@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "generatedAt": null,
+    "pairs": [],
+    "dates": [],
+    "description": "Run backend, then: python backend/scripts/generate_route_cache.py to fill this file."
+  },
+  "routes": {}
+}
