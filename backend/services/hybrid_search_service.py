@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 import time
 
 from backend.services.route_engine import RouteEngine
+from backend.services.multi_modal_route_engine import MultiModalRouteEngine
 from backend.services.external_api_service import fetch_external_routes
 from backend.config import Config
 
@@ -14,6 +15,7 @@ class HybridSearchService:
     def __init__(self, db: Session, route_engine: RouteEngine):
         self.db = db
         self.route_engine = route_engine
+        self.multi_modal_engine = MultiModalRouteEngine()
         self.external_api_timeout_ms = Config.EXTERNAL_API_TIMEOUT_MS # Default to 500ms
 
     async def search_routes(
@@ -63,12 +65,26 @@ class HybridSearchService:
         logger.info(f"Performing internal graph search for {source} -> {destination} (multi_modal={multi_modal})")
         start_time_internal = time.time()
         try:
-            internal_routes = self.route_engine.search_routes(
-                source=source,
-                destination=destination,
-                travel_date=travel_date,
-                budget_category=budget_category,
-            )
+            if multi_modal:
+                # Use multi-modal engine
+                self.multi_modal_engine.load_graph_from_db(self.db)
+                # Assume stops are resolved to IDs
+                source_stop_id = self._resolve_stop_id(source)
+                dest_stop_id = self._resolve_stop_id(destination)
+                if source_stop_id and dest_stop_id:
+                    from datetime import datetime
+                    travel_date_obj = datetime.fromisoformat(travel_date).date()
+                    journeys = self.multi_modal_engine.search_single_journey(source_stop_id, dest_stop_id, travel_date_obj)
+                    internal_routes = [self._convert_journey_to_route(j) for j in journeys]
+                else:
+                    internal_routes = []
+            else:
+                internal_routes = self.route_engine.search_routes(
+                    source=source,
+                    destination=destination,
+                    travel_date=travel_date,
+                    budget_category=budget_category,
+                )
             duration_ms_internal = int((time.time() - start_time_internal) * 1000)
             logger.info(f"Internal graph search for {source} -> {destination} completed in {duration_ms_internal}ms, found {len(internal_routes)} routes.")
 
@@ -188,3 +204,32 @@ class HybridSearchService:
 
         logger.info(f"Enhanced {len(routes)} routes with {len(multimodal_suggestions)} multi-modal suggestions")
         return enhanced_routes
+
+    def _resolve_stop_id(self, station_name: str) -> Optional[int]:
+        """Resolve station name to stop ID."""
+        from backend.models import Stop
+        stop = self.db.query(Stop).filter(Stop.name.ilike(f"%{station_name}%")).first()
+        return stop.id if stop else None
+
+    def _convert_journey_to_route(self, journey: Dict) -> Dict:
+        """Convert multi-modal journey to route format."""
+        legs = journey.get('legs', [])
+        if not legs:
+            return {}
+
+        first_leg = legs[0]
+        last_leg = legs[-1]
+
+        return {
+            "id": journey.get('journey_id', 'multi-modal'),
+            "source": first_leg['departure_stop'],
+            "destination": last_leg['arrival_stop'],
+            "departure_time": first_leg['departure_time'],
+            "arrival_time": last_leg['arrival_time'],
+            "duration": journey['total_duration'],
+            "cost": journey['total_cost'],
+            "transfers": journey['transfers'],
+            "legs": legs,
+            "mode": "multi-modal",
+            "operator": "Multi-Modal Service"
+        }

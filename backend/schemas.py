@@ -69,16 +69,26 @@ class SearchRequestSchema(BaseModel):
     destination: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z\s\-]+$")
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
-    multi_modal: bool = Field(False, description="Whether to include multi-modal planning suggestions")
+    multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
+
+    # New fields for advanced features
+    journey_type: Optional[str] = Field(None, pattern="^(single|connecting|circular|multi_city)$")
+    return_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # For circular journeys
+    cities: Optional[List[str]] = Field(None, description="List of cities for multi-city booking (max 3)")
+    passenger_type: Optional[str] = Field("adult", pattern="^(adult|child|senior|student)$")
+    concessions: Optional[List[str]] = Field(None, description="List of concessions (defence, freedom_fighter, divyang)")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "source": "Mumbai",
-                "destination": "Goa",
+                "source": "Mumbai Central",
+                "destination": "Delhi",
                 "date": "2025-12-25",
                 "budget": "economy",
-                "multi_modal": False
+                "multi_modal": True,
+                "journey_type": "single",
+                "passenger_type": "adult",
+                "concessions": []
             }
         }
 
