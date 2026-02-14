@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-models-have-migration
+        name: Ensure model changes include Alembic migration
+        entry: python backend/scripts/check_model_migration_staged.py
+        language: system
+        files: ^backend/
+        pass_filenames: false
+        stages: [commit]

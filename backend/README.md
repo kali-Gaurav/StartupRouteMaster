@@ -120,6 +120,22 @@ Notes & gotchas
 - PostGIS creates internal tables such as `spatial_ref_sys` — do not drop or recreate these in migrations. If Alembic autogenerate suggests removing PostGIS objects, edit the migration to make it a no-op.
 - If you see a collation version mismatch warning from PostgreSQL, it is an OS-level issue (see PostgreSQL docs). It does not block development but can be addressed by rebuilding DB collation or reinitializing PG with matching libc versions.
 
+Developer checklist (model → migration)
+1. Modify `backend/models.py` (or other ORM classes).
+2. Run:
+   ```bash
+   .venv\Scripts\python -m alembic -c backend/alembic.ini revision --autogenerate -m "describe change"
+   ```
+3. Inspect the generated file under `backend/alembic/versions/` and edit any PostGIS or manual steps.
+4. Run `alembic -c backend/alembic.ini upgrade head` and run tests.
+5. Commit model changes + migration in the same PR.
+
+Local safety (pre-commit)
+- Install `pre-commit` and run `pre-commit install` to enable a pre-commit hook that blocks commits which change models without staging a migration file.
+- The hook is intentionally fast: it only checks staged file paths and does not run DB operations.
+
+If you want, I can also add a `pre-commit` entry to CI to fail builds if hooks are not installed.
+
 If you want, I can add a CI step that verifies migrations are applied during tests.
 
 ## Running the Server

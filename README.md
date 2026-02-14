@@ -79,6 +79,23 @@ A GitHub Actions workflow validates `/health`, `/chat`, and `/api/search` using 
 
 ---
 
+## Contributing — migrations (quick guide)
+- When you change SQLAlchemy models, always create and commit an Alembic migration.
+  - Create autogen migration:
+    ```bash
+    .venv\Scripts\python -m alembic -c backend/alembic.ini revision --autogenerate -m "describe changes"
+    ```
+  - Apply locally to verify: `alembic -c backend/alembic.ini upgrade head`
+  - Commit the new file under `backend/alembic/versions/` together with your model changes.
+- Enable the local safety check (recommended):
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  ```
+  This repository includes a small pre-commit hook that prevents committing model changes without a corresponding migration.
+
+---
+
 ### Running top-level scripts during development
 
 If you run repo-level scripts (examples: `scripts/raptor_benchmark.py`, `scripts/etl_*`) make sure `backend/` is importable. Two easy options:
