@@ -279,3 +279,211 @@ class TestRouteEngine:
         # cleanup
         cache_file.unlink()
 
+
+class TestParetoPruning:
+    """Test Pareto-optimal route filtering."""
+
+    def setup_routeengine(self):
+        from backend.services.route_engine import route_engine
+        # reset internal maps
+        route_engine.stations_map = {}
+        route_engine.segments_map = {}
+        route_engine.route_segments = {}
+        route_engine.station_name_to_id = {}
+        route_engine._is_loaded = True
+        return route_engine
+
+    def test_pareto_pruning_multiple_options(self):
+        """Test that only Pareto-optimal routes are returned when multiple paths exist."""
+        re = self.setup_routeengine()
+        re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
+        re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
+
+        # Create three routes with different time/cost trade-offs:
+        # Route 1: Fast but expensive (direct, 2h, $100) - Pareto optimal
+        # Route 2: Slow and expensive (via transfer, 4h, $150) - dominated
+        # Route 3: Slow but cheap (via transfer, 4h, $80) - Pareto optimal
+        # Route 4: Medium time/medium cost (via transfer, 3h, $120) - dominated by Route 1 and Route 3
+
+        # Direct route: A -> C (fast, expensive)
+        seg_direct = {
+            "id": "seg_direct",
+            "source_station_id": "S1",
+            "dest_station_id": "S3",
+            "departure": "08:00",
+            "arrival": "10:00",
+            "duration": 120,
+            "cost": 100.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_direct",
+            "mode": "train"
+        }
+
+        # Transfer route 1: A -> B -> C (slow, expensive) - dominated
+        seg_ab_slow = {
+            "id": "seg_ab_slow",
+            "source_station_id": "S1",
+            "dest_station_id": "S2",
+            "departure": "08:00",
+            "arrival": "10:00",
+            "duration": 120,
+            "cost": 75.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_slow",
+            "mode": "train"
+        }
+        seg_bc_slow = {
+            "id": "seg_bc_slow",
+            "source_station_id": "S2",
+            "dest_station_id": "S3",
+            "departure": "10:30",
+            "arrival": "12:30",
+            "duration": 120,
+            "cost": 75.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_slow",
+            "mode": "train"
+        }
+
+        # Transfer route 2: A -> B -> C (slow, cheap) - Pareto optimal
+        seg_ab_cheap = {
+            "id": "seg_ab_cheap",
+            "source_station_id": "S1",
+            "dest_station_id": "S2",
+            "departure": "08:00",
+            "arrival": "10:00",
+            "duration": 120,
+            "cost": 40.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_cheap",
+            "mode": "train"
+        }
+        seg_bc_cheap = {
+            "id": "seg_bc_cheap",
+            "source_station_id": "S2",
+            "dest_station_id": "S3",
+            "departure": "10:30",
+            "arrival": "12:30",
+            "duration": 120,
+            "cost": 40.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_cheap",
+            "mode": "train"
+        }
+
+        # Transfer route 3: A -> B -> C (medium time, medium cost) - dominated
+        seg_ab_med = {
+            "id": "seg_ab_med",
+            "source_station_id": "S1",
+            "dest_station_id": "S2",
+            "departure": "08:00",
+            "arrival": "09:30",
+            "duration": 90,
+            "cost": 60.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_med",
+            "mode": "train"
+        }
+        seg_bc_med = {
+            "id": "seg_bc_med",
+            "source_station_id": "S2",
+            "dest_station_id": "S3",
+            "departure": "10:00",
+            "arrival": "11:30",
+            "duration": 90,
+            "cost": 60.0,
+            "operating_days": "1111111",
+            "vehicle_id": "v_med",
+            "mode": "train"
+        }
+
+        re.segments_map = {
+            "seg_direct": seg_direct,
+            "seg_ab_slow": seg_ab_slow,
+            "seg_bc_slow": seg_bc_slow,
+            "seg_ab_cheap": seg_ab_cheap,
+            "seg_bc_cheap": seg_bc_cheap,
+            "seg_ab_med": seg_ab_med,
+            "seg_bc_med": seg_bc_med
+        }
+        re.route_segments = {
+            "route_direct": [seg_direct],
+            "route_slow": [seg_ab_slow, seg_bc_slow],
+            "route_cheap": [seg_ab_cheap, seg_bc_cheap],
+            "route_med": [seg_ab_med, seg_bc_med]
+        }
+
+        # Temporarily set PARETO_LIMIT to high value to see all Pareto-optimal
+        from backend.config import Config
+        old_limit = Config.PARETO_LIMIT
+        Config.PARETO_LIMIT = 10
+        try:
+            results = re.search_routes("A", "C", "2026-02-16")
+
+            # Should return exactly 2 Pareto-optimal routes:
+            # 1. Direct route: 2h, $100 (fastest)
+            # 2. Cheap transfer route: 4h, $80 (cheapest)
+            # The slow expensive (4h, $150) and medium (3h, $120) should be dominated
+            assert len(results) == 2
+
+            # Sort by total cost for consistent checking
+            results.sort(key=lambda x: x["total_cost"])
+
+            # First result should be the cheap transfer route
+            cheap_route = results[0]
+            assert cheap_route["total_cost"] == pytest.approx(80.0)
+            assert cheap_route["total_duration_minutes"] == 240  # 4 hours
+            assert len(cheap_route["segments"]) == 2
+
+            # Second result should be the direct route
+            direct_route = results[1]
+            assert direct_route["total_cost"] == pytest.approx(100.0)
+            assert direct_route["total_duration_minutes"] == 120  # 2 hours
+            assert len(direct_route["segments"]) == 1
+
+        finally:
+            Config.PARETO_LIMIT = old_limit
+
+    def test_pareto_limit_enforced(self):
+        """Test that PARETO_LIMIT is respected when more optimal routes exist."""
+        re = self.setup_routeengine()
+        re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}
+        re.station_name_to_id = {"a": "S1", "b": "S2"}
+
+        # Create many direct routes with slightly different costs/times
+        # All should be Pareto-optimal since they trade off time vs cost
+        segments = []
+        for i in range(10):
+            seg = {
+                "id": f"seg_{i}",
+                "source_station_id": "S1",
+                "dest_station_id": "S2",
+                "departure": f"{8+i:02d}:00",
+                "arrival": f"{9+i:02d}:00",
+                "duration": 60,
+                "cost": 50.0 + i * 5.0,  # Increasing cost
+                "operating_days": "1111111",
+                "vehicle_id": f"v_{i}",
+                "mode": "train"
+            }
+            segments.append(seg)
+            re.segments_map[seg["id"]] = seg
+            re.route_segments[f"route_v_{i}"] = [seg]
+
+        from backend.config import Config
+        old_limit = Config.PARETO_LIMIT
+        Config.PARETO_LIMIT = 3  # Limit to 3 results
+        try:
+            results = re.search_routes("A", "B", "2026-02-16")
+            # Should return at most PARETO_LIMIT results
+            assert len(results) <= 3
+            # All returned routes should be Pareto-optimal (no dominated ones)
+            for i, route in enumerate(results):
+                for other_route in results[i+1:]:
+                    # No route should dominate another
+                    assert not (route["total_duration_minutes"] <= other_route["total_duration_minutes"] and
+                              route["total_cost"] <= other_route["total_cost"] and
+                              (route["total_duration_minutes"] < other_route["total_duration_minutes"] or
+                               route["total_cost"] < other_route["total_cost"]))
+        finally:
+            Config.PARETO_LIMIT = old_limit

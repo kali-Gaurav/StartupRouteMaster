@@ -1,9 +1,8 @@
-import requests
+import httpx
 import hashlib
 import hmac
 import logging
 from typing import Dict, Optional, Tuple
-from uuid import UUID
 
 from backend.config import Config
 
@@ -13,7 +12,7 @@ RAZORPAY_API_URL = "https://api.razorpay.com/v1"
 
 
 class PaymentService:
-    """Handle Razorpay payment operations."""
+    """Handle Razorpay payment operations using an asynchronous HTTP client."""
 
     def __init__(self):
         self.key_id = Config.RAZORPAY_KEY_ID
@@ -26,7 +25,6 @@ class PaymentService:
 
     def is_configured(self) -> bool:
         """Check if Razorpay is properly configured."""
-        # Ensure a strict boolean is returned (not the last truthy string)
         return bool(
             self.key_id
             and self.key_id != "your_razorpay_key_id"
@@ -34,19 +32,15 @@ class PaymentService:
             and self.key_secret != "your_razorpay_key_secret"
         )
 
-    def create_order(
+    async def create_order(
         self,
         amount_rupees: float = 39,
         receipt_id: str = "route_unlock",
         customer_email: Optional[str] = None,
-        idempotency_key: Optional[str] = None, # New parameter
-        description: Optional[str] = None, # New parameter, as it's used in payments.py
+        idempotency_key: Optional[str] = None,
+        description: Optional[str] = None,
     ) -> Dict:
-        """
-        Create Razorpay order for route unlock.
-
-        Returns order details with order_id if successful.
-        """
+        """Create Razorpay order asynchronously."""
         if not self.is_configured():
             return {
                 "success": False,
@@ -55,55 +49,37 @@ class PaymentService:
 
         try:
             amount_paise = int(amount_rupees * 100)
-
             payload = {
-                "amount": amount_paise,
-                "currency": "INR",
-                "receipt": receipt_id,
+                "amount": amount_paise, "currency": "INR", "receipt": receipt_id,
+                "notes": {
+                    "customer_email": customer_email,
+                    "description": description,
+                }
             }
+            headers = {"X-Razorpay-IDEMPOTENCY": idempotency_key} if idempotency_key else {}
 
-            if customer_email:
-                payload["customer_notify"] = 1
-                payload["notes"] = {"customer_email": customer_email}
-            
-            if description: # Add description to payload if provided
-                payload["notes"]["description"] = description
-
-
-            headers = {}
-            if idempotency_key:
-                headers["X-Razorpay-IDEMPOTENCY"] = idempotency_key # New header
-
-            response = requests.post(
-                f"{RAZORPAY_API_URL}/orders",
-                json=payload,
-                auth=(self.key_id, self.key_secret),
-                headers=headers, # Pass headers
-                timeout=5,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{RAZORPAY_API_URL}/orders",
+                    json=payload,
+                    auth=(self.key_id, self.key_secret),
+                    headers=headers,
+                    timeout=10,
+                )
 
             if response.status_code == 200:
                 order_data = response.json()
                 logger.info(f"Order created: {order_data['id']}")
                 return {
-                    "success": True,
-                    "order_id": order_data["id"],
-                    "amount": amount_rupees,
-                    "currency": "INR",
-                    "key_id": self.key_id,
+                    "success": True, "order_id": order_data["id"], "amount": amount_rupees,
+                    "currency": "INR", "key_id": self.key_id,
                 }
             else:
                 logger.error(f"Order creation failed: {response.text}")
-                return {
-                    "success": False,
-                    "error": "Failed to create payment order",
-                }
-        except requests.RequestException as e:
+                return {"success": False, "error": "Failed to create payment order"}
+        except httpx.RequestError as e:
             logger.error(f"Payment API error: {e}")
-            return {
-                "success": False,
-                "error": "Payment service unavailable",
-            }
+            return {"success": False, "error": "Payment service unavailable"}
 
     def verify_payment(
         self,
@@ -111,32 +87,21 @@ class PaymentService:
         razorpay_order_id: str,
         razorpay_signature: str,
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Verify Razorpay payment signature.
-
-        Returns (is_valid, error_message)
-        """
+        """Verify Razorpay payment signature."""
         if not self.is_configured():
             return False, "Razorpay not configured"
-
         try:
             message = f"{razorpay_order_id}|{razorpay_payment_id}"
             generated_signature = hmac.new(
-                self.key_secret.encode(),
-                message.encode(),
-                hashlib.sha256,
+                self.key_secret.encode(), message.encode(), hashlib.sha256
             ).hexdigest()
 
-            is_valid = generated_signature == razorpay_signature
-            error_msg = None if is_valid else "Signature verification failed"
-
-            if is_valid:
+            if hmac.compare_digest(generated_signature, razorpay_signature):
                 logger.info(f"Payment verified: {razorpay_payment_id}")
+                return True, None
             else:
                 logger.warning(f"Signature mismatch for payment: {razorpay_payment_id}")
-
-            return is_valid, error_msg
-
+                return False, "Signature verification failed"
         except Exception as e:
             logger.error(f"Signature verification error: {e}")
             return False, str(e)
@@ -146,14 +111,10 @@ class PaymentService:
         if not self.is_configured():
             logger.error("Cannot verify webhook signature, Razorpay keys not configured.")
             return False
-        
         try:
             generated_signature = hmac.new(
-                self.key_secret.encode(),
-                body,
-                hashlib.sha256,
+                self.key_secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            
             if hmac.compare_digest(generated_signature, signature):
                 logger.info("Webhook signature verified successfully.")
                 return True
@@ -164,106 +125,72 @@ class PaymentService:
             logger.error(f"Webhook signature verification failed: {e}")
             return False
 
-    def fetch_payment_details(self, payment_id: str) -> Optional[Dict]:
-        """Fetch payment details from Razorpay."""
-        if not self.is_configured():
-            return None
-
+    async def fetch_payment_details(self, payment_id: str) -> Optional[Dict]:
+        """Fetch payment details from Razorpay asynchronously."""
+        if not self.is_configured(): return None
         try:
-            response = requests.get(
-                f"{RAZORPAY_API_URL}/payments/{payment_id}",
-                auth=(self.key_id, self.key_secret),
-                timeout=5,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to fetch payment: {response.text}")
-                return None
-
-        except requests.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{RAZORPAY_API_URL}/payments/{payment_id}",
+                    auth=(self.key_id, self.key_secret),
+                    timeout=5,
+                )
+            return response.json() if response.status_code == 200 else None
+        except httpx.RequestError as e:
             logger.error(f"Payment fetch error: {e}")
             return None
 
-    def refund_payment(
-        self,
-        payment_id: str,
-        amount_rupees: Optional[float] = None,
+    async def refund_payment(
+        self, payment_id: str, amount_rupees: Optional[float] = None
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Create refund for a payment.
-
-        Returns (success, error_message)
-        """
-        if not self.is_configured():
-            return False, "Razorpay not configured"
-
+        """Create refund for a payment asynchronously."""
+        if not self.is_configured(): return False, "Razorpay not configured"
         try:
-            payload = {}
-            if amount_rupees:
-                payload["amount"] = int(amount_rupees * 100)
-
-            response = requests.post(
-                f"{RAZORPAY_API_URL}/payments/{payment_id}/refund",
-                json=payload,
-                auth=(self.key_id, self.key_secret),
-                timeout=5,
-            )
-
+            payload = {"amount": int(amount_rupees * 100)} if amount_rupees else {}
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{RAZORPAY_API_URL}/payments/{payment_id}/refund",
+                    json=payload,
+                    auth=(self.key_id, self.key_secret),
+                    timeout=10,
+                )
             if response.status_code in [200, 201]:
-                refund_data = response.json()
-                logger.info(f"Refund created: {refund_data.get('id')}")
+                logger.info(f"Refund created: {response.json().get('id')}")
                 return True, None
             else:
                 logger.error(f"Refund failed: {response.text}")
                 return False, "Refund failed"
-
-        except requests.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"Refund error: {e}")
             return False, str(e)
 
-    def fetch_payments_for_order(self, order_id: str) -> Optional[Dict]:
-        """Fetch all payments for a given Razorpay order."""
-        if not self.is_configured():
-            return None
-
+    async def fetch_payments_for_order(self, order_id: str) -> Optional[Dict]:
+        """Fetch all payments for a given Razorpay order asynchronously."""
+        if not self.is_configured(): return None
         try:
-            response = requests.get(
-                f"{RAZORPAY_API_URL}/orders/{order_id}/payments",
-                auth=(self.key_id, self.key_secret),
-                timeout=5,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to fetch payments for order {order_id}: {response.text}")
-                return None
-
-        except requests.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{RAZORPAY_API_URL}/orders/{order_id}/payments",
+                    auth=(self.key_id, self.key_secret),
+                    timeout=5,
+                )
+            return response.json() if response.status_code == 200 else None
+        except httpx.RequestError as e:
             logger.error(f"Payment fetch error for order {order_id}: {e}")
             return None
 
-    def fetch_order_details(self, order_id: str) -> Optional[Dict]:
-        """Fetch order details from Razorpay."""
-        if not self.is_configured():
-            return None
-
+    async def fetch_order_details(self, order_id: str) -> Optional[Dict]:
+        """Fetch order details from Razorpay asynchronously."""
+        if not self.is_configured(): return None
         try:
-            response = requests.get(
-                f"{RAZORPAY_API_URL}/orders/{order_id}",
-                auth=(self.key_id, self.key_secret),
-                timeout=5,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to fetch order {order_id}: {response.text}")
-                return None
-
-        except requests.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{RAZORPAY_API_URL}/orders/{order_id}",
+                    auth=(self.key_id, self.key_secret),
+                    timeout=5,
+                )
+            return response.json() if response.status_code == 200 else None
+        except httpx.RequestError as e:
             logger.error(f"Order fetch error for {order_id}: {e}")
             return None
 

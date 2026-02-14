@@ -2,6 +2,8 @@ from sqlalchemy.orm import Session
 from backend.models import UnlockedRoute, User, Route, Payment
 from datetime import datetime
 import logging
+import random
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -53,3 +55,28 @@ class UnlockService:
         Retrieves all routes unlocked by a specific user.
         """
         return self.db.query(UnlockedRoute).filter(UnlockedRoute.user_id == user_id).all()
+
+    def verify_live_availability(self, route_id: str, travel_date: str) -> bool:
+        """
+        Simulates a live availability check for a given route and date.
+        In a real implementation, this would involve an API call to an external partner.
+        """
+        logger.info(f"Verifying live availability for route {route_id} on {travel_date} (simulated).")
+        
+        # Simulate external API call
+        if random.random() < Config.SIMULATE_AVAILABILITY_CHECK_FAILURE_RATE:
+            logger.warning(f"Simulating live availability check failure for route {route_id} on {travel_date}.")
+            return False # Simulate unavailability
+
+        # In a real scenario, make an actual API call here
+        # For example:
+        # try:
+        #     response = await httpx.get(f"{Config.EXTERNAL_AVAILABILITY_API_URL}/check?route_id={route_id}&date={travel_date}")
+        #     response.raise_for_status()
+        #     data = response.json()
+        #     return data.get("available", False)
+        # except httpx.RequestError as e:
+        #     logger.error(f"External availability API call failed: {e}")
+        #     return False
+            
+        return True # Default to available if simulation passes and no real API is called

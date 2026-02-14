@@ -9,6 +9,9 @@ from sqlalchemy import (
     JSON,
     Text,
     CheckConstraint,
+    UniqueConstraint,
+    Date,
+    Index, # Import Index
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -51,6 +54,11 @@ class Vehicle(Base):
 
 class Station(Base):
     __tablename__ = "stations"
+    __table_args__ = (
+        Index("idx_stations_geom", "geom", postgresql_using="gist"),
+        Index("idx_stations_name_trgm", func.lower(Column("name")), postgresql_ops={"lower_name": "gin_trgm_ops"}, postgresql_using="gin"),
+        Index("idx_stations_city_trgm", func.lower(Column("city")), postgresql_ops={"lower_city": "gin_trgm_ops"}, postgresql_using="gin"),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String(255), nullable=False, index=True)
@@ -97,6 +105,7 @@ class Segment(Base):
         "Station", foreign_keys=[dest_station_id], back_populates="segments_to"
     )
     vehicle = relationship("Vehicle", back_populates="segments")
+    inventories = relationship("SeatInventory", back_populates="segment")
 
 
 class Route(Base):
@@ -117,6 +126,9 @@ class Route(Base):
 
 class Booking(Base):
     __tablename__ = "bookings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "route_id", "travel_date", name="uq_user_route_travel_date"),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
@@ -183,6 +195,10 @@ class UnlockedRoute(Base):
 
 class StationMaster(Base):
     __tablename__ = "stations_master"
+    __table_args__ = (
+        Index("idx_stations_master_name_trgm", func.lower(Column("station_name")), postgresql_ops={"lower_station_name": "gin_trgm_ops"}, postgresql_using="gin"),
+        Index("idx_stations_master_city_trgm", func.lower(Column("city")), postgresql_ops={"lower_city": "gin_trgm_ops"}, postgresql_using="gin"),
+    )
 
     station_code = Column(String(10), primary_key=True)
     station_name = Column(String(255), nullable=False, index=True)
@@ -192,3 +208,17 @@ class StationMaster(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     geo_hash = Column(String(12), nullable=True)
+
+class SeatInventory(Base):
+    __tablename__ = 'seat_inventory'
+    __table_args__ = (
+        UniqueConstraint('segment_id', 'travel_date', name='uq_segment_travel_date'),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    segment_id = Column(String(36), ForeignKey('segments.id'), nullable=False, index=True)
+    travel_date = Column(Date, nullable=False, index=True)
+    seats_available = Column(Integer, nullable=False)
+    last_reconciled_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    segment = relationship("Segment", back_populates="inventories")

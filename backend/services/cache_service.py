@@ -3,27 +3,69 @@ from redis.lock import Lock
 import json
 import logging
 from typing import Optional, Any, Dict
+import time # New: Import time for duration calculation
 
 from backend.config import Config
+from backend.utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
 
 logger = logging.getLogger(__name__)
 
 class _DummyLock:
     """A dummy lock that does nothing, for use when Redis is not available."""
     def __init__(self, *args, **kwargs):
-        pass
+        self._acquire_time = None # New
 
     def __enter__(self):
+        self._acquire_time = time.time() # New
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if self._acquire_time: # New
+            LOCK_HOLD_DURATION_SECONDS.labels(lock_name="dummy_lock").observe(time.time() - self._acquire_time) # New
         pass
 
     def acquire(self, blocking=True, blocking_timeout=-1):
+        LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name="dummy_lock", outcome="attempt").inc() # New
+        self._acquire_time = time.time() # New
+        LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name="dummy_lock", outcome="acquired").inc() # New
         return True
 
     def release(self):
+        if self._acquire_time: # New
+            LOCK_HOLD_DURATION_SECONDS.labels(lock_name="dummy_lock").observe(time.time() - self._acquire_time) # New
+            self._acquire_time = None # Reset after release # New
         pass
+
+class InstrumentedLock:
+    """A wrapper around redis.lock.Lock to add Prometheus instrumentation."""
+    def __init__(self, lock: Lock, name: str):
+        self._lock = lock
+        self._name = name
+        self._acquire_time = None
+
+    def acquire(self, blocking: bool = True, blocking_timeout: float = -1) -> bool:
+        LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name=self._name, outcome="attempt").inc()
+        acquired = self._lock.acquire(blocking=blocking, blocking_timeout=blocking_timeout)
+        if acquired:
+            self._acquire_time = time.time()
+            LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name=self._name, outcome="acquired").inc()
+        else:
+            LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name=self._name, outcome="failed").inc()
+        return acquired
+
+    def release(self) -> bool:
+        if self._acquire_time:
+            LOCK_HOLD_DURATION_SECONDS.labels(lock_name=self._name).observe(time.time() - self._acquire_time)
+            self._acquire_time = None
+        released = self._lock.release()
+        return released
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
 
 class CacheService:
     """A Redis-based caching service with an in-process fallback for tests/dev when Redis is not available."""
@@ -48,21 +90,25 @@ class CacheService:
         """Check if the Redis connection is available."""
         return self.redis is not None
 
-    def get_lock(self, name: str, timeout: int = 10, blocking_timeout: int = 0) -> Lock:
+    def get_lock(self, name: str, timeout: int = 10, blocking_timeout: int = 0) -> InstrumentedLock: # Changed return type to InstrumentedLock
         """
         Get a Redis distributed lock.
 
         :param name: The name of the lock.
         :param timeout: The lock's TTL in seconds.
         :param blocking_timeout: Max seconds to wait to acquire lock. 0 for non-blocking.
-        :return: A lock object (either Redis-backed or a dummy).
+        :return: An Instrumented Redis lock object.
+        :raises RuntimeError: If Redis is not available.
         """
         if self.is_available():
             # Locks are not versioned as they are not for caching
-            return self.redis.lock(name, timeout=timeout, blocking_timeout=blocking_timeout)
+            redis_lock = self.redis.lock(name, timeout=timeout, blocking_timeout=blocking_timeout)
+            return InstrumentedLock(redis_lock, name) # Wrap with InstrumentedLock
         
-        logger.warning(f"Returning dummy lock for '{name}' as Redis is not available.")
-        return _DummyLock(self.redis, name)
+        # Fallback to DummyLock with instrumentation if Redis is not available
+        dummy_lock = _DummyLock(name) # Pass name for consistency, though dummy_lock doesn't use it
+        LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name=name, outcome="fallback_dummy").inc()
+        return dummy_lock # Return dummy lock as before, now with instrumentation
 
     def get(self, key: str) -> Optional[Any]:
         """Get a value from the cache. Deserializes JSON."""

@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict
 from geoalchemy2.functions import ST_MakePoint, ST_DWithin # Import PostGIS functions
 from geoalchemy2.types import Geography # Import Geography type for explicit casting if needed
-from sqlalchemy import func # Import func from sqlalchemy for generic functions
+from sqlalchemy import func, text # Import func from sqlalchemy for generic functions, and text for raw SQL
 
 from backend.models import Station
 
@@ -12,14 +12,25 @@ class StationService:
 
     def search_stations_by_name(self, query: str, limit: int = 5) -> List[Dict]:
         """
-        Searches for stations by name, returning the top matches.
+        Searches for stations by name, returning the top matches using pg_trgm for fuzzy matching.
         """
         if not query or len(query) < 2:
             return []
             
-        # A simple ILIKE search. Can be enhanced with fuzzy matching or ranking later.
+        # Ensure 'pg_trgm' extension is enabled in your PostgreSQL database.
+        # This is typically done via a migration or manually if you have superuser privileges.
+        # For development, you might uncomment the line below to ensure it's created.
+        # self.db.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;")) 
+        
+        # Use pg_trgm for fuzzy matching and order by similarity
+        # A similarity threshold can be configured, e.g., 0.3
+        similarity_threshold = 0.3 # You can adjust this value based on desired fuzziness
+
         stations = self.db.query(Station).filter(
-            Station.name.ilike(f"%{query}%")
+            func.similarity(Station.name, query) > similarity_threshold
+        ).order_by(
+            func.similarity(Station.name, query).desc(), # Order by relevance
+            Station.name # Secondary sort for consistent results
         ).limit(limit).all()
 
         return [

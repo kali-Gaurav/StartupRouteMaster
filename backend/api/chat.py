@@ -1,6 +1,4 @@
-import redis
-import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import re
@@ -8,15 +6,21 @@ import uuid
 from datetime import datetime
 from difflib import SequenceMatcher
 import httpx # Import httpx for making async HTTP requests
+import json
 from sqlalchemy.orm import Session
+import logging
 
 from backend.config import Config
 from backend.services.cache_service import cache_service
 from backend.services.booking_service import BookingService
 from backend.api import sos as sos_api
 from backend.database import get_db
-from backend.models import User
+from backend.models import User, Route as RouteModel
 from backend.api.dependencies import get_current_user, get_optional_user
+from backend.app import limiter # Import the shared limiter
+from pybreaker import CircuitBreaker, CircuitBreakerError # New: Import CircuitBreaker
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -25,6 +29,14 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 _redis = cache_service.redis if cache_service and cache_service.is_available() else None
 _local_sessions: Dict[str, Dict[str, Any]] = {}
 SESSION_KEY_PREFIX = "chat:session:"
+TOKEN_BUDGET = 4096  # Example token budget
+
+# New: Circuit Breaker for OpenRouter API calls
+openrouter_breaker = CircuitBreaker(
+    fail_max=Config.OPENROUTER_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    reset_timeout=Config.OPENROUTER_CIRCUIT_BREAKER_RECOVERY_TIMEOUT,
+    exclude=Config.OPENROUTER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS
+)
 
 # Pydantic Models for Function Calling (Tools)
 class RouteSearchTool(BaseModel):
@@ -33,9 +45,18 @@ class RouteSearchTool(BaseModel):
     destination: str
     date: Optional[str] = None
 
+class MultiModalPlanTool(BaseModel):
+    """Plan optimal multi-modal journeys combining train, bus, and flight options with commission bias."""
+    source: str
+    destination: str
+    date: Optional[str] = None
+    budget: Optional[str] = None
+    preferences: Optional[str] = None
+
 class BookRouteTool(BaseModel):
     """Book a railway route for the current user."""
     route_id: str
+    hold_seat: Optional[bool] = False
 
 class SOSAlertTool(BaseModel):
     """Trigger an SOS alert with location and an optional message."""
@@ -82,15 +103,77 @@ class GatewayValidator:
             response_obj.state = "search"
             return response_obj
 
+        elif function_name == "MultiModalPlanTool":
+            source = arguments.get("source")
+            destination = arguments.get("destination")
+            date = arguments.get("date")
+            budget = arguments.get("budget")
+            preferences = arguments.get("preferences")
+
+            plan_description = f"multi-modal journey from {source} to {destination}"
+            if date:
+                plan_description += f" on {date}"
+            if budget:
+                plan_description += f" with {budget} budget"
+            if preferences:
+                plan_description += f" considering {preferences}"
+
+            response_obj.reply = f"AI is planning an optimal {plan_description}. I'll analyze train, bus, and flight combinations to find the best options with commission-earning partners."
+            response_obj.trigger_search = True
+            response_obj.collected = {
+                "source": source,
+                "destination": destination,
+                "date": date,
+                "budget": budget,
+                "preferences": preferences,
+                "multi_modal": True
+            }
+            response_obj.actions = [
+                ChatAction(label="View Multi-Modal Options", type="intent", value="view_multimodal"),
+                ChatAction(label="Adjust Preferences", type="intent", value="modify_plan")
+            ]
+            response_obj.state = "multimodal_plan"
+            return response_obj
+
         elif function_name == "BookRouteTool":
             route_id = arguments.get("route_id")
-            # The user is booking for themselves, using the authenticated user's ID.
-            # In a real scenario, you would call a booking service here.
-            # e.g., booking_service = BookingService(self.db)
-            # booking_service.create_booking(user_id=self.user.id, route_id=route_id, ...)
-            response_obj.reply = f"AI requested to book route {route_id} for you. Booking would proceed."
-            response_obj.actions = [ChatAction(label="View Bookings", type="navigate", value="/bookings")]
-            response_obj.state = "booking"
+            hold_seat = arguments.get("hold_seat", False)
+            
+            booking_service = BookingService(self.db)
+            route = self.db.query(RouteModel).filter(RouteModel.id == route_id).first()
+
+            if not route:
+                response_obj.reply = f"Could not find route with ID {route_id}."
+                return response_obj
+
+            if hold_seat:
+                if not self.user:
+                    response_obj.reply = "You need to sign in to hold a seat. Please log in to continue."
+                    response_obj.state = "auth_required"
+                    return response_obj
+                
+                # Assuming a default amount or extracting from route for hold
+                amount_for_hold = route.total_cost if route.total_cost else 0.0
+                booking_details = route.segments # or a summary of segments
+
+                held_booking = booking_service.hold_seat(
+                    user_id=self.user.id,
+                    route_id=route_id,
+                    travel_date="2026-02-14", # Placeholder, ideally derived from context or tool
+                    booking_details=booking_details,
+                    amount_paid=amount_for_hold
+                )
+                if held_booking:
+                    response_obj.reply = f"AI has held a seat for you on route {route_id}. Your pending booking ID is {held_booking.id}. Please proceed to payment to confirm."
+                    response_obj.actions = [ChatAction(label="Complete Booking", type="navigate", value=f"/bookings/{held_booking.id}/payment")]
+                    response_obj.state = "booking_pending"
+                else:
+                    response_obj.reply = f"Failed to hold a seat on route {route_id}."
+                return response_obj
+            else:
+                response_obj.reply = f"AI requested to book route {route_id} for you. Booking would proceed."
+                response_obj.actions = [ChatAction(label="View Bookings", type="navigate", value="/bookings")]
+                response_obj.state = "booking"
             return response_obj
 
         elif function_name == "SOSAlertTool":
@@ -123,14 +206,55 @@ def _load_session(session_id: str) -> Dict[str, Any]:
 
 
 def _save_session(session_id: str, data: Dict[str, Any]) -> None:
+    """
+    Saves a compact conversation summary to Redis.
+    The summary includes key context like source, destination, and date.
+    """
     ttl = Config.REDIS_SESSION_EXPIRY_SECONDS
+    
+    # Create a compact summary
+    messages = data.get("messages", [])
+    last_10_messages = messages[-10:]
+
+    source = None
+    destination = None
+    date = None
+
+    for msg in reversed(last_10_messages):
+        if msg.get("role") == "assistant" and msg.get("collected"):
+            if not source and msg["collected"].get("source"):
+                source = msg["collected"]["source"]
+            if not destination and msg["collected"].get("destination"):
+                destination = msg["collected"]["destination"]
+            if not date and msg["collected"].get("date"):
+                date = msg["collected"]["date"]
+        if source and destination and date:
+            break
+            
+    summary = {
+        "source": source,
+        "destination": destination,
+        "date": date,
+        "last_message_timestamp": last_10_messages[-1]["timestamp"] if last_10_messages else None
+    }
+    
+    compact_data = {
+        "created_at": data.get("created_at"),
+        "summary": summary,
+        # Storing last 2 messages for immediate context
+        "messages": messages[-2:] 
+    }
+
     if _redis:
         try:
-            _redis.set(_session_key(session_id), json.dumps(data), ex=ttl)
+            _redis.set(_session_key(session_id), json.dumps(compact_data), ex=ttl)
             return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to save session to Redis: {e}")
+            
+    # Fallback to local session storage
     _local_sessions[session_id] = data
+
 
 
 def _count_active_sessions() -> int:
@@ -140,6 +264,10 @@ def _count_active_sessions() -> int:
         except Exception:
             return len(_local_sessions)
     return len(_local_sessions)
+
+def count_tokens(text: str) -> int:
+    """A simple approximation for token counting."""
+    return len(text) // 4
 
 # City to major station mapping (contains major junction stations for each city)
 # TODO: In a production system, this should be loaded from a persistent store or a service.
@@ -196,6 +324,7 @@ class ChatResponse(BaseModel):
     correlation_id: Optional[str] = None
 
 
+@openrouter_breaker # New: Apply circuit breaker
 async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Calls the OpenRouter API with the given messages and returns the response."""
     if not Config.OPENROUTER_API_KEY:
@@ -211,6 +340,14 @@ async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "name": "RouteSearchTool",
                 "description": RouteSearchTool.__doc__,
                 "parameters": RouteSearchTool.model_json_schema()
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "MultiModalPlanTool",
+                "description": MultiModalPlanTool.__doc__,
+                "parameters": MultiModalPlanTool.model_json_schema()
             }
         },
         {
@@ -310,8 +447,6 @@ def extract_stations_from_message(message: str) -> Dict[str, str]:
             cleanup_words = r'\b(from|book|train|route|ticket|search|journey|travel|via)\b'
             source = re.sub(cleanup_words, '', source).strip()
             destination = re.sub(cleanup_words, '', destination).strip()
-            source = re.sub(r'\d+', '', source).strip()
-            destination = re.sub(r'\d+', '', destination).strip()
             source = ' '.join(source.split()[:3])
             destination = ' '.join(destination.split()[:3])
             if len(source) > 1 and len(destination) > 1:
@@ -490,7 +625,15 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -
                 ChatAction(label="Dashboard", type="navigate", value="/dashboard")
             ]
         else:
-            reply = "I need both source and destination stations to search for routes.\n\n💡 **Examples:**\n• 'Delhi to Mumbai'\n• 'Book ticket from Kota to Bangalore'\n• 'Kolkata to Chennai on Monday'\n• 'Search trains Jaipur to Pune on 12-02-2026'\n\nPlease try again!"
+            reply = """I need both source and destination stations to search for routes.
+
+💡 **Examples:**
+• 'Delhi to Mumbai'
+• 'Book ticket from Kota to Bangalore'
+• 'Kolkata to Chennai on Monday'
+• 'Search trains Jaipur to Pune on 12-02-2026'
+
+Please try again!"""
             actions = [
                 ChatAction(label="Popular Routes", type="intent", value="popular_routes"),
                 ChatAction(label="Search Form", type="navigate", value="/"),
@@ -555,17 +698,19 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -
 
 # -- POST /chat (uses Redis-backed sessions) --
 @router.post("/", response_model=ChatResponse)
+@limiter.limit("10/minute") # New: Add rate limiting to the chat endpoint
 async def chat_message(
-    request: ChatMessage,
+    request: Request, # Add Request dependency
+    chat_message_request: ChatMessage, # Rename request to chat_message_request
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
-    session_id = request.session_id or str(uuid.uuid4())
+    session_id = chat_message_request.session_id or str(uuid.uuid4())
     session = _load_session(session_id)
 
     session.setdefault("messages", []).append({
         "role": "user",
-        "content": request.message,
+        "content": chat_message_request.message,
         "timestamp": datetime.utcnow().isoformat()
     })
     
@@ -575,14 +720,14 @@ async def chat_message(
 
     # If OpenRouter API key is not configured, fall back to a lightweight rule-based generator
     if not Config.OPENROUTER_API_KEY:
-        intent = get_intent_from_message(request.message)
+        intent = get_intent_from_message(chat_message_request.message)
         # If intent is unknown but message contains 'X to Y' station pattern, treat as search
         if intent == 'unknown':
-            stations_look = extract_stations_from_message(request.message)
+            stations_look = extract_stations_from_message(chat_message_request.message)
             if stations_look.get('source') and stations_look.get('destination'):
                 intent = 'search'
 
-        response_obj = generate_response(intent, request.message, session)
+        response_obj = generate_response(intent, chat_message_request.message, session)
         ai_reply_content = response_obj.reply
         tool_calls = []
     else:
@@ -590,12 +735,44 @@ async def chat_message(
         # Add system message to instruct the AI
         ai_messages.append({
             "role": "system",
-            "content": "You are RouteMaster, an AI assistant for railway travel. You can search for routes, book tickets, and trigger SOS alerts. Use the available tools when appropriate."
+            "content": """You are RouteMaster, an intelligent multi-modal travel planner. You help users find optimal combinations of trains, buses, and flights for their journeys.
+
+CORE PRINCIPLES:
+- Focus on commission-earning redirects: Prioritize partners like RailYatri, RedBus, MakeMyTrip that pay commissions (5-10%)
+- Multi-modal optimization: Suggest best combinations of different transport modes
+- Pareto-optimal choices: Show time vs cost trade-offs (fast/expensive vs slow/cheap)
+- Static data intelligence: Use accurate schedules, no real-time APIs needed
+- User-centric: Consider budget, time preferences, and convenience
+
+AVAILABLE MODES:
+- Trains: Railway routes (primary focus, highest commissions)
+- Buses: Inter-city bus routes (good commissions via RedBus, AbhiBus)
+- Flights: Air routes (highest commissions via MakeMyTrip, Goibibo)
+
+TOOLS USAGE:
+- Use RouteSearchTool for simple railway queries
+- Use MultiModalPlanTool for complex journeys requiring mode combinations
+- Always suggest 2-3 Pareto-optimal options when multiple choices exist
+- Bias towards high-commission partners in recommendations
+
+RESPONSE STYLE:
+- Be helpful and conversational
+- Explain trade-offs clearly
+- Guide users toward commission-generating bookings"""
         })
-        # Implement sliding window for chat history
-        last_10_messages = session["messages"][-10:]
-        for msg in last_10_messages:
-            # Ensure only 'user' and 'assistant' roles are sent to the AI
+        
+        # Token-budgeted context retention
+        total_tokens = count_tokens(ai_messages[0]["content"])
+        
+        temp_messages = []
+        for msg in reversed(session["messages"]):
+            msg_tokens = count_tokens(msg["content"])
+            if total_tokens + msg_tokens > TOKEN_BUDGET:
+                break
+            temp_messages.insert(0, msg)
+            total_tokens += msg_tokens
+            
+        for msg in temp_messages:
             if msg["role"] in ["user", "assistant"]:
                 ai_messages.append({"role": msg["role"], "content": msg["content"]})
         
@@ -603,8 +780,8 @@ async def chat_message(
             ai_response = await call_openrouter_api(ai_messages)
         except HTTPException:
             # If AI API fails, fall back to local generator
-            intent = get_intent_from_message(request.message)
-            response_obj = generate_response(intent, request.message, session)
+            intent = get_intent_from_message(chat_message_request.message)
+            response_obj = generate_response(intent, chat_message_request.message, session)
             ai_reply_content = response_obj.reply
             tool_calls = []
         else:

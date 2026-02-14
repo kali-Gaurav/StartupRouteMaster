@@ -1,121 +1,203 @@
 import hashlib
 import json
 import logging
-import pickle # Import pickle for serialization
-import os # Import os for file path operations
+import pickle
+import os
+import hmac
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
-from datetime import datetime, time, timedelta
+from datetime import datetime
+import redis
+import asyncio # New: Import asyncio
 
 from backend.config import Config
 from backend.models import Segment, Station
 from backend.services.cache_service import cache_service
-# Removed TimeExpandedGraph and dijkstra_search as they will be replaced by RAPTOR
-# from backend.utils.graph_utils import TimeExpandedGraph, dijkstra_search
 from backend.utils.time_utils import format_duration
+from backend.etl.sqlite_to_postgres import REDIS_PUB_SUB_CHANNEL # New: Import Pub/Sub channel name
 
 logger = logging.getLogger(__name__)
 
-GRAPH_CACHE_FILE = "route_engine_graph.pkl" # Define cache file name (reload-trigger)
+# Constants for Redis and HMAC (use values from Config)
+REDIS_GRAPH_KEY = Config.ROUTE_GRAPH_REDIS_KEY
+HMAC_SECRET_KEY = Config.GRAPH_HMAC_SECRET.encode() if Config.GRAPH_HMAC_SECRET else b"default-secret-key"
 
 
 class RouteEngine:
     """
-    A high-performance, date-aware route search engine implementing the RAPTOR algorithm (MVP).
-
-    - Supports: direct trips, single-transfer (1 round), overnight/day-offset, operating_days checks.
-    - Produces `segments`-based routes (uses `route_segments` preprocessed by vehicle_id).
-    - Cache includes metadata (version + etl_timestamp) to detect stale caches.
+    A high-performance, date-aware route search engine implementing the RAPTOR algorithm.
+    The graph is stored in a shared RedisJSON store to allow for stateless scaling.
     """
-    CACHE_SCHEMA_VERSION = 2
+    CACHE_SCHEMA_VERSION = 3  # Incremented due to change in storage mechanism
 
     def __init__(self):
         self.stations_map: Dict[str, Dict] = {}
         self.segments_map: Dict[str, Dict] = {}
         self.station_name_to_id: Dict[str, str] = {}
-        # RAPTOR specific data structures
-        self.routes_by_station: Dict[str, List[Dict]] = {}  # Station ID -> List of routes passing through this station
-        self.route_segments: Dict[str, List[Dict]] = {}  # Route ID -> List of segments in order
-        # Per-route indices for faster boarding (todo02 P0.1)
-        self.route_stop_index: Dict[str, Dict[str, List[int]]] = {}        # route_id -> {station_id: [segment_positions]}
-        self.route_stop_departures: Dict[str, Dict[str, List[int]]] = {}  # route_id -> {station_id: [departure_minutes]}
-        self.route_departure_minutes: Dict[str, List[int]] = {}          # route_id -> [departure_min_for_each_segment]
+        self.routes_by_station: Dict[str, List[Dict]] = {}
+        self.route_segments: Dict[str, List[Dict]] = {}
+        self.route_stop_index: Dict[str, Dict[str, List[int]]] = {}
+        self.route_stop_departures: Dict[str, Dict[str, List[int]]] = {}
         self._is_loaded = False
-        self._cache_meta = {}
+        self._redis_client = None
+        self._pubsub_client = None # New: Redis Pub/Sub client
+        self._pubsub_task = None # New: To hold the background task
+
+        # Start the Pub/Sub listener in the background if Redis is configured
+        if Config.REDIS_URL and not self._pubsub_task: # Only start if not already running
+            self._start_pubsub_listener()
+
+    def _get_redis_client(self):
+        """Initializes and returns a Redis client."""
+        if self._redis_client is None:
+            try:
+                self._redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
+                self._redis_client.ping()
+                logger.info("Redis client connected successfully.")
+            except redis.exceptions.ConnectionError as e:
+                logger.error(f"Could not connect to Redis: {e}")
+                self._redis_client = None
+        return self._redis_client
+
+    def _start_pubsub_listener(self):
+        """Starts the Redis Pub/Sub listener in a background task."""
+        # Ensure an event loop is available (for FastAPI context)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # Create a non-blocking Redis client for Pub/Sub
+        pubsub_redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
+        self._pubsub_client = pubsub_redis_client.pubsub()
+        self._pubsub_client.subscribe(REDIS_PUB_SUB_CHANNEL)
+        logger.info(f"Subscribed to Redis Pub/Sub channel: {REDIS_PUB_SUB_CHANNEL}")
+
+        # Run the listener in a background task
+        self._pubsub_task = loop.create_task(self._pubsub_listener())
+
+    async def _pubsub_listener(self):
+        """Listens for messages on the Redis Pub/Sub channel and invalidates cache."""
+        while True:
+            try:
+                # get_message is blocking for timeout seconds, so it doesn't busy-wait
+                message = self._pubsub_client.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message:
+                    logger.info(f"Received Pub/Sub message: {message['data']}")
+                    # Invalidate the in-memory graph
+                    self._is_loaded = False
+                    logger.info("RouteEngine graph invalidated due to Pub/Sub message.")
+                await asyncio.sleep(0.1) # Small delay to prevent busy-waiting
+            except redis.exceptions.ConnectionError as e:
+                logger.error(f"Redis Pub/Sub connection error: {e}. Attempting to reconnect...", exc_info=True)
+                self._pubsub_client = None # Reset client
+                # Re-establish connection and resubscribe
+                await asyncio.sleep(5) # Wait before retrying
+                if Config.REDIS_URL:
+                    pubsub_redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
+                    self._pubsub_client = pubsub_redis_client.pubsub()
+                    self._pubsub_client.subscribe(REDIS_PUB_SUB_CHANNEL)
+                    logger.info(f"Re-subscribed to Redis Pub/Sub channel: {REDIS_PUB_SUB_CHANNEL}")
+                else:
+                    logger.error("Redis URL not configured, cannot reconnect Pub/Sub.")
+                    break # Exit listener if Redis URL not available
+            except Exception as e:
+                logger.error(f"Error in Redis Pub/Sub listener: {e}", exc_info=True)
+                await asyncio.sleep(1) # Wait before continuing
+
 
     def _save_graph_state(self):
-        """Atomically saves graph state + metadata (version + ETL timestamp) to disk."""
+        """Serializes and saves the graph state to RedisJSON with HMAC signing."""
+        client = self._get_redis_client()
+        if not client:
+            logger.error("Cannot save graph state: Redis client is not available.")
+            return
+
         try:
-            meta = {"schema_version": self.CACHE_SCHEMA_VERSION, "etl_timestamp": datetime.utcnow().isoformat()}
-            payload = {"meta": meta, "state": {
+            state_data = {
                 "stations_map": self.stations_map,
                 "segments_map": self.segments_map,
                 "station_name_to_id": self.station_name_to_id,
                 "routes_by_station": self.routes_by_station,
                 "route_segments": self.route_segments,
-            }}
-            tmp_path = GRAPH_CACHE_FILE + ".tmp"
-            with open(tmp_path, "wb") as f:
-                pickle.dump(payload, f)
-            os.replace(tmp_path, GRAPH_CACHE_FILE)
-            self._cache_meta = meta
-            logger.info(f"RouteEngine graph state saved to {GRAPH_CACHE_FILE} (schema={meta['schema_version']})")
+            }
+            serialized_data = json.dumps(state_data).encode('utf-8')
+            signature = hmac.new(HMAC_SECRET_KEY, serialized_data, hashlib.sha256).hexdigest()
+
+            payload = {
+                "signature": signature,
+                "data": serialized_data.decode('utf-8'),
+                "schema_version": self.CACHE_SCHEMA_VERSION,
+                "etl_timestamp": datetime.utcnow().isoformat()
+            }
+            
+            client.json().set(REDIS_GRAPH_KEY, '$', payload)
+            logger.info(f"RouteEngine graph state saved to Redis at key '{REDIS_GRAPH_KEY}'.")
         except Exception as e:
-            logger.error(f"Failed to save graph state: {e}")
+            logger.error(f"Failed to save graph state to Redis: {e}")
 
     def _load_graph_state(self) -> bool:
-        """Loads the graph state and validates schema_version; returns True on successful load."""
-        if not os.path.exists(GRAPH_CACHE_FILE):
+        """Loads the graph state from RedisJSON and verifies the HMAC signature."""
+        client = self._get_redis_client()
+        if not client:
+            logger.error("Cannot load graph state: Redis client is not available.")
             return False
+
         try:
-            with open(GRAPH_CACHE_FILE, "rb") as f:
-                payload = pickle.load(f)
-            meta = payload.get("meta", {})
-            if meta.get("schema_version") != self.CACHE_SCHEMA_VERSION:
-                logger.warning(f"Graph cache schema mismatch (found={meta.get('schema_version')}, expected={self.CACHE_SCHEMA_VERSION}) — ignoring cache.")
+            payload = client.json().get(REDIS_GRAPH_KEY)
+            
+            if not payload:
+                logger.info("No graph state found in Redis.")
                 return False
-            state = payload.get("state", {})
+
+            # The payload from redis-py json().get() is a list containing the dict
+            payload = payload[0]
+
+            if payload.get("schema_version") != self.CACHE_SCHEMA_VERSION:
+                logger.warning("Graph cache schema mismatch, ignoring Redis cache.")
+                return False
+
+            signature = payload.get("signature")
+            serialized_data = payload.get("data").encode('utf-8')
+            
+            expected_signature = hmac.new(HMAC_SECRET_KEY, serialized_data, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected_signature):
+                logger.error("HMAC signature verification failed. Graph data may be tampered with.")
+                return False
+
+            state = json.loads(serialized_data)
             self.stations_map = state.get("stations_map", {})
             self.segments_map = state.get("segments_map", {})
             self.station_name_to_id = state.get("station_name_to_id", {})
             self.routes_by_station = state.get("routes_by_station", {})
             self.route_segments = state.get("route_segments", {})
-            self._cache_meta = meta
+            
+            self._build_route_indices()
             self._is_loaded = True
-            logger.info(f"RouteEngine graph state loaded from {GRAPH_CACHE_FILE} (schema={meta.get('schema_version')})")
+            logger.info("RouteEngine graph state loaded successfully from Redis.")
             return True
         except Exception as e:
-            logger.error(f"Failed to load graph state: {e}; will rebuild graph.")
-            self._is_loaded = False
+            logger.error(f"Failed to load graph state from Redis: {e}")
             return False
 
-    def _get_cache_key(self, source: str, dest: str, date: str, budget: Optional[str]) -> str:
-        """Generates a consistent MD5 hash for a search query."""
-        query_data = json.dumps({"s": source, "d": dest, "dt": date, "b": budget}, sort_keys=True)
-        return f"route:{hashlib.md5(query_data.encode()).hexdigest()}"
-
     def load_graph_from_db(self, db: Session):
-        """
-        Loads the transport network from the database into memory, preparing for RAPTOR.
-        Attempts to load from cache first; invalidates cache on schema/version mismatch.
-        """
         if self._is_loaded:
-            logger.info("Graph is already loaded, skipping reload.")
+            logger.info("Graph is already loaded.")
             return
 
         if self._load_graph_state():
             return
 
-        logger.info("Cache miss or invalid cache — building graph from DB for RAPTOR...")
+        logger.info("Building graph from DB as it was not found in Redis or was invalid.")
+        # ... [rest of the DB loading logic remains the same]
         stations = db.query(Station).all()
         segments = db.query(Segment).all()
 
-        # Build stations map and name lookup
         for station in stations:
             self.stations_map[station.id] = {"name": station.name, "city": station.city, "lat": station.latitude, "lon": station.longitude}
             self.station_name_to_id[station.name.lower()] = station.id
 
-        # Group segments by vehicle to form ordered routes
         segments_by_vehicle: Dict[Optional[str], List[Segment]] = {}
         for segment in segments:
             segments_by_vehicle.setdefault(segment.vehicle_id, []).append(segment)
@@ -145,175 +227,177 @@ class RouteEngine:
                     self.routes_by_station.setdefault(st_id, [])
                     if not any(r["route_id"] == route_id for r in self.routes_by_station[st_id]):
                         self.routes_by_station[st_id].append({"route_id": route_id, "station_order": order_index})
-
-        # build per-route indices for fast boarding (binary-search boarding)
+        
         self._build_route_indices()
-
         self._is_loaded = True
-        logger.info(f"Graph built: {len(self.stations_map)} stations, {len(self.segments_map)} segments, {len(self.route_segments)} routes.")
+        logger.info(f"Graph built from DB with {len(self.stations_map)} stations and {len(self.route_segments)} routes.")
         self._save_graph_state()
 
-    # ---------------------- RAPTOR (MVP) implementation ----------------------
     def _time_to_minutes(self, hhmm: str) -> int:
         h, m = map(int, hhmm.split(":"))
         return h * 60 + m
 
     def _build_route_indices(self):
         """Precompute per-route station -> segment positions and departure minutes for binary-search boarding."""
-        import bisect  # local import used by search as well
+        import bisect
         self.route_stop_index = {}
         self.route_stop_departures = {}
-        self.route_departure_minutes = {}
         for route_id, segs in self.route_segments.items():
             pos_map = {}
             dep_map = {}
-            departures = []
             for idx, seg in enumerate(segs):
                 dep_min = self._time_to_minutes(seg["departure"])
-                departures.append(dep_min)
                 src = seg["source_station_id"]
                 pos_map.setdefault(src, []).append(idx)
                 dep_map.setdefault(src, []).append(dep_min)
             self.route_stop_index[route_id] = pos_map
             self.route_stop_departures[route_id] = dep_map
-            self.route_departure_minutes[route_id] = departures
-
-    def _operates_on_date(self, operating_days: str, date_obj) -> bool:
-        weekday_index = date_obj.weekday()  # Monday=0
-        return len(operating_days) == 7 and operating_days[weekday_index] == "1"
 
     def _raptor_mvp(self, source_id: str, dest_id: str, travel_date, max_rounds: int = 1):
-        """RAPTOR rounds implementation (round-based label setting).
-
-        - Scans only routes passing through stations that were improved in the previous round
-        - Honors operating_days and arrival_day_offset
-        - Applies transfer window constraints from Config for transfers
-        - Returns list with a single best path (list of segment dicts) or empty list
-        """
+        """RAPTOR rounds implementation with Pareto-optimality for time and cost."""
         if source_id == dest_id:
             return []
 
-        INF = 10 ** 9
-        best_arrival = {s: INF for s in self.stations_map.keys()}
-        prev_segment = {s: None for s in self.stations_map.keys()}
+        INF = float('inf')
+        best_labels = {s: [] for s in self.stations_map.keys()}
+        prev_segment = {s: {} for s in self.stations_map.keys()}
 
-        # seed: source can be boarded at minute 0 (start of travel_date)
-        best_arrival[source_id] = 0
+        best_labels[source_id] = [(0, 0)]
         marked_stations = {source_id}
 
         min_transfer = getattr(Config, "TRANSFER_WINDOW_MIN", 0)
         max_transfer = getattr(Config, "TRANSFER_WINDOW_MAX", 24 * 60)
 
-        for round_idx in range(0, max_rounds + 1):
+        for round_idx in range(max_rounds + 1):
             if not marked_stations:
                 break
+            
             next_marked = set()
-
+            
             for st in list(marked_stations):
                 route_entries = self.routes_by_station.get(st, [])
-                # fallback: if routes_by_station is not populated (unit tests), scan all routes
-                if not route_entries:
-                    route_entries = [{"route_id": rid} for rid in self.route_segments.keys()]
-
+                
                 for route_info in route_entries:
                     route_id = route_info["route_id"]
                     segs = self.route_segments.get(route_id, [])
-
-                    # find indices on route where station `st` appears as a source
-                        # ensure per-route indices exist (lazy-build for tests/manual population)
-                    if not self.route_stop_index:
-                        self._build_route_indices()
-
-                    # fast lookup of segment positions where `st` is the source on this route
+                    
                     positions = self.route_stop_index.get(route_id, {}).get(st, [])
                     departures_at_station = self.route_stop_departures.get(route_id, {}).get(st, [])
 
-                    if not positions:
-                        # fallback to full scan when no index available
-                        for i, seg in enumerate(segs):
-                            if seg.get("source_station_id") != st:
-                                continue
+                    if not positions: continue
 
-                            # service must operate on travel_date
-                            if not self._operates_on_date(seg.get("operating_days", "1111111"), travel_date):
-                                continue
+                    for arr_time, arr_cost in best_labels[st]:
+                        import bisect
+                        
+                        min_allowed_dep = arr_time + min_transfer if round_idx > 0 else arr_time
+                        max_allowed_dep = arr_time + max_transfer if round_idx > 0 else INF
+                        
+                        k = bisect.bisect_left(departures_at_station, min_allowed_dep)
 
-                            seg_dep = self._time_to_minutes(seg["departure"])
+                        for idx_in_list in range(k, len(positions)):
+                            pos = positions[idx_in_list]
+                            seg_dep = departures_at_station[idx_in_list]
 
-                            if round_idx == 0:
-                                can_board = best_arrival.get(st, INF) <= seg_dep
-                            else:
-                                wait = seg_dep - best_arrival.get(st, INF)
-                                can_board = best_arrival.get(st, INF) <= seg_dep and (wait >= min_transfer and wait <= max_transfer)
-
-                            if not can_board:
-                                continue
-
-                            # propagate arrival times forward along the route
-                            for j in range(i, len(segs)):
+                            if seg_dep > max_allowed_dep: break
+                            
+                            current_cost_on_route = 0
+                            for j in range(pos, len(segs)):
                                 downstream = segs[j]
+                                
                                 if not self._operates_on_date(downstream.get("operating_days", "1111111"), travel_date):
                                     continue
+
                                 dst = downstream["dest_station_id"]
-                                arrival_time = self._time_to_minutes(downstream["arrival"]) + downstream.get("arrival_day_offset", 0) * 24 * 60
-                                if arrival_time < best_arrival.get(dst, INF):
-                                    best_arrival[dst] = arrival_time
-                                    prev_segment[dst] = downstream["id"]
+                                new_arrival_time = self._time_to_minutes(downstream["arrival"]) + downstream.get("arrival_day_offset", 0) * 24 * 60
+                                current_cost_on_route += downstream['cost']
+                                new_cost = arr_cost + current_cost_on_route
+                                
+                                existing_labels = best_labels[dst]
+                                is_dominated = any(ex_time <= new_arrival_time and ex_cost <= new_cost for ex_time, ex_cost in existing_labels)
+                                if is_dominated: continue
+                                
+                                new_labels = [(t, c) for t, c in existing_labels if not (new_arrival_time <= t and new_cost <= c)]
+                                new_labels.append((new_arrival_time, new_cost))
+                                
+                                if len(new_labels) != len(existing_labels) or not all(a == b for a, b in zip(new_labels, existing_labels)):
+                                    best_labels[dst] = sorted(new_labels)
+                                    label_hash = hash((new_arrival_time, new_cost))
+                                    prev_segment[dst][label_hash] = (downstream["id"], arr_time, arr_cost)
                                     next_marked.add(dst)
 
-                        continue
-
-                    # binary-search boarding: find first departure at or after allowed time
-                    import bisect
-                    if round_idx == 0:
-                        min_allowed_dep = best_arrival.get(st, INF)
-                        max_allowed_dep = INF
-                    else:
-                        min_allowed_dep = best_arrival.get(st, INF) + min_transfer
-                        max_allowed_dep = best_arrival.get(st, INF) + max_transfer
-
-                    k = bisect.bisect_left(departures_at_station, min_allowed_dep)
-                    for idx_in_list in range(k, len(positions)):
-                        pos = positions[idx_in_list]
-                        seg_dep = departures_at_station[idx_in_list]
-                        if seg_dep > max_allowed_dep:
-                            break
-
-                        # propagate arrival times forward along the route starting from `pos`
-                        for j in range(pos, len(segs)):
-                            downstream = segs[j]
-                            if not self._operates_on_date(downstream.get("operating_days", "1111111"), travel_date):
-                                continue
-                            dst = downstream["dest_station_id"]
-                            arrival_time = self._time_to_minutes(downstream["arrival"]) + downstream.get("arrival_day_offset", 0) * 24 * 60
-                            if arrival_time < best_arrival.get(dst, INF):
-                                best_arrival[dst] = arrival_time
-                                prev_segment[dst] = downstream["id"]
-                                next_marked.add(dst)
             marked_stations = next_marked
 
-        # reconstruct best path for dest_id
-        if prev_segment.get(dest_id) is None:
+        final_paths = []
+        if not best_labels.get(dest_id):
             return []
 
-        path_seg_ids = []
-        cur = dest_id
-        while cur != source_id and prev_segment.get(cur):
-            sid = prev_segment[cur]
-            path_seg_ids.insert(0, sid)
-            prev = self.segments_map.get(sid)
-            if not prev:
-                break
-            cur = prev["source_station_id"]
+        # Reconstruct all paths that reach destination with Pareto-optimal labels
+        for final_time, final_cost in best_labels[dest_id]:
+            path_seg_ids = []
+            cur_time, cur_cost = final_time, final_cost
+            cur = dest_id
+            
+            while cur != source_id:
+                label_hash = hash((cur_time, cur_cost))
+                if label_hash not in prev_segment[cur]: break
+                
+                seg_id, prev_time, prev_cost = prev_segment[cur][label_hash]
+                path_seg_ids.insert(0, seg_id)
+                
+                prev_seg_info = self.segments_map.get(seg_id)
+                if not prev_seg_info: break
+                
+                cur = prev_seg_info["source_station_id"]
+                cur_time, cur_cost = prev_time, prev_cost
 
-        path = [self.segments_map[sid] for sid in path_seg_ids if sid in self.segments_map]
-        return [path] if path else []
+            path = [self.segments_map[sid] for sid in path_seg_ids if sid in self.segments_map]
+            if path:
+                # Calculate total time and cost for the path
+                total_time = sum(seg["duration"] for seg in path)
+                total_cost = sum(seg["cost"] for seg in path)
+                final_paths.append((path, total_time, total_cost))
+
+        # Apply Pareto pruning across all reconstructed paths
+        if not final_paths:
+            return []
+
+        # Sort by time and cost for easier processing
+        final_paths.sort(key=lambda x: (x[1], x[2]))  # Sort by time, then cost
+
+        pareto_paths = []
+        for path, time, cost in final_paths:
+            # Check if this path is dominated by any existing Pareto path
+            is_dominated = any(
+                existing_time <= time and existing_cost <= cost and (existing_time < time or existing_cost < cost)
+                for _, existing_time, existing_cost in pareto_paths
+            )
+            if not is_dominated:
+                # Remove any existing paths that are dominated by this one
+                pareto_paths = [
+                    (p, t, c) for p, t, c in pareto_paths
+                    if not (time <= t and cost <= c and (time < t or cost < c))
+                ]
+                pareto_paths.append((path, time, cost))
+
+        # Sort Pareto-optimal paths by time, then cost
+        pareto_paths.sort(key=lambda x: (x[1], x[2]))
+
+        # Limit to PARETO_LIMIT
+        max_results = getattr(Config, 'PARETO_LIMIT', 3)
+        pareto_paths = pareto_paths[:max_results]
+
+        return [path for path, _, _ in pareto_paths]
+    
+    def _operates_on_date(self, operating_days: str, date_obj: datetime.date) -> bool:
+        """Checks if a service operates on a given date."""
+        weekday_index = date_obj.weekday()  # Monday=0
+        return len(operating_days) == 7 and operating_days[weekday_index] == "1"
 
     def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None) -> List[Dict]:
         if not self._is_loaded:
             raise RuntimeError("RouteEngine graph is not loaded.")
 
-        cache_key = self._get_cache_key(source, destination, travel_date, budget_category)
+        cache_key = f"route:{source}:{destination}:{travel_date}:{budget_category}"
         if cache_service.is_available():
             cached = cache_service.get(cache_key)
             if cached is not None:
@@ -334,7 +418,6 @@ class RouteEngine:
         routes = [self._construct_route_from_segment_list(source, destination, p, budget_category) for p in raw_paths]
         routes = [r for r in routes if r]
 
-        # Budget filter
         budget_limits = {"economy": 1000, "standard": 2000, "premium": 5000}
         max_budget = budget_limits.get(budget_category, float("inf"))
         if budget_category and budget_category != "all":
@@ -381,7 +464,6 @@ class RouteEngine:
         }
 
     def is_loaded(self) -> bool:
-        """Returns whether the in-memory graph has been loaded from the database or cache."""
-        return bool(self._is_loaded)
+        return self._is_loaded
 
 route_engine = RouteEngine()

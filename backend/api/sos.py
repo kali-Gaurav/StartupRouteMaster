@@ -5,6 +5,7 @@ from datetime import datetime
 import uuid
 
 from backend.services.cache_service import cache_service
+from backend.api.websockets import manager
 # Import the limiter instance from the main app if available; fall back to a local Limiter
 try:
     from backend.app import limiter  # prefer the shared limiter
@@ -103,6 +104,7 @@ async def trigger_sos(request: Request, payload: SOSPayload):
         "google_maps_url": f"https://www.google.com/maps/search/?api=1&query={payload.lat},{payload.lng}",
     }
     _save_event(new_event)
+    await manager.broadcast(new_event)
     return new_event
 
 
@@ -149,6 +151,7 @@ async def resolve_sos(event_id: str):
     event['status'] = 'resolved'
     event['resolved_at'] = datetime.utcnow().isoformat()
     _save_event(event)
+    await manager.broadcast(event)
     return event
 
 
@@ -161,6 +164,7 @@ async def send_location_update(event_id: str, lat: float, lng: float):
     event['lng'] = lng
     event['google_maps_url'] = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
     _save_event(event)
+    await manager.broadcast(event)
     return event
 
 
@@ -171,4 +175,5 @@ async def end_trip(event_id: str):
         raise HTTPException(status_code=404, detail='SOS event not found')
     event['status'] = 'trip_ended'
     _save_event(event)
+    await manager.broadcast(event)
     return event

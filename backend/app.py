@@ -9,7 +9,12 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.config import Config
 from backend.database import init_db, close_db
-from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow
+from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets
+
+# FastAPI-Cache
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+import redis.asyncio as aioredis
 
 # Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -73,6 +78,7 @@ app.include_router(auth.router)
 app.include_router(status.router)
 app.include_router(sos.router)
 app.include_router(flow.router)
+app.include_router(websockets.router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
@@ -87,16 +93,71 @@ async def startup():
         await init_db()
         logger.info("Database initialized")
 
-        # Load the route engine graph into memory
-        db = SessionLocal()
-        try:
-            route_engine.load_graph_from_db(db)
-        finally:
-            db.close()
+        # Initialize FastAPI-Cache
+        cache_redis = aioredis.from_url(Config.REDIS_URL, encoding="utf8", decode_responses=True)
+        FastAPICache.init(RedisBackend(cache_redis), prefix="fastapi-cache")
+        logger.info("FastAPI-Cache initialized with Redis.")
+
+        # Load the route engine graph into memory (optionally in background to speed startup)
+        from backend.database import SessionLocal as _SessionLocal
+
+        if Config.ROUTEENGINE_ASYNC_WARMUP:
+            async def _warmup():
+                db_w = _SessionLocal()
+                try:
+                    route_engine.load_graph_from_db(db_w)
+                finally:
+                    db_w.close()
+            import asyncio
+            asyncio.create_task(_warmup())
+            logger.info("RouteEngine warm-up scheduled in background (async warmup enabled).")
+        else:
+            db = _SessionLocal()
+            try:
+                route_engine.load_graph_from_db(db)
+            finally:
+                db.close()
 
         # Start the payment reconciliation worker
         start_reconciliation_worker()
         logger.info("Payment reconciliation worker initialized.")
+
+        # Set up monthly ETL scheduler
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        import httpx
+
+        scheduler = AsyncIOScheduler()
+
+        async def monthly_etl_job():
+            """Run monthly ETL sync job."""
+            try:
+                logger.info("Starting scheduled monthly ETL sync")
+                # Call the ETL endpoint internally
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "http://localhost:8000/api/admin/etl-sync",
+                        params={"token": Config.ADMIN_API_TOKEN}
+                    )
+                    if response.status_code == 200:
+                        logger.info("Monthly ETL sync completed successfully")
+                    else:
+                        logger.error(f"Monthly ETL sync failed: {response.status_code} - {response.text}")
+            except Exception as e:
+                logger.error(f"Monthly ETL job failed: {e}")
+
+        # Schedule ETL to run on the 1st of every month at 2 AM
+        scheduler.add_job(
+            monthly_etl_job,
+            trigger=CronTrigger(day=1, hour=2, minute=0),
+            id="monthly_etl",
+            name="Monthly ETL Sync",
+            max_instances=1,
+            replace_existing=True
+        )
+
+        scheduler.start()
+        logger.info("Monthly ETL scheduler initialized (runs 1st of each month at 2 AM)")
 
     except Exception as e:
         logger.error(f"Failed during startup: {e}")
@@ -111,6 +172,8 @@ async def shutdown():
     stop_reconciliation_worker()
     logger.info("Payment reconciliation worker stopped.")
     await close_db()
+    await FastAPICache.clear() # Clear cache on shutdown, optional
+    logger.info("FastAPI-Cache cleared.")
 
 
 @app.get("/")

@@ -69,6 +69,7 @@ class SearchRequestSchema(BaseModel):
     destination: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z\s\-]+$")
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
+    multi_modal: bool = Field(False, description="Whether to include multi-modal planning suggestions")
 
     class Config:
         json_schema_extra = {
@@ -76,7 +77,8 @@ class SearchRequestSchema(BaseModel):
                 "source": "Mumbai",
                 "destination": "Goa",
                 "date": "2025-12-25",
-                "budget": "economy"
+                "budget": "economy",
+                "multi_modal": False
             }
         }
 

@@ -8,3 +8,10 @@ providers:
     updateIntervalSeconds: 30
     options:
       path: /var/lib/grafana/dashboards
+      files:
+        - operations_dashboard.json
+        - finance_dashboard.json
+        - growth_dashboard.json
+        - ai_dashboard.json
+        - sos_dashboard.json
+        - inventory_dashboard.json

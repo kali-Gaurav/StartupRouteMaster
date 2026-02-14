@@ -13,10 +13,17 @@ from geoalchemy2.functions import ST_MakePoint # Import ST_MakePoint function
 # Import models directly to avoid circular dependency issues with app-level modules
 from backend.models import Base, Station, Segment, Vehicle 
 
+# Add imports for Redis and Config
+import redis
+import json
+from backend.config import Config 
+
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "railway_manager.db")
+REDIS_PUB_SUB_CHANNEL = "route_engine_update" # Define a channel name for updates
 
 class OperatingDaysBitmask:
     """Utility to build a 7-character operating days string (Mon-Sun).
@@ -65,7 +72,6 @@ def calculate_duration(departure_time: str, arrival_time: str) -> int:
 
 
 class SQLiteReader:
-    # ... (rest of the class is unchanged)
     """Reads data from the SQLite railway_manager.db."""
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -276,6 +282,64 @@ class PostgresLoader:
     def close(self):
         self.db.close()
 
+def validate_etl_data(db: Session, station_code_to_id: Dict[str, str], segments_created: int) -> Dict[str, int]:
+    """
+    Validate data integrity after ETL completion.
+    Returns dict with validation results.
+    """
+    validation_results = {
+        'validation_errors': 0,
+        'orphaned_segments': 0,
+        'invalid_durations': 0,
+        'duplicate_segments': 0
+    }
+
+    try:
+        # Check for orphaned segments (segments with invalid station references)
+        orphaned_query = db.execute("""
+            SELECT COUNT(*) FROM segments s
+            WHERE NOT EXISTS (SELECT 1 FROM stations st WHERE st.id = s.source_station_id)
+            OR NOT EXISTS (SELECT 1 FROM stations st WHERE st.id = s.dest_station_id)
+        """)
+        validation_results['orphaned_segments'] = orphaned_query.scalar() or 0
+
+        # Check for segments with invalid durations
+        invalid_duration_query = db.execute("""
+            SELECT COUNT(*) FROM segments WHERE duration_minutes <= 0 OR duration_minutes > 1440
+        """)
+        validation_results['invalid_durations'] = invalid_duration_query.scalar() or 0
+
+        # Check for duplicate segments (same source, dest, vehicle, departure time)
+        duplicate_query = db.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT source_station_id, dest_station_id, vehicle_id, departure_time, COUNT(*)
+                FROM segments
+                GROUP BY source_station_id, dest_station_id, vehicle_id, departure_time
+                HAVING COUNT(*) > 1
+            ) duplicates
+        """)
+        validation_results['duplicate_segments'] = duplicate_query.scalar() or 0
+
+        # Total validation errors
+        validation_results['validation_errors'] = (
+            validation_results['orphaned_segments'] +
+            validation_results['invalid_durations'] +
+            validation_results['duplicate_segments']
+        )
+
+        logger.info(f"ETL Validation Results:")
+        logger.info(f"  - Orphaned segments: {validation_results['orphaned_segments']}")
+        logger.info(f"  - Invalid durations: {validation_results['invalid_durations']}")
+        logger.info(f"  - Duplicate segments: {validation_results['duplicate_segments']}")
+        logger.info(f"  - Total validation errors: {validation_results['validation_errors']}")
+
+    except Exception as e:
+        logger.error(f"ETL validation failed: {e}")
+        validation_results['validation_errors'] = -1  # Indicate validation failure
+
+    return validation_results
+
+
 def run_etl(sqlite_path: str = DEFAULT_SQLITE_PATH, db_url: str | None = None):
     """Run ETL from SQLite -> PostgreSQL (or DB configured via db_url).
 
@@ -331,6 +395,24 @@ def run_etl(sqlite_path: str = DEFAULT_SQLITE_PATH, db_url: str | None = None):
         loader.db.commit()
         results['segments_created'] = created
         logger.info(f"✅ Committed all segments. Created {created} segments.")
+
+        # Validate data integrity after ETL
+        validation_results = validate_etl_data(loader.db, station_code_to_id, created)
+        results.update(validation_results)
+
+        if validation_results['validation_errors'] > 0:
+            logger.warning(f"ETL completed with {validation_results['validation_errors']} validation errors")
+        else:
+            logger.info("✅ ETL validation passed - all data integrity checks successful")
+
+        # After successful update, publish a message to Redis Pub/Sub
+        try:
+            redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
+            message = {"event": "graph_updated", "timestamp": datetime.utcnow().isoformat()}
+            redis_client.publish(REDIS_PUB_SUB_CHANNEL, json.dumps(message))
+            logger.info(f"Published Redis Pub/Sub message to '{REDIS_PUB_SUB_CHANNEL}': {message}")
+        except Exception as pub_sub_e:
+            logger.error(f"Failed to publish Redis Pub/Sub message: {pub_sub_e}")
 
     except Exception as e:
         logger.error(f"ETL failed: {e}", exc_info=True)
