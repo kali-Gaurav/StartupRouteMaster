@@ -4,8 +4,8 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 
-from config import Config
-from schemas import TokenData
+from backend.config import Config
+from backend.schemas import TokenData
 
 # Password Hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

@@ -1,0 +1,22 @@
+groups:
+  - name: routemaster.rules
+    rules:
+      - alert: API_P95_High
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le)) > 0.25
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API p95 latency is above 250ms"
+          description: "p95 latency for all endpoints is > 250ms for the last 5 minutes."
+
+      - alert: Backend_Error_Rate_High
+        expr: |
+          (sum(rate(http_server_requests_seconds_count{status!~"2.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m]))) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backend error rate > 5%"
+          description: "The percentage of non-2xx responses exceeds 5% over the last 5 minutes."

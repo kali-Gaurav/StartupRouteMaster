@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from models import Review, Booking, User
-from schemas import ReviewCreate
+from backend.models import Review, Booking, User
+from backend.schemas import ReviewCreate
 
 
 class ReviewService:

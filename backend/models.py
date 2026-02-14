@@ -14,8 +14,9 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
+from geoalchemy2 import Geometry, func # Import Geometry and func
 
-from database import Base
+from backend.database import Base
 
 
 class User(Base):
@@ -25,6 +26,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     phone_number = Column(String(20), nullable=True)
+    role = Column(String(50), default="user", index=True)  # Add role for RBAC
     created_at = Column(DateTime, default=datetime.utcnow)
 
     bookings = relationship("Booking", back_populates="user")
@@ -55,6 +57,7 @@ class Station(Base):
     city = Column(String(255), nullable=False, index=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
+    geom = Column(Geometry("POINT", srid=4326), nullable=True) # New: Geospatial column
     created_at = Column(DateTime, default=datetime.utcnow)
 
     segments_from = relationship(
@@ -122,11 +125,11 @@ class Booking(Base):
     payment_status = Column(String(50), default="pending")
     amount_paid = Column(Float, default=39.0)
     booking_details = Column(JSON, nullable=False)
-    payment_id = Column(String(36), ForeignKey("payments.id"), nullable=True) # New field
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     user = relationship("User", back_populates="bookings")
     route = relationship("Route", back_populates="bookings")
+    # payment relationship is defined on Payment.booking (Payment.booking_id)
     payment = relationship("Payment", back_populates="booking", uselist=False)
     review = relationship("Review", back_populates="booking", uselist=False)
 
@@ -152,7 +155,6 @@ class Payment(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=True, index=True) # Changed to nullable
-    unlocked_route_id = Column(String(36), ForeignKey("unlocked_routes.id"), nullable=True, index=True) # New: link to unlocked_route
     razorpay_order_id = Column(String(255), nullable=True, index=True)
     razorpay_payment_id = Column(String(255), nullable=True, index=True)
     status = Column(String(50), default="pending")
@@ -161,7 +163,8 @@ class Payment(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking", back_populates="payment")
-    unlocked_route = relationship("UnlockedRoute", back_populates="payment") # New relationship
+    # unlocked_route relationship is defined on UnlockedRoute.payment_id
+    unlocked_route = relationship("UnlockedRoute", back_populates="payment")
 
 
 class UnlockedRoute(Base):

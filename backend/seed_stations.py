@@ -2,8 +2,8 @@ import json
 import os
 import re
 from sqlalchemy.orm import sessionmaker
-from database import engine, Base
-from models import StationMaster
+from backend.database import engine, Base
+from backend.models import StationMaster
 
 # Create tables
 Base.metadata.create_all(bind=engine)

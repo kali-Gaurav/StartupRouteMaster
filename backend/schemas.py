@@ -104,6 +104,7 @@ class RouteDetailSchema(BaseModel):
     budget_category: str
     num_transfers: int
     created_at: datetime
+    is_unlocked: bool = False # Added for real-time unlock status
 
     class Config:
         from_attributes = True

@@ -1,10 +1,16 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
 
-from services.cache_service import cache_service
+from backend.services.cache_service import cache_service
+# Import the limiter instance from the main app if available; fall back to a local Limiter
+try:
+    from backend.app import limiter  # prefer the shared limiter
+except Exception:
+    from slowapi import Limiter
+    limiter = Limiter(key_func=lambda request: request.client.host if hasattr(request, 'client') else 'local')
 
 router = APIRouter(prefix="/api/sos", tags=["sos"])
 
@@ -79,7 +85,8 @@ def _load_event(event_id: str) -> Optional[Dict[str, Any]]:
 
 
 @router.post('/', response_model=SOSEventResponse)
-async def trigger_sos(payload: SOSPayload):
+@limiter.limit("5/minute")
+async def trigger_sos(request: Request, payload: SOSPayload):
     event_id = str(uuid.uuid4())
     new_event = {
         "id": event_id,

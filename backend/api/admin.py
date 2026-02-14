@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.orm import Session
 import logging
 
-from database import get_db
-from schemas import AdminBookingSchema
-from services import BookingService
-from config import Config
+from backend.database import get_db
+from backend.schemas import AdminBookingSchema
+from backend.services import BookingService
+from backend.config import Config
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -70,7 +70,7 @@ async def filter_bookings(
 ):
     """Filter bookings by payment status (admin only)."""
     try:
-        from models import Booking
+        from backend.models import Booking, Payment
 
         query = db.query(Booking).order_by(Booking.created_at.desc())
 
@@ -89,7 +89,8 @@ async def filter_bookings(
                     "user_phone": b.user_phone,
                     "route_id": str(b.route_id),
                     "travel_date": b.travel_date,
-                    "payment_id": b.payment_id,
+                    # Resolve payment id from Payment table (if any)
+                    "payment_id": (db.query(Payment).filter(Payment.booking_id == b.id).first().id if db.query(Payment).filter(Payment.booking_id == b.id).first() else None),
                     "payment_status": b.payment_status,
                     "amount_paid": b.amount_paid,
                     "created_at": b.created_at.isoformat(),
@@ -118,9 +119,9 @@ async def trigger_etl_sync(
             raise HTTPException(status_code=401, detail="Unauthorized")
 
         # Import ETL module
-        from etl.sqlite_to_postgres import run_etl
+        from backend.etl.sqlite_to_postgres import run_etl
 
-        # Run ETL
+        # Run ETL (uses defaults when called without arguments)
         results = run_etl()
 
         # Log results
@@ -135,3 +136,20 @@ async def trigger_etl_sync(
     except Exception as e:
         logger.error(f"ETL sync failed: {e}")
         raise HTTPException(status_code=500, detail=f"ETL sync failed: {str(e)}")
+
+
+@router.post("/reload-graph")
+async def reload_route_engine_graph(
+    token: str = Query(..., description="Admin API token"),
+    db: Session = Depends(get_db),
+):
+    """Admin endpoint to reload the in-memory route-engine graph from DB/cache."""
+    if token != Config.ADMIN_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from backend.services.route_engine import route_engine
+        route_engine.load_graph_from_db(db)
+        return {"status": "success", "message": "Route engine graph reloaded."}
+    except Exception as e:
+        logger.error(f"Failed to reload route engine graph: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload graph: {e}")

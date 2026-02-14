@@ -79,4 +79,22 @@ A GitHub Actions workflow validates `/health`, `/chat`, and `/api/search` using 
 
 ---
 
+### Running top-level scripts during development
+
+If you run repo-level scripts (examples: `scripts/raptor_benchmark.py`, `scripts/etl_*`) make sure `backend/` is importable. Two easy options:
+
+- Recommended (dev): use the bootstrap helper to prepend repository root + `backend/` to sys.path:
+
+  ```bash
+  python scripts/bootstrap-python-path.py scripts/raptor_benchmark.py --stations 200 --queries 100
+  ```
+
+- Or run from repo root with PYTHONPATH/backend on sys.path:
+
+  ```bash
+  PYTHONPATH=./backend python scripts/raptor_benchmark.py --stations 200 --queries 100
+  ```
+
+Both make `from backend.config import Config` (and legacy `from config import Config`) resolve consistently.
+
 See `DOW.md` for the full design, algorithm, and developer guide.

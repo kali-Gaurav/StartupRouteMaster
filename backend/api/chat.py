@@ -1,15 +1,22 @@
 import redis
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import re
 import uuid
 from datetime import datetime
 from difflib import SequenceMatcher
+import httpx # Import httpx for making async HTTP requests
+from sqlalchemy.orm import Session
 
-from config import Config
-from services.cache_service import cache_service
+from backend.config import Config
+from backend.services.cache_service import cache_service
+from backend.services.booking_service import BookingService
+from backend.api import sos as sos_api
+from backend.database import get_db
+from backend.models import User
+from backend.api.dependencies import get_current_user, get_optional_user
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -19,6 +26,86 @@ _redis = cache_service.redis if cache_service and cache_service.is_available() e
 _local_sessions: Dict[str, Dict[str, Any]] = {}
 SESSION_KEY_PREFIX = "chat:session:"
 
+# Pydantic Models for Function Calling (Tools)
+class RouteSearchTool(BaseModel):
+    """Search for railway routes between a source and destination on a specific date."""
+    source: str
+    destination: str
+    date: Optional[str] = None
+
+class BookRouteTool(BaseModel):
+    """Book a railway route for the current user."""
+    route_id: str
+
+class SOSAlertTool(BaseModel):
+    """Trigger an SOS alert with location and an optional message."""
+    location: str
+    message: Optional[str] = None
+
+class GatewayValidator:
+    """
+    Inspects AI-generated tool calls against user permissions before execution.
+    """
+    def __init__(self, user: Optional[User], db: Session):
+        self.user = user
+        self.db = db
+
+    def validate_and_execute(self, tool_call: Dict[str, Any]) -> Optional['ChatResponse']:
+        function_name = tool_call["function"]["name"]
+        try:
+            arguments = json.loads(tool_call["function"]["arguments"])
+        except json.JSONDecodeError:
+            return ChatResponse(reply="I received an invalid tool call from the AI.")
+
+        response_obj = ChatResponse(reply="")
+
+        # Protect sensitive tool calls when user is not authenticated
+        if function_name in ("BookRouteTool", "SOSAlertTool") and not self.user:
+            response_obj.reply = "You need to sign in to perform this action. Please log in to continue."
+            response_obj.state = "auth_required"
+            return response_obj
+
+        if function_name == "RouteSearchTool":
+            source = arguments.get("source")
+            destination = arguments.get("destination")
+            date = arguments.get("date")
+            reply_text = f"AI requested a route search from {source} to {destination}"
+            if date:
+                reply_text += f" on {date}"
+            response_obj.reply = reply_text + ". I would now perform the search."
+            response_obj.trigger_search = True
+            response_obj.collected = {"source": source, "destination": destination, "date": date}
+            response_obj.actions = [
+                ChatAction(label="View Results", type="intent", value="view_search"),
+                ChatAction(label="Modify Search", type="intent", value="modify_search")
+            ]
+            response_obj.state = "search"
+            return response_obj
+
+        elif function_name == "BookRouteTool":
+            route_id = arguments.get("route_id")
+            # The user is booking for themselves, using the authenticated user's ID.
+            # In a real scenario, you would call a booking service here.
+            # e.g., booking_service = BookingService(self.db)
+            # booking_service.create_booking(user_id=self.user.id, route_id=route_id, ...)
+            response_obj.reply = f"AI requested to book route {route_id} for you. Booking would proceed."
+            response_obj.actions = [ChatAction(label="View Bookings", type="navigate", value="/bookings")]
+            response_obj.state = "booking"
+            return response_obj
+
+        elif function_name == "SOSAlertTool":
+            # For now, allow any authenticated user to trigger SOS.
+            # Rate limiting could be added here.
+            location = arguments.get("location")
+            message = arguments.get("message")
+            # In a real scenario, you'd call the SOS service.
+            # e.g., await sos_api.trigger_sos_alert(location, message)
+            response_obj.reply = f"AI requested an SOS alert from {location} with message: '{message}'. An alert would be triggered."
+            response_obj.actions = [ChatAction(label="Open SOS Page", type="navigate", value="/sos")]
+            response_obj.state = "sos"
+            return response_obj
+        
+        return None
 
 def _session_key(session_id: str) -> str:
     return f"{SESSION_KEY_PREFIX}{session_id}"
@@ -107,6 +194,69 @@ class ChatResponse(BaseModel):
     collected: Optional[Dict[str, str]] = None
     session_id: Optional[str] = None
     correlation_id: Optional[str] = None
+
+
+async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calls the OpenRouter API with the given messages and returns the response."""
+    if not Config.OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API key not configured.")
+
+    client = httpx.AsyncClient()
+    
+    # Define the tools available to the AI
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "RouteSearchTool",
+                "description": RouteSearchTool.__doc__,
+                "parameters": RouteSearchTool.model_json_schema()
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "BookRouteTool",
+                "description": BookRouteTool.__doc__,
+                "parameters": BookRouteTool.model_json_schema()
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "SOSAlertTool",
+                "description": SOSAlertTool.__doc__,
+                "parameters": SOSAlertTool.model_json_schema()
+            }
+        }
+    ]
+
+    try:
+        response = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {Config.OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://github.com/Gaurav-Nagar-official/startupV2", # Replace with your actual frontend URL
+                "X-Title": "RouteMaster-Backend",
+            },
+            json={
+                "model": "openai/gpt-4o",  # Or another suitable model
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",  # Allow AI to choose whether to use a tool
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as e:
+        print(f"OpenRouter API HTTP error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail=f"OpenRouter API error: {e.response.text}")
+    except httpx.RequestError as e:
+        print(f"OpenRouter API request error: {e}")
+        raise HTTPException(status_code=500, detail=f"OpenRouter API request failed: {e}")
+    finally:
+        await client.aclose()
 
 
 def string_similarity(a: str, b: str) -> float:
@@ -389,13 +539,27 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -
         ]
 
     elif intent == 'popular_routes':
-        reply = """🌟 **Popular Routes in RouteMaster**
+        reply = "🌟 **Popular Routes in RouteMaster** — try 'Delhi → Mumbai', 'Mumbai → Goa' or 'Bengaluru → Chennai'."
 
-The file was updated successfully.
+    # Build and return ChatResponse
+    return ChatResponse(
+        reply=reply or "I'm not sure how to help with that.",
+        message=None,
+        actions=actions or None,
+        state="search" if trigger_search else "idle",
+        trigger_search=trigger_search,
+        collected=collected,
+        session_id=session_data.get("session_id") if isinstance(session_data, dict) else None,
+        correlation_id=correlation_id,
+    )
 
 # -- POST /chat (uses Redis-backed sessions) --
 @router.post("/", response_model=ChatResponse)
-async def chat_message(request: ChatMessage):
+async def chat_message(
+    request: ChatMessage,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
     session_id = request.session_id or str(uuid.uuid4())
     session = _load_session(session_id)
 
@@ -404,22 +568,82 @@ async def chat_message(request: ChatMessage):
         "content": request.message,
         "timestamp": datetime.utcnow().isoformat()
     })
+    
+    # --- AI Integration Start ---
+    response_obj: ChatResponse
+    validator = GatewayValidator(current_user, db)
 
-    intent = get_intent_from_message(request.message)
-    response = generate_response(intent, request.message, session)
+    # If OpenRouter API key is not configured, fall back to a lightweight rule-based generator
+    if not Config.OPENROUTER_API_KEY:
+        intent = get_intent_from_message(request.message)
+        # If intent is unknown but message contains 'X to Y' station pattern, treat as search
+        if intent == 'unknown':
+            stations_look = extract_stations_from_message(request.message)
+            if stations_look.get('source') and stations_look.get('destination'):
+                intent = 'search'
 
+        response_obj = generate_response(intent, request.message, session)
+        ai_reply_content = response_obj.reply
+        tool_calls = []
+    else:
+        ai_messages = []
+        # Add system message to instruct the AI
+        ai_messages.append({
+            "role": "system",
+            "content": "You are RouteMaster, an AI assistant for railway travel. You can search for routes, book tickets, and trigger SOS alerts. Use the available tools when appropriate."
+        })
+        # Implement sliding window for chat history
+        last_10_messages = session["messages"][-10:]
+        for msg in last_10_messages:
+            # Ensure only 'user' and 'assistant' roles are sent to the AI
+            if msg["role"] in ["user", "assistant"]:
+                ai_messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        try:
+            ai_response = await call_openrouter_api(ai_messages)
+        except HTTPException:
+            # If AI API fails, fall back to local generator
+            intent = get_intent_from_message(request.message)
+            response_obj = generate_response(intent, request.message, session)
+            ai_reply_content = response_obj.reply
+            tool_calls = []
+        else:
+            # Process AI response
+            tool_calls = []
+            ai_reply_content = ""
+            if ai_response and ai_response.get("choices"):
+                message_from_ai = ai_response["choices"][0]["message"]
+                if message_from_ai.get("content"):
+                    ai_reply_content = message_from_ai["content"]
+                if message_from_ai.get("tool_calls"):
+                    tool_calls = message_from_ai["tool_calls"]
+
+            response_obj = ChatResponse(reply=ai_reply_content or "I'm not sure how to respond to that.")
+
+    # If the response was produced by tools (AI or local generator returned tool-like intent), handle them below
+    if 'tool_calls' not in locals():
+        tool_calls = []
+
+    if tool_calls:
+        for tool_call in tool_calls:
+            validated_response = validator.validate_and_execute(tool_call)
+            if validated_response:
+                response_obj = validated_response
+
+    # --- AI Integration End ---
+    
     session["messages"].append({
         "role": "assistant",
-        "content": response.reply,
-        "actions": [a.dict() for a in (response.actions or [])],
+        "content": response_obj.reply,
+        "actions": [a.dict() for a in (response_obj.actions or [])],
         "timestamp": datetime.utcnow().isoformat()
     })
 
     _save_session(session_id, session)
 
-    response.session_id = session_id
-    response.state = intent
-    return response
+    response_obj.session_id = session_id
+    response_obj.state = response_obj.state if response_obj.state else "idle"
+    return response_obj
 
 
 @router.get("/health")

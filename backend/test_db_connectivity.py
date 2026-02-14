@@ -7,9 +7,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database import SessionLocal
+from backend.database import SessionLocal
 from sqlalchemy import text
-from models import Segment, Station
+from backend.models import Segment, Station
 
 def main():
     print("\n" + "="*70)

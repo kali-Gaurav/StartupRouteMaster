@@ -5,11 +5,12 @@ import time
 import json
 
 from typing import Dict, List
-from database import get_db
-from schemas import SearchRequestSchema
-from services.route_engine import route_engine
-from models import StationMaster
-from services.cache_service import cache_service
+from backend.database import get_db
+from backend.schemas import SearchRequestSchema
+from backend.services.route_engine import route_engine
+from backend.models import StationMaster, Station # Import Station model as well
+from backend.services.cache_service import cache_service
+from backend.services.station_service import StationService # Import StationService
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -85,10 +86,10 @@ async def search_stations_endpoint(
 
     try:
         query_lower = q.lower()
-        # Query a broader set of candidates from the database
-        candidates = db.query(StationMaster).filter(
-            (StationMaster.station_name.ilike(f"%{query_lower}%")) |
-            (StationMaster.station_code.ilike(f"{query_lower}%"))
+        # Use Station model for querying, as it now has geom column
+        candidates = db.query(Station).filter(
+            (Station.name.ilike(f"%{query_lower}%")) |
+            (Station.id.ilike(f"{query_lower}%")) # Assuming station ID can be used as code
         ).limit(50).all()
 
         if not candidates:
@@ -100,12 +101,12 @@ async def search_stations_endpoint(
         ]
         
         # Sort by score (descending), then by name (ascending)
-        scored_stations.sort(key=lambda x: (-x[0], x[1].station_name))
+        scored_stations.sort(key=lambda x: (-x[0], x[1].name)) # Use station.name now
         
         # Format the top results
         results = [{
-            "name": station.station_name,
-            "code": station.station_code,
+            "name": station.name,
+            "code": station.id, # Use station.id as code
             "city": station.city,
         } for score, station in scored_stations[:10]]
 
@@ -117,3 +118,24 @@ async def search_stations_endpoint(
         logger.error(f"Station search autocomplete error: {e}")
         # Return empty list on error to prevent frontend from crashing
         return []
+
+@router.get("/stations/near", response_model=List[Dict])
+async def get_nearby_stations_endpoint(
+    latitude: float = Query(..., ge=-90, le=90, description="Latitude of the current location"),
+    longitude: float = Query(..., ge=-180, le=180, description="Longitude of the current location"),
+    radius_km: float = Query(..., gt=0, description="Radius in kilometers to search for stations"),
+    limit: int = Query(10, gt=0, le=50, description="Maximum number of nearby stations to return"),
+    db: Session = Depends(get_db),
+):
+    """
+    Finds stations near a given geographical point within a specified radius.
+    """
+    try:
+        station_service = StationService(db)
+        nearby_stations = station_service.get_stations_near_me(latitude, longitude, radius_km, limit)
+        return nearby_stations
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error fetching nearby stations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch nearby stations.")

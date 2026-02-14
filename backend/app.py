@@ -1,22 +1,58 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import structlog
 
-from config import Config
-from database import init_db, close_db
-from api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from services.route_engine import route_engine
-from database import SessionLocal
+from backend.config import Config
+from backend.database import init_db, close_db
+from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow
 
-logging.basicConfig(level=Config.LOG_LEVEL)
-logger = logging.getLogger(__name__)
+# Prometheus instrumentation
+from prometheus_fastapi_instrumentator import Instrumentator
+
+from backend.services.route_engine import route_engine
+from backend.database import SessionLocal
+from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
+
+# Configure structured logging
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+    cache_logger_on_first_use=True,
+)
+logger = structlog.get_logger()
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="RouteMaster API",
     description="High-performance route optimization and booking platform",
     version="1.0.0",
 )
+
+# Mount Prometheus Instrumentator early so middleware is registered before startup
+try:
+    Instrumentator().instrument(app).expose(app)
+    logger.info("Prometheus Instrumentator mounted at /metrics")
+except Exception as ex:
+    logger.warning(f"Prometheus instrumentation failed to initialize at module import: {ex}")
+
+# Set up rate limiter state and exception handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +73,9 @@ app.include_router(auth.router)
 app.include_router(status.router)
 app.include_router(sos.router)
 app.include_router(flow.router)
+# Backwards-compatible stations endpoint
+from backend.api import stations as stations_api
+app.include_router(stations_api.router)
 
 
 @app.on_event("startup")
@@ -55,6 +94,10 @@ async def startup():
         finally:
             db.close()
 
+        # Start the payment reconciliation worker
+        start_reconciliation_worker()
+        logger.info("Payment reconciliation worker initialized.")
+
     except Exception as e:
         logger.error(f"Failed during startup: {e}")
         raise
@@ -64,6 +107,9 @@ async def startup():
 async def shutdown():
     """Close database on shutdown."""
     logger.info("Shutting down RouteMaster API...")
+    # Stop the payment reconciliation worker
+    stop_reconciliation_worker()
+    logger.info("Payment reconciliation worker stopped.")
     await close_db()
 
 

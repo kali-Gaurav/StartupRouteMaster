@@ -2,7 +2,8 @@ version: '3.8'
 
 services:
   db:
-    image: postgres:15
+    # Pin PostGIS to a PostgreSQL 15 image so existing pgdata (PG15) remains compatible
+    image: postgis/postgis:15-3.3
     container_name: startupv2_postgres
     restart: unless-stopped
     environment:

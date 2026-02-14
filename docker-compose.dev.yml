@@ -23,3 +23,53 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 5s
       retries: 5
+
+  grafana:
+    image: grafana/grafana:9.5.3
+    container_name: startupv2_grafana
+    depends_on:
+      - db
+      - redis
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "routemaster"
+      GF_PLUGINS_ENABLE_ALPHA: "true"
+    volumes:
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD-SHELL", "grafana-cli --version || exit 1"]
+      interval: 10s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:2.48.0
+    container_name: startupv2_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      retries: 5
+
+  alertmanager:
+    image: prom/alertmanager:0.25.0
+    container_name: startupv2_alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/ready || exit 1"]
+      interval: 10s
+      retries: 5

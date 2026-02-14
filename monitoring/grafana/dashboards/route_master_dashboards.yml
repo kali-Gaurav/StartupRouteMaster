@@ -1,0 +1,12 @@
+- name: sos_emergency_dashboard
+  orgId: 1
+  folder: ''
+  type: file
+  options:
+    path: /var/lib/grafana/dashboards/sos_emergency_dashboard.json
+- name: financial_performance_dashboard
+  orgId: 1
+  folder: ''
+  type: file
+  options:
+    path: /var/lib/grafana/dashboards/financial_performance_dashboard.json

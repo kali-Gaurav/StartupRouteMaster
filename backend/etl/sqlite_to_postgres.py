@@ -1,16 +1,17 @@
 import sqlite3
 import uuid
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 import os
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker
+from geoalchemy2.functions import ST_MakePoint # Import ST_MakePoint function
 
 # Import models directly to avoid circular dependency issues with app-level modules
-from models import Base, Station, Segment, Vehicle 
+from backend.models import Base, Station, Segment, Vehicle 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,11 +28,35 @@ class OperatingDaysBitmask:
         return ''.join('1' if v else '0' for v in (mon, tue, wed, thu, fri, sat, sun))
 
 
+def _parse_time_flexible(tstr: str) -> datetime:
+    """Parse time strings like 'HH:MM' or 'HH:MM:SS' into a datetime object.
+
+    - Tries common formats, strips trailing seconds if necessary.
+    - Raises ValueError for unrecognized formats so caller can skip bad rows.
+    """
+    if tstr is None:
+        raise ValueError("time string is None")
+    s = str(tstr).strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    # last-resort: if there are extra fractional/garbage seconds, try to truncate to HH:MM
+    if s.count(":") >= 2:
+        parts = s.split(":")
+        s2 = ":".join(parts[:2])
+        try:
+            return datetime.strptime(s2, "%H:%M")
+        except ValueError:
+            pass
+    raise ValueError(f"Unrecognized time format: {tstr!r}")
+
+
 def calculate_duration(departure_time: str, arrival_time: str) -> int:
-    """Calculate duration in minutes between two HH:MM strings; handles overnight."""
-    fmt = "%H:%M"
-    d = datetime.strptime(departure_time, fmt)
-    a = datetime.strptime(arrival_time, fmt)
+    """Calculate duration in minutes between two time strings; handles overnight and seconds."""
+    d = _parse_time_flexible(departure_time)
+    a = _parse_time_flexible(arrival_time)
     delta = a - d
     if delta.total_seconds() < 0:
         # arrival is next day
@@ -64,64 +89,134 @@ class SQLiteReader:
         return stations
 
     def read_segment_data(self) -> List[Dict]:
-        """Reads train route data to generate segments."""
+        """Reads train schedule data to generate segments with accurate timings and operating days."""
         conn = self.get_connection()
         cursor = conn.cursor()
+
+        # Fetch all train schedules and group them
         cursor.execute("""
-            SELECT train_no, seq_no, station_code, departure_time, arrival_time,
-                   distance_from_source, cumulative_travel_minutes, day_offset
-            FROM train_routes
-            WHERE departure_time IS NOT NULL AND arrival_time IS NOT NULL
+            SELECT train_no, seq_no, station_code, arrival_time, departure_time, day_offset
+            FROM train_schedule
             ORDER BY train_no, seq_no
         """)
-        routes_data = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        schedule_data = [dict(row) for row in cursor.fetchall()]
         
-        trains = {}
-        for row in routes_data:
-            trains.setdefault(row['train_no'], []).append(row)
+        train_schedules = {}
+        for row in schedule_data:
+            train_schedules.setdefault(row['train_no'], []).append(row)
+
+        # Fetch train running days
+        cursor.execute("SELECT train_no, mon, tue, wed, thu, fri, sat, sun FROM train_running_days")
+        running_days_data = {row['train_no']: OperatingDaysBitmask.create(
+            mon=row['mon'], tue=row['tue'], wed=row['wed'], thu=row['thu'], fri=row['fri'], sat=row['sat'], sun=row['sun']
+        ) for row in cursor.fetchall()}
+        
+        # Fetch distances from train_routes for segments (this can be considered static for now)
+        # Assuming distance is a property of the physical segment, not the schedule entry
+        cursor.execute("""
+            SELECT train_no, source_station_code, dest_station_code, distance_km
+            FROM (
+                SELECT
+                    tr.train_no,
+                    tr.station_code AS source_station_code,
+                    LEAD(tr.station_code, 1) OVER (PARTITION BY tr.train_no ORDER BY tr.seq_no) AS dest_station_code,
+                    LEAD(tr.distance_from_source, 1) OVER (PARTITION BY tr.train_no ORDER BY tr.seq_no) - tr.distance_from_source AS distance_km
+                FROM train_routes tr
+            )
+            WHERE dest_station_code IS NOT NULL
+        """)
+        segment_distances = {}
+        for row in cursor.fetchall():
+            segment_distances[(row['train_no'], row['source_station_code'], row['dest_station_code'])] = row['distance_km']
 
         segments = []
-        for train_no, stops in trains.items():
+        for train_no, stops in train_schedules.items():
+            if train_no not in running_days_data:
+                logger.warning(f"Skipping train {train_no}: no running days data found.")
+                continue
+
+            operating_days = running_days_data[train_no]
+            
+            # Sort stops by sequence number to ensure correct order
             stops.sort(key=lambda x: x['seq_no'])
+
             for i in range(len(stops) - 1):
                 current_stop = stops[i]
                 next_stop = stops[i + 1]
+
+                source_station_code = current_stop['station_code']
+                dest_station_code = next_stop['station_code']
+                
+                # Use arrival_time of next_stop and departure_time of current_stop for segment
+                departure_time_str = current_stop['departure_time']
+                arrival_time_str = next_stop['arrival_time']
+                
+                # Calculate duration considering day offsets
                 try:
-                    duration = next_stop['cumulative_travel_minutes'] - current_stop['cumulative_travel_minutes']
-                    distance = next_stop['distance_from_source'] - current_stop['distance_from_source']
-                    
-                    if duration <= 0:
+                    # parse flexible time formats and normalize stored times to HH:MM
+                    departure_dt = _parse_time_flexible(departure_time_str)
+                    arrival_dt = _parse_time_flexible(arrival_time_str)
+                    departure_time_norm = departure_dt.strftime("%H:%M")
+                    arrival_time_norm = arrival_dt.strftime("%H:%M")
+
+                    # Adjust arrival_dt for day offset
+                    effective_arrival_dt = arrival_dt + timedelta(days=next_stop['day_offset'])
+                    effective_departure_dt = departure_dt + timedelta(days=current_stop['day_offset'])
+
+                    # compute duration and validate
+                    duration_delta = effective_arrival_dt - effective_departure_dt
+                    duration_minutes = int(duration_delta.total_seconds() // 60)
+
+                    if duration_minutes <= 0:
+                        logger.warning(f"Skipping segment for train {train_no} from {source_station_code} to {dest_station_code}: non-positive duration ({duration_minutes} minutes).")
                         continue
+
+                    distance_km = segment_distances.get((train_no, source_station_code, dest_station_code), 0)
+                    if distance_km == 0:
+                        logger.warning(f"No distance found for segment {train_no}-{source_station_code}-{dest_station_code}. Setting to 0.")
 
                     segments.append({
                         'train_no': train_no,
-                        'source_station_code': current_stop['station_code'],
-                        'dest_station_code': next_stop['station_code'],
-                        'departure_time': current_stop['departure_time'],
-                        'arrival_time': next_stop['arrival_time'],
-                        'duration_minutes': duration,
-                        'distance_km': distance,
-                        'arrival_day_offset': next_stop['day_offset'] - current_stop['day_offset'],
-                        'operator': 'Indian Railways',
-                        'operating_days': '1111111',
-                        'cost': 150.0
+                        'source_station_code': source_station_code,
+                        'dest_station_code': dest_station_code,
+                        'departure_time': departure_time_norm,
+                        'arrival_time': arrival_time_norm,
+                        'duration_minutes': duration_minutes,
+                        'distance_km': distance_km,
+                        'arrival_day_offset': next_stop['day_offset'], # Day offset relative to train's departure day
+                        'operator': 'Indian Railways', # Assuming all trains are Indian Railways for now
+                        'operating_days': operating_days,
+                        'cost': 150.0 # Placeholder cost, should be derived from train_fares table
                     })
                 except (TypeError, ValueError) as e:
-                    logger.warning(f"Skipping segment for train {train_no} due to data error: {e}")
+                    logger.warning(f"Skipping segment for train {train_no} from {source_station_code} to {dest_station_code} due to data error: {e}")
                     continue
-        logger.info(f"Generated {len(segments)} segments from {len(trains)} trains.")
+        
+        conn.close()
+        logger.info(f"Generated {len(segments)} segments from schedule data.")
         return segments
 
 class PostgresLoader:
     """Loads data into the PostgreSQL database."""
-    def __init__(self, db_url: str):
+    def __init__(self, db_url: str | None = None):
+        # Allow callers to omit db_url and fall back to Config.DATABASE_URL
+        from backend.config import Config as _Config
+        db_url = db_url or _Config.DATABASE_URL or "sqlite:///:memory:"
         engine = create_engine(db_url)
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         self.db: Session = self.SessionLocal()
         self.vehicle_cache: Dict[str, str] = {}
         Base.metadata.drop_all(engine) # Drop all existing tables
         Base.metadata.create_all(engine) # Ensure tables exist with the latest schema
+        
+        try:
+            # Try enabling PostGIS where available; ignore when not supported (e.g. sqlite tests)
+            self.db.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+            self.db.commit()
+            logger.info("PostGIS extension enabled.")
+        except Exception:
+            self.db.rollback()
+
         logger.info(f"Connected to PostgreSQL and ensured tables exist.")
 
     # ... (rest of the class is largely unchanged, but uses self.db)
@@ -129,9 +224,22 @@ class PostgresLoader:
         station = self.db.query(Station).filter(Station.name == name, Station.city == city).first()
         if station:
             return station.id
-        new_station = Station(id=str(uuid.uuid4()), name=name, city=city, latitude=lat or 0.0, longitude=lon or 0.0)
+        
+        geom = None
+        if lat is not None and lon is not None:
+            geom = ST_MakePoint(lon, lat)
+
+        new_station = Station(
+            id=str(uuid.uuid4()), 
+            name=name, 
+            city=city, 
+            latitude=lat or 0.0, 
+            longitude=lon or 0.0,
+            geom=geom # Populate the geom column
+        )
         self.db.add(new_station)
         self.db.commit()
+        self.db.refresh(new_station) # Refresh to get the generated geom value if any
         return new_station.id
 
     def get_or_create_vehicle(self, train_no: str, operator: str) -> Optional[str]:
@@ -168,50 +276,77 @@ class PostgresLoader:
     def close(self):
         self.db.close()
 
-def run_etl(sqlite_path: str, db_url: str):
+def run_etl(sqlite_path: str = DEFAULT_SQLITE_PATH, db_url: str | None = None):
+    """Run ETL from SQLite -> PostgreSQL (or DB configured via db_url).
+
+    Returns a dict with counts: stations_synced, segments_created, errors
+    """
     logger.info("="*60)
-    logger.info(f"Starting ETL: {sqlite_path} -> PostgreSQL")
+    logger.info(f"Starting ETL: {sqlite_path} -> {db_url or 'Config.DATABASE_URL'}")
     logger.info("="*60)
 
     reader = SQLiteReader(sqlite_path)
     loader = PostgresLoader(db_url)
 
+    results = {
+        'stations_synced': 0,
+        'segments_created': 0,
+        'errors': 0,
+    }
+
     try:
         stations = reader.read_stations_master()
-        station_code_to_id = {s['station_code']: loader.get_or_create_station(s['station_code'], s['station_name'], s['city'], s.get('latitude'), s.get('longitude')) for s in stations}
+        station_code_to_id = {}
+        for s in stations:
+            sid = loader.get_or_create_station(s['station_code'], s['station_name'], s['city'], s.get('latitude'), s.get('longitude'))
+            if sid:
+                station_code_to_id[s['station_code']] = sid
+        results['stations_synced'] = len(station_code_to_id)
         logger.info(f"Synced {len(station_code_to_id)} stations.")
 
         segments_data = reader.read_segment_data()
+        created = 0
         for seg_dict in segments_data:
-            vehicle_id = loader.get_or_create_vehicle(seg_dict['train_no'], seg_dict['operator'])
-            source_id = station_code_to_id.get(seg_dict['source_station_code'])
-            dest_id = station_code_to_id.get(seg_dict['dest_station_code'])
+            try:
+                vehicle_id = loader.get_or_create_vehicle(seg_dict['train_no'], seg_dict['operator'])
+                source_id = station_code_to_id.get(seg_dict['source_station_code'])
+                dest_id = station_code_to_id.get(seg_dict['dest_station_code'])
 
-            if not all([vehicle_id, source_id, dest_id]):
+                if not all([vehicle_id, source_id, dest_id]):
+                    results['errors'] += 1
+                    continue
+
+                if loader.create_segment({
+                    "id": str(uuid.uuid4()), "source_station_id": source_id, "dest_station_id": dest_id,
+                    "vehicle_id": vehicle_id, "transport_mode": "train", "departure_time": seg_dict['departure_time'],
+                    "arrival_time": seg_dict['arrival_time'], "duration_minutes": seg_dict['duration_minutes'],
+                    "distance_km": seg_dict['distance_km'], "arrival_day_offset": seg_dict['arrival_day_offset'],
+                    "cost": seg_dict['cost'], "operating_days": seg_dict['operating_days'],
+                }):
+                    created += 1
+            except Exception:
+                results['errors'] += 1
                 continue
-            
-            loader.create_segment({
-                "id": str(uuid.uuid4()), "source_station_id": source_id, "dest_station_id": dest_id,
-                "vehicle_id": vehicle_id, "transport_mode": "train", "departure_time": seg_dict['departure_time'],
-                "arrival_time": seg_dict['arrival_time'], "duration_minutes": seg_dict['duration_minutes'],
-                "distance_km": seg_dict['distance_km'], "arrival_day_offset": seg_dict['arrival_day_offset'],
-                "cost": seg_dict['cost'], "operating_days": seg_dict['operating_days'],
-            })
-        
+
         loader.db.commit()
-        logger.info(f"✅ Committed all segments.")
+        results['segments_created'] = created
+        logger.info(f"✅ Committed all segments. Created {created} segments.")
 
     except Exception as e:
         logger.error(f"ETL failed: {e}", exc_info=True)
         loader.db.rollback()
+        results['errors'] += 1
     finally:
         loader.close()
         logger.info("ETL process finished.")
 
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ETL script to load data from SQLite to PostgreSQL.")
     parser.add_argument("--source", default=DEFAULT_SQLITE_PATH, help="Path to the source SQLite database file.")
-    parser.add_argument("--db-url", required=True, help="URL for the target PostgreSQL database.")
+    parser.add_argument("--db-url", required=False, help="URL for the target PostgreSQL database. If omitted, uses DATABASE_URL from Config.")
     args = parser.parse_args()
     
     run_etl(sqlite_path=args.source, db_url=args.db_url)

@@ -10,6 +10,7 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL", "")
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_SESSION_EXPIRY_SECONDS = int(os.getenv("REDIS_SESSION_EXPIRY_SECONDS", "3600"))
+    REDIS_VERSION_PREFIX = os.getenv("REDIS_VERSION_PREFIX", "v1")
 
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
@@ -24,6 +25,7 @@ class Config:
 
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
     @classmethod
     def validate(cls):

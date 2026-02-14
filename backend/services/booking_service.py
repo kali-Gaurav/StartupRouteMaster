@@ -1,10 +1,10 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime
 from typing import Optional, Dict, List
 import logging
 
-from models import Booking, Route as RouteModel, Payment, User
-from schemas import BookingResponseSchema
+from backend.models import Booking, Route as RouteModel, Payment, User
+from backend.schemas import BookingResponseSchema
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +107,11 @@ class BookingService:
             return None
 
     def get_bookings_by_user(self, user: User) -> List[Booking]:
-        """Get all bookings for a specific user."""
+        """Get all bookings for a specific user, eagerly loading route details."""
         try:
             bookings = (
                 self.db.query(Booking)
+                .options(joinedload(Booking.route))
                 .filter(Booking.user_id == user.id)
                 .order_by(Booking.created_at.desc())
                 .all()

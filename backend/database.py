@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import QueuePool
 import logging
 
-from config import Config
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 

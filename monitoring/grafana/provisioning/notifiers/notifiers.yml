@@ -1,0 +1,21 @@
+apiVersion: 1
+notifiers:
+  - name: SlackAlerts
+    type: slack
+    uid: slack_alerts
+    isDefault: false
+    orgId: 1
+    settings:
+      url: "https://hooks.slack.com/services/REPLACE/ME/TOOLATE"
+      recipient: "#alerts"
+  - name: EmailAlerts
+    type: smtp
+    uid: email_alerts
+    isDefault: false
+    orgId: 1
+    settings:
+      addresses: "ops@example.com"
+      host: "smtp.example.com:587"
+      user: "smtp-user"
+      password: "smtp-pass"
+      from_address: "alerts@example.com"

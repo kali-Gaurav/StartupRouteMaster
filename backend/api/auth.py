@@ -1,15 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
-from database import get_db
-from services.user_service import UserService
-from utils.security import create_access_token, decode_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, credentials_exception
-from models import User
-from dependencies import get_current_user # Assuming get_current_user from dependencies.py
+from backend.database import get_db
+from backend.services.user_service import UserService
+from backend.utils.security import create_access_token, decode_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, credentials_exception
+from backend.models import User
+from backend.api.dependencies import get_current_user
+from backend.services.cache_service import cache_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 
 class AuthResponse(BaseModel):
     success: bool
@@ -136,9 +140,16 @@ async def update_user_location(location_update: UserLocationUpdate, current_user
     return AuthResponse(success=True, message="Location updated successfully.", user=updated_user.to_dict())
 
 @router.post("/logout", response_model=AuthResponse)
-async def logout():
-    # For token-based authentication, logout on the server side often means
-    # blacklisting the token if using refresh tokens, or simply
-    # instructing the client to discard the token.
-    # For now, just return success.
-    return AuthResponse(success=True, message="Logged out successfully.")
+async def logout(token: str = Depends(oauth2_scheme)):
+    """
+    Adds the current user's token to a blacklist to invalidate it.
+    """
+    if cache_service.is_available():
+        # The key for the blacklist will be the token itself.
+        # We set a TTL on the key equal to the token's remaining validity.
+        cache_service.set(f"jwt_blacklist:{token}", 1, ttl_seconds=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+        return AuthResponse(success=True, message="Logged out successfully.")
+    else:
+        # If Redis is not available, we can't blacklist.
+        # The frontend should still delete the token.
+        return AuthResponse(success=True, message="Logged out successfully (no blacklist).")

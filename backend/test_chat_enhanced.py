@@ -3,7 +3,7 @@
 import sys
 sys.path.insert(0, '.')
 
-from api.chat import (
+from backend.api.chat import (
     extract_stations_from_message,
     extract_date_from_message,
     resolve_city_to_station,

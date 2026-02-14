@@ -1,0 +1,125 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 6,"w": 24,"x": 0,"y": 0},
+      "id": 2,
+      "options": {"showHeader": true},
+      "pluginVersion": "8.x.x",
+      "targets": [
+        {
+          "format": "table",
+          "refId": "A",
+          "rawSql": "SELECT id, user_id, status, location, description, created_at, updated_at FROM sos_alerts WHERE status = 'active' ORDER BY created_at DESC LIMIT 200",
+          "datasource": "${PostgresDS}"
+        }
+      ],
+      "title": "Active SOS Alerts (table)",
+      "type": "table"
+    },
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 4,"w": 6,"x": 0,"y": 6},
+      "id": 4,
+      "options": {},
+      "targets": [
+        {
+          "datasource": "${PostgresDS}",
+          "format": "time_series",
+          "refId": "A",
+          "rawSql": "SELECT $__timeGroup(created_at,'1m') AS time, count(*) AS value FROM sos_alerts WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "title": "SOS Alerts over time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 4,"w": 6,"x": 6,"y": 6},
+      "id": 6,
+      "options": {"reduceOptions": {"calcs": ["last"],"fields": "","values": false}},
+      "targets": [
+        {
+          "datasource": "${PostgresDS}",
+          "format": "time_series",
+          "refId": "A",
+          "rawSql": "SELECT $__timeGroup(created_at,'1m') AS time, sum(CASE WHEN status='active' THEN 1 ELSE 0 END) AS value FROM sos_alerts WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "title": "Active alerts (count)",
+      "type": "stat",
+      "alert": {
+        "name": "Active SOS alerts > 0",
+        "severity": "critical",
+        "frequency": "10s",
+        "for": "30s",
+        "conditions": [
+          {
+            "type": "query",
+            "query": {"params": ["A"]},
+            "reducer": {"type": "last", "params": []},
+            "evaluator": {"type": "gt", "params": [0]},
+            "operator": {"type": "and"}
+          }
+        ],
+        "noDataState": "ok",
+        "executionErrorState": "alerting",
+        "notifications": []
+      }
+    },
+    {
+      "datasource": "${PrometheusDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 4,"w": 12,"x": 12,"y": 6},
+      "id": 8,
+      "options": {},
+      "targets": [
+        {
+          "expr": "http_server_requests_seconds_count{job=~\"routemaster.*\"}",
+          "legendFormat": "requests",
+          "refId": "A"
+        }
+      ],
+      "title": "API request count (Prometheus)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 32,
+  "style": "dark",
+  "tags": ["sos", "ops", "realtime"],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "PostgresDS",
+        "label": "Postgres",
+        "query": "postgres",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "type": "datasource",
+        "name": "PrometheusDS",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "time": {"from": "now-6h","to": "now"},
+  "timepicker": {"refresh_intervals": ["5s","10s","30s","1m","5m","10m","30m","1h"]},
+  "title": "SOS Emergency Dashboard",
+  "uid": "sos-emergency-dashboard",
+  "version": 1
+}

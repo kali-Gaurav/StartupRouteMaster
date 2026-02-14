@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from services import PaymentService
+from backend.services import PaymentService
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ class TestPaymentService:
         configured = service.is_configured()
         assert isinstance(configured, bool)
 
-    @patch("services.payment_service.requests.post")
+    @patch("backend.services.payment_service.requests.post")
     def test_create_order_success(self, mock_post, payment_service):
         """Test successful order creation."""
         mock_response = MagicMock()
@@ -38,6 +38,32 @@ class TestPaymentService:
 
             assert result.get("success") is True
             assert result.get("order_id") == "order_123"
+
+    @patch("backend.services.payment_service.requests.post")
+    def test_create_order_with_idempotency_key(self, mock_post, payment_service):
+        """Test successful order creation with an idempotency key."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "order_test_idempotency"}
+        mock_post.return_value = mock_response
+
+        idempotency_key_value = "booking_id_123"
+
+        if payment_service.is_configured():
+            result = payment_service.create_order(
+                amount_rupees=50.0,
+                receipt_id="test_receipt_idempotency",
+                idempotency_key=idempotency_key_value,
+            )
+
+            assert result.get("success") is True
+            assert result.get("order_id") == "order_test_idempotency"
+            
+            # Verify that the X-Razorpay-IDEMPOTENCY header was sent
+            mock_post.assert_called_once()
+            called_kwargs = mock_post.call_args.kwargs
+            assert "headers" in called_kwargs
+            assert called_kwargs["headers"].get("X-Razorpay-IDEMPOTENCY") == idempotency_key_value
 
     def test_create_order_not_configured(self):
         """Test order creation when not configured."""

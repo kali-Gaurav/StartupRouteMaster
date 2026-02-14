@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Optional, Tuple
 from uuid import UUID
 
-from config import Config
+from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,8 @@ class PaymentService:
         amount_rupees: float = 39,
         receipt_id: str = "route_unlock",
         customer_email: Optional[str] = None,
+        idempotency_key: Optional[str] = None, # New parameter
+        description: Optional[str] = None, # New parameter, as it's used in payments.py
     ) -> Dict:
         """
         Create Razorpay order for route unlock.
@@ -63,11 +65,20 @@ class PaymentService:
             if customer_email:
                 payload["customer_notify"] = 1
                 payload["notes"] = {"customer_email": customer_email}
+            
+            if description: # Add description to payload if provided
+                payload["notes"]["description"] = description
+
+
+            headers = {}
+            if idempotency_key:
+                headers["X-Razorpay-IDEMPOTENCY"] = idempotency_key # New header
 
             response = requests.post(
                 f"{RAZORPAY_API_URL}/orders",
                 json=payload,
                 auth=(self.key_id, self.key_secret),
+                headers=headers, # Pass headers
                 timeout=5,
             )
 
@@ -211,3 +222,48 @@ class PaymentService:
         except requests.RequestException as e:
             logger.error(f"Refund error: {e}")
             return False, str(e)
+
+    def fetch_payments_for_order(self, order_id: str) -> Optional[Dict]:
+        """Fetch all payments for a given Razorpay order."""
+        if not self.is_configured():
+            return None
+
+        try:
+            response = requests.get(
+                f"{RAZORPAY_API_URL}/orders/{order_id}/payments",
+                auth=(self.key_id, self.key_secret),
+                timeout=5,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch payments for order {order_id}: {response.text}")
+                return None
+
+        except requests.RequestException as e:
+            logger.error(f"Payment fetch error for order {order_id}: {e}")
+            return None
+
+    def fetch_order_details(self, order_id: str) -> Optional[Dict]:
+        """Fetch order details from Razorpay."""
+        if not self.is_configured():
+            return None
+
+        try:
+            response = requests.get(
+                f"{RAZORPAY_API_URL}/orders/{order_id}",
+                auth=(self.key_id, self.key_secret),
+                timeout=5,
+            )
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to fetch order {order_id}: {response.text}")
+                return None
+
+        except requests.RequestException as e:
+            logger.error(f"Order fetch error for {order_id}: {e}")
+            return None
+

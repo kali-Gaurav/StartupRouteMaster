@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 import pytest
 
-from models import User, Booking, Route, Review
+from backend.models import User, Booking, Route, Review
 
 def test_create_review(client: TestClient, db_session: Session):
     """

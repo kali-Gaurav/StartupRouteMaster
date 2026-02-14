@@ -97,6 +97,31 @@ backend/
    python -c "from database import init_db; import asyncio; asyncio.run(init_db())"
    ```
 
+## Database migrations (Alembic)
+
+This project uses Alembic to manage database schema migrations. The repository includes a stamped baseline so local development can start from an existing schema.
+
+- Create a new migration after changing `backend/models.py`:
+  ```bash
+  .venv\Scripts\python -m alembic -c backend/alembic.ini revision --autogenerate -m "describe changes"
+  ```
+
+- Apply migrations to your database:
+  ```bash
+  .venv\Scripts\python -m alembic -c backend/alembic.ini upgrade head
+  ```
+
+- If you are bringing an existing database under Alembic control, stamp the current head (non-destructive):
+  ```bash
+  .venv\Scripts\python -m alembic -c backend/alembic.ini stamp head
+  ```
+
+Notes & gotchas
+- PostGIS creates internal tables such as `spatial_ref_sys` — do not drop or recreate these in migrations. If Alembic autogenerate suggests removing PostGIS objects, edit the migration to make it a no-op.
+- If you see a collation version mismatch warning from PostgreSQL, it is an OS-level issue (see PostgreSQL docs). It does not block development but can be addressed by rebuilding DB collation or reinitializing PG with matching libc versions.
+
+If you want, I can add a CI step that verifies migrations are applied during tests.
+
 ## Running the Server
 
 ### Development Mode

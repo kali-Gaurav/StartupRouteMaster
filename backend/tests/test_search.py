@@ -3,15 +3,28 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Station, Segment
-from services import RouteEngine
+from backend.models import Base, Station, Segment
+from backend.services import RouteEngine
 
 
 @pytest.fixture
 def test_db():
-    """Create test database."""
+    """Create test database (sqlite in-memory). Avoid geoalchemy2 DDL calls for sqlite."""
     engine = create_engine("sqlite:///:memory:")
+
+    # Temporarily disable geoalchemy2 sqlite after_create hook which expects SpatiaLite
+    try:
+        import geoalchemy2.dialects.sqlite as _gasqlite
+        _orig_after_create = getattr(_gasqlite, 'after_create', None)
+        _gasqlite.after_create = lambda *a, **kw: None
+    except Exception:
+        _orig_after_create = None
+
     Base.metadata.create_all(bind=engine)
+
+    if _orig_after_create is not None:
+        _gasqlite.after_create = _orig_after_create
+
     SessionLocal = sessionmaker(bind=engine)
     return SessionLocal()
 
