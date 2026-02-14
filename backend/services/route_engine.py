@@ -36,6 +36,10 @@ class RouteEngine:
         # RAPTOR specific data structures
         self.routes_by_station: Dict[str, List[Dict]] = {}  # Station ID -> List of routes passing through this station
         self.route_segments: Dict[str, List[Dict]] = {}  # Route ID -> List of segments in order
+        # Per-route indices for faster boarding (todo02 P0.1)
+        self.route_stop_index: Dict[str, Dict[str, List[int]]] = {}        # route_id -> {station_id: [segment_positions]}
+        self.route_stop_departures: Dict[str, Dict[str, List[int]]] = {}  # route_id -> {station_id: [departure_minutes]}
+        self.route_departure_minutes: Dict[str, List[int]] = {}          # route_id -> [departure_min_for_each_segment]
         self._is_loaded = False
         self._cache_meta = {}
 
@@ -142,6 +146,9 @@ class RouteEngine:
                     if not any(r["route_id"] == route_id for r in self.routes_by_station[st_id]):
                         self.routes_by_station[st_id].append({"route_id": route_id, "station_order": order_index})
 
+        # build per-route indices for fast boarding (binary-search boarding)
+        self._build_route_indices()
+
         self._is_loaded = True
         logger.info(f"Graph built: {len(self.stations_map)} stations, {len(self.segments_map)} segments, {len(self.route_segments)} routes.")
         self._save_graph_state()
@@ -150,6 +157,26 @@ class RouteEngine:
     def _time_to_minutes(self, hhmm: str) -> int:
         h, m = map(int, hhmm.split(":"))
         return h * 60 + m
+
+    def _build_route_indices(self):
+        """Precompute per-route station -> segment positions and departure minutes for binary-search boarding."""
+        import bisect  # local import used by search as well
+        self.route_stop_index = {}
+        self.route_stop_departures = {}
+        self.route_departure_minutes = {}
+        for route_id, segs in self.route_segments.items():
+            pos_map = {}
+            dep_map = {}
+            departures = []
+            for idx, seg in enumerate(segs):
+                dep_min = self._time_to_minutes(seg["departure"])
+                departures.append(dep_min)
+                src = seg["source_station_id"]
+                pos_map.setdefault(src, []).append(idx)
+                dep_map.setdefault(src, []).append(dep_min)
+            self.route_stop_index[route_id] = pos_map
+            self.route_stop_departures[route_id] = dep_map
+            self.route_departure_minutes[route_id] = departures
 
     def _operates_on_date(self, operating_days: str, date_obj) -> bool:
         weekday_index = date_obj.weekday()  # Monday=0
@@ -193,30 +220,67 @@ class RouteEngine:
                     segs = self.route_segments.get(route_id, [])
 
                     # find indices on route where station `st` appears as a source
-                    for i, seg in enumerate(segs):
-                        if seg.get("source_station_id") != st:
-                            continue
+                        # ensure per-route indices exist (lazy-build for tests/manual population)
+                    if not self.route_stop_index:
+                        self._build_route_indices()
 
-                        # service must operate on travel_date
-                        if not self._operates_on_date(seg.get("operating_days", "1111111"), travel_date):
-                            continue
+                    # fast lookup of segment positions where `st` is the source on this route
+                    positions = self.route_stop_index.get(route_id, {}).get(st, [])
+                    departures_at_station = self.route_stop_departures.get(route_id, {}).get(st, [])
 
-                        seg_dep = self._time_to_minutes(seg["departure"])
-                        seg_arr = self._time_to_minutes(seg["arrival"]) + seg.get("arrival_day_offset", 0) * 24 * 60
+                    if not positions:
+                        # fallback to full scan when no index available
+                        for i, seg in enumerate(segs):
+                            if seg.get("source_station_id") != st:
+                                continue
 
-                        # compute wait time between arrival at `st` and this trip's departure
-                        wait = seg_dep - best_arrival.get(st, INF)
+                            # service must operate on travel_date
+                            if not self._operates_on_date(seg.get("operating_days", "1111111"), travel_date):
+                                continue
 
-                        if round_idx == 0:
-                            can_board = best_arrival.get(st, INF) <= seg_dep
-                        else:
-                            can_board = best_arrival.get(st, INF) <= seg_dep and (wait >= min_transfer and wait <= max_transfer)
+                            seg_dep = self._time_to_minutes(seg["departure"])
 
-                        if not can_board:
-                            continue
+                            if round_idx == 0:
+                                can_board = best_arrival.get(st, INF) <= seg_dep
+                            else:
+                                wait = seg_dep - best_arrival.get(st, INF)
+                                can_board = best_arrival.get(st, INF) <= seg_dep and (wait >= min_transfer and wait <= max_transfer)
 
-                        # propagate arrival times forward along the route
-                        for j in range(i, len(segs)):
+                            if not can_board:
+                                continue
+
+                            # propagate arrival times forward along the route
+                            for j in range(i, len(segs)):
+                                downstream = segs[j]
+                                if not self._operates_on_date(downstream.get("operating_days", "1111111"), travel_date):
+                                    continue
+                                dst = downstream["dest_station_id"]
+                                arrival_time = self._time_to_minutes(downstream["arrival"]) + downstream.get("arrival_day_offset", 0) * 24 * 60
+                                if arrival_time < best_arrival.get(dst, INF):
+                                    best_arrival[dst] = arrival_time
+                                    prev_segment[dst] = downstream["id"]
+                                    next_marked.add(dst)
+
+                        continue
+
+                    # binary-search boarding: find first departure at or after allowed time
+                    import bisect
+                    if round_idx == 0:
+                        min_allowed_dep = best_arrival.get(st, INF)
+                        max_allowed_dep = INF
+                    else:
+                        min_allowed_dep = best_arrival.get(st, INF) + min_transfer
+                        max_allowed_dep = best_arrival.get(st, INF) + max_transfer
+
+                    k = bisect.bisect_left(departures_at_station, min_allowed_dep)
+                    for idx_in_list in range(k, len(positions)):
+                        pos = positions[idx_in_list]
+                        seg_dep = departures_at_station[idx_in_list]
+                        if seg_dep > max_allowed_dep:
+                            break
+
+                        # propagate arrival times forward along the route starting from `pos`
+                        for j in range(pos, len(segs)):
                             downstream = segs[j]
                             if not self._operates_on_date(downstream.get("operating_days", "1111111"), travel_date):
                                 continue
@@ -226,7 +290,6 @@ class RouteEngine:
                                 best_arrival[dst] = arrival_time
                                 prev_segment[dst] = downstream["id"]
                                 next_marked.add(dst)
-
             marked_stations = next_marked
 
         # reconstruct best path for dest_id

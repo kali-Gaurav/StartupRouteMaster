@@ -1,51 +1,86 @@
-# RouteMaster — Top 30 High‑Priority Technical Tasks
+The following 40 refined tasks include the previous 30 (now sharpened for production) and 10 new "Gap-Resolution" tasks focusing on real-world multi-vendor integration, data integrity, and disaster recovery.
 
-This task list is derived from a deep-dive audit (routing, payment, ETL, chat agent, data layer). Tasks are ordered by priority (P0, P1, P2) and include quick descriptions and where to implement.
+Phase 1: High-Performance Routing & Data (P0)
+1. RAPTOR Optimization: Implement per-stop route indices and binary-search boarding in backend/services/route_engine.py to replace standard Dijkstra.
 
-## P0 — Critical (must fix before 1k+ concurrent users)
+2. Pareto Pruning: Add multi-objective optimization (time vs. cost) to RAPTOR to provide varied route options.
 
-1. Implement full RAPTOR optimizations in `backend/services/route_engine.py` — per-stop route indices, binary-search boarding, Pareto pruning, unit + perf tests. (Priority: P0)
-2. Replace time-expanded Dijkstra with the RAPTOR production path for transit segments and update tests. (P0)
-3. Move in‑memory graph cache from local pickle to shared cache (Redis/RedisJSON or object store) with versioning and HMAC signing. (P0)
-4. Make RouteEngine horizontally scalable: stateless search workers + shared graph cache; add readiness probe. (P0)
-5. Implement robust Redis-based seat-locking with owner token, TTL, and Lua CAS; integrate in `create_order`/`verify`. (P0)
-6. Enforce DB-level invariants to prevent double-booking (unique/index + transactional checks on bookings). (P0)
-7. Change `_DummyLock` to *not* silently succeed for distributed locks; fail critical operations when Redis is unavailable. (P0)
-8. Harden seat-lock release: verify lock owner before deletion (atomic release). (P0)
-9. Add `POST /api/payments/webhook` handler (signature verify + idempotent processing + enqueue work). (P0)
-10. Replace blocking `requests` with `httpx.AsyncClient` (or run in threadpool) in async endpoints; add circuit breakers and strict timeouts. (P0)
+3. RedisJSON Graph Storage: Move the in-memory graph to a shared RedisJSON store with HMAC signing to enable stateless scaling.
 
-## P1 — High (important for correctness, resilience, observability)
+4. Stateless Workers: Re-architect RouteEngine to run on specialized search workers with readiness probes for Kubernetes.
 
-11. Enforce GatewayValidator for AI tool-calls in `backend/api/chat.py`; require auth, rate limits and audit logs. (P1)
-12. Implement chat session summarization and token-budgeted context retention (persist compact summaries in Redis). (P1)
-13. Fix station geospatial query & distance computation; add missing imports/Float casting and unit tests. (P1)
-14. Improve station autocomplete performance — add `pg_trgm` trigram index or external search. (P1)
-15. Remove N+1 queries in admin endpoints — rewrite as JOIN or use eager loading. (P1)
-16. Add GIST index on `stations.geom` and validate SRID; add migration. (P1)
-17. Implement coordinated cache invalidation after ETL (Redis pub/sub notification). (P1)
-18. Add circuit breakers + fail‑open fallbacks for external APIs (OpenRouter, Razorpay) with cached responses for search. (P1)
-19. Make Redis in‑mem fallback strict (non-distributed features should be disabled in prod). (P1)
-20. Improve payment reconciliation worker: add webhook-first approach, reduce polling windows and exponential backoff. (P1)
+5. Serialized Warm-up: Implement background graph "warm-up" from Protobuf/Pickle to reduce cold-start latency on deployments.
 
-## P1 — Data & Inventory (continued)
+6. PostGIS Integration: Add a GIST index on stations.geom and migrate all "near-me" queries to ST_DWithin.
 
-21. Add seat inventory model/table + atomic upsert workflows; sync with external partners and reconcile. (P1)
-22. Add RouteEngine startup/readiness gating and background warm-up to avoid race conditions. (P1)
-23. Add Prometheus metrics and dashboards (search latency, cache hits, lock contention, webhook errors). Define SLOs and alerts. (P1)
-24. Add API rate-limiting (gateway or middleware) for `/api/search`, `/chat`, `/api/payments`. (P1)
+7. Trigram Autocomplete: Implement pg_trgm indexes for fuzzy station name matching in the UI.
 
-## P2 — Important but lower priority
+8. [NEW] Hybrid Search Fallback: Build a strategy pattern that attempts a Real-Time API fetch (Railway/Bus) but "fails-open" to the internal graph if external services exceed 500ms.
 
-25. Offload CPU-bound search work from request threads — threadpool, microservice, or compiled hot-paths. (P2)
-26. Return compact route summaries (avoid sending full JSON every time); lazy-load details. (P2)
-27. Enforce idempotency for webhook/payment processing and add DB upserts. (P2)
-28. Introduce message queue for decoupling booking/payment flows (retryable, durable). (P2)
-29. Implement SAGA/compensation for multi-step flows (unlock → payment → external booking). (P2)
-30. Add automated load/perf tests (k6/Locust) to CI asserting p95 < 100ms for search. (P2)
+Phase 2: Transactional Integrity & Inventory (P0)
+9. Redis Distributed Locking: Replace _DummyLock with a Lua-scripted CAS (Compare-And-Swap) lock for seat reservations.
 
----
+10. Atomic Release: Harden the lock release logic to verify the owner token before deletion, preventing one user from accidentally unlocking another's seat.
 
-Notes:
-- See `backend/services/route_engine.py`, `backend/api/payments.py`, `backend/services/cache_service.py`, `backend/etl/sqlite_to_postgres.py`, `backend/api/chat.py` for related code locations.
-- I can implement any of these tasks (example: Redis seat locking + tests & migration). Tell me which task to pick first.
+11. DB-Level Constraints: Enforce unique constraints and transactional checks in PostgreSQL to prevent double-booking at the database level.
+
+12. Seat Inventory Model: Build a dedicated inventory table that tracks seat counts per segment_id and travel_date.
+
+13. Payment Webhook Handler: Implement POST /api/payments/webhook with signature verification and idempotent processing.
+
+14. Async Payment Bridge: Replace blocking requests with httpx.AsyncClient for all external payment calls.
+
+15. [NEW] Pre-Payment Verification: Implement a mandatory "Unlock" check that verifies live availability via API immediately before launching the Razorpay modal.
+
+16. [NEW] Inventory Reconciliation: Build a background task to sync the internal seat count with external partner data every 15 minutes.
+
+Phase 3: AI Agent & "Real Agentic" Flow (P1)
+17. Tool-Calling Schema: Upgrade the OpenRouter integration to use strictly defined Pydantic schemas for search, booking, and SOS triggers.
+
+18. Gateway Validation: Intercept AI-generated tool calls to verify user authentication and permissions before executing backend tasks.
+
+19. Redis Session Memory: Persist compact conversation summaries in Redis to maintain "Source/Destination" context across turns.
+
+20. Chat Budgeting: Implement token-budgeted context retention to prevent LLM errors on long conversations.
+
+21. SOS Real-time Alerts: Connect the /api/sos trigger to a WebSocket that pushes immediate alerts to the Admin Dashboard.
+
+22. [NEW] Agentic Booking: Allow the AI agent to "hold" a seat for a user by generating a pending_booking_id directly from the chat interface.
+
+Phase 4: Observability & Scaling (P1)
+23. N+1 Query Resolution: Rewrite admin dashboards to use SQL JOINs or eager loading for "Revenue per Mode" reports.
+
+24. Cache Invalidation: Set up Redis pub/sub notifications to notify search workers when the ETL pipeline updates station data.
+
+25. Prometheus Exporter: Instrument the FastAPI app to expose metrics for search latency (p95), lock contention, and webhook errors.
+
+26. Grafana Dashboards: Build the 6 core dashboards (Operations, Finance, Growth, AI, SOS, and Inventory) using the Prometheus data.
+
+27. API Rate Limiting: Implement slowapi decorators for high-cost routes like /api/search and /chat.
+
+28. Circuit Breakers: Add circuit breakers for OpenRouter and Razorpay to prevent cascading failures.
+
+29. [NEW] API Cost Tracking: Track the cost per user-search for external APIs to manage startup burn rate.
+
+30. [NEW] Dead Letter Queues: Implement a message queue (RabbitMQ/Redis) for failed booking webhooks to allow automated retries.
+
+Phase 5: Production Hardening & Security (P2)
+31. SAGA Pattern: Implement compensation logic for multi-step flows (if external booking fails, trigger an automatic refund).
+
+32. CPU-Bound Offloading: Move heavy graph computations to a threadpool to keep the FastAPI event loop responsive.
+
+33. Compact Route Payloads: Modify the search response to return light summaries, lazy-loading segment details only when requested.
+
+34. PWA Ticket Caching: Use Service Workers to cache the /ticket/:id page for offline access in tunnels/trains.
+
+35. Automated Load Testing: Add k6/Locust scripts to the CI/CD pipeline to block deployments that exceed 100ms p95 latency.
+
+36. JWT Revocation: Implement a Redis-based blacklist for logging out sessions and revoking stolen tokens.
+
+37. RBAC Dashboard: Secure the Admin Dashboard with Role-Based Access Control and 2FA.
+
+38. [NEW] Data Anonymization: Encrypt PII (Personally Identifiable Information) in the Users table at the database level.
+
+39. [NEW] Multi-Region Fallback: Plan a multi-region deployment strategy for the PostgreSQL database to ensure 99.9% availability.
+
+40. [NEW] Automated Rollbacks: Configure CI/CD to automatically rollback if the Prometheus "Success Rate" drops below 95% after a new deploy.
