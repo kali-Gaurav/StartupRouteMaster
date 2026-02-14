@@ -21,7 +21,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    image: redis/redis-stack:7.2.0-v9
     container_name: startupv2_redis
     restart: unless-stopped
     ports:

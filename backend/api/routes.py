@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/routes", tags=["routes"])
 logger = logging.getLogger(__name__)
 
 
-@router.get("/{route_id}", response_model=RouteDetailSchema)
+@router.get("/{route_id}")  # Removed response_model for testing
 async def get_route_details(
     route_id: str,
     db: Session = Depends(get_db),

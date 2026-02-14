@@ -10,10 +10,10 @@ from backend.database import SessionLocal
 from backend.services.payment_service import PaymentService
 from backend.models import Booking, Payment, SeatInventory, Segment
 from backend.tasks.inventory_reconciliation_task import run_inventory_reconciliation_task # Import the async task
+from backend.tasks.partner_health_check_task import run_partner_health_check_task # New: Import partner health check task
+from backend.config import Config # New: Import Config for interval
 
 logger = logging.getLogger(__name__)
-
-# RECONCILIATION_INTERVAL_MINUTES = 15 # No longer needed, as it's in Config
 
 def reconcile_payments():
     """
@@ -67,6 +67,17 @@ def inventory_reconciliation_wrapper():
         logger.critical(f"Unhandled error in inventory reconciliation wrapper: {e}", exc_info=True)
     logger.info("Finished asynchronous inventory reconciliation wrapper.")
 
+def partner_health_check_wrapper():
+    """
+    Wrapper to run the asynchronous partner health check task within the APScheduler.
+    """
+    logger.info("Starting asynchronous partner health check wrapper.")
+    try:
+        asyncio.run(run_partner_health_check_task())
+    except Exception as e:
+        logger.critical(f"Unhandled error in partner health check wrapper: {e}", exc_info=True)
+    logger.info("Finished asynchronous partner health check wrapper.")
+
 
 scheduler = None
 
@@ -79,7 +90,7 @@ def start_reconciliation_worker():
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         reconcile_payments,
-        IntervalTrigger(minutes=15), # Keep payment reconciliation at 15 minutes
+        IntervalTrigger(minutes=Config.PAYMENT_RECONCILIATION_INTERVAL_MINUTES), # Use Config
         id='payment_reconciliation_job',
         name='Razorpay Payment Reconciliation',
         replace_existing=True
@@ -91,8 +102,15 @@ def start_reconciliation_worker():
         name='Seat Inventory Reconciliation',
         replace_existing=True
     )
+    scheduler.add_job(
+        partner_health_check_wrapper, # New: Add partner health check job
+        IntervalTrigger(minutes=Config.PARTNER_HEALTH_CHECK_INTERVAL_MINUTES), # Run every X minutes from Config
+        id='partner_health_check_job',
+        name='Partner Redirect Health Check',
+        replace_existing=True
+    )
     scheduler.start()
-    logger.info("Payment and inventory reconciliation worker started.")
+    logger.info("Payment, inventory, and partner health check worker started.")
 
 def stop_reconciliation_worker():
     global scheduler

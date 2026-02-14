@@ -1,15 +1,15 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import logging
 import structlog
 
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from backend.config import Config
 from backend.database import init_db, close_db
 from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets
+from backend.utils.limiter import limiter
 
 # FastAPI-Cache
 from fastapi_cache import FastAPICache
@@ -38,8 +38,9 @@ structlog.configure(
 )
 logger = structlog.get_logger()
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Rate limit exceeded handler
+async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
 
 app = FastAPI(
     title="RouteMaster API",

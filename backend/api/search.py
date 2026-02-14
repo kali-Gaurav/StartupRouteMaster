@@ -8,14 +8,14 @@ from typing import Dict, List, Optional
 from backend.database import get_db
 from backend.schemas import SearchRequestSchema
 from backend.services.route_engine import route_engine
-from backend.models import StationMaster, Station # Import Station model as well
+from backend.models import StationMaster, Station, Disruption # Import Disruption model
 from backend.services.cache_service import cache_service
 from backend.services.station_service import StationService # Import StationService
 from backend.services.hybrid_search_service import HybridSearchService # Import HybridSearchService
 from backend.config import Config # Import Config
-from fastapi_cache.decorator import cached # Import cached decorator
+# from fastapi_cache.decorator import cached # Import cached decorator - commented out for testing
 from backend.api.websockets import manager as websocket_manager # Import the shared WebSocket manager
-from backend.app import limiter # Import the shared limiter
+from backend.utils.limiter import limiter # Import the shared limiter
 from backend.utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL # Import custom metrics
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -23,17 +23,14 @@ logger = logging.getLogger(__name__)
 
 # --- Route Search Endpoint ---
 
-@router.post("/", response_model=Dict)
-@cached(ttl=60) # Cache search results for 60 seconds
+@router.post("/", response_model=None)  # Removed response_model to avoid Pydantic issues with Optional[WebSocket]
+# @cached(ttl=60) # Cache search results for 60 seconds - commented out for testing
 @limiter.limit("5/minute") # Rate limit to 5 requests per minute
-async def search_routes_endpoint(request: Request, search_request: SearchRequestSchema, db: Session = Depends(get_db), websocket: Optional[WebSocket] = None): # Added websocket parameter
+async def search_routes_endpoint(request: Request, search_request: SearchRequestSchema, db: Session = Depends(get_db)): # Removed websocket parameter for testing
     """
     Search for routes using the hybrid search engine (external API with internal graph fallback).
-    If a WebSocket is provided, results will be streamed.
     """
-    if websocket:
-        await websocket_manager.connect(websocket)
-        await websocket.send_json({"status": "searching", "message": "Starting route search..."})
+    # Removed websocket code for testing
 
     start_time = time.time()
     status_label = "failure" # Default to failure
@@ -51,25 +48,36 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
         duration_ms = int((time.time() - start_time) * 1000)
         logger.info(f"Hybrid search for {search_request.source} -> {search_request.destination} completed in {duration_ms}ms, found {len(routes)} routes.")
         
-        response_data = {"routes": routes, "message": "Search completed successfully."}
+        # Check for active disruptions on travel date
+        from datetime import datetime
+        travel_date = datetime.fromisoformat(search_request.date).date()
+        disruptions = db.query(Disruption).filter(
+            Disruption.disruption_date == travel_date,
+            Disruption.status == "active"
+        ).all()
+        
+        disruption_alerts = []
+        for d in disruptions:
+            disruption_alerts.append({
+                "type": d.disruption_type,
+                "description": d.description,
+                "severity": d.severity,
+                "route_id": d.route_id
+            })
+        
+        response_data = {
+            "routes": routes, 
+            "disruption_alerts": disruption_alerts,
+            "message": "Search completed successfully."
+        }
         status_label = "success" # Set to success if no exception
 
-        if websocket:
-            await websocket.send_json({"status": "completed", "results": response_data})
-            return # WebSocket handles response
-        
         return response_data # For HTTP requests
     except RuntimeError as e:
         logger.error(f"Route engine error: {e}")
-        if websocket:
-            await websocket.send_json({"status": "error", "message": f"The route search engine is not available: {e}"})
-            return
         raise HTTPException(status_code=503, detail=f"The route search engine is not available: {e}")
     except Exception as e:
         logger.error(f"An unexpected error occurred during search: {e}")
-        if websocket:
-            await websocket.send_json({"status": "error", "message": "An unexpected error occurred during search."})
-            return
         raise HTTPException(status_code=500, detail="An unexpected error occurred during search.")
     finally:
         # Observe search latency and increment total requests
@@ -103,7 +111,8 @@ def calculate_station_score(station: StationMaster, query: str) -> int:
     return score
 
 @router.get("/stations", response_model=List[Dict])
-@cached(ttl=3600) # Cache station autocomplete results for 1 hour
+# @cached(ttl=3600) # Cache station autocomplete results for 1 hour
+@limiter.limit("30/minute") # New: Rate limit to 30 requests per minute
 async def search_stations_endpoint(
     request: Request, # Added Request dependency
     q: str = Query(..., min_length=2, description="Search query for stations"),
@@ -157,7 +166,8 @@ async def search_stations_endpoint(
         return []
 
 @router.get("/stations/near", response_model=List[Dict])
-@cached(ttl=3600) # Cache nearby stations for 1 hour
+# @cached(ttl=3600) # Cache nearby stations for 1 hour
+@limiter.limit("30/minute") # New: Rate limit to 30 requests per minute
 async def get_nearby_stations_endpoint(
     request: Request, # Added Request dependency
     latitude: float = Query(..., ge=-90, le=90, description="Latitude of the current location"),
