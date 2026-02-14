@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+import geoalchemy2
 
 
 # revision identifiers, used by Alembic.
@@ -43,7 +44,7 @@ def upgrade() -> None:
     sa.Column('city', sa.String(length=255), nullable=False),
     sa.Column('latitude', sa.Float(), nullable=False),
     sa.Column('longitude', sa.Float(), nullable=False),
-    sa.Column('geom', sa.NullType(), nullable=True),
+    sa.Column('geom', geoalchemy2.types.Geometry(geometry_type='POINT', srid=4326, from_text='ST_GeomFromEWKT', name='geometry'), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
