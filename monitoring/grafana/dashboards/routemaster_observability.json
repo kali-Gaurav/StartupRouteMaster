@@ -181,11 +181,7 @@
       "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
       "targets": [
         {
-          "expr": "(
-            (sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m])))
-            * (1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1)))
-            * avg(rma_proxy_health_score)
-          ) * 100",
+          "expr": "((sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m]))) * (1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1))) * avg(rma_proxy_health_score) * 100",
           "refId": "A"
         }
       ]
@@ -202,8 +198,5 @@
         { "expr": "(1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1))) * 100", "legendFormat": "Validation Pass %", "refId": "C" }
       ]
     }
-  ],
-  "schemaVersion": 16,
-  "version": 1,
-  "links": []
+  ]
 }

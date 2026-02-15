@@ -235,6 +235,41 @@ class TestRunner:
         # raw DOM (full dump)
         raw_dom = base / f"raw_dom.html"
         raw_dom.write_text(content, encoding='utf-8')
+
+        # Run selector-testing harness on the saved HTML and persist report
+        try:
+            from routemaster_agent.intelligence.selector_generator import generate_table_selectors
+            from routemaster_agent.intelligence.selector_tester import evaluate_selectors
+            selectors = generate_table_selectors(content)
+            selector_results = evaluate_selectors(content, selectors, expected_min_rows=5)
+            selector_report_path = base / f"selector_report_attempt_{attempt}.json"
+            selector_report_path.write_text(json.dumps(selector_results, indent=2, default=str), encoding='utf-8')
+
+            # update global selector registry with best candidate for 'ntes_schedule' template
+            try:
+                registry_path = Path(__file__).resolve().parents[2] / 'intelligence' / 'selector_registry.json'
+                if registry_path.exists():
+                    reg = json.loads(registry_path.read_text(encoding='utf-8') or '{}')
+                else:
+                    reg = {}
+                best = selector_results[0] if selector_results else None
+                if best and best.get('score', 0) >= 0.75:
+                    tpl = reg.get('ntes_schedule', {})
+                    tpl.update({
+                        'primary': tpl.get('primary') or 'table.table-striped tbody tr',
+                        'backup_1': best.get('selector'),
+                        'confidence_score': best.get('score'),
+                        'last_tested': datetime.utcnow().isoformat(),
+                        'candidates_tested': len(selector_results)
+                    })
+                    reg['ntes_schedule'] = tpl
+                    registry_path.write_text(json.dumps(reg, indent=2), encoding='utf-8')
+            except Exception:
+                pass
+        except Exception:
+            # selector harness failure should not block artifact saving
+            pass
+
         # screenshot
         png_path = base / f"attempt_{attempt}.png"
         try:

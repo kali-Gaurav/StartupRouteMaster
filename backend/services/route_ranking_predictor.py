@@ -96,7 +96,14 @@ class RouteRankingPredictor:
                 logger.warning("Model not trained and cannot load, using default ranking")
                 return 0.5  # neutral
 
+        # Ensure features are in the same order as training
+        feature_order = ['route_duration_hours', 'route_cost_rupees', 'num_transfers', 
+                        'predicted_delay_minutes', 'time_of_day', 'day_of_week', 
+                        'is_weekend', 'user_pref_duration_weight', 'user_pref_cost_weight', 
+                        'route_popularity_score']
+        
         df = pd.DataFrame([route_features])
+        df = df[feature_order]  # Reorder columns to match training
         prob = self.model.predict_proba(df)[0][1]  # prob of class 1 (booking)
         return prob
 
@@ -138,9 +145,9 @@ class RouteRankingPredictor:
         """
         # Basic route features
         features = {
-            'route_duration_hours': route.get('total_duration_hours', 0),
+            'route_duration_hours': route.get('total_duration_minutes', 0) / 60.0,
             'route_cost_rupees': route.get('total_cost', 0),
-            'num_transfers': len(route.get('segments', [])) - 1 if route.get('segments') else 0,
+            'num_transfers': route.get('num_transfers', 0),
             'predicted_delay_minutes': route.get('predicted_delay_minutes', 0),
             'time_of_day': route.get('departure_hour', 12),  # default noon
             'day_of_week': route.get('departure_day_of_week', 0),  # default Monday

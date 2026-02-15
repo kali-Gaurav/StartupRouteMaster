@@ -660,7 +660,6 @@ class RouteEngine:
         )
 
         # Get Tatkal demand prediction
-        from datetime import datetime
         current_time = datetime.now()
         route_info_for_tatkal = {
             'departure_datetime': datetime.strptime(travel_date + " " + segments_data[0]['departure_time'], "%Y-%m-%d %H:%M"),
@@ -671,6 +670,11 @@ class RouteEngine:
             'competition_score': 1.0,   # placeholder
         }
         tatkal_info = tatkal_demand_predictor.get_tatkal_recommendation(route_info_for_tatkal, current_time)
+
+        # Extract additional fields for ML ranking
+        departure_hour = int(segments_data[0]['departure_time'].split(':')[0])
+        departure_day_of_week = date_obj.weekday()
+        popularity_score = 0.5  # placeholder - would come from historical data
 
         return {
             "id": f"route_{hashlib.md5(json.dumps(segments_data, sort_keys=True).encode()).hexdigest()[:12]}",
@@ -688,6 +692,9 @@ class RouteEngine:
             "layover_penalty": layover_penalty,
             "feasibility_score": feasibility,
             "tatkal_info": tatkal_info,
+            "departure_hour": departure_hour,
+            "departure_day_of_week": departure_day_of_week,
+            "popularity_score": popularity_score,
         }
 
     def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, num_transfers: int, layover_penalty: float = 0.0, delay_penalty: float = 0.0) -> float:
