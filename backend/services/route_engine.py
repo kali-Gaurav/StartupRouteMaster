@@ -15,6 +15,7 @@ from backend.models import Segment, Station
 from backend.services.cache_service import cache_service
 from backend.utils.time_utils import format_duration
 from backend.etl.sqlite_to_postgres import REDIS_PUB_SUB_CHANNEL # New: Import Pub/Sub channel name
+from backend.services.delay_predictor import delay_predictor  # New: Import delay predictor
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,9 @@ class RouteEngine:
         # lightweight and reset at the start of each search.
         self._last_metrics = {}
         self._metrics_enabled = os.getenv("ROUTEENGINE_ENABLE_METRICS", "1") == "1"
+        # Maximum number of Pareto labels to keep per stop to prevent explosion
+        # Can be tuned via Config.MAX_LABELS_PER_STOP
+        self._max_labels_per_stop = getattr(Config, 'MAX_LABELS_PER_STOP', 20)
 
         # Start the Pub/Sub listener in the background if Redis is configured
         # and explicitly enabled via environment variable. Tests and some
@@ -297,9 +301,11 @@ class RouteEngine:
                 RMA_RAPTOR_ROUNDS_TOTAL,
                 RMA_RAPTOR_LABELS_GENERATED_TOTAL,
                 RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL,
+                RMA_CACHE_HIT_TOTAL,
+                RMA_CACHE_MISS_TOTAL,
             )
         except Exception:
-            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = None
+            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = RMA_CACHE_HIT_TOTAL = RMA_CACHE_MISS_TOTAL = None
 
         if source_id == dest_id:
             return []
@@ -395,6 +401,19 @@ class RouteEngine:
 
                                 # Normalize labels list (sorted by time then cost) for deterministic comparisons
                                 new_labels = sorted(new_labels)
+
+                                # Enforce a hard cap per-stop after dominance pruning to avoid
+                                # exponential label growth in dense graphs. Keep the best K
+                                # labels by arrival time (then cost). This implements the
+                                # MAX_LABELS_PER_STOP safeguard from the project roadmap.
+                                if len(new_labels) > self._max_labels_per_stop:
+                                    # Select top-K by (arrival_time, cost)
+                                    kept = new_labels[: self._max_labels_per_stop]
+                                    kept_keys = set(f"{t}:{c}" for t, c in kept)
+                                    # Prune prev_segment entries for labels that were dropped
+                                    prev_segment_dst = prev_segment.get(dst, {})
+                                    prev_segment[dst] = {k: v for k, v in prev_segment_dst.items() if k in kept_keys}
+                                    new_labels = kept
 
                                 if new_labels != existing_labels:
                                     best_labels[dst] = new_labels
@@ -512,12 +531,21 @@ class RouteEngine:
         if not self._is_loaded:
             raise RuntimeError("RouteEngine graph is not loaded.")
 
-        cache_key = f"route:{source}:{destination}:{travel_date}:{budget_category}"
+        cache_key = f"route:{source}:{destination}:{travel_date}:{budget_category}:{getattr(Config, 'MAX_TRANSFERS', Config.MAX_TRANSFERS)}"
         if cache_service.is_available():
             cached = cache_service.get(cache_key)
             # treat empty list as a cache-miss so engine can recompute (helps tests & fresh data)
             if cached:
+                try:
+                    RMA_CACHE_HIT_TOTAL.inc()
+                except Exception:
+                    pass
                 return cached
+            else:
+                try:
+                    RMA_CACHE_MISS_TOTAL.inc()
+                except Exception:
+                    pass
 
         source_station_id = self.station_name_to_id.get(source.lower())
         dest_station_id = self.station_name_to_id.get(destination.lower())
@@ -531,7 +559,7 @@ class RouteEngine:
             return []
 
         raw_paths = self._raptor_mvp(source_station_id, dest_station_id, date_obj, max_rounds=Config.MAX_TRANSFERS)
-        routes = [self._construct_route_from_segment_list(source, destination, p, budget_category) for p in raw_paths]
+        routes = [self._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
         routes = [r for r in routes if r]
 
         budget_limits = {"economy": 1000, "standard": 2000, "premium": 5000}
@@ -542,15 +570,29 @@ class RouteEngine:
         routes.sort(key=lambda r: (r["total_duration_minutes"], r["total_cost"]))
 
         if cache_service.is_available():
-            cache_service.set(cache_key, routes)
+            ttl = getattr(Config, 'ROUTE_CACHE_TTL_SECONDS', getattr(Config, 'CACHE_TTL_SECONDS', 600))
+            cache_service.set(cache_key, routes, ttl_seconds=ttl)
 
         return routes
 
-    def _construct_route_from_segment_list(self, source: str, dest: str, segment_list: List[Dict], budget_category: Optional[str]) -> Optional[Dict]:
+    def _construct_route_from_segment_list(self, source: str, dest: str, segment_list: List[Dict], travel_date: str, budget_category: Optional[str]) -> Optional[Dict]:
         if not segment_list:
             return None
         total_cost = sum(s["cost"] for s in segment_list)
         total_duration_minutes = sum(s["duration"] for s in segment_list)
+        
+        # Predict total delay for the route
+        date_obj = datetime.strptime(travel_date, "%Y-%m-%d").date()
+        total_predicted_delay = 0.0
+        for seg in segment_list:
+            train_id = hash(seg.get('vehicle_id', 'unk')) % 10000
+            day_of_week = date_obj.weekday()
+            month = date_obj.month
+            dep_hour = int(seg['departure'].split(':')[0])
+            past_delay_avg = 0.0  # TODO: integrate historical delay data
+            weather_score = 0.5  # TODO: integrate weather API
+            delay = delay_predictor.predict_delay(train_id, day_of_week, month, dep_hour, past_delay_avg, weather_score)
+            total_predicted_delay += delay
         segments_data = []
         station_ids = []
         for s in segment_list:
@@ -608,7 +650,8 @@ class RouteEngine:
             total_cost=total_cost,
             safety_score=safety_score,
             num_transfers=len(segment_list) - 1,
-            layover_penalty=layover_penalty
+            layover_penalty=layover_penalty,
+            delay_penalty=total_predicted_delay
         )
 
         return {
@@ -619,6 +662,7 @@ class RouteEngine:
             "total_duration": format_duration(total_duration_minutes),
             "total_duration_minutes": total_duration_minutes,
             "total_cost": total_cost,
+            "predicted_delay_minutes": total_predicted_delay,
             "safetyScore": safety_score,
             "budget_category": budget_category or "standard",
             "num_transfers": len(segment_list) - 1,
@@ -627,7 +671,7 @@ class RouteEngine:
             "feasibility_score": feasibility,
         }
 
-    def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, num_transfers: int, layover_penalty: float = 0.0) -> float:
+    def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, num_transfers: int, layover_penalty: float = 0.0, delay_penalty: float = 0.0) -> float:
         """Compute a scalar feasibility score for ranking routes (higher is better).
         Uses configurable weights in Config but keeps units normalized so tests remain stable.
         """
@@ -635,10 +679,11 @@ class RouteEngine:
         wc = getattr(Config, 'FEASIBILITY_WEIGHT_COST', 0.01)
         wf = getattr(Config, 'FEASIBILITY_WEIGHT_COMFORT', 0.5)
         wtr = getattr(Config, 'FEASIBILITY_WEIGHT_TRANSFERS', 5.0)
+        wd = getattr(Config, 'FEASIBILITY_WEIGHT_DELAY', 0.1)
 
         time_hours = total_time_minutes / 60.0
         # Higher safety_score increases score; other terms decrease it
-        score = (wf * (safety_score / 100.0)) - (wt * time_hours) - (wc * total_cost) - (wtr * num_transfers) - layover_penalty
+        score = (wf * (safety_score / 100.0)) - (wt * time_hours) - (wc * total_cost) - (wtr * num_transfers) - layover_penalty - (wd * delay_penalty)
         return score
 
     def is_loaded(self) -> bool:

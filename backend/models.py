@@ -41,6 +41,7 @@ class User(Base):
     unlocked_routes = relationship("UnlockedRoute", back_populates="user")
     commission_tracks = relationship("CommissionTracking", back_populates="user")
     disruptions_created = relationship("Disruption", back_populates="creator")
+    route_search_logs = relationship("RouteSearchLog", back_populates="user")
 
 # ==============================================================================
 # NEW GTFS-INSPIRED TRANSIT MODELS
@@ -427,3 +428,31 @@ class StationMaster(Base):
     longitude = Column(Float, nullable=True)
     is_junction = Column(Boolean, default=False)
     # keep a minimal legacy model used by seed scripts and older APIs
+
+# ==============================================================================
+# ML AND INTELLIGENCE MODELS
+# ==============================================================================
+
+class RouteSearchLog(Base):
+    """Logs route searches for ML training and analytics."""
+    __tablename__ = "route_search_logs"
+    __table_args__ = (
+        Index("idx_route_search_logs_user_id", "user_id"),
+        Index("idx_route_search_logs_src_dst", "src", "dst"),
+        Index("idx_route_search_logs_date", "date"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)  # Nullable for anonymous searches
+    src = Column(String(255), nullable=False)
+    dst = Column(String(255), nullable=False)
+    date = Column(Date, nullable=False)
+    routes_shown = Column(JSON, nullable=False)  # List of route summaries shown to user
+    route_clicked = Column(String(36), nullable=True)  # ID of the route clicked (if any)
+    booking_success = Column(Boolean, nullable=True)  # Whether a booking was completed
+    latency_ms = Column(Float, nullable=False)  # Search latency in milliseconds
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="route_search_logs")  # Assuming we add this to User model
+
+# Add to User model if needed, but for now, just define the table

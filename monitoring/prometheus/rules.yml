@@ -20,3 +20,34 @@ groups:
         annotations:
           summary: "Backend error rate > 5%"
           description: "The percentage of non-2xx responses exceeds 5% over the last 5 minutes."
+
+      # --- RouteMaster-specific alert rules ---
+      - alert: RMA_Extraction_Success_Rate_Low
+        expr: |
+          (sum(rate(rma_extraction_success_total[10m])) / sum(rate(rma_extraction_attempts_total[10m]))) * 100 < 95
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RouteMaster extraction success rate below 95%"
+          description: "Extraction success rate (success/attempts) < 95% over the last 10 minutes. Investigate selector drift or network/proxy issues."
+
+      - alert: RMA_Proxy_Disabled_Fraction_High
+        expr: |
+          (sum((rma_proxy_health_score < 0.5)) / count(rma_proxy_health_score)) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 50% of proxies unhealthy/disabled"
+          description: "Proxy pool health score indicates >50% of proxies are below 0.5 health over the last 5 minutes. Check proxy provider and rotation."
+
+      - alert: RMA_RAPTOR_P95_SLOW
+        expr: |
+          histogram_quantile(0.95, sum(rate(rma_raptor_runtime_seconds_bucket[5m])) by (le)) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAPTOR p95 search time > 200ms"
+          description: "95th percentile RAPTOR runtime over the last 5 minutes exceeds 200ms. Consider scaling or profiling the route engine."

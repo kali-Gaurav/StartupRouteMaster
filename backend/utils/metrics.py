@@ -82,3 +82,13 @@ RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = Counter(
     'rma_raptor_transfer_expansions_total',
     'Number of transfer expansions during RAPTOR search.'
 )
+
+# --- Cache Metrics ---
+RMA_CACHE_HIT_TOTAL = Counter(
+    'rma_cache_hit_total',
+    'Total number of route cache hits.'
+)
+RMA_CACHE_MISS_TOTAL = Counter(
+    'rma_cache_miss_total',
+    'Total number of route cache misses.'
+)
