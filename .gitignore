@@ -22,3 +22,24 @@ dist-ssr
 *.sw?
 .env
 backend/railway_manager.db
+
+# Python / runtime artifacts
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+
+# Database files and large artifacts
+*.db
+*.sqlite3
+routemaster_agent.db
+backend.zip
+
+# Test/output directories
+test_output/
+
+# Distribution/build
+dist/
+build/
+*.egg-info/
