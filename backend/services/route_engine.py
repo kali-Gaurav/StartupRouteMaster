@@ -17,6 +17,7 @@ from backend.utils.time_utils import format_duration
 from backend.etl.sqlite_to_postgres import REDIS_PUB_SUB_CHANNEL # New: Import Pub/Sub channel name
 from backend.services.delay_predictor import delay_predictor  # New: Import delay predictor
 from backend.services.route_ranking_predictor import route_ranking_predictor  # New: Import route ranking predictor
+from backend.services.tatkal_demand_predictor import tatkal_demand_predictor  # New: Import tatkal demand predictor
 
 logger = logging.getLogger(__name__)
 
@@ -658,6 +659,19 @@ class RouteEngine:
             delay_penalty=total_predicted_delay
         )
 
+        # Get Tatkal demand prediction
+        from datetime import datetime
+        current_time = datetime.now()
+        route_info_for_tatkal = {
+            'departure_datetime': datetime.strptime(travel_date + " " + segments_data[0]['departure_time'], "%Y-%m-%d %H:%M"),
+            'booking_velocity_24h': 15,  # placeholder - would come from real data
+            'popularity_score': 0.6,     # placeholder
+            'current_occupancy': 0.4,    # placeholder
+            'tatkal_premium': 1.5,       # placeholder
+            'competition_score': 1.0,   # placeholder
+        }
+        tatkal_info = tatkal_demand_predictor.get_tatkal_recommendation(route_info_for_tatkal, current_time)
+
         return {
             "id": f"route_{hashlib.md5(json.dumps(segments_data, sort_keys=True).encode()).hexdigest()[:12]}",
             "source": source,
@@ -673,6 +687,7 @@ class RouteEngine:
             "is_unlocked": False,
             "layover_penalty": layover_penalty,
             "feasibility_score": feasibility,
+            "tatkal_info": tatkal_info,
         }
 
     def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, num_transfers: int, layover_penalty: float = 0.0, delay_penalty: float = 0.0) -> float:
