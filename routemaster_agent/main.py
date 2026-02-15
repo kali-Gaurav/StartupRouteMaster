@@ -208,6 +208,55 @@ async def detect_schedule_changes(payload: dict):
     return {"results": results}
 
 
+# Alerts API (for dashboard retrieval)
+@app.get('/api/admin/rma-alerts')
+async def list_rma_alerts(limit: int = 50, unresolved_only: bool = True):
+    """Return recent RMA alerts for dashboard consumption."""
+    from routemaster_agent.database.db import SessionLocal
+    from routemaster_agent.database.models import Alert
+    session = SessionLocal()
+    try:
+        q = session.query(Alert).order_by(Alert.created_at.desc())
+        if unresolved_only:
+            q = q.filter(Alert.resolved == False)
+        rows = q.limit(limit).all()
+        result = [
+            {
+                'id': r.id,
+                'source': r.source,
+                'train_number': r.train_number,
+                'level': r.level,
+                'message': r.message,
+                'metadata': r.meta,
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+                'resolved': r.resolved,
+                'resolved_at': r.resolved_at.isoformat() if r.resolved_at else None
+            }
+            for r in rows
+        ]
+        return {'alerts': result}
+    finally:
+        session.close()
+
+
+@app.post('/api/admin/rma-alerts/{alert_id}/resolve')
+async def resolve_rma_alert(alert_id: int):
+    from routemaster_agent.database.db import SessionLocal
+    from routemaster_agent.database.models import Alert
+    from datetime import datetime
+    session = SessionLocal()
+    try:
+        a = session.query(Alert).filter(Alert.id == alert_id).first()
+        if not a:
+            return {'error': 'not found'}
+        a.resolved = True
+        a.resolved_at = datetime.utcnow()
+        session.commit()
+        return {'ok': True, 'id': alert_id}
+    finally:
+        session.close()
+
+
 @app.post("/api/batch-enrich-schedule")
 async def batch_schedule(train_numbers: List[str], background_tasks: BackgroundTasks):
     """Backward-compatible simple batch endpoint (keeps previous behavior)."""
