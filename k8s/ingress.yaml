@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: railway-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: railway.local  # Change to your domain
+    http:
+      paths:
+      - path: /api/scraper
+        pathType: Prefix
+        backend:
+          service:
+            name: scraper
+            port:
+              number: 8001
+      - path: /api/routes
+        pathType: Prefix
+        backend:
+          service:
+            name: route-service
+            port:
+              number: 8002
+      - path: /api/rl
+        pathType: Prefix
+        backend:
+          service:
+            name: rl-service
+            port:
+              number: 8003
+      - path: /api/users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8004

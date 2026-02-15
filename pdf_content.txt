@@ -1,0 +1,567 @@
+A PROJECT
+REPORT
+ON
+“Optimization of Railway Reservation System
+using Reinforcement Learning”
+Submitted in partial fulfillment for the award of the degree of
+BACHELOR OF TECHNOLOGY
+In
+Computer Engineering
+GUIDED BY: SUBMITTED BY:
+Ms. Archika Jain NABH SHARMA
+(ASSISTANT PROFESSOR) NANDINI SINGHAL
+NIHARIKA GUPTA
+NISHTHA GORANA
+RAJASTHAN TECHNICAL UNIVERSITY,KOTA
+DEPARTMENT OF COMPUTER ENGINEERING
+POORNIMA COLLEGE OF ENGINEERING
+SITAPURA, JAIPUR
+ISI-,RIICO InstitutionalArea,Sitapura,Jaipur-302022
+May -2022
+A PROJECT
+REPORT
+ON
+“Optimization of Railway Reservation System
+using Reinforcement Learning”
+Submitted in partial fulfillment for the award of the degree of
+BACHELOR OF TECHNOLOGY
+In
+Computer Engineering
+GUIDED BY: SUBMITTED BY:
+MS. ARCHIKA JAIN NABH SHARMA
+(ASSISTANT PROFESSOR) NANDINI SINGHAL
+NIHARIKA GUPTA
+NISHTHA GORANA
+RAJASTHAN TECHNICAL UNIVERSITY,KOTA
+DEPARTMENT OF COMPUTER ENGINEERING
+POORNIMA COLLEGE OF ENGINEERING
+SITAPURA, JAIPUR
+ISI-,RIICO InstitutionalArea,Sitapura,Jaipur-302022
+May -2022
+
+
+
+
+ACKNOWLEDGEMENT
+I would like to convey my profound sense of reverence and admiration to my supervisor Ms.
+Archika Jain Project Guide Department of Computer Engineering, Poornima College of
+Engineering, for his intense concern, attention, priceless direction, guidance and encouragement
+throughout this research work.
+I am grateful to Dr. Mahesh Bundele, Director of Poornima College of Engineering for his
+helping attitude with a keen interest in completing this dissertation in time.
+I extend my heartiest gratitude to all the teachers, who extended their cooperation to steer the
+topic towards its successful completion. I am also thankful to non-teaching staff of the
+department to support in preparation of this dissertation work.
+My special heartfelt gratitude goes to Dr. Surendra Kumar Yadav, HOD, Department of
+Computer Engineering, Manish Dubey, Nikita Jain, Project guide, Department of
+Computer Engineering, Poornima College of Engineering, for unvarying support, guidance
+and motivation during the course of this research.
+I would like to express my deep sense of gratitude towards management of Poornima College of
+Engineering including Dr. S. M. Seth, Chairman Emeritus, Poornima Group and former
+Director NIH, Roorkee, Shri Shashikant Singhi, Chairman, Poornima Group, Mr. M. K. M.
+Shah, Director Admin & Finance, Poornima Group and Ar. Rahul Singhi, Director Poornima
+Group for establishment of institute and providing facilities my studies.
+I would like to take the opportunity of expressing my thanks to all faculty members of the
+Department, for their kind support, technical guidance, and inspiration throughout the course.
+I am deeply thankful to my parents and all other family members for their blessings and
+inspiration. At last but not least I would like to give special thanks to God who enabled me to
+complete my dissertation on time.
+Nabh Sharma
+Nandini Singhal
+Niharika Gupta
+Nishtha Gorana
+CHAPTER 1
+INTRODUCTION
+The Indian railway is a government organization. The network is one of the largest networks in
+the world and is considered the lifeline of the country with almost 70,000 km long tracks, 20,000
+passenger trains running on the network providing the essential services to the people on around
+7000 stations spread across the country. Along with passenger services, Indian railways also
+provide freight services across the country with almost 8700 freight trains on average. It has a huge
+chunk of term budget which is provided since it require constant repair and maintenance..
+In the fiscal year 2019-20, Indian Railways carried over 20 billion passengers and transported over
+3 billion tonnes of freight, and generated a staggering revenue of almost 6 trillion INR.
+Interestingly, the freight services account for around 2/3rd of the total revenue. It is also one the
+biggest single organization employers. In summary, Indian railways is a gigantic economic
+ecosystem. Along with all the cost, it is under substantial burden to be more efficient since the
+demand of decent transport across the country grows enormously with each passing year. The
+freight traffic is too stressed; so to overcome this, dedicated freight corridors are developed which
+will be exclusive to freight traffic. This will drastically reduce the total freight transport time since
+currently preference is given to passenger trains which delays the transportation and which in turn
+decreases the efficiency of Indian Railways freight system. So extending railway infrastructure to
+satisfy the increasing demand can seems to solve the problems. But we can find certain examples
+across the world with high investment with no return of investment resulted in low quality across
+the network. Alternatively, an equally fruitful approach is to enhance the existing infrastructure
+using various automation techniques within the field of artificial intelligence, machine learning
+and internet of things. So the rest of the text consist of matters that need to be coped with along
+with certain logical (algorithm based) approach which can be efficiently used in the Indian
+economics and services context..
+PROBLEM STATEMENT
+Getting quicker and earliest booking in Indian Railways system is typically a challenge for
+passengers. The challenge is to plan an optimization using the most recent technologies which
+improves probability of getting a ticket, improving booking time and customer experience
+remarkably. Expectation from solution are:
+(1) Once a passenger enters origin and destination, probable options and alternatives should be
+provided to him, within a predefined/limited time-frame . This might help passengers in getting
+confirmed seats.
+(2) Additional functionality could be added to help passengers getting confirmed seats, and
+improve booking time.
+(3) Data available within the general public domain/internet are often employed by students to
+approach problems
+2.1 POTENTIAL SOLUTIONS
+Layover Routes:- The conventional booking system only shows the direct trains if
+available between the source and destination. So to provide more alternative routes
+to the passengers ,we have suggested an alternative algorithm which shows all the
+other feasible routes options with one or more layovers (just like air travel) in
+between source and destination keeping various constraints such as total duration of
+journey, total cost of journey along with various other constraints which can affect
+a passenger’s travel experience.
+Early Tatkal Prediction:- Taking into account the time duration of tatkal quota
+booking being should out within seconds of opening. We can develop a predictive
+model using the previous year data of the same day which will provide us a
+probability of getting confirmed tickets in the tatkal slot.
+2.2 SCHEDULING
+Scheduling is one the most tricky problems in the railway field. Broadly , it can be categorized
+into 5 subproblems. The Indian railway system works theoretically as it is meant to consist of a
+long string of stations, which connect with each other at Major stations called the Junctions.
+Further, Each station contains 1 or more parallel lines, which are assigned to a particular traffic
+direction or might be bidirectional. The track between each pair of neighboring stations are
+typically called ‘sections’, which allow it to be differentiated from the tracks which are at stations
+The section tracks might be bidirectional or fixed direction for the traffic. A typical section in
+Indian railway consists of 1 or 2 tracks, a little busy line contains more than 2 tracks which can
+further increase as we approach a big junction station.
+Currently, these tracks are shared by freight and passenger trains, sometimes reserved for specific
+movement.
+Datasets Used:
+❖ Datasets:
+• All Train Schedule
+• Intermediate Stations
+• Arrival Departure of Trains
+• Route Rank
+❖ API’s:
+• Train between Station i.e. Source and Destination
+• Station name to Station code
+• Train Live Status
+CHAPTER 2
+LITERATURE REVIEW
+To understand the project topic, various methods can be adopted. We used various research papers
+for the references. At the time of the review process of those papers, we used various parameters
+to find the best solution approach. A summary of these review papers is presented below:
+Summary Review Papers
+Paper 1:
+[Dr. Ram Sethu et al. 2018] has presented a paper on “A STUDY IN INDIAN RAILWAYS
+PASSENGERS RESERVATION SYSTEM”. In this paper, the authors have explored different
+issues of implementing smart computing in railway systems pertaining to reservation models. He
+discussed the shortcomings of existing Reservation System Model along with architecture for new
+model implementation with UID which is UNIQUE IDENTIFICATION which would be obtained
+through Aadhar Card and thus removes the hassle of passengers having to enter details and
+payment procedure again for each booking. Thus this Proposed Model would reduce the overall
+turnaround time for a passenger to book a ticket which reduces the overall overhead for the servers.
+The only drawback in this study is it assumes that all the passenger who are booking tickets posses
+the facility of mobile phone at ease along which the requirement of one time registration for UID
+even if required ticket is booked through Station Window
+Paper 2:
+[Dr. Reddy et al. 2018] has presented a paper on “Enhancement of Railway Reservation System
+Using Internet of Things”.In the present PRS system there are many passenger dilemmas to book
+the ticket and railway reservation system to issue the ticket. Passengers must wait on the IRCTC
+website for more than 5 minutes to book a ticket. Hence present PRS is updated to smart railway
+reservation under the vision of India 2022. The passenger vending machine reads the passenger
+details that can be interacted with the railway reservation system to the UIDAI database. The result
+proved that passengers obtained the ticket within a fraction of a second, the reservation chart
+contains the passengers name with photo, and effective passenger reservations will be maintained.
+Paper 3:
+[Ankit Malhotra et al. 2014] has presented a paper on “Optimized Proposed Algorithm for Graph
+Traversal'' .This paper spotlights an algorithm to traverse a directed or an undirected graph. The
+aim here is to hunt out a alternative method which might be invariably applied to all or any kinds
+of graphs the algorithm work with traversing the vertex with most outgoing edges first along with
+all the neighboring vertices.
+If the graph is infinite and there is no solution the algorithm will diverge but within the worst case,
+the time complexity is analogous to Breadth First Search (BFS) i.e. the proposed algorithm
+possesses to think about all paths to all or any or any possible nodes .So the time complexity will
+nlogn in worst case.
+Paper 4:
+[Akshat Shrivastava et al. 2018] has presented a paper on “RAILBOT: A Railway (IRCTC)
+Chatbot”. This paper explains the procedure to develop a Chatbot which will be providing basic
+information related services like PNR, seat availability, etc which in turn saves the overall time of
+the user to access the above information. They go to repair the bugs and include the railway
+complaints and booking information. The key to effective chatbot use is to make sure they enhance
+your customer’s experience. This chatbot will benefit the passengers by saving time, memory
+space and internet usage.
+Paper 5:
+[Harshvardhan Mishra and Renuka Sharma et al. 2019] has presented a paper on “Railway
+Reservation and Route optimization System". Nowadays Railway is the simplest because it allows
+for long journeys as compared to others. this way of transportation is cost effective and appropriate
+for travelling. For travelling by railways there is a requirement of advanced reservation. there is a
+requirement to implement a system application for reservation tickets. Nowadays everyone desires
+to achieve the destination as fast as possible. Thus, one additional feature has been added to the
+prevailing reservation system and one can easily get to know which train is that the simplest option
+to achieve . Some sorting algorithms are employed with some circumstances. Time for all the trains
+has been sorted. Then by selecting this point we'll know which trains are available. The results of
+those methods is that, it'd show the train among all the trains at the very best of the list which is
+taking less time to achieve the destination. during this paper ‘Rapid Application Development
+process model’ has been used. By presumptuous passenger’s necessities an application has been
+established, thus all the necessities of passengers are often fulfilled.
+Paper 6:
+[Xingkui Li ET al.2019] has presented a paper on “Optimizing the Paths of Trains Formed at the
+loading area during a Multi-loop Rail Network”. Each loop during a multi-loop rail network
+consists of two segments, both of which have roughly the same conditions and mileage and are
+approximately symmetrical. This paper is devoted to optimizing the paths of trains formed at the
+loading area during a multi-loop rail network. to realize this goal, three different situations are
+analyzed, and two models are proposed for networks with adequate and inadequate capabilities.
+Two integer applied math models for optimizing the paths of trains formed at the loading area
+during a multi-loop rail network are proposed. The model during this paper doesn't need to
+determine the trail set beforehand but only must select the arc for each loop and eventually form a
+path by connecting each arc. a gaggle of numerical experiments with various rail loops and train
+flows are conducted to gauge the performance of the proposed methods. We use the Lingo solver
+to unravel the proposed models. For large-scale train flows and rail loops, a genetic
+algorithm is supposed . This algorithm performs well in optimizing the paths of large-scale train
+flows formed at the loading area during a multi-loop rail network.
+Paper 7:
+[Hannah Bast et al. 2015] has presented paper on “Route Planning in Transportation
+Networks” This survey is an introduction to the state of the art within the world of practical
+algorithms for routing in transportation networks. This survey features a broader scope, also
+including schedule-based public transportation networks also as multimodal scenarios (combining
+schedule-based and unrestricted modes). Considers shortest path algorithms for static networks;
+although it focuses on methods that employment well on road networks, they're going to be applied
+to arbitrary graphs. Then considers the relative performance of these algorithms on real road
+networks, also as how they're going to affect other transportation applications. Consider algorithms
+for journey planning on schedule-based public transportation systems (consisting of buses, trains,
+and trams, for example), which is kind of different from routing in road networks. (Like time-
+dependent components are included publicly transport).Then consider a true multimodal scenario,
+which mixes schedule-based means of transportation with less restricted ones, like walking and
+cycling. This problem is significantly harder than its individual components, but reasonable
+solutions can still be found.
+Paper 8:
+[Ian Osband et al. 2018] has presented a paper on “Behavior Suite for Reinforcement Learning
+”. This paper introduces the Behavior Suite for Reinforcement Learning, or bsuite for brief . Bsuite
+could also be a set of carefully-designed experiments that investigate core capabilities of
+reinforcement learning (RL) agents with two objectives. First, to collect clear, informative and
+scalable problems that capture key issues within the planning of general and efficient learning
+algorithms. Second, to review agent behavior through their performance on these shared
+benchmarks.
+An efficient RL agent must address three challenges simultaneously:
+Generalization: be able to learn efficiently from data it collects.
+Exploration: prioritize the right experience to seek out from.
+Long-term consequences: consider effects beyond just one occasion step.
+Paper 9:
+[ Mounaim Latif et al. 2016] has presented a paper on “Cross platform approach for mobile
+application development: A survey” during this paper a survey of cross-platform creation
+approaches with a stress on the MDA (Model Driven Architecture) approach because it's one of
+the foremost promising cross platform approaches. The codes to be written once and deployed on
+several platforms. Through this, time and price are reduced since the code is written to specialise
+in multiple devices. Developers got to maintain the model of the appliance so on lookout of the
+native code for each platform.
+Paper 10:
+[Omoniyi Ajoke et al. 2020] has presented a paper on “Design of a Modified Dijkstra’s Algorithm
+for locating alternate routes for shortest-path problems with huge costs”. The classical Dijkstra’s
+algorithm has been widely utilized in shortest path problems. it's indeed one of the foremost
+referenced shortest path algorithms. However, it's observed that in certain circumstances finding
+shortest paths between given nodes could even be achieved at a huge cost especially where time
+and efforts are of great consideration. The methodology entailed creation of a document containing
+the nodes, edges and probabilities of moving between edges. the chances were generated
+employing a random number generation scheme. The contents of the document were read character
+by character and thus the proposed Dijkstra’s algorithm. The algorithm was tested employing a
+40- node graph; and thus the possible routes were generated. The findings revealed the shortest
+route and implies therefore that the proposed modified.
+CHAPTER 3
+Implementation
+The Project is divided into 3 Main Modules:-
+1.) Implementation of Reservation System Website
+2.) Implementation of Train Search Algorithm
+3.) Implementation of Reinforcement Learning Algorithm
+Part 1: Implementation of Reservation System Website
+The website is based on Django Framework using Python language. A User Interface (UI) is
+developed to facilitate the interaction between the user and the website application. It also
+improves the efficiency, responsiveness and accessibility of website. We developed the UI taking
+the inputs i.e. Source, destination, date, train type and shift, after taking these inputs it will show
+the possible alternate routes to the user. We have used Django based on Python for the backend
+and Basic HTML, CSS, Bootstrap for the Front-end.
+The UI is sleek and basic as to keep the turnaround time in between the search as minimum as
+possible since including animations or effects can affect the website performance which was the
+key aspect of the project.
+Part 2: Implementation of Train Search Algorithm
+The Main hurdle was to collect the respective data since Indian railway doesn’t provide an official
+API for data collection for private usage. So we had to collect through various public gateways.
+After further research we stumbled upon https://indianrailapi.com/ which was a free to use
+platform providing data API but since it was free to use; the API provided had a really bad output
+efficiency. So we finally decided to store dummy data locally and proceed with our algorithm
+which will work on the dummy dataset. We had developed Python Script which worked as a Web
+Crawler using a beautiful Soup Library which helped in creation of respective data sets. Due to
+Covid-19 circumstances, only special Trains were working at the time of collection of data. So we
+have collected data of nearly 13000 railway stations and close to 250 trains which are running in
+real time. Since no official API was provided, some of the data had to be manually collected.
+We developed an algorithm which would take source and destination from the user and provide
+with various possible direct as well as layover routes. The Main idea behind the algorithm is to use
+the Real life characteristic that all the trains run in pairs. It starts with finding all the possible
+stations which can be reached from the source station all over the India, considering it set A. Again,
+repeat the same step with finding all the possible stations which can be reached from the destination
+station all over the India, considering it set B. Now after we find the intersection of SET A & SET
+B, the resultant set provides us all the possible stations which can be considered a Layover Point
+irrespective of its feasibility.
+Since we would be providing alternate routes to the user, the provided route is expected to be as
+feasible as possible. This includes feasibility factors such as Time, Overall cost of travel and
+Passenger Comfort. Time is one of the highest priority when a user is expecting alternate routes,
+so we have used different time factors based on the total direct journey duration between source
+and destination. Overall Cost of Travel is applied strictly as it can affect the choice of user to
+select a particular path. Passenger Comfort is also taken into account which takes woman safety
+in account which in turn removes all the routes which have mid – night layover suggestions and
+also try to accommodate the layover at the station with all the available facilities.
+Part 1: Implementation of Reservation System Website
+Reinforcement learning works on a set of learning problems where an agent takes actions in an
+environment in order to maximize some defined reward function. Since no previous data of
+booking and passenger reservation is provided by Indian Railway, so we had to use reinforcement
+learning algorithm here which work on the basic principle of reward function maximization.
+So we have defined the basic reward function of (CURRENT RANK+1)/TOTAL ROUTES which
+changes when a user confirm the booking of one particular route from all the available routes. This
+influences the system to show the most ranked route as more favorable and display it topmost.
+This allows the user to select the most favorable routes which also includes routes with least
+layovers, with day time layover when travelling with kids or ladies and also cost optimized route
+which is the most cost friendly to the user.
+Chapter 4
+Introduction to Python
+Python is an object-oriented language, interpreted, dynamic and multipurpose programming
+language.
+It was created by Guido Van Rossum in 1989. Like perl, python source code is also available
+under GNU general Public License (GPL).
+Python is derived from many languages, including ABC, Modula-3, C, C++, Algol-68, small
+talk, UNIX shell and other scripted languages.
+Many large companies use the python programming languages include NASA, Google,
+YouTube
+Python Features
+There are lots of features provided by python programming languages
+• Python is easy to use and a high-level language. Thus, it is a programmer-friendly
+language.
+• It is more expressive. The sense of expressiveness of the code is easily understandable.
+• Python can equally on different platforms such as Windows, Linux, Unix, Macintosh etc.
+• It is freely available (www.python.org). The source-code is also available. Therefore, it is
+open source.
+• Python has a large and broad library.
+• Graphical user interfaces can be developed using python.
+• It can be easily integrated with languages like C, C++, JAVA etc.
+3.1 Python Applications
+Python have an extended wide range of applications
+⮚ Web Development :- It is extensive used in web development paradigm as it is easy to
+use and provide with micro-frameworks which allows fast pace development of any
+project
+⮚ Machine Learning and Artificial Intelligence:- It is also used in ML and AI since it
+provides an extended file support and have an large sized community working on to
+improve it
+⮚ Desktop GUI :- It is also used in desktop GUI development
+⮚ Game Development: - It also has libraries such as PySoy which are used for game
+development. Example: Civilization-IV, Vega Strike, etc.
+3.2 Tokens:
+Tokens are the smallest unit of a python program which in turn divides each line into the
+smallest lexical component. Each of these tokens is a subpart of a line of code.
+There are following tokens in Python:
+• Keywords
+• Identifiers
+• Literals
+• Operators
+3.2.1 Keywords or Reverse Words
+Keywords are special pre-defined words which have specified meaning to the compiler.
+List of Keywords used in Python are:
+True Try Or Return Pass
+Asset For If From Import
+Else Finally Elif Del Except
+Global Def Class Continue Break
+Nonlocal In Not Is Lambda
+Raise False None And As
+3.2.3. Operators
+• Arithmetic Operators
+• Relational Operators
+• Assignment Operators
+• Logical Operators
+• Membership Operators
+• Identity Operators
+• Bitwise Operators
+Arithmetic Operators:
+// Integer Divide
++ Addition
+- Subtraction
+* Multiplication
+/ Division
+% return remainder
+** Exponent
+Relational Operators:
+< Less than
+> Greater than
+<= Less than or equal to
+>= Greater than equal to
+== Equal to
+!= Not equal to
+<> Not equal to (similar to !=)
+Logical Operators:
+And Logical AND
+Or Logical OR
+Not Logical NOT
+Identity Operators:
+is Returns true if identity of two operands are same, else false
+is not Returns true if identity of two operands are not same, else false
+Table 2.7. identity operators
+3.3 Comments
+• comment (single line):
+Put # in the starting of the line of code
+#example for this type of comment
+• comment (Multiple Line):
+It can be written inside triple quates.
+””” Here
+Is
+Multiple line comment”””
+Assigning values to Variable
+Assigning single value to multiple variables
+x=y=z=50
+print x
+print y
+print z
+O/p
+50
+50
+50
+Assigning multiple values to multiple variables
+a, b, c=5, 10, 15
+print a
+print b
+print c
+O/p
+5
+10
+15
+3.4 Selective Statements
+The if statement is a condition checker point in a program which is executed if the condition
+mentioned is True or in case of False the else portion is executed if any
+Simple if
+if (conditions):
+statements
+if with else
+if (conditions):
+statements
+else:
+statements
+Ladder if
+if statement:
+body
+elif statements:
+body
+else:
+body
+Iteration
+• While
+• For
+While Loop
+It is also a conditional checker statement with a body of its own which in turn is executed
+consecutively until the condition specified is satisfied.
+while <expression>:
+body
+Example
+a=10
+while a>0:
+print” Value of a is”, a
+a=a-2
+CHAPTER 5
+Machine Learning
+5.1 Supervised learning:
+Supervised learning is the place where you've input factors (x) and a yield variable (Y) and you
+utilize a calculation to fit within the design capacity from the contribution to the yield.
+Y = f(X)
+The objective is to surmise the planning capacity so well that when you've got new info
+information (x) that you simply simply can foresee the yield factors (Y) for that information. It's
+called regulated learning on the grounds that the cycle of a calculation gained from the
+preparation dataset is often thought of as an educator administering the training cycle. We all
+know the right answers, the calculation iteratively makes forecasts on the preparation
+information and is adjusted by the trainer . Learning stops when the calculation accomplishes a
+worthy degree of execution.
+5.1.1 linear regression
+Linear Regression is an appealing model on the grounds that the portrayal is so straightforward.
+The portrayal could also be a straight condition that joins a selected arrangement of knowledge
+esteems (x) the answer that's that the anticipated yield for that set of data esteems (y). Therein
+capacity, both the info esteems (x) and thus the yield esteem are numeric. The direct condition
+doles out one multiplier to each information worth or segment, called a coefficient and spoken to
+by the capital Greek letter Beta (B). One extra coefficient is likewise added, giving the road a
+further level of opportunity (for example going here and there on a two-dimensional plot) and is
+typically called the block or the predisposition coefficient.
+5.1.2 KNN
+KNN are often used for both classification and regression predictive problems. However, it's
+more widely utilized in classification problems within the industry. to gauge any technique, we
+generally inspect 3 important aspects:
+1. Ease to interpret output
+2. Calculation time
+3. Predictive Power
+5.1.3 Logistic Regression
+Logistic Regression could also be a directed learning arrangement calculation used to anticipate
+the likelihood of an objective variable. the thought of target or ward variable is dichotomous,
+which suggests there would be just two potential classes. In basic words, the reliant variable is
+double in nature having information coded together or the other 1 (represents achievement/yes)
+or 0 (represents disappointment/no).
+Numerically, a strategic relapse model predicts P(Y=1) as a component of X. It's one of the
+littlest amount of complex ML calculations which can be utilized for various grouping issues, as
+an example , spam recognition, Diabetes expectation, malignant growth location then forth.
+5.1.4 NAIVE BAYES
+It is a characterization strategy enthusiastic to Bayes' theorem with a supposition of autonomy
+among indicators. In straightforward terms, a Naive Bayes classifier expects that the presence of
+a specific element during a category is random to the presence of another element.
+For instance, a natural product might be viewed as an apple within the event that it's red, round,
+and around 3 crawls in measurement. regardless of whether these highlights depend upon one
+another or upon the presence of varied highlights, these properties autonomously increase the
+likelihood that this organic product is an apple which is that the rationale it's mentioned as
+'Gullible'
+5.2 Unsupervised Machine Learning
+Unsupervised learning is the place where you simply have input information (X) and no
+comparing yield factors. The target for unsupervised learning is to mean the essential structure or
+appropriation within the knowledge to become familiar with the knowledge . These are called
+unsupervised learning in light of the actual fact that not within the least like managed learning
+above there are no right answers and there is no instructor. Calculations are left to their own
+devices to hunt out and present the fascinating structure with regards to the knowledge .
+5.3 NLP (Natural Language Processing)
+Natural Language Processing, or NLP for brief , is comprehensively characterized because the
+programmed control of characteristic language, almost like discourse and text, by programming.
+The investigation of tongue preparing has been around for over 50 years and outgrew the world
+of etymology with the ascent of PCs.
+CHAPTER 6
+DATA SCIENCE
+Data science is a paradigm that is combination of fundamental mathematical knowledge based
+on statistics along with programming skills which allows us to extract a deep understanding
+objectives from data. Data science usually works by application of various machine learning
+algorithms to various data sources i.e. texts, numbers, images, video, audio, etc. to train an
+artificial intelligence model which performs tasks which generally require human intelligence.
+6.2 Pandas
+Pandas is a python package which provides flexible ,swift data structures which are designed
+specifically for working with ‘labeled’ data. It is developed with an aim to act as a high level
+building block for doing various world data analysis in Python. Currently, the community is been
+working towards a broader goal of making pandas a versatile open source and a very powerful
+open source tool which would be available in various languages. and it is on its way towards the
+desired goal.
+Some of the major features of Pandas are:
+1. inserting or removing column in data structure
+2. reshaping data sets
+3. dealing with missing data
+4. performing various split combine operations for data reshaping
+5. large dataset label slicing operations
+6. reading data from various file storage formats such as XML, CSV, etc.
+Some of the major application of pandas:-
+1. Economics
+2. Recommendation System
+3. Stock prediction
+4. Advertising
+5. Statistics
+6. Big Data
+7. Analytics
+8. Data Science
+9. Natural Language Processing
+6.3 Matplotlib
+Matplotlib may be a tremendous visualization library in Python for 2D plots of arrays. Matplotlib
+could also be a multi-platform data visualization library built on NumPy arrays and designed to
+work with the broader SciPy stack. it had been introduced by John Hunter within the year 2002.
+One of the simplest benefits of visualization is that it allows us visual access to large amounts of
+data in easily digestible visuals. Matplotlib consists of several plots like line, bar, scatter,
+histogram etc.
+CHAPTER 7
+Conclusion and Future Scope
+Conquering the difficulties faced by the Indian Railways system with respect to booking, we have
+effectively executed the initial step of our proposed solution. This progression would give
+simplicity to the passengers in getting a confirmed booking when they enter the origin and
+destination, by giving probable options and alternatives routes to reach their desired destination.
+Future Scope
+● Improvements in the conventional train between station algorithms used by using
+specifically generated constraints by the choice of the user.
+● Prediction of new train routes using the data obtained by the booking algorithms
+● Improve the overall user experience at the time of booking and significantly reduce the
+booking time taken.

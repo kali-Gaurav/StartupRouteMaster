@@ -1,0 +1,123 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis/redis-stack:7.2.0-v9
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        pip install -r backend/scraper/requirements.txt
+        pip install -r backend/etl/requirements.txt
+        pip install -r backend/route_service/requirements.txt
+        pip install -r backend/user_service/requirements.txt
+
+    - name: Run tests
+      run: |
+        # Add test commands here
+        echo "Running tests..."
+        # python -m pytest backend/tests/ -v
+
+    - name: Build Docker images
+      run: |
+        docker build -t startupv2-scraper ./backend/scraper
+        docker build -t startupv2-etl ./backend/etl
+        docker build -t startupv2-route_service ./backend/route_service
+        docker build -t startupv2-user_service ./backend/user_service
+        # RL service build takes too long for CI, build on deploy
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and push Docker images
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: railway-intelligence
+      run: |
+        # Build and push images
+        services=("scraper" "etl" "route_service" "user_service")
+
+        for service in "${services[@]}"; do
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA ./backend/$service
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA
+        done
+
+    - name: Deploy to Kubernetes
+      run: |
+        # Update Kubernetes manifests with new image tags
+        sed -i "s|startupv2-scraper:latest|$ECR_REGISTRY/$ECR_REPOSITORY:scraper-$GITHUB_SHA|g" k8s/scraper.yaml
+        sed -i "s|startupv2-etl:latest|$ECR_REGISTRY/$ECR_REPOSITORY:etl-$GITHUB_SHA|g" k8s/etl.yaml
+        sed -i "s|startupv2-route_service:latest|$ECR_REGISTRY/$ECR_REPOSITORY:route_service-$GITHUB_SHA|g" k8s/route-service.yaml
+        sed -i "s|startupv2-user_service:latest|$ECR_REGISTRY/$ECR_REPOSITORY:user_service-$GITHUB_SHA|g" k8s/user-service.yaml
+
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/
+
+    - name: Run health checks
+      run: |
+        # Wait for deployments to be ready
+        kubectl wait --for=condition=available --timeout=300s deployment/scraper
+        kubectl wait --for=condition=available --timeout=300s deployment/route-service
+        kubectl wait --for=condition=available --timeout=300s deployment/user-service
+
+        # Run health checks
+        kubectl exec deployment/scraper -- curl -f http://localhost:8001/health
+        kubectl exec deployment/route-service -- curl -f http://localhost:8002/health
+        kubectl exec deployment/user-service -- curl -f http://localhost:8004/health
