@@ -69,9 +69,9 @@ class Alert(Base):
     train_number = Column(String, nullable=True, index=True)
     level = Column(String, default="critical")
     message = Column(String)
-    # `metadata` is a reserved attribute name on Declarative classes; map the DB
-    # column named `metadata` to the attribute `meta` to avoid the collision.
-    meta = Column('metadata', JSON, nullable=True)
+    # avoid using attribute name 'metadata' (reserved by SQLAlchemy Declarative API)
+    # store alert metadata in column 'meta' to keep attribute name safe
+    meta = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved = Column(Boolean, default=False)
     resolved_at = Column(DateTime, nullable=True)
