@@ -289,6 +289,24 @@ services:
     networks:
       - default
 
+  alembic_runner:
+    image: python:3.11-slim
+    container_name: startupv2_alembic_runner
+    volumes:
+      - .:/usr/src/app # Mount the entire project root
+    working_dir: /usr/src/app # Set working directory to project root
+    depends_on:
+      db:
+        condition: service_healthy # Ensure DB is ready
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - PYTHONPATH=/usr/src/app # Add project root to PYTHONPATH
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        pip install --no-cache-dir alembic "sqlalchemy<2.0" "GeoAlchemy2==0.13.3" "psycopg2-binary" "python-dotenv" "fastapi" "pydantic"
+        alembic -c backend/alembic.ini upgrade head
+
 volumes:
   pgdata: {}
   grafana_data: {}

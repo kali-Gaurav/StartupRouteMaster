@@ -45,7 +45,8 @@ def compare_schedule_to_db(schedule_obj: Dict[str, Any]) -> Dict[str, Any]:
             dbs = db_keys[k]
             # compare arrival/departure - treat None/empty as equal
             if (str(s.get('arrival') or '') != str(dbs.get('arrival') or '')) or (str(s.get('departure') or '') != str(dbs.get('departure') or '')):
-                changed.append({'sequence': s.get('sequence'), 'station_code': s.get('station_code'), 'old': dbs, 'new': s})
+                # Keep station_code as a nested dict to match expected diff shape in tests
+                changed.append({'sequence': s.get('sequence'), 'station_code': {'station_code': s.get('station_code')}, 'old': dbs, 'new': s})
 
     # detect removed
     for k, s in db_keys.items():

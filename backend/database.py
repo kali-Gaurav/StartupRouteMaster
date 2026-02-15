@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.pool import QueuePool
 import logging
@@ -108,7 +108,18 @@ def get_db(request: Request = None):
 async def init_db():
     """Initialize database schema."""
     try:
-        # For init_db, we always use the write engine to create tables.
+        # For init_db, ensure required Postgres extensions exist (pg_trgm for trigram indexes)
+        # then create tables on the write engine.
+        if engine_write.dialect.name == "postgresql":
+            try:
+                with engine_write.connect() as conn:
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
+                    logger.info("Ensured pg_trgm extension exists on primary database.")
+            except Exception as e:
+                # Log and continue; creating the extension may require elevated DB privileges
+                logger.warning(f"Could not create pg_trgm extension: {e}")
+
+        # Create all tables and indexes
         Base.metadata.create_all(bind=engine_write)
         logger.info("Database tables created successfully on primary engine.")
     except Exception as e:

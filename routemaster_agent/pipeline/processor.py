@@ -6,6 +6,12 @@ from routemaster_agent.database.db import SessionLocal, engine
 from routemaster_agent.database.models import TrainMaster, TrainStation, LiveStatus
 from .data_cleaner import clean_schedule, clean_live_status
 
+# metrics
+from routemaster_agent.metrics import (
+    RMA_STATIONS_EXTRACTED_TOTAL,
+    RMA_DB_MISMATCH_TOTAL,
+)
+
 class DataPipeline:
     def __init__(self):
         self.output_dir = "output"
@@ -50,6 +56,16 @@ class DataPipeline:
         if rows:
             df = pd.DataFrame(rows)
             df.to_csv(f"{self.output_dir}/schedules_{timestamp}.csv", index=False)
+            # metrics: stations extracted (aggregate per-batch)
+            try:
+                if schedules:
+                    for s in schedules:
+                        train_no = s.get('train_no') or s.get('train_number')
+                        cnt = len((s.get('schedule') or []))
+                        if cnt:
+                            RMA_STATIONS_EXTRACTED_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc(cnt)
+            except Exception:
+                pass
 
     def save_batch_live(self, lives: list):
         timestamp = datetime.now().strftime("%Y%m%d")
@@ -147,6 +163,10 @@ class DataPipeline:
             return True
         except Exception as e:
             session.rollback()
+            try:
+                RMA_DB_MISMATCH_TOTAL.labels(train_number=train_no).inc()
+            except Exception:
+                pass
             print("update_database failed:", e)
             return False
         finally:

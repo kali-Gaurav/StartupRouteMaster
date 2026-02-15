@@ -34,6 +34,17 @@ class ProxyMonitor:
                     total = len(results)
                     failed = sum(1 for r in results if not r.get('ok'))
                     fail_rate = failed / total if total else 0.0
+                    # update ProxyManager status per-proxy so manager can auto-disable when threshold exceeded
+                    for r in results:
+                        try:
+                            proxy_url = r.get('proxy')
+                            ok = bool(r.get('ok'))
+                            latency = r.get('latency')
+                            status_code = r.get('status_code')
+                            error = r.get('error')
+                            pm.set_status(proxy_url, ok=ok, latency=latency, status_code=status_code, error=error)
+                        except Exception:
+                            continue
                     if total and fail_rate >= self.fail_threshold:
                         # persist an alert to DB for operators
                         try:

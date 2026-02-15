@@ -43,8 +43,17 @@ class RouteEngine:
         self._pubsub_client = None # New: Redis Pub/Sub client
         self._pubsub_task = None # New: To hold the background task
 
+        # Instrumentation counters used by the benchmark harness. These are
+        # lightweight and reset at the start of each search.
+        self._last_metrics = {}
+        self._metrics_enabled = os.getenv("ROUTEENGINE_ENABLE_METRICS", "1") == "1"
+
         # Start the Pub/Sub listener in the background if Redis is configured
-        if Config.REDIS_URL and not self._pubsub_task: # Only start if not already running
+        # and explicitly enabled via environment variable. Tests and some
+        # execution contexts may not have Redis available, so default to
+        # disabled unless ROUTEENGINE_ENABLE_PUBSUB=1 is set.
+        pubsub_enabled = os.getenv("ROUTEENGINE_ENABLE_PUBSUB", "0") == "1"
+        if Config.REDIS_URL and pubsub_enabled and not self._pubsub_task:
             self._start_pubsub_listener()
 
     def _get_redis_client(self):
@@ -259,15 +268,39 @@ class RouteEngine:
             pos_map = {}
             dep_map = {}
             for idx, seg in enumerate(segs):
-                dep_min = self._time_to_minutes(seg["departure"])
+                # Account for day offsets on departures. Some segments encode
+                # departures after midnight via 'departure_day_offset' or
+                # by reusing 'arrival_day_offset'. Normalize departure minutes
+                # to an absolute minute count so binary-search boarding works
+                # correctly for overnight services.
+                dep_offset = seg.get("departure_day_offset", seg.get("arrival_day_offset", 0))
+                dep_min = self._time_to_minutes(seg["departure"]) + dep_offset * 24 * 60
                 src = seg["source_station_id"]
                 pos_map.setdefault(src, []).append(idx)
                 dep_map.setdefault(src, []).append(dep_min)
             self.route_stop_index[route_id] = pos_map
             self.route_stop_departures[route_id] = dep_map
 
+        # Ensure departures arrays are sorted (important if segments were not in
+        # strictly increasing departure order due to day offsets); this keeps
+        # binary searches deterministic.
+        for route_id, dep_map in self.route_stop_departures.items():
+            for st, deps in dep_map.items():
+                deps.sort()
+
     def _raptor_mvp(self, source_id: str, dest_id: str, travel_date, max_rounds: int = 1):
         """RAPTOR rounds implementation with Pareto-optimality for time and cost."""
+        # instrumentation
+        try:
+            from backend.utils.metrics import (
+                RMA_RAPTOR_RUNTIME_SECONDS,
+                RMA_RAPTOR_ROUNDS_TOTAL,
+                RMA_RAPTOR_LABELS_GENERATED_TOTAL,
+                RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL,
+            )
+        except Exception:
+            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = None
+
         if source_id == dest_id:
             return []
 
@@ -276,6 +309,18 @@ class RouteEngine:
             self._build_route_indices()
 
         INF = float('inf')
+        # Reset per-search metrics
+        if self._metrics_enabled:
+            self._last_metrics = {
+                "labels_generated": 0,
+                "max_labels_per_stop": 0,
+                "transfer_expansions": 0,
+                "binary_search_calls": 0,
+                "rounds_processed": 0,
+            }
+        # start timer
+        import time
+        start_ts = time.time()
         best_labels = {s: [] for s in self.stations_map.keys()}
         prev_segment = {s: {} for s in self.stations_map.keys()}
 
@@ -314,7 +359,10 @@ class RouteEngine:
                         
                         min_allowed_dep = arr_time + min_transfer if round_idx > 0 else arr_time
                         max_allowed_dep = arr_time + max_transfer if round_idx > 0 else INF
-                        
+                        # Count binary search usage (benchmarking)
+                        if self._metrics_enabled:
+                            self._last_metrics["binary_search_calls"] += 1
+
                         k = bisect.bisect_left(departures_at_station, min_allowed_dep)
 
                         for idx_in_list in range(k, len(positions)):
@@ -336,21 +384,39 @@ class RouteEngine:
                                 new_cost = arr_cost + current_cost_on_route
                                 
                                 existing_labels = best_labels[dst]
+                                # Dominance check: skip if an existing label dominates the new label
                                 is_dominated = any(ex_time <= new_arrival_time and ex_cost <= new_cost for ex_time, ex_cost in existing_labels)
-                                if is_dominated: continue
-                                
+                                if is_dominated:
+                                    continue
+
+                                # Remove labels that are dominated by the new label, then add the new one
                                 new_labels = [(t, c) for t, c in existing_labels if not (new_arrival_time <= t and new_cost <= c)]
                                 new_labels.append((new_arrival_time, new_cost))
-                                
-                                if len(new_labels) != len(existing_labels) or not all(a == b for a, b in zip(new_labels, existing_labels)):
-                                    best_labels[dst] = sorted(new_labels)
-                                    label_hash = hash((new_arrival_time, new_cost))
-                                    prev_segment[dst][label_hash] = (downstream["id"], arr_time, arr_cost)
+
+                                # Normalize labels list (sorted by time then cost) for deterministic comparisons
+                                new_labels = sorted(new_labels)
+
+                                if new_labels != existing_labels:
+                                    best_labels[dst] = new_labels
+                                    # Use a deterministic string key for label identification to avoid
+                                    # issues with Python's randomized hash() across processes and
+                                    # to make keys human-inspectable in tests/logs.
+                                    label_key = f"{new_arrival_time}:{new_cost}"
+                                    prev_segment[dst][label_key] = (downstream["id"], arr_time, arr_cost)
                                     next_marked.add(dst)
+                                    # Metrics updates
+                                    if self._metrics_enabled:
+                                        self._last_metrics["labels_generated"] += 1
+                                        cur_labels = len(best_labels[dst])
+                                        if cur_labels > self._last_metrics["max_labels_per_stop"]:
+                                            self._last_metrics["max_labels_per_stop"] = cur_labels
+                                        self._last_metrics["transfer_expansions"] += 1
                                     if debug:
                                         print(f"[RAPTOR DEBUG] Updated label for {dst} -> time={new_arrival_time} cost={new_cost} via seg={downstream['id']}")
 
             marked_stations = next_marked
+            if self._metrics_enabled:
+                self._last_metrics["rounds_processed"] = round_idx + 1
 
         final_paths = []
         if not best_labels.get(dest_id):
@@ -363,10 +429,11 @@ class RouteEngine:
             cur = dest_id
             
             while cur != source_id:
-                label_hash = hash((cur_time, cur_cost))
-                if label_hash not in prev_segment[cur]: break
-                
-                seg_id, prev_time, prev_cost = prev_segment[cur][label_hash]
+                label_key = f"{cur_time}:{cur_cost}"
+                if label_key not in prev_segment[cur]:
+                    break
+
+                seg_id, prev_time, prev_cost = prev_segment[cur][label_key]
                 path_seg_ids.insert(0, seg_id)
                 
                 prev_seg_info = self.segments_map.get(seg_id)
@@ -410,6 +477,29 @@ class RouteEngine:
         # Limit to PARETO_LIMIT
         max_results = getattr(Config, 'PARETO_LIMIT', 3)
         pareto_paths = pareto_paths[:max_results]
+
+        # Attach final metrics for the last search
+        if self._metrics_enabled:
+            # labels_generated may be 0 if source==dest or no paths
+            self._last_metrics.setdefault("labels_generated", 0)
+            self._last_metrics.setdefault("max_labels_per_stop", 0)
+            self._last_metrics.setdefault("transfer_expansions", 0)
+            self._last_metrics.setdefault("binary_search_calls", 0)
+            self._last_metrics.setdefault("rounds_processed", 0)
+
+        # report to prometheus client if available
+        try:
+            duration = time.time() - start_ts
+            if RMA_RAPTOR_RUNTIME_SECONDS is not None:
+                RMA_RAPTOR_RUNTIME_SECONDS.observe(duration)
+            if RMA_RAPTOR_ROUNDS_TOTAL is not None:
+                RMA_RAPTOR_ROUNDS_TOTAL.inc(self._last_metrics.get('rounds_processed', 0) or 0)
+            if RMA_RAPTOR_LABELS_GENERATED_TOTAL is not None:
+                RMA_RAPTOR_LABELS_GENERATED_TOTAL.inc(self._last_metrics.get('labels_generated', 0) or 0)
+            if RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL is not None:
+                RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL.inc(self._last_metrics.get('transfer_expansions', 0) or 0)
+        except Exception:
+            pass
 
         return [path for path, _, _ in pareto_paths]
     

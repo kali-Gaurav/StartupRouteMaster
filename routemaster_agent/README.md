@@ -14,6 +14,8 @@ Notes:
 API Endpoints:
 - POST /api/unlock-route-details  — single train verification (NTES + Disha)
 - POST /api/enrich-trains       — batch enrich (schedules, live status, optional Disha checks)
+- POST /api/admin/run-rma-tests  — run QA test runner (admin)
+- POST /api/admin/detect-changes — run change detection for trains
 
 Example: POST /api/enrich-trains
 {
@@ -24,6 +26,22 @@ Example: POST /api/enrich-trains
   "concurrency": 5
 }
 
+Alerting (env vars):
+- RMA_SLACK_WEBHOOK_URL — Slack incoming webhook for test failures
+- RMA_SELECTOR_FAILURE_THRESHOLD — threshold for selector-failure alerts (default 5)
+
+Proxy & UA rotation (env vars):
+- RMA_USE_PROXY — true/false to enable proxy usage for scraper and fallback requests
+- RMA_PROXY_LIST — comma-separated proxy URLs (e.g. http://host:3128)
+- RMA_PROXY_FILE — file path with one proxy URL per line
+- RMA_UA_LIST — comma-separated user agents to rotate (overrides built-in list)
+
 Output files (saved to `output/`):
 - schedules_YYYYMMDD.json / schedules_YYYYMMDD.csv
 - live_status_YYYYMMDD.json / live_status_YYYYMMDD.csv
+
+Test artifacts (QA runner):
+- test_output/YYYYMMDD/<train_number>/attempt_N.html
+- test_output/YYYYMMDD/<train_number>/attempt_N.png
+- test_output/YYYYMMDD/<train_number>/validation_errors_attempt_N.json
+- logs/testing_metrics_YYYYMMDD.json (metrics per train run)

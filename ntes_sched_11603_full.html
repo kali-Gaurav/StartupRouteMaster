@@ -1,0 +1,1706 @@
+
+<!DOCTYPE HTML>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"> 
+<meta http-equiv='cache-control' content='no-cache'>
+<meta http-equiv='expires' content='0'>
+<meta http-equiv='pragma' content='no-cache'>
+<meta name="Accept-encoding" content="deflate">
+<meta name="Content-Encoding" content="deflate">
+<meta name="X-Frame-Options" content="deny">
+<meta name="X-XSS-Protection" content="1; mode=block">
+<meta name="Access-Control-Allow-Origin" content="*">
+<meta name="Referrer-Policy" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Style-Type" content="text/css">
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+
+<link rel="shortcut icon"  type="image/png" href="app_icon.ico">
+<link rel="apple-touch-icon-precomposed" sizes="57x57" href="icon_144.png" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="description" content="Official Indian Railways site for travelers using railways for taking holiday vacation trips, official trips, tours, and daily commute. Site provides train-running related and real-time status queries for all trains of India.">
+<meta name="keywords" content="India Travel, Indian Railways, Trains, Travel across India, Things to do in India,Train Station, Time Table, Train Schedules, Train Arrivals, Train Delays, Online Tracking, Mobile Tracking, Cheap Travel, yatra,Journey Planner, Trip Planner,Train Enquiry,Train Running,Train Running Status,Train Running Information,Spot Your Train,Live Train Status,Ntes,National Train Enquiry System">
+<title>NTES</title>
+<link rel="stylesheet" type="text/css" href="theme/mntes.css">
+<script src="javascripts/LibraryFunctions.js?v=1"></script>
+<script src="javascripts/mntes.js?v=7"></script>
+<script src="javascripts/mntes_utility.js?v=3"></script>
+<link rel="stylesheet" href="theme/bootstrap-theme.min.css" >
+<link rel="stylesheet" href="theme/w3.css">
+<!-- Bootstrap CSS CDN -->
+<!-- <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.0/css/bootstrap.min.css" integrity="sha384-9gVQ4dYFwwWSjIDZnLEWnxCjeSWFphJiwGPXr1jddIhOegiu1FwO5qRGvFXOdJZ4" crossorigin="anonymous">-->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-rbsA2VBKQhggwzxH7pPCaAqO46MgnOM80zW1RWuH61DGLwZJEdK2Kadq2F9CUG65" crossorigin="anonymous">
+<script defer src="https://use.fontawesome.com/releases/v5.0.13/js/solid.js" integrity="sha384-tzzSw1/Vo+0N5UhStP3bvwWPq+uvzCMfrN1fEFe+xBmv1C/AtVX5K0uZtmcHitFZ" crossorigin="anonymous"></script>
+<script defer src="https://use.fontawesome.com/releases/v5.0.13/js/fontawesome.js" integrity="sha384-6OIrr52G08NpOFSZdxxz1xdNSndlD4vdcf/q2myIUVO0VsqaGHJsB0RaBE01VTOY" crossorigin="anonymous"></script>
+
+<style>
+
+ #divert {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-white.png) -360px 0;
+    background-repeat:no-repeat;
+}
+#cancel {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-white.png) -72px 0;
+    background-repeat:no-repeat;
+}
+#reschedule {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-white.png) -432px 0;
+    background-repeat:no-repeat;
+}
+#exception {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-white.png) -504px 0;
+    background-repeat:no-repeat;
+}
+ #divert1 {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-black.png) -360px 0;
+    background-repeat:no-repeat;
+}
+#cancel1 {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-black.png) -72px 0;
+    background-repeat:no-repeat;
+}
+#reschedule1 {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-black.png) -432px 0;
+    background-repeat:no-repeat;
+}
+#exception1 {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-black.png) -504px 0;
+    background-repeat:no-repeat;
+}
+
+#info {
+    width: 18px;
+    height: 18px;
+    background: url(images/icons-18-white.png) -536px 0;
+    background-repeat:no-repeat;
+}
+
+#divshadow {
+	width: 100%;
+	max-width:1380px;
+	margin:auto;
+    height: auto;
+    padding:1px;
+    border-radius:5px;
+   /* background-color: white;*/
+}
+
+body.small-font { font-size: 10px; }
+body.medium-font { font-size: 14px; }
+body.large-font { font-size: 20px; }
+ :root {
+      --bg-color: #ffffff;
+      --text-color: #000000;
+      --panel-bg: #ffffff;
+      --button-bg: #eeeeee;
+      --button-hover: #dddddd;
+    }
+
+</style>
+<style>
+  :root {
+      --bg-color: #ffffff;
+      --text-color: #1a1a1a;
+      --link-color: #0066cc;
+      --highlight-color: #ff9800;
+      --secondary-text-color: #757575;
+      --heading-color: #2c3e50;
+    }
+
+    body.dark {
+      --bg-color: #121212;
+      --text-color: #e0e0e0;
+      --link-color: #8ab4f8;
+      --highlight-color: #ffb74d;
+      --secondary-text-color: #b0b0b0;
+      --heading-color: #ecf0f1;
+      --panel-bg: #1e1e1e;
+      --button-bg: #333333;
+      --button-hover: #444444;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: Arial, sans-serif;
+      margin: 0;
+      /*padding: 2rem;*/
+      transition: background-color 0.3s, color 0.3s;
+    }
+
+    h1, h2 {
+      color: var(--heading-color);
+    }
+
+    p {
+      color: var(--secondary-text-color);
+      line-height: 1.6;
+    }
+
+    a {
+      color: var(--link-color);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+/*
+    .container {
+      max-width: 800px;
+      margin: auto;
+      text-align: center;
+    }
+*/
+    .highlight {
+      color: var(--highlight-color);
+      font-weight: bold;
+    }
+
+    /* Toggle switch style */
+    .switch-wrapper {
+      margin: 20px auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .switch-label {
+      margin-right: 10px;
+      font-size: 1rem;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 50px;
+      height: 24px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .4s;
+      border-radius: 34px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: #2196F3;
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(26px);
+    }
+    
+    body.dark table.table {
+	  color: white !important;            /* Make text readable */
+	  background-color: black !important; /* Set dark background */
+	  border-color: #666 !important;      /* Softer borders */
+	}
+	
+	body.dark table.table thead th {
+	  color: yellow !important;           /* Highlight headers */
+	  background-color: #111 !important;  /* Slight contrast from body */
+	  border-color: #666 !important;
+	}
+	
+	body.dark table.table td,
+	body.dark table.table th {
+	  border-color: #666 !important;
+	   color: white !important; 
+	}
+	
+	body.dark table.table-striped tbody tr:nth-child(odd) {
+	  background-color: #222 !important;
+	}
+	
+	body.dark table.table-striped tbody tr:nth-child(even) {
+	 background-color: #000 !important;
+	}
+	
+    body.dark .w3-modal .w3-modal-content .w3-center{
+     background-color:#292727;/* #121212;*/
+     color: #eee;
+     border: 1px solid #333;
+    }
+	body.dark .form-control {
+  background-color: #1e1e1e;
+  color: #eee;
+  border: 1px solid #555;
+}
+
+body.dark .form-control::placeholder {
+  color: #aaa;
+}
+
+body.dark .input-group i {
+  color: #ccc;
+}
+
+body.dark .input-group i:hover {
+  color: #fff;
+}
+	  
+body.dark .w3-blue {
+  background-color: #333336 !important; 
+  color: #e0e0e0 !important; 
+}    
+
+ .nav-tabs .nav-link {
+            border-left: 1px solid #1E90FF;
+            border-top: 1px solid #1E90FF;
+            border-right: 1px solid #1E90FF;
+            border-bottom: 3px solid #1E90FF;
+            background-color: #FFFFFF;
+        }
+ .nav-tabs .nav-link.active {
+            border-left: 1px solid #1E90FF;
+            border-top: 1px solid #1E90FF;
+            border-right: 1px solid #1E90FF;
+            border-bottom: 3px solid #1E90FF;
+            background-color: #1E90FF;
+            font-weight: 500;
+            color: #FFFFFF;
+        }
+
+body.dark .nav-tabs .nav-link {
+  background-color: #333336 !important; 
+  color: #e0e0e0 !important;
+  border-left :1px solid #232640;
+  border-top :1px solid #232640;
+  border-right :1px solid #232640;
+  border-bottom :3px solid #232640;
+}
+
+body.dark .nav-tabs .nav-link.active  {
+  background-color: #232640 !important; 
+  color: #e0e0e0 !important;
+  border-left :1px solid #232640;
+  border-top :1px solid #232640;
+  border-right :1px solid #232640;
+  border-bottom :3px solid #232640;
+}  
+
+body.dark .tt-suggestion:hover {
+	cursor: pointer;
+	background-color: #3d4142;
+	color: #FFFFFF;
+}
+ 
+body.dark .tt-menu {
+	background-color: #4e4f4f;
+	color:#fff;
+	}
+body.dark .tt-suggestion {
+	color:#e9f0f2;
+	}
+/*	
+body.dark .ui-autocomplete{
+	background-color: #4e4f4f;
+	color:#fff;
+	}
+*/	
+body.dark .ui-autocomplete {
+    background-color: #2a2a2a; 
+    border-color: #555;        
+    color: #eee;               
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+body.dark .ui-autocomplete li {
+    color: #ddd;
+    background-color: #2a2a2a;
+    padding-left:5px;
+    border:none;
+}
+
+body.dark .ui-autocomplete li.ui-state-focus, 
+body.dark .ui-autocomplete li.ui-state-active {
+    background-color: #444; 
+    color: #fff;
+}
+body.dark #myInput {
+background-image: url('images/search_w.png');
+}
+</style>
+<style>
+    .floating-accessibility {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 9999;
+    }
+
+    #accessibilityToggle {
+      background-color: #4729A3;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 48px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    }
+
+    #accessibilityToggle:hover {
+      background-color: #351e7d;
+    }
+
+    .accessibility-icon {
+      width: 24px;
+      height: 24px;
+    }
+
+    .accessibility-panel {
+      display: none;
+      position: absolute;
+      top: 60px;
+      right: 0;
+      background: var(--panel-bg);
+      color: var(--text-color);
+      min-width: 250px;
+      max-width: 480px;
+      width: 100%;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+    }
+
+    .accessibility-panel.show {
+      display: block;
+    }
+
+    .accessibility-panel h2 {
+      margin-top: 0;
+      font-size: 18px;
+    }
+
+    .accessibility-panel ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .accessibility-panel li {
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .accessibility-panel button {
+      background: var(--button-bg);
+      color: var(--text-color);
+      border: none;
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .accessibility-panel button:hover {
+      background: var(--button-hover);
+    }
+
+    /* Toggle switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 20px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: 0.4s;
+      border-radius: 20px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.4s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: #4729A3;
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    .switch-label {
+      margin-right: 10px;
+      font-size: 14px;
+    }
+	
+	.button-row {
+	  display: flex;
+	  gap: 10px;
+	}
+	
+	.button-row.single .access-btn {
+	  flex: 1;
+	}
+    
+    .access-btn {
+	  flex: 1;
+	  height: 100px;
+	  padding:10px;
+	  background-color: #f2f2f2;
+	  border: none;
+	  border-radius: 8px;
+	  display: flex;
+	  flex-direction: column;
+	  align-items: center;
+	  justify-content: center;
+	  cursor: pointer;
+	  text-align: center;
+	  transition: background 0.2s ease;
+	}
+
+.access-btn:hover {
+  background-color: #e0e0e0;
+}
+.access-btn[aria-pressed="true"] {
+  background-color: #4729A3; 
+  color:#eee;
+}
+
+body.dark .access-btn[aria-pressed="true"] {
+  background-color: #4729A3; /* highlight color when active */
+}  
+</style>
+<style>
+/* Dark mode for modal with .dark-modal class */
+body.dark .modal-content {
+  background-color: #121212;
+  color: #e0e0e0;
+  border: none;
+}
+
+body.dark .modal-header {
+  background-color: #1f1f1f;
+  border-bottom: 1px solid #333;
+}
+
+body.dark .w3-panel.w3-orange {
+  background-color: #b36b00 !important; /* Darker orange */
+  color: #fff !important;
+}
+
+body.dark .w3-table-all {
+  background-color: #1c1c1c;
+  color: #ddd;
+  border-color: #333;
+}
+
+body.dark .w3-table-all th {
+  background-color: #2c2c2c;
+  color: #fff;
+  border-bottom: 2px solid #444;
+}
+
+body.dark .w3-table-all tr {
+  border-bottom: 1px solid #333;
+}
+
+body.dark .w3-table-all tr:hover {
+  background-color: #333;
+  color: #fff;
+}
+
+body.dark .close {
+  color: #ccc;
+  opacity: 1;
+}
+
+body.dark .close:hover {
+  color: #fff;
+}
+
+/* Normal (light) mode button */
+.custom-btn {
+  background-color: #07498f;  /* nice blue */
+  border: 1px solid #0459b5;
+  color: white;
+  padding: 0.5em 1.25em;
+  font-size: 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+  user-select: none;
+}
+
+ .custom-btn:hover,
+ .custom-btn:focus {
+  background-color: #0056b3;
+  border-color: #004085;
+  outline: none;
+}
+
+/* Dark mode overrides */
+body.dark .custom-btn {
+  background-color: #2b2b2b;   /* dark gray */
+  border: 1px solid #1c1c1c;
+  color: #eee;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+}
+
+body.dark .custom-btn:hover,
+body.dark .custom-btn:focus {
+  background-color: #1c1c1c;
+  border-color: #121212;
+  color: #fff;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.8);
+  outline: none;
+}
+
+body.dark .custom-btn:active {
+  background-color: #0f0f0f;
+  border-color: #0a0a0a;
+  box-shadow: none;
+}
+.dropdown-toggle::after {
+    display: none !important;
+}
+.bluehead{
+    font-family:Calibri;
+    font-size:12pt;
+	color:#0000FF;
+}
+body.dark .bluehead{
+	font-family:Calibri;
+    font-size:12pt;
+	color:#ddd;
+}
+ body.big-cursor, body.big-cursor * {
+    cursor: url('images/cursor.svg') 16 16, auto;
+  }
+  
+body.big-cursor a,
+body.big-cursor button {
+  cursor: url('images/pointer.svg') 16 16, pointer;
+}
+
+body.high-link a{
+  font-weight: bold !important;
+  text-decoration: underline !important;
+}
+
+body.dark.high-link a{
+  color: yellow !important;
+  font-weight: bold !important;
+  text-decoration: underline !important;
+}
+
+body.dark .w3-sand {
+  background-color: #333336 !important; /* dark muted brown */
+  color: #f4e8d8 !important; /* light sandy text */
+}
+
+/* Override links inside w3-sand */
+body.dark .w3-sand a {
+  color: #e0c097 !important;
+}
+
+/* Optional: buttons inside w3-sand in dark mode */
+body.dark .w3-sand button {
+  background-color: #5c4a3d !important;
+  color: #f4e8d8 !important;
+  border: none !important;
+}
+
+/* Button hover in dark mode */
+body.dark .w3-sand button:hover {
+  background-color: #7a644d !important;
+}
+
+</style>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<script src="https://code.jquery.com/ui/1.14.1/jquery-ui.min.js" integrity="sha256-AlTido85uXPlSyyaZNsjJXeCs07eSv3r43kyCVc8ChI=" crossorigin="anonymous"></script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+<script>
+
+
+
+	
+          
+
+     
+    
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+function i1771159089252(){
+	var _loc="ht" + "t" + "ps://en" + "quiry.indianrail.gov.in/mntes/";
+	var r1771159090252=function(){
+		setTimeout(function(){document.location=_loc + "NoAccess.html";},2000);
+	};
+	try{
+		if(parent){
+			try{if(parent.location!=document.location)parent.location=_loc; return;}catch(ex){}
+			try{if(parent.document.location!=document.location)parent.document.location=_loc; return;}catch(ex){}
+			try{if(parent.window.document.location!=document.location)parent.window.document.location=_loc; return;}catch(ex){}
+			try{r1771159090252();}catch(ex){}
+		}
+		if(window.parent){
+			try{if(window.parent.location!=document.location)window.parent.location=_loc; return;}catch(ex){}
+			try{if(window.parent.document.location!=document.location)window.parent.document.location=_loc; return;}catch(ex){}
+			try{if(window.parent.window.document.location!=document.location)window.parent.window.document.location=_loc; return;}catch(ex){}
+			try{r1771159090252();}catch(ex){}
+		}
+		if(opener){
+			try{if(opener.location!=document.location)opener.location=_loc; return;}catch(ex){}
+			try{if(opener.document.location!=document.location)opener.document.location=_loc; return;}catch(ex){}
+			try{if(opener.window.document.location!=document.location)opener.window.document.location=_loc; return;}catch(ex){}
+			try{r1771159090252();}catch(ex){}
+		}
+		if(top!=self){
+			try{top.document.location=_loc;}catch(ex){}
+			try{top.location=_loc;}catch(ex){}
+			try{r1771159090252();}catch(ex){}
+		}
+	}
+	catch(ex){
+		try{r1771159090252();}catch(ex){}
+	}
+}
+
+i1771159089252();
+
+</script>
+
+<script src="js/typeahead.bundle.js"></script>
+<link rel="stylesheet" href="theme/w3.css" >
+<link rel="stylesheet" href="nui/style.css" >
+
+
+
+<script src="javascripts/train_data.js?v=2026021518"></script>
+
+<!-- Google reCAPTCHA -->
+
+
+<script>
+function selStn()
+{
+	
+}
+</script>
+<script type="text/javascript">
+
+var substringMatcher = function(strs) {
+	  return function findMatches(q, cb) {
+	    var matches, substringRegex;
+
+	    // an array that will be populated with substring matches
+	    matches = [];
+
+	    // regex used to determine if a string contains the substring `q`
+	    substrRegex = new RegExp(q, 'i');
+
+	    // iterate through the pool of strings and for any string that
+	    // contains the substring `q`, add it to the `matches` array
+	    $.each(strs, function(i, str) {
+	      if (substrRegex.test(str)) {
+	        matches.push(str);
+	      }
+	    });
+
+	    cb(matches);
+	  };
+	};
+
+
+$(document).ready(function(){
+	history.pushState("NTES", "NTES", ".")
+    // Defining the local dataset
+    var cars=arrTrainList;
+    // Constructing the suggestion engine
+  /*  var cars = new Bloodhound({
+        datumTokenizer: Bloodhound.tokenizers.whitespace,
+        queryTokenizer: Bloodhound.tokenizers.whitespace,
+        local: cars
+    });
+*/
+    // Initializing the typeahead
+    $('#trainNo').typeahead({
+        hint: false,
+        maxItem: 10,
+        displayKey: 'value',
+        highlight: true, 
+        minLength: 1 
+    },
+    {
+        name: 'cars',
+        source: substringMatcher(cars),
+        limit: 15,
+        templates: {
+            empty: [
+                '<div class="empty-message">',
+                  'No data',
+                '</div>'
+              ].join('\n'),
+              suggestion: function(data) {
+                return '<p><strong>'+data+'</strong></p>';
+              }
+          }
+    }).on('typeahead:selected', function(event, selection) {
+  	  
+  	  // the second argument has the info you want
+  		onTrainFindInput('K');
+  	});
+    $('#trainNo').width='100%';
+    
+ });  
+</script>
+
+<style>
+
+.typeahead, .tt-query, .tt-hint {
+	border: 2px solid #CCCCCC;
+	border-radius: 8px;
+	font-size: 16px; /*Set input font size */
+	height: 30px;
+	line-height: 30px;
+	outline: medium none;
+	padding: 8px 12px;
+	width: 396px;
+}
+.typeahead {
+	background-color: #FFFFFF;
+	width: 100%;
+}
+.typeahead:focus {
+	border: 2px solid #0097CF;
+}
+.tt-query {
+	box-shadow: 0 1px 1px rgba(0, 0, 0, 0.075) inset;
+}
+.tt-hint {
+	color: #999999;
+}
+.tt-menu {
+	background-color: #FFFFFF;
+	border: 1px solid rgba(0, 0, 0, 0.2);
+	border-radius: 8px;
+	box-shadow: 0 5px 10px rgba(0, 0, 0, 0.2);
+	margin-top: 5px;
+	padding: 8px 0;
+	width: 422px;
+}
+.tt-suggestion {
+	font-size: 16px;  
+	padding: 3px 20px;
+}
+.tt-suggestion:hover {
+	cursor: pointer;
+	background-color: #0097CF;
+	color: #FFFFFF;
+}
+.tt-suggestion p {
+	margin: 0;
+}
+
+.twitter-typeahead, .tt-hint, .tt-input, .tt-menu { width: 95%; }
+
+.card{
+    padding: .5em .5em .5em;
+    border: 1px solid #ddd;
+    border-radius: 1em;
+    box-shadow: 0 5px 10px rgba(0,0,0,.2);
+}
+.card-header .title {
+    font-size: 17px;
+    color: #000;
+}
+.card-header .accicon {
+  float: right;
+  font-size: 20px;  
+  width: 1.2em;
+}
+.card-header{
+  cursor: pointer;
+  border-bottom: none;
+}
+.card-body{
+  border-top: 1px solid #ddd;
+}
+.card-header:not(.collapsed) .rotate-icon {
+  transform: rotate(180deg);
+}
+
+.action-button {
+    font-size: 12px; 
+    border: 1px solid #3182F0;  /*EC5B24*/
+    color: #3182F0;
+    padding: 1px 0;
+    border-radius: 3px;
+    width: 80px;
+    text-align: center;
+    cursor: pointer;
+    vertical-align: middle;
+    display: inline-block!important;
+    }
+    
+.action-button2 {
+	background-color : white;
+	font-size: 12px; 
+	border: 1px solid #29990D;  /*EC5B24*/
+	color: #29990D;
+	padding: 12px 2px;
+	border-radius: 3px;
+	width: 120px;
+	text-align: center;
+	cursor: pointer;
+	vertical-align: top;
+	display: inline-block!important;
+}
+
+</style>
+
+</head>
+<body>
+
+ <div class="wrapper" id="divshadow">
+
+
+
+
+
+		<nav id="sidebar" style="z-index: 999" >
+			<button type="button" id="sidebarCollapse" class="btn" style="float:right;margin-right:10px;background:none;display:none;">
+               <span style="color:white;"><h4>X</h4></span>
+            </button>
+            <div class="sidebar-header" style="text-align:center;" >
+            <img src="images/app_ntes-web.png" width="120px" height="120px" style="margin-left:1px;"/>
+                <h3 style="margin-top:-5px;margin-bottom:0px;">NTES</h3> 
+                <span>Indian Railways</span>
+                <h6 style="margin-top:0px;">National Train Enquiry System</h6>
+            </div>
+		<form name="frmNav" method="post" onsubmit="return false;">
+		<input type="hidden" name="lan" id="lan" value="en"/>
+            <ul class="list-unstyled components">
+            	<li ><a href="#" onclick="javascript:onMainMenu('spotTrain','')" > <img src="images/search-white.png" border="0" height="14" width="14" style="margin-top:-5px;">&nbsp;&nbsp;&nbsp;Spot Your Train </a></li>
+				<li ><a href="#" onclick="javascript:onMainMenu('liveStation','')" ><img src="images/live_bell.png" border="0" height="14" width="14" style="margin-top:-5px;">&nbsp;&nbsp;&nbsp;Live Station </a></li>
+				<li ><a href="#" onclick="javascript:onMainMenu('trainSchedule','')" ><img src="images/calendar-white.png" border="0" height="14" width="14" style="margin-top:-5px;">&nbsp;&nbsp;&nbsp;Train Schedule </a></li>
+				<li ><a href="#" onclick="javascript:onMainMenu('tbs','')" ><img src="images/transmit_icon_white.png" border="0" height="14" width="14" style="margin-top:-5px;">&nbsp;&nbsp;&nbsp;Trains B/w Stations </a></li>
+				<li ><a href="#" onclick="javascript:showExcpInfo('N')"><i class="fas fa-exclamation-triangle"></i>&nbsp;&nbsp;&nbsp;Train Exception Info</a></li>    
+
+        <li>
+        <a href="#pageSubmenu2" data-bs-toggle="collapse" aria-expanded="false" class="dropdown-toggle d-flex align-items-center">
+            <i class="fa fa-info-circle" aria-hidden="true"></i> &nbsp;&nbsp;&nbsp;More Info
+            <span class="ms-auto"><i class="fa fa-caret-down"></i></span> <!-- Caret icon -->
+        </a>
+        <!-- Collapsible Submenu -->
+        <ul class="collapse list-unstyled" id="pageSubmenu2">
+            <li>
+                <a href="#" onclick="javascript:onMainMenu('tas', '')">
+                    <img src="images/calendar-white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Station Time Table
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="javascript:showSplTrainsS()">
+                    <img src="images/book_white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Parcel Special Trains
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="javascript:onMainMenu('avgDelay', '')">
+                    <img src="images/clock-white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Average Delay
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="javascript:onMainMenu('tbsh', '')">
+                    <img src="images/heritage.png" border="0" height="14" width="16" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Heritage Trains
+                </a>
+            </li>
+        </ul>
+    </li>
+
+	     <li>
+      		<a href="#pageSubmenu3" data-bs-toggle="collapse" aria-expanded="false" class="dropdown-toggle d-flex align-items-center">
+			    &nbsp;<i class="fa fa-info" aria-hidden="true"></i>&nbsp;&nbsp;&nbsp;&nbsp;Useful Links
+			    <span class="ms-auto"><i class="fa fa-caret-down"></i></span> <!-- Caret icon -->
+			</a>
+        <!-- Collapsible Submenu -->
+        <ul class="collapse list-unstyled" id="pageSubmenu3">
+            <li>
+                <a href="#" onclick="onMenuPNR('pnr')">
+                    <img src="images/user-white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;PNR Status
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="onMenuSeat('seat')">
+                    <img src="images/seat_white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Seat Availability
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="onMenuBook('book')">
+                    <img src="images/book_white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Ticket Booking
+                </a>
+            </li>
+            <li>
+                <a href="#" onclick="onMenuFreight('freight')">
+                    <img src="images/book_white.png" border="0" height="14" width="14" style="margin-top:-5px;">
+                    &nbsp;&nbsp;Freight Business
+                </a>
+            </li>
+            <li>
+                <a href="https://wr.indianrailways.gov.in/view_section.jsp?lang=0&id=0,6,458" target="_blank">
+                    <i class="fa fa-train" aria-hidden="true"></i>&nbsp;&nbsp;Mumbai Suburban(Western) 
+                </a>
+            </li>
+            <li>
+                <a href="https://cr.indianrailways.gov.in/view_section.jsp?lang=0&id=0,5,2360" target="_blank">
+                    <i class="fa fa-train" aria-hidden="true"></i>&nbsp;&nbsp;Mumbai Suburban (Central and Harbour)
+                </a>
+            </li>
+        </ul>
+    </li>
+	           
+	           
+	           
+	           <li><div style="text-align:center;color: white;padding-top:10px;">Get Mobile App</div></li>
+	           <li><hr style="background-color:white;margin-left:15%;margin-top:0px;width:70%"></li>
+	           <li><div style="width:100%; display: flex;"><div style="width:50%;margin-left:5px;background-color: #765A9E;border: 1px solid #eee;border-radius:5px 0px 0px 5px;text-align:center;"><a href="#"  style="text-decoration: none;vertical-align: middle;" onclick="showNA();"><img alt="Android" src="images/Google_Play_logo.png" height="25" width="24" style="margin-top:-5px;"> &nbsp;Android</a></div>
+	           	   <div style="flex:1;margin-right:5px;background-color: #765A9E;border: 1px solid #eee;border-radius:0px 5px 5px 0px;text-align:center;"><a href="#"  style="text-decoration: none; vertical-align: middle;" onclick="showNI();"><img alt="iOS" src="images/apple.png" height="24" width="24" style="margin-top:-12px;">&nbsp;&nbsp;iOS </a></div></div>
+	           </li>
+	           <li ><a href="https://railmadad.indianrailways.gov.in" target="_blank"><i class="fas fa-comments" aria-hidden="true"></i>&nbsp;&nbsp;Complaints </a></li>
+	           	<li>
+      		<a href="#" onclick="showNLang();" data-bs-toggle="collapse" aria-expanded="false" class="dropdown-toggle d-flex align-items-center">
+      		<i class="fas fa-globe" aria-hidden="true"></i>  
+               &nbsp;&nbsp;Language: &nbsp;&nbsp;English
+			    <span class="ms-auto"><i class="fa fa-caret-down"></i></span> <!-- Caret icon -->
+			</a>
+			</li>
+	        	
+				<li ><a href="disclaimerDisplay.html" target="_blank"><i class="fas fa-comment-dots" aria-hidden="true"></i>&nbsp;&nbsp;Disclaimer</a></li>
+				
+		   </ul>     
+      </form>
+   </nav>
+<div id="na" class="w3-modal" style="cursor:pointer;display:none;">
+  <div class="w3-modal-content w3-card-4 w3-animate-zoom" style="max-width:600px;cursor:auto">
+    <div class="w3-center" style="padding:10px;"><br>
+    <span onclick="document.getElementById('na').style.display='none'" title="Close Modal"
+  	class="w3-button w3-hover-text-grey w3-container w3-display-topright w3-xxlarge">&times;</span>
+  	<h3> Download NTES Android App </h3>
+  	<div>
+	<img src="images/ntes_android.png" alt="NTES Android App" height="200" width="200">
+	<a onclick="document.getElementById('na').style.display='none'" href="https://play.google.com/store/apps/details?id=cris.icms.ntes" target="_blank"><img src="images/google_store.png"><br>Scan QR or Download from Play Store</a>
+	<br>
+	</div>
+	</div>
+</div>
+</div>
+
+<div id="nlang" class="w3-modal" style="cursor:pointer;display:none;z-index: 9999;">
+  <div class="w3-modal-content w3-card-4 w3-animate-zoom" style="max-width:600px;cursor:auto">
+    <div class="w3-center" style="padding:10px;"><br>
+    <span onclick="document.getElementById('nlang').style.display='none'" title="Close Modal"
+  	class="w3-button w3-hover-text-grey w3-container w3-display-topright w3-xxlarge">&times;</span>
+  	<h3>Select Language </h3>
+  	<div>
+  	<ol class="list-unstyled components" style="text-align: left;padding-left: 50px;font-size: 15px;font-weight: bold;">
+  	 	<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=en">&nbsp;&nbsp;1. English</a></li>
+  	 	<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=hi">&nbsp;&nbsp;2. हिन्दी </a></li>
+   
+   		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=ta">&nbsp;&nbsp;3. தமிழ் </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=te">&nbsp;&nbsp;4. తెలుగు </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=bn">&nbsp;&nbsp;5. বাংলা </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=mr">&nbsp;&nbsp;6. मराठी </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=pa">&nbsp;&nbsp;7. ਪੰਜਾਬੀ </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=or">&nbsp;&nbsp;8. ଓଡିଆ </a></li>
+		<li style="padding: 10px;" ><a onclick="document.getElementById('nlang').style.display='none'" href="q?opt=MainMenu&subOpt=language&lan=ml">&nbsp;&nbsp;9. മലയാളം </a></li>
+   
+	</ol>
+	<br>
+	</div>
+	</div>
+</div>
+</div>
+
+<div id="ni" class="w3-modal" style="cursor:pointer;display:none;">
+  <div class="w3-modal-content w3-card-4 w3-animate-zoom" style="max-width:600px;cursor:auto">
+    <div class="w3-center" style="padding:10px;"><br>
+    <span onclick="document.getElementById('ni').style.display='none'" title="Close Modal"
+  	class="w3-button w3-hover-text-grey w3-container w3-display-topright w3-xxlarge">&times;</span>
+  	<h3>Download NTES iOS App</h3>
+  	<div>
+	<img src="images/ntes_ios.png" alt="NTES iOS App" height="200" width="200">
+	<a onclick="document.getElementById('ni').style.display='none'" href="https://apps.apple.com/in/app/ntes/id1033073796" target="_blank"><img src="images/apple_store.png"><br>Scan QR or Download from App Store</a>
+	<br>
+	</div>
+	</div>
+</div>
+</div>
+   
+<script type="text/javascript">
+function showNA()
+{
+document.getElementById('na').style.display='block';
+}
+function showNI()
+{
+document.getElementById('ni').style.display='block';
+}
+function showNLang()
+{
+document.getElementById('nlang').style.display='block';
+}
+ </script>       
+<div id="content">
+
+
+
+
+
+
+ <div class="floating-accessibility">
+    <button id="accessibilityToggle" aria-expanded="false" aria-controls="accessibilityPanel" aria-label="Open Accessibility Panel">
+     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 46" fill="currentColor" width="64" height="64">
+  	 <circle cx="22.5" cy="23" r="22" stroke="currentColor" stroke-width="2" fill="none"/>
+     <path transform="translate(6 6)" d="M16.4994 0.814209C18.4722 0.814209 20.0863 2.3018 20.0863 4.11998C20.0863 5.93815 18.4722 7.42574 16.4994 7.42574C14.5266 7.42574 12.9125 5.93815 12.9125 4.11998C12.9125 2.3018 14.5266 0.814209 16.4994 0.814209ZM32.6404 12.3844H21.8798V33.8719H18.2929V23.9546H14.706V33.8719H11.1191V12.3844H0.358398V9.07863H32.6404V12.3844Z"/>
+	</svg>
+     </button>
+   <div id="accessibilityPanel" class="accessibility-panel" aria-hidden="true" role="application">
+  <h2>Accessibility Tools</h2>
+  <ul class="accessibility-list">
+    <li>
+      <button onclick="document.getElementById('theme-toggle').click()" aria-label="Toggle Dark Mode">
+        <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />
+        </svg>
+        <span>Dark Mode</span>
+      </button>
+      <label class="switch">
+        <input type="checkbox" id="theme-toggle">
+        <span class="slider"></span>
+      </label>
+    </li>
+
+	<li>
+	 <button class="access-btn" aria-pressed="false" id="lBtn">
+      <font style="size: 25px;font-weight: bold;">A<sup>+</sup></font><br/>
+      <span class="label">Large Font</span>
+    </button>&nbsp;
+    <button class="access-btn"  aria-pressed="false" id="sBtn">
+      <font style="size: 25px;font-weight: bold;">A<sup>-</sup></font><br/>
+      <span class="label">Small Font</span>
+    </button>
+	</li>
+		<li>
+	<button class="access-btn" aria-pressed="false" id="mBtn">
+	     <font style="size: 25px;font-weight: bold;">A</font><br/>
+	      <span class="label">Normal Font</span>
+	    </button>&nbsp;
+	    <button class="access-btn" id="textSpacingBtn" aria-pressed="false">
+		<i class="fas fa-text-width"></i><br/>
+		<span class="label">Text Spacing</span>
+		</button>
+	</li>
+	<li>
+	<button class="access-btn" id="lineHeightBtn" aria-pressed="false">
+	<i class="fas fa-text-height"></i><br/>
+	<span class="label">Line Height</span>
+	</button>&nbsp;
+	<button class="access-btn" id="invertColorsBtn" aria-pressed="false">
+	     <svg width="24" height="24" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 17.93V4.07A8 8 0 0120 12a8 8 0 01-7 7.93z" />
+        </svg><br/>
+	      <span class="label">Invert Color</span>
+	    </button>&nbsp;
+	    <button class="access-btn" style="display: none;">
+	      <span class="label">&nbsp;</span>
+	    </button>
+	</li>
+	<li>
+	<button class="access-btn" id="sReadBtn" aria-pressed="false">
+	<img src="images/screenreader.png" width="28px" height="18px" align="middle"  alt="Screen Reader" title="Screen Reader" style="margin-bottom: 8px;">
+	<span class="label">Screen Reader</span>
+	</button>&nbsp;
+	<button class="access-btn" id="curBtn" aria-pressed="false">
+		<img src="images/big_cursor.png" width="24px" height="28px" align="middle"  style="margin-bottom: 8px;">
+	<span class="label">Big Cursor</span>
+	</button>
+	</li>
+	<li>
+	<button class="access-btn" id="hLinkBtn" aria-pressed="false">
+	<svg xmlns="xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#5f6368" role="presentation">
+<path d="M432.31-298.46H281.54q-75.34 0-128.44-53.1Q100-404.65 100-479.98q0-75.33 53.1-128.44 53.1-53.12 128.44-53.12h150.77v60H281.54q-50.39 0-85.96 35.58Q160-530.38 160-480q0 50.38 35.58 85.96 35.57 35.58 85.96 35.58h150.77v60ZM330-450v-60h300v60H330Zm197.69 151.54v-60h150.77q50.39 0 85.96-35.58Q800-429.62 800-480q0-50.38-35.58-85.96-35.57-35.58-85.96-35.58H527.69v-60h150.77q75.34 0 128.44 53.1Q860-555.35 860-480.02q0 75.33-53.1 128.44-53.1 53.12-128.44 53.12H527.69Z"></path></svg>
+	<span class="label">Highlight Links</span>
+	</button>
+	</li>
+	</ul>
+</div>
+</div>
+
+<form name="frmMainMenu" method="post" onsubmit="return false;">
+			<nav class="navbar navbar-expand-lg navbar-light " >
+                <div class="container-fluid">
+                <button type="button" id="sidebarCollapse2" class="btn btn-info" style="margin-left:-15px;display: block;">
+                        <i class="fas fa-align-left"></i>
+                        <span></span>
+                    </button>
+                    <div style="float: left;margin-left:10px;flex:1;"><h2>National Train Enquiry System</h2></div>
+                     <img src="images/ir.png" width="50px" height="50px" style="margin-top:-5px;margin-left:5px;"/>
+
+                </div>
+            </nav>
+            </form>
+            
+<div class="w3-panel w3-round w3-blue"align="left" ><h3>Spot Your Train</h3></div>
+
+<div class="container">
+<ul class="nav nav-tabs" >
+ <li class='nav-item ' style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding-bottom: 3px;">
+    <a class='nav-link' data-bs-toggle='tab' href='#' onclick="onTrainFindInput('A');">Train Instances </a>
+    </li>
+  <li class='nav-item ' style="margin-left: 5px;border-top-left-radius: 5px;border-top-right-radius: 5px;">
+    <a class='nav-link active' data-bs-toggle='tab' href='#s1'><b>Journey Station Basis</b></a>
+    </li> 
+ </ul>
+   <div class="tab-content" style="margin-top: 20px;">
+     <div class='tab-pane  fade in show active' id='s1'>
+       
+  	 <form name="frmTRN" method="post" onsubmit="return false;">
+    <input type="hidden" name="lan" id="lan" value="en"/>
+
+    <div class="row">
+        <div class="col-md">
+            <label for="trainNo">Train No./Name </label> 
+            <div class="input-group">
+			    <input type="text" class="form-control" style="min-width: 70px" placeholder="Train No./Name " name="trainNo" id="trainNo" size="6" maxlength="15" value="" onkeyup="onTrainFindInput('K')">
+			    <span style="margin-left: -60px; z-index: 1;cursor: pointer;margin-top:7px;" onclick="onTrainFindInput('B');"><i class="fa fa-search"></i></span>&nbsp;&nbsp;
+			    <span style="margin-left: -70px; z-index: 1;cursor: pointer;margin-top:7px;" onclick="document.getElementById('trainNo').value='';"><i class="fa fa-times"></i></span> 
+			</div>
+            
+			<div class="autocomplete" style="width:100%">
+			
+			
+			</div>
+        </div>
+         <div class="col-md">
+        
+         </div>
+    </div>
+    </form>
+
+<!-- Input Section -->
+<div class="w3-panel" >
+<span id="divMessageText" style="color:red"></span>
+</div>
+<div id="dvMainBody">
+
+<DIV ID="splashScreen" STYLE="position:absolute;visibility:hidden;z-index:5;top:47%;left:47%;">
+	<!--<span style="float:left;filter:alpha(opacity=75);-moz-opacity:.75;opacity:.75;">-->
+	<IMG SRC="images/350.gif" BORDER=0 width=40 height=40>
+	<!--</span>-->
+</DIV>
+<!-- Message Section -->
+
+
+<!-- Message Section -->
+
+
+
+<!-- Main Body -->
+<br>
+</div>
+</div>
+</div>
+<div style="padding: 10px;">
+Note - Data shown with (*) are dynamic in nature and may change. 
+</div>
+</div>
+<script async src="https://securepubads.g.doubleclick.net/tag/js/gpt.js"></script>
+<script>
+ window.googletag = window.googletag || {cmd: []};
+ googletag.cmd.push(function() {
+ var mapping_Spot1Top = googletag.sizeMapping().
+	addSize([980, 0], [[970,90],[728,90]]).
+	addSize([768,0], [728,90]).
+	addSize([350, 0], [300,250]).
+	build();
+ googletag.defineSlot('/37179215/MNTES_SPOT_YOUR_TRAIN_1_TOP', [[300, 250], [970, 90], [728, 90]], 'div-gpt-ad-1650964457937-0').defineSizeMapping(mapping_Spot1Top).addService(googletag.pubads());
+    googletag.pubads().enableSingleRequest();
+    googletag.pubads().collapseEmptyDivs();
+    googletag.enableServices();
+  });
+</script>
+
+<!-- /37179215/MNTES_SPOT_YOUR_TRAIN_1_TOP -->
+<div id='div-gpt-ad-1650964457937-0' style='min-width: 300px; min-height: 90px;text-align: center;'>
+  <script>
+  googletag.cmd.push(function() { googletag.display('div-gpt-ad-1650964457937-0'); });
+  </script>
+</div>
+
+
+<!-- Main Body -->
+<script>
+  window.onload = function() {
+      selStn();
+    };	
+</script>
+
+
+
+<!-- Footer -->
+
+
+
+
+<center>
+<table style="width: 100%;text-align: right;">
+	<tr>
+		<td align="right"><font size="2" color="#006fc4" face="verdana">15-Feb 18:08&nbsp;</font>
+			<a href="https://www.facebook.com/RailMinIndia" target="_blank"><img src="images/facebook_icon.png" border=0 width="24" height="24"></a>
+			<a href="https://twitter.com/RailMinIndia" target="_blank"><img src="images/twitter_icon.png" border=0 width="24" height="24"></a>
+			<a href="https://www.youtube.com/user/RailMinIndia" target="_blank"><img src="images/youtube.png" border=0 width="24" height="24"></a>
+		</td>
+	</tr>
+	
+</table>
+<br/>
+<table style="border-radius: 20px;font-size: 13px;">
+<tr><td align="center" colspan="2" style="padding-top: 5px;"><img src="images/ROne.png" height="65" width="65" style="margin-bottom: 5px;"><br/><img src="images/new_blink.gif" width="50px" height="30px" style="margin-top:-10px;"/><b>RailOne - Official Indian Railways Super App!</b><img src="images/new_blink.gif" width="50px" height="30px" style="margin-top:-10px;"/></td></tr>
+<tr><td colspan="2" style="padding-left: 10px;padding-right: 10px;">
+Book tickets, check train status, track PNR & order food - All in one secure app.</td></tr>
+<tr><td align="right" style="padding-right: 10px;padding-bottom: 10px;"><img alt="Android" src="images/Google_Play_logo.png" height="25" width="24" style="margin-top:-5px;"> <a onclick="showRA();" href="#" style="color: #7726A6"><b>Download Android App</b></a></td><td style="padding-left: 10px;padding-bottom: 10px;"><img alt="iOS" src="images/apple.png" height="26" width="26" style="margin-top:-8px;padding:3px;background: #121212;border-radius: 5px;"> <a onclick="showRI();" href="#" style="color: #7726A6;"><b>Download iOS App</b></a></td>
+</table>
+<br/>
+<a href="https://www.india.gov.in" target="_blank"><img src="images/india_gov_in.png" height="75" width="100"></a>
+<input type="hidden" name="appLang" value="en">
+<font size="1"	color="#e98e05" face="verdana" >	
+<br>Property of Indian Railways
+<br>Designed and Hosted by CRIS
+<br>Copyright @ 2013 Centre for Railway Information Systems
+<br>All Rights Reserved
+</font>
+<br>
+</center>
+
+<div id="ra" class="w3-modal" style="cursor:pointer;display:none;">
+  <div class="w3-modal-content w3-card-4 w3-animate-zoom" style="max-width:600px;cursor:auto">
+    <div class="w3-center" style="padding:10px;"><br>
+    <span onclick="document.getElementById('ra').style.display='none'" title="Close Modal"
+  	class="w3-button w3-hover-text-grey w3-container w3-display-topright w3-xxlarge">&times;</span>
+  	<h3> Download RailOne Android App </h3>
+  	<div>
+	<img src="images/railone_and.png" alt="RailOne Android App" height="200" width="200">
+	<a onclick="document.getElementById('ra').style.display='none'" href="https://play.google.com/store/apps/details?id=org.cris.aikyam" target="_blank"><img src="images/google_store.png"><br>Scan QR or Download from Play Store</a>
+	<br>
+	</div>
+	</div>
+</div>
+</div>
+
+<div id="ri" class="w3-modal" style="cursor:pointer;display:none;">
+  <div class="w3-modal-content w3-card-4 w3-animate-zoom" style="max-width:600px;cursor:auto">
+    <div class="w3-center" style="padding:10px;"><br>
+    <span onclick="document.getElementById('ri').style.display='none'" title="Close Modal"
+  	class="w3-button w3-hover-text-grey w3-container w3-display-topright w3-xxlarge">&times;</span>
+  	<h3>Download RailOne iOS App</h3>
+  	<div>
+	<img src="images/railone_ios.png" alt="RailOne iOS App" height="200" width="200">
+	<a onclick="document.getElementById('ri').style.display='none'" href="https://apps.apple.com/in/app/railone/id6473384334" target="_blank"><img src="images/apple_store.png"><br>Scan QR or Download from App Store</a>
+	<br>
+	</div>
+	</div>
+</div>
+</div>
+
+<!-- Footer -->
+<script type="text/javascript">
+function showRA()
+{
+document.getElementById('ra').style.display='block';
+}
+function showRI()
+{
+document.getElementById('ri').style.display='block';
+}
+</script>
+
+<script>
+    const toggleBtn = document.getElementById('accessibilityToggle');
+    const panel = document.getElementById('accessibilityPanel');
+    const themeToggle = document.getElementById('theme-toggle');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const savedTheme = localStorage.getItem('theme');
+    const savedTspace = localStorage.getItem('tspace');
+    const savedLspace = localStorage.getItem('lspace');
+    const savedCurs = localStorage.getItem('curs');
+    const savedInv = localStorage.getItem('inv');
+    const savedHlink = localStorage.getItem('hlink');
+
+    
+    // Panel toggle
+    if(toggleBtn!=null){
+    toggleBtn.addEventListener('click', () => {
+      const isOpen = panel.classList.toggle('show');
+      toggleBtn.setAttribute('aria-expanded', isOpen);
+      panel.setAttribute('aria-hidden', !isOpen);
+    });
+    }
+
+    // Outside click to close
+    document.addEventListener('click', (e) => {
+      if (!document.querySelector('.floating-accessibility').contains(e.target)) {
+        panel.classList.remove('show');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        panel.setAttribute('aria-hidden', 'true');
+      }
+    });
+
+    // Dark Mode Toggle
+    
+     if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+      document.body.classList.add('dark');
+      themeToggle.checked = true;
+    }
+
+     if(themeToggle !=null){
+    themeToggle.addEventListener('change', () => {
+     // document.body.classList.toggle('dark', themeToggle.checked);
+
+      if (themeToggle.checked) {
+          document.body.classList.add('dark');
+          localStorage.setItem('theme', 'dark');
+        } else {
+          document.body.classList.remove('dark');
+          localStorage.setItem('theme', 'light');
+        }
+      
+    });
+     }
+
+    const sbtn = document.getElementById('sBtn');
+    if(sbtn!=null){
+    sbtn.addEventListener('click', () => {
+    	setFontSize('small');
+        });
+    }
+    const mbtn = document.getElementById('mBtn');
+    if(mbtn!=null){
+    mbtn.addEventListener('click', () => {
+    	setFontSize('medium');
+        });
+    }
+    const lbtn = document.getElementById('lBtn');
+    if(lbtn !=null){
+    lbtn.addEventListener('click', () => {
+    	setFontSize('large');
+        });
+    }
+    // Font Size Control
+    function setFontSize(size) {
+      if (size === 'small') {
+        document.body.style.fontSize = '12px';
+        sbtn.setAttribute('aria-pressed', true);
+        mbtn.setAttribute('aria-pressed', false);
+        lbtn.setAttribute('aria-pressed', false);
+        localStorage.setItem('fontSize', 'small');
+      } else if (size === 'medium') {
+        document.body.style.fontSize = '15px';
+        sbtn.setAttribute('aria-pressed', false);
+        mbtn.setAttribute('aria-pressed', true);
+        lbtn.setAttribute('aria-pressed', false);
+        localStorage.setItem('fontSize', 'medium');
+      } else if (size === 'large') {
+        document.body.style.fontSize = '18px';
+        sbtn.setAttribute('aria-pressed', false);
+        mbtn.setAttribute('aria-pressed', false);
+        lbtn.setAttribute('aria-pressed', true);
+        localStorage.setItem('fontSize', 'large');
+      }
+    }
+
+    const btn = document.getElementById('textSpacingBtn');
+	if(btn!=null){
+    btn.addEventListener('click', () => {
+      const isActive = btn.getAttribute('aria-pressed') === 'true';
+      btn.setAttribute('aria-pressed', String(!isActive));
+
+      // Toggle text spacing on the body (or target container)
+      if (!isActive) {
+        document.body.style.letterSpacing = '0.15em';
+        localStorage.setItem('tspace', '1');
+      } else {
+        document.body.style.letterSpacing = '';
+        localStorage.setItem('tspace', '0');
+      }
+    });
+	}
+
+
+    const lineHeightBtn = document.getElementById('lineHeightBtn');
+	if(lineHeightBtn !=null){
+    lineHeightBtn.addEventListener('click', () => {
+      const isActive = lineHeightBtn.getAttribute('aria-pressed') === 'true';
+      lineHeightBtn.setAttribute('aria-pressed', String(!isActive));
+
+      if (!isActive) {
+        document.body.style.lineHeight = '1.8'; // Increased line height
+        localStorage.setItem('lspace', '1');
+      } else {
+        document.body.style.lineHeight = ''; // Reset to default
+        localStorage.setItem('lspace', '0');
+      }
+    });
+	}
+
+    const invertBtn = document.getElementById('invertColorsBtn');
+	if(invertBtn!=null){
+    invertBtn.addEventListener('click', () => {
+      const isPressed = invertBtn.getAttribute('aria-pressed') === 'true';
+      invertBtn.setAttribute('aria-pressed', String(!isPressed));
+
+      if (!isPressed) {
+        document.body.style.filter = 'invert(1)';
+        localStorage.setItem('inv', '1');
+      } else {
+        document.body.style.filter = '';
+        localStorage.setItem('inv', '0');
+      }
+    });
+	}
+
+    const scrBtn = document.getElementById('sReadBtn');
+	if(scrBtn!=null){
+    scrBtn.addEventListener('click', () => {
+    	window.open("ScreenReader.html", '_blank').focus();
+    });
+	}
+
+    const crBtn = document.getElementById('curBtn');
+	if(crBtn!=null){
+	 crBtn.addEventListener('click', () => {
+	   document.body.classList.toggle('big-cursor');
+	   const isPressed = crBtn.getAttribute('aria-pressed') === 'true';
+	   crBtn.setAttribute('aria-pressed', !isPressed);
+	   localStorage.setItem('curs', !isPressed?'1':'0');
+	 });
+	}
+	const hLinkBtn = document.getElementById('hLinkBtn');
+	if(hLinkBtn!=null){
+	hLinkBtn.addEventListener('click', () => {
+		   document.body.classList.toggle('high-link');
+		   const isPressed = hLinkBtn.getAttribute('aria-pressed') === 'true';
+		   hLinkBtn.setAttribute('aria-pressed', !isPressed);
+		   localStorage.setItem('hlink', !isPressed?'1':'0');
+		 });
+	}	 
+
+	  window.onload = function() {
+	      const savedFontSize = localStorage.getItem('fontSize') || 'medium';
+	      setFontSize(savedFontSize);
+	      if(savedTspace==='1'){
+	    	  btn.setAttribute('aria-pressed',true);
+	    	  document.body.style.letterSpacing = '0.15em';
+		      }
+	      if(savedLspace==='1'){
+	    	  lineHeightBtn.setAttribute('aria-pressed', true);
+	    	  document.body.style.lineHeight = '1.8';
+		      }
+	      if(savedCurs ==='1'){
+	    	  crBtn.setAttribute('aria-pressed', true);
+	    	  document.body.classList.add('big-cursor');
+		      }
+	      if(savedInv ==='1'){
+	    	  invertBtn.setAttribute('aria-pressed', true);
+	    	  document.body.style.filter = 'invert(1)';
+		      }
+	      if(savedHlink==='1'){
+	    	  hLinkBtn.setAttribute('aria-pressed', true);
+	    	  document.body.classList.add('high-link');
+		      }
+	    };
+	 
+  </script>
+<!-- Google reCAPTCHA -->
+
+<!-- Global site tag (gtag.js) - Google Analytics -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-89952719-2"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'UA-89952719-2');
+</script>
+
+
+</div>
+</div>
+	
+     
+    <!-- IE10 viewport hack for Surface/desktop Windows 8 bug -->
+    <script src="javascripts/ie.js"></script>
+
+
+
+  <!-- Popper.JS -->
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.0/umd/popper.min.js" integrity="sha384-cs/chFZiN24E4KMATLdqdvsezGxaGsi4hLGOzlXwp5UZB1LY//20VyM2taTB4QvJ" crossorigin="anonymous"></script>-->
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.6/dist/umd/popper.min.js" integrity="sha384-oBqDVmMz9ATKxIep9tiCxS/Z9fNfEXiDAYTujMAeBAsjFuCZSmKbSSUnQlmh/jp3" crossorigin="anonymous"></script>
+  <!-- Bootstrap JS -->
+    <!-- ><script src="https://stackpath.bootstrapcdn.com/bootstrap/4.1.0/js/bootstrap.min.js" integrity="sha384-uefMccjFJAIv6A+rW+L4AHf99KvxDjWSu1z9VI8SKNVmz4sk7buKt/6v9KI65qnm" crossorigin="anonymous"></script>-->
+ <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-kenU1KFdBIe4zVF0s0G1M5b4hcpxyD9F7jL+jjXkk+Q2h455rYXK/7HAuoJl+0I4" crossorigin="anonymous"></script>
+  
+    <script type="text/javascript">
+        $(document).ready(function () {
+            //if(screen.width<768){$('#sidebar').toggleClass('active');}
+        	$('#sidebarCollapse').on('click', function () {
+                $('#sidebar').toggleClass('active');
+            });
+        	$('#sidebarCollapse2').on('click', function () {
+                $('#sidebar').toggleClass('active');
+            });
+        });
+    </script>
+
+</body>
+</html>
+
+

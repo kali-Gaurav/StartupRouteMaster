@@ -10,3 +10,4 @@ asyncpg
 requests
 APScheduler
 beautifulsoup4
+prometheus_client

@@ -54,6 +54,7 @@ def build_synthetic_network(num_stations: int = 50, route_length: int = 3):
                 "duration": 60,
                 "cost": 50.0,
                 "operating_days": "1111111",
+                "mode": "train",
                 "vehicle_id": f"v{r}",
             }
             route_engine.segments_map[seg["id"]] = seg
@@ -84,10 +85,45 @@ if __name__ == "__main__":
 
     # Run searches and time them
     times = []
+    metrics_agg = {
+        "labels_generated": [],
+        "max_labels_per_stop": [],
+        "transfer_expansions": [],
+        "binary_search_calls": [],
+        "rounds_processed": [],
+    }
     for q in queries:
         start = time.perf_counter()
         _ = route_engine.search_routes(q[0], q[1], "2026-02-16")
         times.append(time.perf_counter() - start)
+        # collect metrics from the route_engine if available
+        m = getattr(route_engine, "_last_metrics", None)
+        if m:
+            for k in metrics_agg.keys():
+                metrics_agg[k].append(m.get(k, 0))
 
     times_ms = [t * 1000 for t in times]
-    print(f"Ran {len(times)} queries — median={sorted(times_ms)[len(times_ms)//2]:.2f}ms, mean={sum(times_ms)/len(times_ms):.2f}ms, max={max(times_ms):.2f}ms")
+    median = sorted(times_ms)[len(times_ms)//2]
+    mean = sum(times_ms)/len(times_ms)
+    output = {
+        "total_routes_tested": len(route_engine.route_segments),
+        "total_queries": len(times),
+        "median_runtime_ms": round(median, 2),
+        "avg_runtime_ms": round(mean, 2),
+        "max_runtime_ms": round(max(times_ms), 2),
+        "metrics": {
+            "labels_generated_avg": round(sum(metrics_agg["labels_generated"])/len(metrics_agg["labels_generated"]) if metrics_agg["labels_generated"] else 0, 2),
+            "labels_generated_max": max(metrics_agg["labels_generated"]) if metrics_agg["labels_generated"] else 0,
+            "max_labels_per_stop_avg": round(sum(metrics_agg["max_labels_per_stop"])/len(metrics_agg["max_labels_per_stop"]) if metrics_agg["max_labels_per_stop"] else 0, 2),
+            "max_labels_per_stop_max": max(metrics_agg["max_labels_per_stop"]) if metrics_agg["max_labels_per_stop"] else 0,
+            "transfer_expansions_avg": round(sum(metrics_agg["transfer_expansions"])/len(metrics_agg["transfer_expansions"]) if metrics_agg["transfer_expansions"] else 0, 2),
+            "transfer_expansions_max": max(metrics_agg["transfer_expansions"]) if metrics_agg["transfer_expansions"] else 0,
+            "binary_search_calls_avg": round(sum(metrics_agg["binary_search_calls"])/len(metrics_agg["binary_search_calls"]) if metrics_agg["binary_search_calls"] else 0, 2),
+            "binary_search_calls_max": max(metrics_agg["binary_search_calls"]) if metrics_agg["binary_search_calls"] else 0,
+            "rounds_processed_avg": round(sum(metrics_agg["rounds_processed"])/len(metrics_agg["rounds_processed"]) if metrics_agg["rounds_processed"] else 0, 2),
+            "rounds_processed_max": max(metrics_agg["rounds_processed"]) if metrics_agg["rounds_processed"] else 0,
+        }
+    }
+
+    import json
+    print(json.dumps(output, indent=2))

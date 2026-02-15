@@ -34,3 +34,23 @@ def test_runner_with_mocked_data(monkeypatch, tmp_path):
     assert res['passed'] == 1
     assert res['failed'] == 0
     assert res['results'][0]['validation_passed'] is True
+
+
+def test_runner_triggers_alert_on_failure(monkeypatch):
+    # make NTES return too few stations to force validation failure
+    async def bad_schedule(self, page, train_no):
+        return {"train_no": train_no, "name": "BAD", "schedule": [{"sequence":1}]}
+    monkeypatch.setattr('routemaster_agent.scrapers.ntes_agent.NTESAgent.get_schedule', bad_schedule)
+    # patch notify_test_summary to capture call
+    called = {}
+    def fake_notify(summary):
+        called['called'] = True
+        called['summary'] = summary
+        return {'ok': True}
+    monkeypatch.setattr('routemaster_agent.alerting.notify_test_summary', fake_notify)
+
+    runner = TestRunner(train_numbers=["88888"], concurrency=1, strict=True, save_artifacts=False)
+    res = asyncio.run(runner.run())
+    assert res['failed'] == 1
+    assert called.get('called') is True
+    assert 'results' in called['summary']

@@ -4,6 +4,11 @@ from typing import List, Optional
 import uuid
 from datetime import datetime
 import logging
+from sqlalchemy.orm import Session
+from fastapi import Depends
+from backend.database import get_db
+from .db_utils import get_stop_by_id_cached
+from backend.models import Stop
 
 app = FastAPI(title="Route Search & Optimization Service")
 
@@ -41,10 +46,22 @@ class RouteResponse(BaseModel):
     recommendations: List[dict]
 
 @app.post("/search", response_model=List[RouteResponse])
-async def search_routes(request: RouteRequest):
+async def search_routes(request: RouteRequest, db: Session = Depends(get_db)):
     """Search for optimal routes between stations"""
     try:
         logger.info(f"Searching routes from {request.source_station} to {request.destination_station}")
+
+        # --- Demonstrate caching for a stop ---
+        # For demonstration, let's try to fetch a dummy stop_id (e.g., 1)
+        # In a real scenario, request.source_station or destination_station
+        # would be mapped to a Stop.id or Stop.stop_id to fetch details.
+        dummy_stop_id_for_cache_demo = 1 # Assuming Stop.id is integer
+        cached_stop = get_stop_by_id_cached(db, dummy_stop_id_for_cache_demo)
+        if cached_stop:
+            logger.info(f"Demo: Fetched stop (ID: {cached_stop.id}, Name: {cached_stop.name}) using cache.")
+        else:
+            logger.warning(f"Demo: Could not fetch stop with ID {dummy_stop_id_for_cache_demo} for cache demo (it might not exist in DB yet).")
+        # --- End cache demonstration ---
 
         # TODO: Implement RAPTOR algorithm
         # For now, return mock response

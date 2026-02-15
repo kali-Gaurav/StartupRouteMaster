@@ -1,15 +1,19 @@
 from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional
 import asyncio
+from prometheus_client import generate_latest
 
 from routemaster_agent.scrapers.browser import BrowserManager
 from routemaster_agent.scrapers.ntes_agent import NTESAgent
 from routemaster_agent.scrapers.disha_agent import AskDishaAgent
 from routemaster_agent.pipeline.processor import DataPipeline
-from cache import cache
+from routemaster_agent.cache import cache
+from routemaster_agent.monitoring.proxy_monitor import ProxyMonitor
 
 app = FastAPI(title="RouteMaster AI Agent")
+_proxy_monitor: Optional[ProxyMonitor] = None
 
 class RouteRequest(BaseModel):
     train_number: str
@@ -154,6 +158,7 @@ async def enrich_trains(req: EnrichRequest, background_tasks: BackgroundTasks):
 # --- Testing endpoint -------------------------------------------------
 from routemaster_agent.testing.runner import TestRunner
 import os
+from routemaster_agent.proxy import ProxyManager
 
 @app.post('/api/admin/run-rma-tests')
 async def run_rma_tests(payload: dict):
@@ -167,6 +172,27 @@ async def run_rma_tests(payload: dict):
     tester = TestRunner(train_numbers=train_numbers, concurrency=concurrency, strict=strict)
     summary = await tester.run()
     return summary
+
+
+@app.on_event('startup')
+async def _rma_startup():
+    """Start background monitors (proxy health) when the app starts."""
+    global _proxy_monitor
+    try:
+        _proxy_monitor = ProxyMonitor(interval=int(os.getenv('RMA_PROXY_CHECK_INTERVAL', '300')), timeout=int(os.getenv('RMA_PROXY_CHECK_TIMEOUT', '5')), fail_threshold=float(os.getenv('RMA_PROXY_FAIL_THRESHOLD', '0.5')))
+        _proxy_monitor.start()
+    except Exception:
+        _proxy_monitor = None
+
+
+@app.on_event('shutdown')
+async def _rma_shutdown():
+    global _proxy_monitor
+    try:
+        if _proxy_monitor:
+            await _proxy_monitor.stop()
+    except Exception:
+        pass
 
 
 @app.post('/api/admin/detect-changes')
@@ -237,6 +263,81 @@ async def list_rma_alerts(limit: int = 50, unresolved_only: bool = True):
         return {'alerts': result}
     finally:
         session.close()
+
+
+@app.get('/api/admin/proxy-health')
+async def proxy_health(run_check: bool = True, timeout: int = 5):
+    """Return configured proxies and optionally run live health checks.
+
+    Query params:
+    - run_check (bool): whether to perform active HTTP checks (default true)
+    - timeout (int): per-proxy timeout seconds
+    """
+    pm = ProxyManager()
+    if not pm.has_proxies():
+        return {"enabled": False, "proxies": []}
+
+    if not run_check:
+        return {"enabled": True, "status": pm.get_status()}
+
+    try:
+        results = pm.health_check_all(timeout=timeout)
+        # update status map
+        for r in results:
+            proxy_url = r.get('proxy')
+            pm.set_status(proxy_url, ok=bool(r.get('ok')), latency=r.get('latency'), status_code=r.get('status_code'), error=r.get('error'))
+    except Exception as e:
+        return {"enabled": True, "error": str(e), "status": pm.get_status()}
+
+    return {"enabled": True, "results": results, "status": pm.get_status()}
+
+
+@app.get('/api/admin/proxy-metrics')
+async def proxy_metrics(format: str = 'prometheus'):
+    """Return proxy metrics in either 'prometheus' (text/plain) or 'json'.
+
+    Metrics include per-proxy enabled (0/1), fail_count, success_count, last_checked, latency, ok (0/1).
+    """
+    from fastapi.responses import PlainTextResponse
+    pm = ProxyManager()
+    status = pm.get_status()
+    aggregate = {
+        'total_proxies': len(status),
+        'enabled': sum(1 for s in status.values() if s.get('enabled')),
+        'disabled': sum(1 for s in status.values() if not s.get('enabled')),
+    }
+    if format == 'json':
+        return {'aggregate': aggregate, 'status': status}
+
+    # prometheus exposition
+    lines = []
+    # gauges
+    lines.append(f'rma_proxies_total {aggregate["total_proxies"]}')
+    lines.append(f'rma_proxies_enabled {aggregate["enabled"]}')
+    lines.append(f'rma_proxies_disabled {aggregate["disabled"]}')
+    for proxy, st in status.items():
+        name = proxy.replace('://', '_').replace('/', '_').replace(':', '_')
+        enabled = 1 if st.get('enabled') else 0
+        ok = 1 if st.get('ok') else 0
+        fail_count = st.get('fail_count', 0) or 0
+        success_count = st.get('success_count', 0) or 0
+        latency = st.get('latency') or 0
+        # expose simple metrics with proxy label
+        lines.append(f'rma_proxy_enabled{{proxy="{proxy}"}} {enabled}')
+        lines.append(f'rma_proxy_ok{{proxy="{proxy}"}} {ok}')
+        lines.append(f'rma_proxy_fail_count{{proxy="{proxy}"}} {fail_count}')
+        lines.append(f'rma_proxy_success_count{{proxy="{proxy}"}} {success_count}')
+        lines.append(f'rma_proxy_latency_seconds{{proxy="{proxy}"}} {latency}')
+
+    body = "\n".join(lines) + "\n"
+    return PlainTextResponse(content=body, media_type='text/plain')
+
+
+@app.get('/metrics')
+async def metrics_endpoint():
+    """Prometheus exposition endpoint for RouteMaster agent metrics."""
+    data = generate_latest()
+    return Response(content=data, media_type='text/plain; version=0.0.4')
 
 
 @app.post('/api/admin/rma-alerts/{alert_id}/resolve')

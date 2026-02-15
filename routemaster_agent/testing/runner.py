@@ -67,6 +67,14 @@ class TestRunner:
             "artifacts_path": str(self.output_root),
             "results": results,
         }
+
+        # send alert if failures or selector spikes
+        try:
+            from routemaster_agent.alerting import notify_test_summary
+            notify_test_summary(summary)
+        except Exception:
+            pass
+
         return summary
 
     async def _run_one(self, train_no: str, context, sem: asyncio.Semaphore) -> Dict[str, Any]:
