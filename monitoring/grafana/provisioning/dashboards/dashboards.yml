@@ -15,3 +15,4 @@ providers:
         - ai_dashboard.json
         - sos_dashboard.json
         - inventory_dashboard.json
+        - routemaster_observability.json

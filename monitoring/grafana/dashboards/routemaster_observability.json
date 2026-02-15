@@ -1,0 +1,209 @@
+{
+  "apiVersion": 1,
+  "folderId": 0,
+  "overwrite": true,
+  "uid": "routemaster-observability",
+  "title": "RouteMaster Observability",
+  "tags": ["routemaster","observability","extraction"],
+  "timezone": "browser",
+  "schemaVersion": 30,
+  "version": 1,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "source",
+        "label": "Extractor",
+        "datasource": "prometheus",
+        "query": "label_values(rma_extraction_duration_seconds, source)",
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "ntes_schedule", "value": "ntes_schedule" }
+      },
+      {
+        "type": "query",
+        "name": "proxy",
+        "label": "Proxy",
+        "datasource": "prometheus",
+        "query": "label_values(rma_proxy_health_score, proxy)",
+        "multi": true,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Extraction Success Rate (last 5m)",
+      "id": 1,
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "(sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m]))) * 100",
+          "legendFormat": "success_rate",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Extraction Duration (p50 / p95) by source",
+      "id": 2,
+      "gridPos": { "x": 6, "y": 0, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(rma_extraction_duration_seconds_bucket[5m])) by (le, source))", "legendFormat": "p50 {{source}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(rma_extraction_duration_seconds_bucket[5m])) by (le, source))", "legendFormat": "p95 {{source}}", "refId": "B" }
+      ]
+    },
+    {
+      "type": "bar-chart",
+      "title": "Failures by Extractor (rate /5m)",
+      "id": 3,
+      "gridPos": { "x": 0, "y": 4, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rate(rma_extraction_failures_total[5m])) by (source)", "legendFormat": "{{source}}", "refId": "A" }
+      ],
+      "options": { "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Extraction Attempts (volume)",
+      "id": 4,
+      "gridPos": { "x": 6, "y": 6, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(rma_extraction_attempts_total[5m])) by (source)", "legendFormat": "{{source}}", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "Proxy Intelligence", "gridPos": { "x": 0, "y": 9, "w": 24, "h": 1 }, "id": 100 },
+
+    {
+      "type": "timeseries",
+      "title": "Proxy Health Score (per proxy)",
+      "id": 5,
+      "gridPos": { "x": 0, "y": 10, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "rma_proxy_health_score", "legendFormat": "{{proxy}}", "refId": "A" } ]
+    },
+    {
+      "type": "stat",
+      "title": "Disabled Proxy Count",
+      "id": 6,
+      "gridPos": { "x": 12, "y": 10, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [ { "expr": "count(rma_proxy_health_score < 0.5)", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy Failure Rate (per proxy)",
+      "id": 7,
+      "gridPos": { "x": 18, "y": 10, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "rate(rma_proxy_failures_total[5m]) by (proxy)", "legendFormat": "{{proxy}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy Requests Volume",
+      "id": 8,
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(rma_proxy_requests_total[5m])) by (proxy)", "legendFormat": "{{proxy}}", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "Data Quality", "gridPos": { "x": 0, "y": 18, "w": 24, "h": 1 }, "id": 200 },
+
+    {
+      "type": "table",
+      "title": "Top trains by stations extracted (last 1h)",
+      "id": 9,
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "topk(20, sum(rate(rma_stations_extracted_total[1h])) by (train_number))", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Validation Failures (rate)",
+      "id": 10,
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(rma_validation_failures_total[5m])) by (source)", "legendFormat": "{{source}}", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "DB Mismatch Events",
+      "id": 11,
+      "gridPos": { "x": 0, "y": 25, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "rate(rma_db_mismatch_total[5m])", "legendFormat": "db_mismatch", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "RAPTOR Runtime Intelligence", "gridPos": { "x": 0, "y": 29, "w": 24, "h": 1 }, "id": 300 },
+
+    {
+      "type": "timeseries",
+      "title": "RAPTOR p95 Runtime",
+      "id": 12,
+      "gridPos": { "x": 0, "y": 30, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(rma_raptor_runtime_seconds_bucket[5m])) by (le))", "refId": "A" } ]
+    },
+    {
+      "type": "stat",
+      "title": "RAPTOR Rounds (rate)",
+      "id": 13,
+      "gridPos": { "x": 12, "y": 30, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(rma_raptor_rounds_total[5m]))", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RAPTOR Labels Generated (rate)",
+      "id": 14,
+      "gridPos": { "x": 18, "y": 30, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(rma_raptor_labels_generated_total[5m]))", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "System Reliability Index", "gridPos": { "x": 0, "y": 34, "w": 24, "h": 1 }, "id": 400 },
+
+    {
+      "type": "stat",
+      "title": "Reliability Score (%)",
+      "id": 15,
+      "gridPos": { "x": 0, "y": 35, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "(
+            (sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m])))
+            * (1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1)))
+            * avg(rma_proxy_health_score)
+          ) * 100",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reliability Components (trend)",
+      "id": 16,
+      "gridPos": { "x": 6, "y": 35, "w": 18, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "(sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m]))) * 100", "legendFormat": "Extraction Success %", "refId": "A" },
+        { "expr": "avg(rma_proxy_health_score) * 100", "legendFormat": "Proxy Health (avg)", "refId": "B" },
+        { "expr": "(1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1))) * 100", "legendFormat": "Validation Pass %", "refId": "C" }
+      ]
+    }
+  ],
+  "schemaVersion": 16,
+  "version": 1,
+  "links": []
+}
