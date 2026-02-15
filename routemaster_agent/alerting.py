@@ -67,7 +67,7 @@ def notify_test_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
     Email notifications are disabled by default — alerts are shown on the dashboard.
     Returns a dict summarizing notification + storage actions.
     """
-    results = {"slack": None, "db_logged": None, "reason": None}
+    results = {"slack": None, "db_logged": None, "email": None, "reason": None}
     try:
         failed = summary.get("failed", 0)
         selector_spikes = any((r.get("selector_failures", 0) or 0) >= int(os.getenv('RMA_SELECTOR_FAILURE_THRESHOLD', str(SELECTOR_FAILURE_THRESHOLD))) for r in summary.get("results", []))
@@ -102,10 +102,17 @@ def notify_test_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        # Slack (optional)
-        webhook = os.getenv('RMA_SLACK_WEBHOOK_URL') or os.getenv('RMA_SLACK_WEBHOOK') or SLACK_WEBHOOK
-        if webhook:
-            results['slack'] = _send_slack_message(text)
+        # DO NOT send external messages (email/Slack/WhatsApp) from this service.
+        # Persisted alerts should be surfaced via the developer/passenger dashboards
+        # (Grafana/UI) rather than via outbound messages from this agent.
+        results['slack'] = False
+        results['email'] = False
+
+        # Indicate the dashboard should be updated and provide simple counts
+        results['dashboard_update'] = True
+        results['alerts_created'] = {
+            'total': 1 + sum(1 for r in summary.get('results', []) if not r.get('validation_passed') or ((r.get('selector_failures') or 0) >= int(os.getenv('RMA_SELECTOR_FAILURE_THRESHOLD', str(SELECTOR_FAILURE_THRESHOLD)))))
+        }
 
         return results
     except Exception as e:
