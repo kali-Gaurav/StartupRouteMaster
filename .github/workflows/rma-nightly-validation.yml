@@ -51,3 +51,27 @@ jobs:
         if: always()
         run: |
           echo "Nightly RMA validation completed. Artifacts uploaded."
+
+      - name: Slack notification (optional)
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.RMA_SLACK_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os, json
+          p = 'logs/testing_metrics_$(date +%Y%m%d).json'
+          if not os.path.exists(p):
+              print('no metrics file to report')
+              raise SystemExit(0)
+          failed = []
+          for line in open(p):
+              j = json.loads(line)
+              if not j.get('validation_passed'):
+                  failed.append(j)
+          text = f"RMA nightly: tested {len(open(p).read().strip().splitlines())} trains — {len(failed)} failed"
+          if failed:
+              text += "\nFailed trains: " + ", ".join(str(x['train_number']) for x in failed)
+          import requests
+          resp = requests.post(os.environ['SLACK_WEBHOOK'], json={'text': text})
+          print('slack status', resp.status_code)
+          PY
