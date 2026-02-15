@@ -18,9 +18,28 @@ scrape_configs:
   - job_name: 'routemaster_api'
     metrics_path: /metrics
     static_configs:
-      - targets: ['api:8000']
+      - targets: ['host.docker.internal:8000']  # For local backend
 
   - job_name: 'grafana'
     metrics_path: /metrics
     static_configs:
       - targets: ['grafana:3000']
+
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9101']  # JMX metrics if configured
+
+  - job_name: 'scraper'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['scraper:8001']
+
+  - job_name: 'route_service'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['route_service:8002']
+
+  - job_name: 'rl_service'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['rl_service:8003']

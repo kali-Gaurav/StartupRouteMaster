@@ -60,6 +60,10 @@ class MultiModalRouteEngine:
         # Load stops
         stops = db.query(Stop).all()
         for stop in stops:
+            # prefer an explicit safety_score column if available in the DB model, otherwise default to 50
+            safety = getattr(stop, 'safety_score', None)
+            if safety is None:
+                safety = 50
             self.stops_map[stop.id] = {
                 'stop_id': stop.stop_id,
                 'name': stop.name,
@@ -67,7 +71,8 @@ class MultiModalRouteEngine:
                 'lat': stop.latitude,
                 'lon': stop.longitude,
                 'location_type': stop.location_type,
-                'parent_station': stop.parent_station_id
+                'parent_station': stop.parent_station_id,
+                'safety_score': float(safety)
             }
 
         # Load routes
@@ -448,6 +453,93 @@ class MultiModalRouteEngine:
         }
         return mapping.get(route_type, 'unknown')
 
+    def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, transfers: int, layover_penalty: float = 0.0) -> float:
+        """Compute feasibility score for connecting / multimodal journeys.
+        Keeps the same weighting strategy as the main RouteEngine.
+        """
+        wt = getattr(Config, 'FEASIBILITY_WEIGHT_TIME', 1.0)
+        wc = getattr(Config, 'FEASIBILITY_WEIGHT_COST', 0.01)
+        wf = getattr(Config, 'FEASIBILITY_WEIGHT_COMFORT', 0.5)
+        wtr = getattr(Config, 'FEASIBILITY_WEIGHT_TRANSFERS', 5.0)
+
+        time_hours = total_time_minutes / 60.0
+        score = (wf * (safety_score / 100.0)) - (wt * time_hours) - (wc * total_cost) - (wtr * transfers) - layover_penalty
+        return score
+
+    def _combine_journeys(self, j1: Dict, j2: Dict, layover_minutes: float) -> Dict:
+        """Combine two journeys into a connecting journey and compute feasibility score."""
+        combined_segments = j1['segments'] + j2['segments']
+        total_duration = j1['total_duration_minutes'] + j2['total_duration_minutes'] + layover_minutes
+        total_cost = j1['total_cost'] + j2['total_cost']
+
+        # Determine safety score: average of involved stops' safety_score when available
+        stop_names = [seg.get('from_stop') or seg.get('from') for seg in combined_segments if seg.get('from_stop') or seg.get('from')]
+        safety_vals = []
+        # try to map stop names back to stop entries
+        for stop_id, stop_info in self.stops_map.items():
+            if stop_info['name'] in stop_names and isinstance(stop_info.get('safety_score'), (int, float)):
+                safety_vals.append(float(stop_info['safety_score']))
+        if safety_vals:
+            safety_score = sum(safety_vals) / len(safety_vals)
+        else:
+            # fallback heuristic
+            safety_score = max(1, 100 - (len(combined_segments) - 1) * 10 - int(total_duration / 60 / 24))
+
+        # Night layover penalty (if layover in night window)
+        NIGHT_START = 22 * 60
+        NIGHT_END = 5 * 60
+        layover_penalty = 0.0
+        # check approximate time of layover using j1 last segment arrival
+        if j1['segments']:
+            last_seg = j1['segments'][-1]
+            # attempt to parse time objects or strings
+            try:
+                arr_time = last_seg.get('arrival_time')
+                if isinstance(arr_time, str):
+                    hh, mm = map(int, arr_time.split(':'))
+                    arr_min = hh * 60 + mm
+                else:
+                    arr_min = arr_time.hour * 60 + arr_time.minute
+                if (arr_min >= NIGHT_START) or (arr_min <= NIGHT_END):
+                    station_name = j1['destination']
+                    # find station safety
+                    station_safety = 50.0
+                    for sid, sinfo in self.stops_map.items():
+                        if sinfo['name'] == station_name:
+                            station_safety = float(sinfo.get('safety_score', station_safety))
+                            break
+                    station_factor = max(0.0, 1.0 - station_safety / 100.0)
+                    layover_penalty = station_factor * getattr(Config, 'NIGHT_LAYOVER_PENALTY', 1.0)
+            except Exception:
+                # defensive: if we cannot parse times, ignore layover penalty
+                pass
+
+        feasibility = self._compute_feasibility_score(
+            total_time_minutes=total_duration,
+            total_cost=total_cost,
+            safety_score=safety_score,
+            transfers=j1.get('transfers', 0) + j2.get('transfers', 0) + 1,
+            layover_penalty=layover_penalty
+        )
+
+        return {
+            'journey_id': f"connecting_{j1['journey_id']}_{j2['journey_id']}",
+            'source': j1['source'],
+            'destination': j2['destination'],
+            'departure_date': j1['departure_date'],
+            'segments': combined_segments,
+            'total_duration_minutes': total_duration,
+            'total_cost': total_cost,
+            'transfers': j1['transfers'] + j2['transfers'] + 1,  # +1 for inter-journey transfer
+            'modes': list(set(j1['modes'] + j2['modes'])),
+            'layover_minutes': layover_minutes,
+            'connecting_stations': [j1['destination']],
+            'pnr_references': [j1.get('pnr_reference'), j2.get('pnr_reference')],
+            'safety_score': safety_score,
+            'layover_penalty': layover_penalty,
+            'feasibility_score': feasibility
+        }
+
     def search_connecting_journeys(self, journeys: List[Dict], min_layover: int = 30,
                                  max_layover: int = 240) -> List[Dict]:
         """
@@ -517,26 +609,7 @@ class MultiModalRouteEngine:
             pass
         return None
 
-    def _combine_journeys(self, j1: Dict, j2: Dict, layover_minutes: float) -> Dict:
-        """Combine two journeys into a connecting journey."""
-        combined_segments = j1['segments'] + j2['segments']
-        total_duration = j1['total_duration_minutes'] + j2['total_duration_minutes'] + layover_minutes
-        total_cost = j1['total_cost'] + j2['total_cost']
 
-        return {
-            'journey_id': f"connecting_{j1['journey_id']}_{j2['journey_id']}",
-            'source': j1['source'],
-            'destination': j2['destination'],
-            'departure_date': j1['departure_date'],
-            'segments': combined_segments,
-            'total_duration_minutes': total_duration,
-            'total_cost': total_cost,
-            'transfers': j1['transfers'] + j2['transfers'] + 1,  # +1 for inter-journey transfer
-            'modes': list(set(j1['modes'] + j2['modes'])),
-            'layover_minutes': layover_minutes,
-            'connecting_stations': [j1['destination']],
-            'pnr_references': [j1.get('pnr_reference'), j2.get('pnr_reference')]
-        }
 
     def search_circular_journey(self, outward_journey: Dict, return_date: date,
                               max_layover: int = 1440) -> List[Dict]:
@@ -732,15 +805,22 @@ class MultiModalRouteEngine:
         # Check for active disruptions
         disruptions = []
         if disruption_db:
-            travel_date = datetime.fromisoformat(journey['departure_date']).date()
-            disruptions = disruption_db.query(Disruption).filter(
-                Disruption.status == "active",
-                or_(
-                    and_(Disruption.start_time <= datetime.combine(travel_date, datetime.max.time()),
-                         Disruption.end_time >= datetime.combine(travel_date, datetime.min.time())),
-                    Disruption.gtfs_route_id.in_([s.get('route_id') for s in journey.get('segments', [])])
-                )
-            ).all()
+            try:
+                travel_date = datetime.fromisoformat(journey['departure_date']).date()
+                disruptions = disruption_db.query(Disruption).filter(
+                    Disruption.status == "active",
+                    or_(
+                        and_(Disruption.start_time <= datetime.combine(travel_date, datetime.max.time()),
+                             Disruption.end_time >= datetime.combine(travel_date, datetime.min.time())),
+                        Disruption.gtfs_route_id.in_([s.get('route_id') for s in journey.get('segments', [])])
+                    )
+                ).all()
+            except Exception as e:
+                logger.error(f"Error querying disruptions: {e}")
+                disruptions = []
+            except Exception as e:
+                logger.error(f"Error querying disruptions: {e}")
+                disruptions = []
 
         # Apply delays based on disruptions
         for disruption in disruptions:

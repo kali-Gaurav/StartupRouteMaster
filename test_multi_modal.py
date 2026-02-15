@@ -8,7 +8,14 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.services.multi_modal_route_engine import MultiModalRouteEngine
+# Import directly to avoid __init__.py issues
+import importlib.util
+spec = importlib.util.spec_from_file_location("multi_modal_route_engine", "backend/services/multi_modal_route_engine.py")
+multi_modal_module = importlib.util.module_from_spec(spec)
+sys.modules["multi_modal_route_engine"] = multi_modal_module
+spec.loader.exec_module(multi_modal_module)
+MultiModalRouteEngine = multi_modal_module.MultiModalRouteEngine
+
 from backend.database import get_db
 from datetime import date
 

@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
-from app import app
+from backend.app import app
 from backend.database import get_db
 from backend.models import StationMaster
 from backend.services.cache_service import CacheService

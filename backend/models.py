@@ -322,6 +322,39 @@ class Payment(Base):
 
 
 # ==============================================================================
+# NEW TABLES FOR ADVANCED FEATURES
+# ==============================================================================
+
+class RealtimeData(Base):
+    """For dynamic updates like train locations, delays, cancellations."""
+    __tablename__ = "realtime_data"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type = Column(String(50), nullable=False, index=True)  # e.g., 'delay', 'cancellation', 'location_update'
+    entity_type = Column(String(50), nullable=False)  # e.g., 'trip', 'stop', 'route'
+    entity_id = Column(String(100), nullable=False, index=True)  # ID of the affected entity
+    data = Column(JSON, nullable=False)  # Flexible JSON for event-specific data
+    timestamp = Column(DateTime, nullable=False, index=True)
+    source = Column(String(100), nullable=False)  # e.g., 'api', 'web_scraper', 'iot_sensor'
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class RLFeedbackLog(Base):
+    """Logs for Reinforcement Learning feedback."""
+    __tablename__ = "rl_feedback_logs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    session_id = Column(String(36), nullable=False, index=True)
+    action = Column(String(100), nullable=False)  # e.g., 'route_selected', 'booking_completed'
+    context = Column(JSON, nullable=False)  # User context, search params, etc.
+    reward = Column(Float, nullable=False)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
+# ==============================================================================
 # DEPRECATED MODELS (To be removed after migration)
 # ==============================================================================
 
@@ -343,49 +376,54 @@ class PrecalculatedRoute(Base):
 # Note: The original 'routes' table was renamed to 'precalculated_routes' to make its purpose clear.
 # The following models are now obsolete due to the new GTFS structure.
 
-# class Vehicle(Base):
-#     __tablename__ = "vehicles"
-#     __table_args__ = (
-#         CheckConstraint("type IN ('train', 'bus', 'flight')", name="vehicle_type_check"),
-#     )
-#     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-#     vehicle_number = Column(String(50), nullable=False)
-#     type = Column(String(50), nullable=False)
-#     operator = Column(String(255), nullable=False)
-#     capacity = Column(Integer, nullable=True)
-#     segments = relationship("Segment", back_populates="vehicle")
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+    __table_args__ = (
+        CheckConstraint("type IN ('train', 'bus', 'flight')", name="vehicle_type_check"),
+    )
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    vehicle_number = Column(String(50), nullable=False)
+    type = Column(String(50), nullable=False)
+    operator = Column(String(255), nullable=False)
+    capacity = Column(Integer, nullable=True)
+    segments = relationship("Segment", back_populates="vehicle")
 
-# class Station(Base):
-#     __tablename__ = "stations"
-#     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-#     name = Column(String(255), nullable=False, index=True)
-#     city = Column(String(255), nullable=False, index=True)
-#     latitude = Column(Float, nullable=False)
-#     longitude = Column(Float, nullable=False)
-#     geom = Column(Geometry("POINT", srid=4326), nullable=True)
-#     created_at = Column(DateTime, default=datetime.utcnow)
-#     segments_from = relationship("Segment", foreign_keys="Segment.source_station_id", back_populates="source_station")
-#     segments_to = relationship("Segment", foreign_keys="Segment.dest_station_id", back_populates="dest_station")
+class Station(Base):
+    __tablename__ = "stations"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=False, index=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    geom = Column(Geometry("POINT", srid=4326), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    segments_from = relationship("Segment", foreign_keys="Segment.source_station_id", back_populates="source_station")
+    segments_to = relationship("Segment", foreign_keys="Segment.dest_station_id", back_populates="dest_station")
 
-# class Segment(Base):
-#     __tablename__ = "segments"
-#     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-#     source_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
-#     dest_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
-#     vehicle_id = Column(String(36), ForeignKey("vehicles.id"), nullable=True, index=True)
-#     transport_mode = Column(String(50), nullable=False)
-#     departure_time = Column(String(8), nullable=False)
-#     arrival_time = Column(String(8), nullable=False)
-#     duration_minutes = Column(Integer, nullable=False)
-#     cost = Column(Float, nullable=False)
-#     operating_days = Column(String(7), nullable=False, default="1111111")
-#     source_station = relationship("Station", foreign_keys=[source_station_id], back_populates="segments_from")
-#     dest_station = relationship("Station", foreign_keys=[dest_station_id], back_populates="segments_to")
-#     vehicle = relationship("Vehicle", back_populates="segments")
-#     inventories = relationship("SeatInventory", back_populates="segment")
+class Segment(Base):
+    __tablename__ = "segments"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    source_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
+    dest_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
+    vehicle_id = Column(String(36), ForeignKey("vehicles.id"), nullable=True, index=True)
+    transport_mode = Column(String(50), nullable=False)
+    departure_time = Column(String(8), nullable=False)
+    arrival_time = Column(String(8), nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    cost = Column(Float, nullable=False)
+    operating_days = Column(String(7), nullable=False, default="1111111")
+    source_station = relationship("Station", foreign_keys=[source_station_id], back_populates="segments_from")
+    dest_station = relationship("Station", foreign_keys=[dest_station_id], back_populates="segments_to")
+    vehicle = relationship("Vehicle", back_populates="segments")
+    # SeatInventory now references `stop_time_id`; remove direct Segment->SeatInventory relationship to avoid FK mismatch in tests
 
-# class StationMaster(Base):
-#     __tablename__ = "stations_master"
-#     station_code = Column(String(10), primary_key=True)
-#     station_name = Column(String(255), nullable=False, index=True)
-#     # ... other fields
+class StationMaster(Base):
+    __tablename__ = "stations_master"
+    station_code = Column(String(10), primary_key=True)
+    station_name = Column(String(255), nullable=False, index=True)
+    city = Column(String(255), nullable=True, index=True)
+    state = Column(String(255), nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    is_junction = Column(Boolean, default=False)
+    # keep a minimal legacy model used by seed scripts and older APIs

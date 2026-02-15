@@ -4,7 +4,12 @@ from typing import Optional, Dict, List, Any
 import logging
 from time import sleep
 
-from backend.models import Booking, Route as RouteModel, Payment, User, Segment # Import Segment model
+from backend.models import Booking, Route as RouteModel, Payment, User
+# `Segment` model is optional (was removed/commented in models.py); import if present
+try:
+    from backend.models import Segment
+except Exception:
+    Segment = None
 from backend.schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
 

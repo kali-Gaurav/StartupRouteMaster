@@ -6,12 +6,8 @@ import uuid
 
 from backend.services.cache_service import cache_service
 from backend.api.websockets import manager
-# Import the limiter instance from the main app if available; fall back to a local Limiter
-try:
-    from backend.app import limiter  # prefer the shared limiter
-except Exception:
-    from slowapi import Limiter
-    limiter = Limiter(key_func=lambda request: request.client.host if hasattr(request, 'client') else 'local')
+# Use the shared limiter from its source module
+from backend.utils.limiter import limiter
 
 router = APIRouter(prefix="/api/sos", tags=["sos"])
 

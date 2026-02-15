@@ -21,6 +21,7 @@ import json
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend.database import Base, get_db
 from backend.models import StationMaster
@@ -31,8 +32,12 @@ from backend.models import StationMaster
 @pytest.fixture(scope="session")
 def db():
     """Provide a test database session and seed station_master for station search tests."""
-    # Create an in-memory SQLite DB for tests
-    engine = create_engine("sqlite:///:memory:")
+    # Create a thread-shared in-memory SQLite DB for tests (StaticPool + check_same_thread=False)
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     # Avoid geoalchemy2 DDL calls which require SpatiaLite/PostGIS in sqlite
     try:

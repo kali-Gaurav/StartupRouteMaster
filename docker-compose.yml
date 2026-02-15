@@ -20,6 +20,24 @@ services:
       timeout: 5s
       retries: 5
 
+  routemaster_db:
+    image: postgis/postgis:15-3.3
+    container_name: startupv2_routemaster_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: routemaster
+    volumes:
+      - routemaster_pgdata:/var/lib/postgresql/data
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d routemaster"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis/redis-stack:7.2.0-v9
     container_name: startupv2_redis
@@ -32,5 +50,246 @@ services:
       timeout: 5s
       retries: 5
 
+  # Message Broker: Apache Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: startupv2_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: startupv2_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+
+  # Observability: Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: startupv2_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  # Observability: Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: startupv2_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  # Observability: Loki for logging
+  loki:
+    image: grafana/loki:latest
+    container_name: startupv2_loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./monitoring/loki/local-config.yaml:/etc/loki/local-config.yaml
+
+  # Observability: Promtail for log shipping
+  promtail:
+    image: grafana/promtail:latest
+    container_name: startupv2_promtail
+    volumes:
+      - /var/log:/var/log
+      - ./monitoring/promtail/config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+
+  # Scraper Orchestrator Service
+  scraper:
+    build: ./backend/scraper
+    container_name: startupv2_scraper
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+      - kafka
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend/scraper:/app/backend/scraper
+    networks:
+      - default
+
+  # Scraper Worker (Celery)
+  scraper_worker:
+    build: ./backend/scraper
+    container_name: startupv2_scraper_worker
+    depends_on:
+      - redis
+      - kafka
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend/scraper:/app/backend/scraper
+    command: celery -A app.celery worker --loglevel=info
+    networks:
+      - default
+
+  # ETL Consumer Service
+  etl:
+    build: ./backend/etl
+    container_name: startupv2_etl
+    depends_on:
+      - db
+      - kafka
+    restart: unless-stopped
+    networks:
+      - default
+
+  # Route Search & Optimization Service
+  route_service:
+    build: ./backend/route_service
+    container_name: startupv2_route_service
+    ports:
+      - "8002:8002"
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - default
+
+  # ML & RL Recommendation Service
+  rl_service:
+    build: ./backend/rl_service
+    container_name: startupv2_rl_service
+    ports:
+      - "8003:8003"
+    depends_on:
+      - redis
+      - kafka
+    environment:
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - default
+
+  user_service:
+    build: ./backend/user_service
+    container_name: startupv2_user_service
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=your-secret-key-change-in-production
+    depends_on:
+      - db
+      - redis
+    networks:
+      - default
+
+  payment_service:
+    build: ./backend/payment_service
+    container_name: startupv2_payment_service
+    restart: unless-stopped
+    ports:
+      - "8005:8005"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379
+      - SECRET_KEY=your-secret-key-change-in-production
+      - STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
+      - STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+    depends_on:
+      - db
+      - redis
+    networks:
+      - default
+
+  notification_service:
+    build: ./backend/notification_service
+    container_name: startupv2_notification_service
+    restart: unless-stopped
+    ports:
+      - "8006:8006"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379
+      - TWILIO_ACCOUNT_SID=your_twilio_account_sid
+      - TWILIO_AUTH_TOKEN=your_twilio_auth_token
+      - TWILIO_PHONE_NUMBER=your_twilio_phone_number
+      - SENDGRID_API_KEY=your_sendgrid_api_key
+      - FROM_EMAIL=noreply@railwayintelligence.com
+    depends_on:
+      - db
+      - redis
+    networks:
+      - default
+
+  api_gateway:
+    build: ./backend/api_gateway
+    container_name: startupv2_api_gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SCRAPER_URL=http://scraper:8001
+      - ROUTE_URL=http://route_service:8002
+      - RL_URL=http://rl_service:8003
+      - USER_URL=http://user_service:8004
+      - PAYMENT_URL=http://payment_service:8005
+      - NOTIFICATION_URL=http://notification_service:8006
+    depends_on:
+      - scraper
+      - etl
+      - route_service
+      - user_service
+    networks:
+      - default
+
+  routemaster_agent:
+    build: ./routemaster_agent
+    container_name: startupv2_routemaster_agent
+    ports:
+      - "8008:8008"
+    environment:
+      - RMA_DATABASE_URL=postgresql://postgres:postgres@routemaster_db:5432/routemaster
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - routemaster_db
+      - redis
+    networks:
+      - default
+
 volumes:
   pgdata: {}
+  grafana_data: {}
+  routemaster_pgdata: {}

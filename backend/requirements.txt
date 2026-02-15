@@ -21,3 +21,10 @@ prometheus-fastapi-instrumentator
 GeoAlchemy2==0.13.3
 APScheduler
 fastapi-cache2
+confluent-kafka[librdkafka]==2.3.0
+celery==5.3.4
+scrapy==2.11.1
+itemadapter==0.8.0
+kafka-python==2.0.2
+twilio==8.2.2
+sendgrid==6.10.0

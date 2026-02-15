@@ -238,10 +238,23 @@ class RouteEngine:
         return h * 60 + m
 
     def _build_route_indices(self):
-        """Precompute per-route station -> segment positions and departure minutes for binary-search boarding."""
+        """Precompute per-route station -> segment positions and departure minutes for binary-search boarding.
+        Also (re)builds `routes_by_station` from `route_segments` when necessary so tests that set
+        `route_segments` directly behave correctly.
+        """
         import bisect
         self.route_stop_index = {}
         self.route_stop_departures = {}
+        # rebuild routes_by_station from route_segments if it's empty
+        if not self.routes_by_station:
+            self.routes_by_station = {}
+            for route_id, segs in self.route_segments.items():
+                for order_index, seg in enumerate(segs):
+                    for st_id in (seg["source_station_id"], seg["dest_station_id"]):
+                        self.routes_by_station.setdefault(st_id, [])
+                        if not any(r["route_id"] == route_id for r in self.routes_by_station[st_id]):
+                            self.routes_by_station[st_id].append({"route_id": route_id, "station_order": order_index})
+
         for route_id, segs in self.route_segments.items():
             pos_map = {}
             dep_map = {}
@@ -258,6 +271,10 @@ class RouteEngine:
         if source_id == dest_id:
             return []
 
+        # ensure indices and routes_by_station are up-to-date (helps unit tests that set route_segments directly)
+        if not self.route_stop_index or not self.route_stop_departures or not self.routes_by_station:
+            self._build_route_indices()
+
         INF = float('inf')
         best_labels = {s: [] for s in self.stations_map.keys()}
         prev_segment = {s: {} for s in self.stations_map.keys()}
@@ -268,10 +285,16 @@ class RouteEngine:
         min_transfer = getattr(Config, "TRANSFER_WINDOW_MIN", 0)
         max_transfer = getattr(Config, "TRANSFER_WINDOW_MAX", 24 * 60)
 
+        import os
+        debug = os.getenv('ROUTEENGINE_DEBUG', '0') == '1'
+
         for round_idx in range(max_rounds + 1):
             if not marked_stations:
                 break
             
+            if debug:
+                print(f"[RAPTOR DEBUG] Round {round_idx}, marked_stations={marked_stations}")
+
             next_marked = set()
             
             for st in list(marked_stations):
@@ -324,6 +347,8 @@ class RouteEngine:
                                     label_hash = hash((new_arrival_time, new_cost))
                                     prev_segment[dst][label_hash] = (downstream["id"], arr_time, arr_cost)
                                     next_marked.add(dst)
+                                    if debug:
+                                        print(f"[RAPTOR DEBUG] Updated label for {dst} -> time={new_arrival_time} cost={new_cost} via seg={downstream['id']}")
 
             marked_stations = next_marked
 
@@ -400,7 +425,8 @@ class RouteEngine:
         cache_key = f"route:{source}:{destination}:{travel_date}:{budget_category}"
         if cache_service.is_available():
             cached = cache_service.get(cache_key)
-            if cached is not None:
+            # treat empty list as a cache-miss so engine can recompute (helps tests & fresh data)
+            if cached:
                 return cached
 
         source_station_id = self.station_name_to_id.get(source.lower())
@@ -436,9 +462,12 @@ class RouteEngine:
         total_cost = sum(s["cost"] for s in segment_list)
         total_duration_minutes = sum(s["duration"] for s in segment_list)
         segments_data = []
+        station_ids = []
         for s in segment_list:
             src = self.stations_map.get(s["source_station_id"], {"name": "unknown"})
             dst = self.stations_map.get(s["dest_station_id"], {"name": "unknown"})
+            station_ids.append(s["source_station_id"])
+            station_ids.append(s["dest_station_id"])
             segments_data.append({
                 "mode": s["mode"],
                 "from": src["name"],
@@ -449,6 +478,49 @@ class RouteEngine:
                 "cost": s["cost"],
                 "details": f"Vehicle ID: {s.get('vehicle_id')}",
             })
+
+        # Compute route-level safety score: prefer explicit station safety if available, else fallback to heuristic
+        safety_values = []
+        for sid in set(station_ids):
+            st = self.stations_map.get(sid, {})
+            if isinstance(st.get("safety_score"), (int, float)):
+                safety_values.append(float(st.get("safety_score")))
+        if safety_values:
+            safety_score = sum(safety_values) / len(safety_values)
+        else:
+            safety_score = max(1, 100 - (len(segment_list) - 1) * 10 - int(total_duration_minutes / 60 / 24))
+
+        # Calculate layover penalties (penalize night layovers at low-safety stations)
+        layover_penalty = 0.0
+        NIGHT_START = 22 * 60
+        NIGHT_END = 5 * 60
+        for i in range(len(segment_list) - 1):
+            prev = segment_list[i]
+            nxt = segment_list[i + 1]
+            # transfer detected if vehicle changes or station differs
+            if prev["dest_station_id"] == nxt["source_station_id"] and prev.get("vehicle_id") != nxt.get("vehicle_id"):
+                prev_arr = self._time_to_minutes(prev["arrival"]) + prev.get("arrival_day_offset", 0) * 24 * 60
+                next_dep = self._time_to_minutes(nxt["departure"]) + nxt.get("departure_day_offset", 0) * 24 * 60
+                layover_minutes = next_dep - prev_arr
+
+                # Check if layover occurs during night window (rough check)
+                arr_hour_min = prev_arr % (24 * 60)
+                if (arr_hour_min >= NIGHT_START) or (arr_hour_min <= NIGHT_END):
+                    # station safety (if available) affects penalty
+                    st = self.stations_map.get(prev["dest_station_id"], {})
+                    station_safety = float(st.get("safety_score", safety_score))
+                    station_factor = max(0.0, 1.0 - station_safety / 100.0)
+                    layover_penalty += station_factor * getattr(Config, 'NIGHT_LAYOVER_PENALTY', 1.0)
+
+        # Compute feasibility score (higher = better)
+        feasibility = self._compute_feasibility_score(
+            total_time_minutes=total_duration_minutes,
+            total_cost=total_cost,
+            safety_score=safety_score,
+            num_transfers=len(segment_list) - 1,
+            layover_penalty=layover_penalty
+        )
+
         return {
             "id": f"route_{hashlib.md5(json.dumps(segments_data, sort_keys=True).encode()).hexdigest()[:12]}",
             "source": source,
@@ -457,11 +529,27 @@ class RouteEngine:
             "total_duration": format_duration(total_duration_minutes),
             "total_duration_minutes": total_duration_minutes,
             "total_cost": total_cost,
-            "safetyScore": max(1, 100 - (len(segment_list) - 1) * 10 - int(total_duration_minutes / 60 / 24)),
+            "safetyScore": safety_score,
             "budget_category": budget_category or "standard",
             "num_transfers": len(segment_list) - 1,
             "is_unlocked": False,
+            "layover_penalty": layover_penalty,
+            "feasibility_score": feasibility,
         }
+
+    def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, num_transfers: int, layover_penalty: float = 0.0) -> float:
+        """Compute a scalar feasibility score for ranking routes (higher is better).
+        Uses configurable weights in Config but keeps units normalized so tests remain stable.
+        """
+        wt = getattr(Config, 'FEASIBILITY_WEIGHT_TIME', 1.0)
+        wc = getattr(Config, 'FEASIBILITY_WEIGHT_COST', 0.01)
+        wf = getattr(Config, 'FEASIBILITY_WEIGHT_COMFORT', 0.5)
+        wtr = getattr(Config, 'FEASIBILITY_WEIGHT_TRANSFERS', 5.0)
+
+        time_hours = total_time_minutes / 60.0
+        # Higher safety_score increases score; other terms decrease it
+        score = (wf * (safety_score / 100.0)) - (wt * time_hours) - (wc * total_cost) - (wtr * num_transfers) - layover_penalty
+        return score
 
     def is_loaded(self) -> bool:
         return self._is_loaded

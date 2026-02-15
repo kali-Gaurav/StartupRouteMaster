@@ -17,7 +17,7 @@ from backend.api import sos as sos_api
 from backend.database import get_db
 from backend.models import User, Route as RouteModel
 from backend.api.dependencies import get_current_user, get_optional_user
-from backend.app import limiter # Import the shared limiter
+from backend.utils.limiter import limiter  # import limiter from its source module
 from pybreaker import CircuitBreaker, CircuitBreakerError # New: Import CircuitBreaker
 
 logger = logging.getLogger(__name__)

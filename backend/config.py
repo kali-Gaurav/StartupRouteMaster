@@ -27,6 +27,13 @@ class Config:
     # Pareto / multi-option search
     PARETO_LIMIT = int(os.getenv("PARETO_LIMIT", "3"))
 
+    # Feasibility / ranking weights (used by route scoring)
+    FEASIBILITY_WEIGHT_TIME = float(os.getenv("FEASIBILITY_WEIGHT_TIME", "1.0"))
+    FEASIBILITY_WEIGHT_COST = float(os.getenv("FEASIBILITY_WEIGHT_COST", "0.01"))
+    FEASIBILITY_WEIGHT_COMFORT = float(os.getenv("FEASIBILITY_WEIGHT_COMFORT", "0.5"))
+    FEASIBILITY_WEIGHT_TRANSFERS = float(os.getenv("FEASIBILITY_WEIGHT_TRANSFERS", "5.0"))
+    NIGHT_LAYOVER_PENALTY = float(os.getenv("NIGHT_LAYOVER_PENALTY", "1.0"))
+
     # Redis graph storage + HMAC signing
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")
     ROUTE_GRAPH_REDIS_KEY = os.getenv("ROUTE_GRAPH_REDIS_KEY", "route_engine:graph")
@@ -47,6 +54,9 @@ class Config:
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+    # RouteMaster Agent service
+    RMA_URL = os.getenv("RMA_URL", "http://routemaster_agent:8008")
 
     # Circuit Breaker settings for OpenRouter
     OPENROUTER_CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv("OPENROUTER_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "5"))

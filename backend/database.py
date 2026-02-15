@@ -1,10 +1,8 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.pool import QueuePool
-from sqlalchemy.ext.horizontal_shard import ShardedSession
 import logging
 
-from typing import Optional
 from fastapi import Request
 
 from backend.config import Config
@@ -35,48 +33,34 @@ if Config.READ_DATABASE_URL:
     )
 
 # --- Custom Connection Routing ---
-class RoutingSession(ShardedSession):
+class RoutingSession(Session):
+    """Session subclass that routes to a read-replica for read-only work when
+    available. This keeps behaviour simple and avoids the additional
+    requirements that come with SQLAlchemy's horizontal sharding session.
     """
-    A SQLAlchemy session that routes connections to a read replica for read-only
-    operations if a read replica is configured.
-    """
-    def _name_for_object(self, obj):
-        # We don't need object-level sharding, so this method is simplified.
-        # This determines which 'shard' (engine) an object belongs to.
-        # For simplicity, we'll route based on the session's read_only flag.
-        return 'reader' if getattr(self, '_read_only', False) and engine_read else 'writer'
 
-    def _shard_chooser(self, mapper, instance, clause=None):
-        if getattr(self, '_read_only', False) and engine_read:
-            return 'reader'
-        return 'writer'
+    def get_bind(self, mapper=None, **kw):
+        # Optional explicit shard_id (kept for backward-compatibility).
+        shard_id = kw.pop("shard_id", None)
+        if shard_id == "reader":
+            return engine_read if engine_read else engine_write
+        if shard_id == "writer":
+            return engine_write
 
-    def _choose_conn_for_mapper(self, mapper, read_only=False, **kw):
-        if read_only and engine_read:
-            return self.get_bind(mapper, shard_id='reader', **kw)
-        return self.get_bind(mapper, shard_id='writer', **kw)
-
-    def get_bind(self, mapper=None, *, shard_id=None, **kw):
-        if shard_id:
-            if shard_id == 'reader':
-                if engine_read:
-                    return engine_read
-                else:
-                    logger.warning("Read replica requested but not configured, falling back to writer.")
-                    return engine_write
-            elif shard_id == 'writer':
-                return engine_write
-        # Fallback if no shard_id or special routing is determined
+        # Use session-level flag (set by dependency) to route reads to replica
+        if getattr(self, "_read_only", False) and engine_read:
+            return engine_read
         return engine_write
 
-    def connection(self, mapper=None, *, shard_id=None, **kw):
+    def connection(self, mapper=None, **kw):
+        # Allow explicit shard_id to be passed through to get_bind
+        shard_id = kw.pop("shard_id", None)
         if shard_id:
-            return super().connection(mapper=mapper, shard_id=shard_id, **kw)
-        
-        # Determine if this connection should be read-only based on the session's flag
-        if getattr(self, '_read_only', False) and engine_read:
-            return super().connection(mapper=mapper, shard_id='reader', **kw)
-        return super().connection(mapper=mapper, shard_id='writer', **kw)
+            return super().connection(mapper=mapper, **{**kw, "shard_id": shard_id})
+
+        if getattr(self, "_read_only", False) and engine_read:
+            return super().connection(mapper=mapper)
+        return super().connection(mapper=mapper)
 
 # --- Session Factory ---
 # Bind to both engines for the RoutingSession
@@ -84,29 +68,34 @@ SessionLocal = sessionmaker(
     class_=RoutingSession,
     autocommit=False,
     autoflush=False,
+    # Bind the session factory to the primary write engine by default. The
+    # RoutingSession.get_bind implementation will return the read-replica
+    # when appropriate (db._read_only is set by the dependency).
+    bind=engine_write,
 )
-SessionLocal.configure(
-    binds={'writer': engine_write, 'reader': engine_read or engine_write}
-)
+
+# Backwards-compatibility alias expected by many modules/tests
+engine = engine_write
 
 Base = declarative_base()
 
 # --- Dependency to get a database session ---
-def get_db(request: Optional[Request] = None):
-    """
-    Dependency to get a database session.
+def get_db(request: Request = None):
+    """Dependency to get a database session.
     Routes read-only requests to the read replica if available.
+    Accepting a bare `Request` (possibly None) avoids confusing FastAPI's dependency analyzer
+    when `typing.Optional[Request]` is present.
     """
     db = SessionLocal()
     # Check if the request method implies a read-only operation
     # FastAPI's Request object has a method attribute
-    if request and request.method == "GET" and engine_read:
+    if request and getattr(request, "method", None) == "GET" and engine_read:
         db._read_only = True
         logger.debug("Using read replica for GET request.")
     else:
         db._read_only = False
         logger.debug("Using write database for non-GET or no-read-replica-configured request.")
-        
+
     try:
         yield db
     except Exception as e:

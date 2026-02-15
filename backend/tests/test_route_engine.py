@@ -487,3 +487,74 @@ class TestParetoPruning:
                                route["total_cost"] < other_route["total_cost"]))
         finally:
             Config.PARETO_LIMIT = old_limit
+
+
+class TestFeasibilityScoring:
+    """Tests for feasibility scoring, safety and night-layover penalties."""
+
+    def setup_routeengine(self):
+        from backend.services.route_engine import route_engine
+        route_engine.stations_map = {}
+        route_engine.segments_map = {}
+        route_engine.route_segments = {}
+        route_engine.station_name_to_id = {}
+        route_engine._is_loaded = True
+        return route_engine
+
+    def test_safer_layover_preferred(self):
+        re = self.setup_routeengine()
+        # stations A, B (unsafe), D (safe), C
+        re.stations_map = {
+            "S1": {"name": "A", "safety_score": 80},
+            "S2": {"name": "B", "safety_score": 10},
+            "S3": {"name": "C", "safety_score": 80},
+            "S4": {"name": "D", "safety_score": 90}
+        }
+        re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3", "d": "S4"}
+
+        # Two transfer routes with a clear trade-off so both are Pareto-optimal:
+        # - via B: faster but more expensive (unsafe)
+        # - via D: slower but cheaper (safe)
+        s1 = {"id": "seg_ab", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:40", "duration": 100, "cost": 70.0, "operating_days": "1111111", "vehicle_id": "v1", "mode": "train"}
+        s2 = {"id": "seg_bc", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:50", "arrival": "10:40", "duration": 50, "cost": 50.0, "operating_days": "1111111", "vehicle_id": "v2", "mode": "train"}
+
+        s3 = {"id": "seg_ad", "source_station_id": "S1", "dest_station_id": "S4", "departure": "08:00", "arrival": "09:30", "duration": 90, "cost": 40.0, "operating_days": "1111111", "vehicle_id": "v3", "mode": "train"}
+        s4 = {"id": "seg_dc", "source_station_id": "S4", "dest_station_id": "S3", "departure": "09:45", "arrival": "11:00", "duration": 75, "cost": 60.0, "operating_days": "1111111", "vehicle_id": "v4", "mode": "train"}
+
+        re.segments_map = {"seg_ab": s1, "seg_bc": s2, "seg_ad": s3, "seg_dc": s4}
+        re.route_segments = {"route_1": [s1, s2], "route_2": [s3, s4]}
+
+        results = re.search_routes("A", "C", "2026-02-16")
+        assert len(results) >= 2
+        # The route via D (safe layover) should have higher feasibility_score than via B (unsafe)
+        scores = {tuple(seg['from'] for seg in r['segments']): r['feasibility_score'] for r in results}
+        route_via_b = scores.get(("A", "B"))
+        route_via_d = scores.get(("A", "D"))
+        assert route_via_d is not None and route_via_b is not None
+        assert route_via_d > route_via_b
+
+    def test_night_layover_penalized(self):
+        re = self.setup_routeengine()
+        re.stations_map = {"S1": {"name": "A", "safety_score": 60}, "S2": {"name": "B", "safety_score": 60}, "S3": {"name": "C", "safety_score": 60}}
+        re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
+
+        # Route 1: day layover at B (slightly slower)
+        s1 = {"id": "s1", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:30", "duration": 90, "cost": 50.0, "operating_days": "1111111", "vehicle_id": "v1", "mode": "train"}
+        s2 = {"id": "s2", "source_station_id": "S2", "dest_station_id": "S3", "departure": "10:00", "arrival": "11:00", "duration": 60, "cost": 50.0, "operating_days": "1111111", "vehicle_id": "v2", "mode": "train"}
+
+        # Route 2: night layover at B (slightly faster but gets a night-penalty)
+        s3 = {"id": "s3", "source_station_id": "S1", "dest_station_id": "S2", "departure": "22:30", "arrival": "23:30", "duration": 60, "cost": 40.0, "operating_days": "1111111", "vehicle_id": "v3", "mode": "train"}
+        s4 = {"id": "s4", "source_station_id": "S2", "dest_station_id": "S3", "departure": "00:30", "arrival": "01:30", "duration": 60, "cost": 50.0, "operating_days": "1111111", "vehicle_id": "v4", "mode": "train", "departure_day_offset": 1}
+
+        re.segments_map = {"s1": s1, "s2": s2, "s3": s3, "s4": s4}
+        re.route_segments = {"route_day": [s1, s2], "route_night": [s3, s4]}
+
+        results = re.search_routes("A", "C", "2026-02-16")
+        assert len(results) >= 2
+        # find feasibility scores
+        scores = [r['feasibility_score'] for r in results]
+        # night route must have strictly lower feasibility score due to night-layover penalty
+        night_scores = [r['feasibility_score'] for r in results if any(seg['departure_time']=="22:30" or seg['arrival_time']=="23:30" for seg in r['segments'])]
+        day_scores = [r['feasibility_score'] for r in results if any(seg['departure_time']=="08:00" for seg in r['segments'])]
+        assert night_scores and day_scores
+        assert max(day_scores) > max(night_scores)

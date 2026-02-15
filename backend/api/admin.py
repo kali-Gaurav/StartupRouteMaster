@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from sqlalchemy.orm import Session
+from typing import List
 import logging
 
 from backend.database import get_db
@@ -160,6 +161,23 @@ async def reload_route_engine_graph(
     except Exception as e:
         logger.error(f"Failed to reload route engine graph: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reload graph: {e}")
+
+
+@router.post("/enrich-trains")
+async def admin_enrich_trains(
+    train_numbers: List[str],
+    date: str = Query("today"),
+    per_segment: bool = Query(False),
+    _: bool = Depends(verify_admin_token),
+):
+    """Admin endpoint that forwards enrich request to the RouteMaster agent service."""
+    try:
+        from backend.services.routemaster_client import enrich_trains_remote
+        result = await enrich_trains_remote(train_numbers, date=date, use_disha=True, per_segment=per_segment)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        logger.error(f"Failed to call routemaster agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/disruptions")
