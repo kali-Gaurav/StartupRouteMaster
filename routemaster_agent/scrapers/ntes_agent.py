@@ -19,6 +19,8 @@ class NTESAgent:
 
         proxy_id = getattr(getattr(page, 'context', None), '_rma_proxy', 'direct') or 'direct'
         source_label = 'ntes_schedule'
+        # per-extraction confidence (1.0 = high)
+        confidence = 1.0
         RMA_EXTRACTION_ATTEMPTS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
         timer = RMA_EXTRACTION_DURATION_SECONDS.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).time()
         try:
@@ -103,8 +105,25 @@ class NTESAgent:
             # If no stations found via expected selector, try selector-adaptation heuristics
             if not stations:
                 try:
+                    # primary selector failed — increment primary failure metric
+                    try:
+                        from routemaster_agent.metrics import RMA_SELECTOR_PRIMARY_FAILURES_TOTAL
+                        RMA_SELECTOR_PRIMARY_FAILURES_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc()
+                    except Exception:
+                        pass
+
                     from routemaster_agent.scrapers.selector_adapt import extract_table_heuristic
                     stations = await extract_table_heuristic(page)
+                    # semantic/table heuristic succeeded
+                    if stations:
+                        try:
+                            from routemaster_agent.metrics import RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL, RMA_SELECTOR_FALLBACK_TOTAL
+                            RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc()
+                            RMA_SELECTOR_FALLBACK_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc()
+                        except Exception:
+                            pass
+                        # semantic fallback is less confident than primary
+                        confidence = 0.85
                 except Exception:
                     stations = []
 
@@ -136,6 +155,15 @@ class NTESAgent:
                                         'distance': tds[7] if len(tds) > 7 else None,
                                         'platform': tds[8] if len(tds) > 8 else None,
                                     })
+                    # server-side fallback used — count as fallback and lower confidence
+                    if stations:
+                        try:
+                            from routemaster_agent.metrics import RMA_SELECTOR_FALLBACK_TOTAL
+                            RMA_SELECTOR_FALLBACK_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc()
+                        except Exception:
+                            pass
+                        # server-side fallback is lower-confidence
+                        confidence = 0.6
                 except Exception:
                     pass
             # best-effort train-level metadata
@@ -161,6 +189,13 @@ class NTESAgent:
 
             timer.__exit__(None, None, None)
             RMA_EXTRACTION_SUCCESS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                # clamp confidence
+                c = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(max(0.0, min(1.0, c)))
+            except Exception:
+                pass
 
             return {
                 "train_no": train_no,
@@ -177,6 +212,11 @@ class NTESAgent:
             print(f"Error fetching schedule for {train_no}: {e}")
             try:
                 timer.__exit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                RMA_EXTRACTION_CONFIDENCE.labels(source='ntes_schedule', train_number=train_no).set(0.0)
             except Exception:
                 pass
             RMA_EXTRACTION_FAILURES_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
@@ -218,6 +258,11 @@ class NTESAgent:
 
             timer.__exit__(None, None, None)
             RMA_EXTRACTION_SUCCESS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(1.0)
+            except Exception:
+                pass
 
             return {
                 "train_no": train_no,
@@ -229,6 +274,11 @@ class NTESAgent:
             print(f"NTES live-status error for {train_no}: {e}")
             try:
                 timer.__exit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(0.0)
             except Exception:
                 pass
             RMA_EXTRACTION_FAILURES_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()

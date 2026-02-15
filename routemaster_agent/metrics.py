@@ -72,6 +72,28 @@ RMA_PROXY_HEALTH_SCORE = Gauge(
     ['proxy']
 )
 
+# --- Selector telemetry & extraction confidence ---
+RMA_SELECTOR_FALLBACK_TOTAL = Counter(
+    'rma_selector_fallback_total',
+    'Number of times selector fallback was used.',
+    ['source', 'train_number']
+)
+RMA_SELECTOR_PRIMARY_FAILURES_TOTAL = Counter(
+    'rma_selector_primary_failures_total',
+    'Number of times primary selector failed and fallback was attempted.',
+    ['source', 'train_number']
+)
+RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL = Counter(
+    'rma_selector_semantic_success_total',
+    'Number of times semantic/table heuristic successfully extracted data.',
+    ['source', 'train_number']
+)
+RMA_EXTRACTION_CONFIDENCE = Gauge(
+    'rma_extraction_confidence',
+    'Per-extraction confidence score (0.0-1.0).',
+    ['source', 'train_number']
+)
+
 # --- Route engine metrics (instrumented in backend) ---
 # Placeholders here for local imports if needed elsewhere in the agent.
 
@@ -90,4 +112,8 @@ __all__ = [
     'RMA_PROXY_FAILURES_TOTAL',
     'RMA_PROXY_DISABLED_TOTAL',
     'RMA_PROXY_HEALTH_SCORE',
+    'RMA_SELECTOR_FALLBACK_TOTAL',
+    'RMA_SELECTOR_PRIMARY_FAILURES_TOTAL',
+    'RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL',
+    'RMA_EXTRACTION_CONFIDENCE',
 ]

@@ -16,6 +16,7 @@ from backend.services.cache_service import cache_service
 from backend.utils.time_utils import format_duration
 from backend.etl.sqlite_to_postgres import REDIS_PUB_SUB_CHANNEL # New: Import Pub/Sub channel name
 from backend.services.delay_predictor import delay_predictor  # New: Import delay predictor
+from backend.services.route_ranking_predictor import route_ranking_predictor  # New: Import route ranking predictor
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +569,9 @@ class RouteEngine:
             routes = [r for r in routes if r["total_cost"] <= max_budget]
 
         routes.sort(key=lambda r: (r["total_duration_minutes"], r["total_cost"]))
+
+        # Apply dynamic route ranking using ML model
+        routes = route_ranking_predictor.rank_routes(routes)
 
         if cache_service.is_available():
             ttl = getattr(Config, 'ROUTE_CACHE_TTL_SECONDS', getattr(Config, 'CACHE_TTL_SECONDS', 600))

@@ -14,6 +14,7 @@ class AskDishaAgent:
 
         proxy_id = getattr(getattr(page, 'context', None), '_rma_proxy', 'direct') or 'direct'
         source_label = 'askdisha'
+        confidence = 1.0
         RMA_EXTRACTION_ATTEMPTS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
         timer = RMA_EXTRACTION_DURATION_SECONDS.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).time()
 
@@ -45,6 +46,11 @@ class AskDishaAgent:
 
             timer.__exit__(None, None, None)
             RMA_EXTRACTION_SUCCESS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(confidence)
+            except Exception:
+                pass
 
             return {
                 "train_no": train_no,
@@ -60,6 +66,11 @@ class AskDishaAgent:
             print(f"Disha Verification Failed: {e}")
             try:
                 timer.__exit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(0.0)
             except Exception:
                 pass
             RMA_EXTRACTION_FAILURES_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
