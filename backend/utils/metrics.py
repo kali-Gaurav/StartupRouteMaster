@@ -171,6 +171,11 @@ RMA_ROUTE_SCORE_DELTA = Histogram(
     buckets=(-2.0, -1.0, -0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 1.0, 2.0)
 )
 
+RMA_ROUTE_RELIABILITY_WEIGHT_USED = Gauge(
+    'rma_route_reliability_weight_used',
+    'Current active reliability weight used in routing decisions.'
+)
+
 # --- ML Pipeline Data Quality Metrics ---
 # Feature extraction metrics
 ML_FEATURE_EXTRACTION_ATTEMPTS_TOTAL = Counter(

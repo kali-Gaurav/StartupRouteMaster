@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package route;
+
+import "google/protobuf/timestamp.proto";
+
+service RouteService {
+  rpc FindRoutes (RouteRequest) returns (RouteResponse);
+  rpc UpdateGraph (GraphUpdateRequest) returns (GraphUpdateResponse);
+  rpc GetStationReachability (ReachabilityRequest) returns (ReachabilityResponse);
+}
+
+message RouteRequest {
+  string from_station_id = 1;
+  string to_station_id = 2;
+  google.protobuf.Timestamp departure_date = 3;
+  int32 max_transfers = 4;
+  string user_id = 5;
+  repeated string preferences = 6;
+}
+
+message RouteResponse {
+  repeated Route routes = 1;
+  string search_id = 2;
+  double latency_ms = 3;
+  bool cached = 4;
+}
+
+message Route {
+  string route_id = 1;
+  repeated Leg legs = 2;
+  double total_duration_mins = 3;
+  double total_price = 4;
+  double reliability_score = 5;
+}
+
+message Leg {
+  string trip_id = 1;
+  string train_number = 2;
+  string train_name = 3;
+  string from_station_id = 4;
+  string to_station_id = 5;
+  google.protobuf.Timestamp departure_time = 6;
+  google.protobuf.Timestamp arrival_time = 7;
+  int32 duration_mins = 8;
+  double distance_km = 9;
+}
+
+message GraphUpdateRequest {
+  string train_number = 1;
+  string delay_type = 2;
+  int32 delay_minutes = 3;
+  string current_station_id = 4;
+}
+
+message GraphUpdateResponse {
+  bool success = 1;
+  int32 affected_routes_count = 2;
+}
+
+message ReachabilityRequest {
+  string source_station_id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  int32 max_duration_mins = 3;
+}
+
+message ReachabilityResponse {
+  map<string, int32> reachable_stations = 1; // station_id -> travel_time
+}

@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package inventory;
+
+import "google/protobuf/timestamp.proto";
+
+service InventoryService {
+  rpc CheckAvailability (AvailabilityRequest) returns (AvailabilityResponse);
+  rpc LockSeats (LockRequest) returns (LockResponse);
+  rpc ReleaseSeats (ReleaseRequest) returns (ReleaseResponse);
+  rpc AllocateSeats (AllocationRequest) returns (AllocationResponse);
+}
+
+message AvailabilityRequest {
+  string train_id = 1;
+  string from_stop_id = 2;
+  string to_stop_id = 3;
+  google.protobuf.Timestamp travel_date = 4;
+  string quota_type = 5; // e.g., GENERAL, TATKAL
+  string class_type = 6; // e.g., 2A, 3A, SL
+}
+
+message AvailabilityResponse {
+  int32 available_count = 1;
+  string status = 2; // e.g., AVAILABLE, RAC, WL
+  int32 prediction_accuracy = 3;
+  double price = 4;
+}
+
+message LockRequest {
+  string train_id = 1;
+  string from_stop_id = 2;
+  string to_stop_id = 3;
+  google.protobuf.Timestamp travel_date = 4;
+  int32 count = 5;
+  string lock_token = 6;
+  int32 expiry_seconds = 7;
+}
+
+message LockResponse {
+  bool success = 1;
+  string lock_id = 2;
+  string error_message = 3;
+}
+
+message ReleaseRequest {
+  string lock_id = 1;
+}
+
+message ReleaseResponse {
+  bool success = 1;
+}
+
+message AllocationRequest {
+  string lock_id = 1;
+  string pnr = 2;
+}
+
+message AllocationResponse {
+  bool success = 1;
+  repeated string seat_numbers = 2;
+}

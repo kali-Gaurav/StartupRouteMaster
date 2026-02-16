@@ -455,4 +455,38 @@ class RouteSearchLog(Base):
 
     user = relationship("User", back_populates="route_search_logs")  # Assuming we add this to User model
 
-# Add to User model if needed, but for now, just define the table
+# ==============================================================================
+# REAL-TIME GRAPH MUTATION MODELS
+# ==============================================================================
+
+class TrainState(Base):
+    """Real-time state of trains for graph mutation engine"""
+    __tablename__ = "train_states"
+    __table_args__ = (
+        Index("idx_train_states_trip_id", "trip_id"),
+        Index("idx_train_states_status", "status"),
+        Index("idx_train_states_last_updated", "last_updated"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trip_id = Column(Integer, nullable=False, unique=True, index=True)  # References trips.id
+    train_number = Column(String(50), nullable=False, index=True)
+    current_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
+    next_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
+    delay_minutes = Column(Integer, default=0, nullable=False)
+    status = Column(String(20), default="on_time", nullable=False)  # on_time, delayed, cancelled, running_late
+    platform_number = Column(String(10), nullable=True)
+    last_updated = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    estimated_arrival = Column(DateTime, nullable=True)
+    estimated_departure = Column(DateTime, nullable=True)
+    occupancy_rate = Column(Float, default=0.0, nullable=False)  # 0.0 to 1.0
+    cancelled_stations = Column(JSON, default=list, nullable=False)  # List of cancelled stop IDs
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    current_station = relationship("Stop", foreign_keys=[current_station_id])
+    next_station = relationship("Stop", foreign_keys=[next_station_id])
+
+    def __repr__(self):
+        return f"<TrainState(trip_id={self.trip_id}, status={self.status}, delay={self.delay_minutes})>"

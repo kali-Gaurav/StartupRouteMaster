@@ -5,7 +5,7 @@ import logging
 
 from fastapi import Request
 
-from backend.config import Config
+from .config import Config
 
 logger = logging.getLogger(__name__)
 

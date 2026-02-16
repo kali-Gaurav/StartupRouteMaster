@@ -11,9 +11,16 @@ from routemaster_agent.scrapers.disha_agent import AskDishaAgent
 from routemaster_agent.pipeline.processor import DataPipeline
 from routemaster_agent.cache import cache
 from routemaster_agent.monitoring.proxy_monitor import ProxyMonitor
+from routemaster_agent.command_interface import CommandInterface
+from routemaster_agent.ai.agent_state_manager import agent_state_manager
+from routemaster_agent.scheduler import AutonomousScheduler
 
 app = FastAPI(title="RouteMaster AI Agent")
 _proxy_monitor: Optional[ProxyMonitor] = None
+
+# Initialize AI components
+command_interface = CommandInterface(app)
+autonomous_scheduler = AutonomousScheduler()
 
 class RouteRequest(BaseModel):
     train_number: str
@@ -271,6 +278,25 @@ async def admin_recompute_reliability(payload: dict):
     return {"results": results}
 
 
+@app.post('/api/admin/reliability/get')
+async def get_train_reliabilities_endpoint(payload: dict):
+    """Get reliability scores for a list of trains.
+
+    Payload: {"trains": ["12345", "12951"]}
+    Returns: {"12345": 0.85, "12951": 0.92}
+    """
+    trains = payload.get('trains') or []
+    if not trains:
+        return {"error": "no trains provided"}, 400
+
+    from routemaster_agent.intelligence.train_reliability import get_train_reliabilities
+    try:
+        results = get_train_reliabilities(trains)
+        return results
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
 # Alerts API (for dashboard retrieval)
 @app.get('/api/admin/rma-alerts')
 async def list_rma_alerts(limit: int = 50, unresolved_only: bool = True):
@@ -416,3 +442,20 @@ async def _background_fetch_and_store(train_number: str):
         await pipeline.update_database(schedule, live)
     finally:
         await browser_mgr.close()
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize AI components on startup."""
+    await command_interface.initialize()
+    await autonomous_scheduler.initialize()
+    autonomous_scheduler.start()
+    agent_state_manager.load_state_from_file()  # Load previous state
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    autonomous_scheduler.stop()
+    await command_interface.shutdown()
+    agent_state_manager.save_state_to_file()  # Save state for recovery

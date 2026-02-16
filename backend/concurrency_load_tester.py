@@ -21,8 +21,12 @@ import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
-import matplotlib.pyplot as plt
-import numpy as np
+try:
+    import matplotlib.pyplot as plt
+    import numpy as np
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 from prometheus_client import Counter, Histogram, Gauge
 
 # Metrics
@@ -447,6 +451,10 @@ class ConcurrencyTestReporter:
     @staticmethod
     def plot_results(results: List[ConcurrencyTestResult], output_file: str = "concurrency_test.png"):
         """Generate visualization of test results"""
+        if not HAS_MATPLOTLIB:
+            logging.warning("matplotlib not available, skipping visualization")
+            return
+            
         try:
             concurrency_levels = [r.concurrency_level for r in sorted(results, key=lambda x: x.concurrency_level)]
             throughput = [r.requests_per_second for r in sorted(results, key=lambda x: x.concurrency_level)]

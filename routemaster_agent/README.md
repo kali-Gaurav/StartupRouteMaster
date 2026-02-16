@@ -11,6 +11,11 @@ Notes:
 - The scrapers use Playwright and require browser binaries (step 3).
 - DB defaults to a local SQLite file created at runtime.
 
+Architecture boundary (MANDATORY):
+- `routemaster_agent` is a data-intelligence & ingestion service only — it writes validated data to the shared database and exposes admin/inspection endpoints.
+- **Do not** import or call backend application logic from inside `routemaster_agent`.
+- Communication MUST be: Agent → Database → Backend (no direct Agent→Backend logic coupling).
+
 API Endpoints:
 - POST /api/unlock-route-details  — single train verification (NTES + Disha)
 - POST /api/enrich-trains       — batch enrich (schedules, live status, optional Disha checks)

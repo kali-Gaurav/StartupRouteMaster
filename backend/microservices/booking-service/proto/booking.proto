@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package booking;
+
+import "google/protobuf/timestamp.proto";
+
+service BookingService {
+  rpc InitiateBooking (BookingRequest) returns (BookingResponse);
+  rpc GetBookingStatus (StatusRequest) returns (StatusResponse);
+  rpc CancelBooking (CancelRequest) returns (CancelResponse);
+}
+
+message BookingRequest {
+  string user_id = 1;
+  string train_id = 2;
+  string from_stop_id = 3;
+  string to_stop_id = 4;
+  google.protobuf.Timestamp travel_date = 5;
+  string quota_type = 6;
+  string class_type = 7;
+  repeated Passenger passengers = 8;
+  string payment_method_id = 9;
+}
+
+message Passenger {
+  string name = 1;
+  int32 age = 2;
+  string gender = 3;
+  string berth_preference = 4;
+}
+
+message BookingResponse {
+  string pnr = 1;
+  string status = 2; // PENDING, CONFIRMED, FAILED
+  double total_amount = 3;
+  string transaction_id = 4;
+  string error_message = 5;
+}
+
+message StatusRequest {
+  string pnr = 1;
+}
+
+message StatusResponse {
+  string pnr = 1;
+  string status = 2;
+  repeated string seat_numbers = 3;
+  google.protobuf.Timestamp booking_time = 4;
+}
+
+message CancelRequest {
+  string pnr = 1;
+  string reason = 2;
+}
+
+message CancelResponse {
+  bool success = 1;
+  double refund_amount = 2;
+  string cancellation_id = 3;
+}

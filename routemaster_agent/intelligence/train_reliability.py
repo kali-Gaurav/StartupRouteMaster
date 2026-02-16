@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict
 
 from routemaster_agent.intelligence.reliability import compute_reliability_score
 from routemaster_agent.database.db import SessionLocal
@@ -52,3 +52,28 @@ def compute_and_store(train_number: str, *, avg_extraction_confidence: float, sc
     score = compute_train_reliability(avg_extraction_confidence=avg_extraction_confidence, schedule_drift_score=schedule_drift_score, delay_probability=delay_probability)
     store_train_reliability(train_number, reliability_score=score, avg_extraction_confidence=avg_extraction_confidence, schedule_drift_score=schedule_drift_score, delay_probability=delay_probability, window_minutes=window_minutes)
     return score
+
+
+def get_train_reliabilities(train_numbers: List[str]) -> Dict[str, float]:
+    """Get latest reliability scores for a list of train numbers.
+    
+    Returns a dict mapping train_number -> reliability_score.
+    If no reliability data exists for a train, returns 1.0 (neutral/default).
+    """
+    db = SessionLocal()
+    try:
+        # Get the latest reliability record for each train
+        results = {}
+        for train_no in train_numbers:
+            row = db.query(TrainReliabilityIndex).filter(
+                TrainReliabilityIndex.train_number == train_no
+            ).order_by(TrainReliabilityIndex.id.desc()).first()
+            
+            if row:
+                results[train_no] = row.reliability_score
+            else:
+                results[train_no] = 1.0  # Default neutral score
+        
+        return results
+    finally:
+        db.close()

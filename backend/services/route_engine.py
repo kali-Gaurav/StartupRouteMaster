@@ -309,12 +309,9 @@ class RouteEngine:
                 RMA_CACHE_MISS_TOTAL,
                 ROUTING_LABELS_GENERATED_TOTAL,
                 ROUTING_ROUNDS_PROCESSED_TOTAL,
-                RMA_ROUTING_RELIABILITY_APPLIED_TOTAL,
-                RMA_ROUTE_AVG_RELIABILITY,
-                RMA_ROUTE_SCORE_DELTA,
             )
         except Exception:
-            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = RMA_CACHE_HIT_TOTAL = RMA_CACHE_MISS_TOTAL = ROUTING_LABELS_GENERATED_TOTAL = ROUTING_ROUNDS_PROCESSED_TOTAL = RMA_ROUTING_RELIABILITY_APPLIED_TOTAL = RMA_ROUTE_AVG_RELIABILITY = RMA_ROUTE_SCORE_DELTA = None
+            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = RMA_CACHE_HIT_TOTAL = RMA_CACHE_MISS_TOTAL = ROUTING_LABELS_GENERATED_TOTAL = ROUTING_ROUNDS_PROCESSED_TOTAL = None
 
         if source_id == dest_id:
             return []
@@ -573,7 +570,8 @@ class RouteEngine:
             return []
 
         raw_paths = self._raptor_mvp(source_station_id, dest_station_id, date_obj, max_rounds=Config.MAX_TRANSFERS)
-        routes = [await self._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
+        route_tasks = [self._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
+        routes = await asyncio.gather(*route_tasks)
         routes = [r for r in routes if r]
 
         budget_limits = {"economy": 1000, "standard": 2000, "premium": 5000}
@@ -712,26 +710,17 @@ class RouteEngine:
                 train_ids = [str(s.get('vehicle_id')) for s in segment_list if s.get('vehicle_id')]
                 unique_trains = list({t for t in train_ids if t})
                 if unique_trains:
-                    rel_map = await get_train_reliabilities(unique_trains)
+                    rel_map = get_train_reliabilities(unique_trains)
                     vals = [rel_map.get(t, 1.0) for t in unique_trains]
                     avg_rel = sum(vals) / len(vals) if vals else 1.0
                     # penalty scales with (1 - avg_rel)
                     reliability_penalty = float(getattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.0)) * (1.0 - avg_rel)
                     feasibility = feasibility - reliability_penalty
-
-                    # Record reliability-aware routing metrics
-                    if RMA_ROUTING_RELIABILITY_APPLIED_TOTAL is not None:
-                        RMA_ROUTING_RELIABILITY_APPLIED_TOTAL.inc()
-                    if RMA_ROUTE_AVG_RELIABILITY is not None:
-                        RMA_ROUTE_AVG_RELIABILITY.observe(avg_rel)
-                    if RMA_ROUTE_SCORE_DELTA is not None:
-                        RMA_ROUTE_SCORE_DELTA.observe(-reliability_penalty)  # negative because it's a penalty
         except Exception:
             # fail-open: do not penalize if RMA is unavailable
             avg_rel = 1.0
             reliability_penalty = 0.0
 
-```
         # Get Tatkal demand prediction
         current_time = datetime.now()
         route_info_for_tatkal = {
