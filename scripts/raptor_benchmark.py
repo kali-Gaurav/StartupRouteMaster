@@ -13,6 +13,7 @@ import argparse
 import psutil
 import os
 from datetime import datetime
+import asyncio
 
 # Ensure project root is on sys.path so `backend` package is importable when running this script directly
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,13 +98,13 @@ if __name__ == "__main__":
         a, b = random.sample(station_names, 2)
         queries.append((a, b))
 
-    def run_benchmark(ml_enabled=True):
+    async def run_benchmark(ml_enabled=True):
         """Run benchmark with ML enabled/disabled"""
         # Temporarily disable ML if needed
         if not ml_enabled:
             # Monkey patch to disable ML ranking
             original_rank = route_engine.search_routes
-            def search_without_ml(source, destination, travel_date, budget_category=None):
+            async def search_without_ml(source, destination, travel_date, budget_category=None):
                 if not route_engine._is_loaded:
                     raise RuntimeError("RouteEngine graph is not loaded.")
 
@@ -134,7 +135,7 @@ if __name__ == "__main__":
                     return []
 
                 raw_paths = route_engine._raptor_mvp(source_station_id, dest_station_id, date_obj, max_rounds=Config.MAX_TRANSFERS)
-                routes = [route_engine._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
+                routes = [await route_engine._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
                 routes = [r for r in routes if r]
 
                 budget_limits = {"economy": 1000, "standard": 2000, "premium": 5000}
@@ -169,7 +170,7 @@ if __name__ == "__main__":
         start_time = time.time()
         for q in queries:
             query_start = time.perf_counter()
-            _ = route_engine.search_routes(q[0], q[1], "2026-02-16")
+            _ = await route_engine.search_routes(q[0], q[1], "2026-02-16")
             times.append(time.perf_counter() - query_start)
             # collect metrics from the route_engine if available
             m = getattr(route_engine, "_last_metrics", None)
@@ -221,8 +222,8 @@ if __name__ == "__main__":
     # Run benchmark
     if args.compare_ml:
         print("Running comparison: ML enabled vs disabled...")
-        result_with_ml = run_benchmark(ml_enabled=True)
-        result_without_ml = run_benchmark(ml_enabled=False)
+        result_with_ml = asyncio.run(run_benchmark(ml_enabled=True))
+        result_without_ml = asyncio.run(run_benchmark(ml_enabled=False))
         
         output = {
             "benchmark_config": {
@@ -240,7 +241,7 @@ if __name__ == "__main__":
             }
         }
     else:
-        result = run_benchmark(ml_enabled=args.ml_enabled)
+        result = asyncio.run(run_benchmark(ml_enabled=args.ml_enabled))
         output = {
             "benchmark_config": {
                 "stations": args.stations,

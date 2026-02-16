@@ -48,7 +48,11 @@ class AskDishaAgent:
             RMA_EXTRACTION_SUCCESS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
             try:
                 from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
-                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(confidence)
+                from routemaster_agent.intelligence.reliability import compute_extraction_confidence
+                c = float(confidence) if isinstance(confidence, (int, float)) else 0.0
+                # no retries here and validation passed on success path
+                score = compute_extraction_confidence(selector_confidence=c, retry_count=0, validation_pass_rate=1.0, proxy_health_score=1.0)
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(score)
             except Exception:
                 pass
 

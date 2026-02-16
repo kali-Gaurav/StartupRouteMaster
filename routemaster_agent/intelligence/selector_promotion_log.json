@@ -1,0 +1,42 @@
+[
+  {
+    "page_type": "ntes_schedule",
+    "old_primary": "table.bad",
+    "new_primary": "table.good",
+    "timestamp": "2026-02-16T15:16:41.396867",
+    "primary_failure_rate": 0.375,
+    "backup_sample_size": 31
+  },
+  {
+    "page_type": "ntes_schedule",
+    "old_primary": "primary.sel",
+    "new_primary": "backup.good",
+    "timestamp": "2026-02-16T15:16:41.559336",
+    "primary_failure_rate": 0.15841584158415842,
+    "backup_sample_size": 20
+  },
+  {
+    "page_type": "ntes_schedule",
+    "old_primary": "primary.sel",
+    "new_primary": "backup.small",
+    "timestamp": "2026-02-16T15:16:41.608598",
+    "primary_failure_rate": 0.3333333333333333,
+    "backup_sample_size": 25
+  },
+  {
+    "page_type": "ntes_schedule",
+    "old_primary": "primary.sel",
+    "new_primary": "backup.good",
+    "timestamp": "2026-02-16T15:16:41.634852",
+    "primary_failure_rate": 0.6666666666666666,
+    "backup_sample_size": 30
+  },
+  {
+    "page_type": "ntes_schedule",
+    "old_primary": "primary.sel",
+    "new_primary": "backup.good",
+    "timestamp": "2026-02-16T15:16:41.667553",
+    "primary_failure_rate": 0.9090909090909091,
+    "backup_sample_size": 30
+  }
+]

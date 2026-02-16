@@ -92,3 +92,140 @@ RMA_CACHE_MISS_TOTAL = Counter(
     'rma_cache_miss_total',
     'Total number of route cache misses.'
 )
+
+# --- Event Streaming Metrics ---
+# Histogram for route search latency
+ROUTE_LATENCY_MS = Histogram(
+    'route_latency_ms',
+    'Histogram of route search latency in milliseconds.',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
+)
+
+# Histogram for event publish latency
+EVENT_PUBLISH_LATENCY_MS = Histogram(
+    'event_publish_latency_ms',
+    'Histogram of event publish latency in milliseconds.',
+    buckets=(0.1, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500)
+)
+
+# Counter for event publish failures
+EVENT_PUBLISH_FAILURES_TOTAL = Counter(
+    'event_publish_failures_total',
+    'Total number of event publish failures.',
+    ['topic', 'error_type']
+)
+
+# Gauge for circuit breaker state
+CIRCUIT_BREAKER_STATE = Gauge(
+    'circuit_breaker_state',
+    'Current state of the circuit breaker (0=closed, 1=open).'
+)
+
+# Counter for circuit breaker opens
+CIRCUIT_BREAKER_OPENS_TOTAL = Counter(
+    'circuit_breaker_opens_total',
+    'Total number of circuit breaker opens.'
+)
+
+# Gauge for consumer lag
+CONSUMER_LAG_SECONDS = Gauge(
+    'consumer_lag_seconds',
+    'Current consumer lag in seconds.',
+    ['topic', 'partition']
+)
+
+# Histogram for ML inference latency
+ML_INFERENCE_LATENCY_MS = Histogram(
+    'ml_inference_latency_ms',
+    'Histogram of ML inference latency in milliseconds.',
+    ['model'],
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
+)
+
+# Routing algorithm stability metrics
+ROUTING_LABELS_GENERATED_TOTAL = Counter(
+    'routing_labels_generated_total',
+    'Total number of labels generated during RAPTOR routing.'
+)
+
+ROUTING_ROUNDS_PROCESSED_TOTAL = Counter(
+    'routing_rounds_processed_total',
+    'Total number of RAPTOR rounds processed.'
+)
+
+# --- Reliability-aware routing metrics (Phase-6) ---
+RMA_ROUTING_RELIABILITY_APPLIED_TOTAL = Counter(
+    'rma_routing_reliability_applied_total',
+    'Total number of routes where reliability penalty was applied.'
+)
+
+RMA_ROUTE_AVG_RELIABILITY = Histogram(
+    'rma_route_avg_reliability',
+    'Average reliability score of routes processed.',
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+)
+
+RMA_ROUTE_SCORE_DELTA = Histogram(
+    'rma_route_score_delta',
+    'Change in route feasibility score due to reliability penalty.',
+    buckets=(-2.0, -1.0, -0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5, 1.0, 2.0)
+)
+
+# --- ML Pipeline Data Quality Metrics ---
+# Feature extraction metrics
+ML_FEATURE_EXTRACTION_ATTEMPTS_TOTAL = Counter(
+    'ml_feature_extraction_attempts_total',
+    'Total number of feature extraction attempts.'
+)
+
+ML_FEATURE_EXTRACTION_FAILURES_TOTAL = Counter(
+    'ml_feature_extraction_failures_total',
+    'Total number of feature extraction failures.',
+    ['failure_reason']
+)
+
+# Data quality gauges
+ML_MISSING_FEATURE_RATE = Gauge(
+    'ml_missing_feature_rate',
+    'Rate of missing features in the feature store (0.0 to 1.0).'
+)
+
+ML_FEATURE_NULL_PERCENTAGE = Gauge(
+    'ml_feature_null_percentage',
+    'Percentage of null values in feature columns (0.0 to 1.0).',
+    ['feature_name']
+)
+
+ML_OUTLIER_RATE = Gauge(
+    'ml_outlier_rate',
+    'Rate of outlier values detected in features (0.0 to 1.0).',
+    ['feature_name']
+)
+
+# Label delay histogram
+ML_LABEL_DELAY_SECONDS = Histogram(
+    'ml_label_delay_seconds',
+    'Time delay between event and label application in seconds.',
+    buckets=(60, 300, 900, 1800, 3600, 7200, 14400, 28800, 86400)  # 1min to 1day
+)
+
+# Dataset quality metrics
+ML_DATASET_RECORD_COUNT = Gauge(
+    'ml_dataset_record_count',
+    'Current number of records in the feature store.',
+    ['table_name']
+)
+
+ML_DATASET_MISSING_LABEL_RATE = Gauge(
+    'ml_dataset_missing_label_rate',
+    'Rate of records missing target labels (0.0 to 1.0).',
+    ['target_variable']
+)
+
+# Feature distribution monitoring
+ML_FEATURE_VALUE_HISTOGRAM = Histogram(
+    'ml_feature_value_histogram',
+    'Distribution of feature values for monitoring drift.',
+    ['feature_name'],
+    buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, float('inf'))
+)

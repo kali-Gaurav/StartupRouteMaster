@@ -78,7 +78,14 @@ class NTESAgent:
             except Exception:
                 train_name = ""
 
-            rows = await page.query_selector_all("table.table-striped tbody tr")
+            # consult selector registry for primary selector for this page type
+            try:
+                from routemaster_agent.intelligence.selector_registry import get_primary_selector, record_selector_result
+                primary_sel = get_primary_selector('ntes_schedule') or 'table.table-striped tbody tr'
+            except Exception:
+                primary_sel = 'table.table-striped tbody tr'
+
+            rows = await page.query_selector_all(primary_sel)
             stations = []
 
             for row in rows:
@@ -105,10 +112,15 @@ class NTESAgent:
             # If no stations found via expected selector, try selector-adaptation heuristics
             if not stations:
                 try:
-                    # primary selector failed — increment primary failure metric
+                    # primary selector failed — increment primary failure metric and registry
                     try:
                         from routemaster_agent.metrics import RMA_SELECTOR_PRIMARY_FAILURES_TOTAL
                         RMA_SELECTOR_PRIMARY_FAILURES_TOTAL.labels(source='ntes_schedule', train_number=train_no).inc()
+                    except Exception:
+                        pass
+                    try:
+                        from routemaster_agent.intelligence.selector_registry import record_selector_result
+                        record_selector_result('ntes_schedule', primary_sel, False)
                     except Exception:
                         pass
 
@@ -187,13 +199,38 @@ class NTESAgent:
             except Exception:
                 pass
 
+            # record primary success in selector registry if primary was used
+            try:
+                from routemaster_agent.intelligence.selector_registry import get_primary_selector, record_selector_result
+                if get_primary_selector('ntes_schedule'):
+                    # primary selector matched and produced stations
+                    record_selector_result('ntes_schedule', get_primary_selector('ntes_schedule'), True)
+            except Exception:
+                pass
+
             timer.__exit__(None, None, None)
             RMA_EXTRACTION_SUCCESS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
             try:
                 from routemaster_agent.metrics import RMA_EXTRACTION_CONFIDENCE
-                # clamp confidence
+                from routemaster_agent.intelligence.reliability import compute_extraction_confidence
+                # selector-based confidence (from heuristics)
                 c = float(confidence) if isinstance(confidence, (int, float)) else 0.0
-                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(max(0.0, min(1.0, c)))
+                # validation pass rate: 1.0 if we extracted stations, else 0.0
+                vpr = 1.0 if stations else 0.0
+                # proxy health (best-effort from ProxyManager status)
+                phs = 1.0
+                try:
+                    from routemaster_agent.proxy import ProxyManager
+                    if proxy_id and proxy_id != 'direct':
+                        st = ProxyManager().get_status().get(proxy_id, {})
+                        succ = st.get('success_count', 0) or 0
+                        fail = st.get('fail_count', 0) or 0
+                        total = succ + fail
+                        phs = (succ / total) if total else (1.0 if st.get('ok') else 0.0)
+                except Exception:
+                    phs = 1.0
+                score = compute_extraction_confidence(selector_confidence=c, retry_count=0, validation_pass_rate=vpr, proxy_health_score=phs)
+                RMA_EXTRACTION_CONFIDENCE.labels(source=source_label, train_number=train_no).set(score)
             except Exception:
                 pass
 

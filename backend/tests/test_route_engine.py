@@ -127,7 +127,7 @@ class TestRouteEngine:
         route_engine._is_loaded = True
         return route_engine
 
-    def test_direct_route(self):
+    async def test_direct_route(self):
         re = self.setup_routeengine()
         # stations
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}
@@ -137,7 +137,7 @@ class TestRouteEngine:
         re.segments_map = {"seg1": seg}
         re.route_segments = {"route_v1": [seg]}
 
-        results = re.search_routes("A", "B", "2026-02-16")
+        results = await re.search_routes("A", "B", "2026-02-16")
         assert len(results) >= 1
         r = results[0]
         assert r["num_transfers"] == 0
@@ -558,3 +558,128 @@ class TestFeasibilityScoring:
         day_scores = [r['feasibility_score'] for r in results if any(seg['departure_time']=="08:00" for seg in r['segments'])]
         assert night_scores and day_scores
         assert max(day_scores) > max(night_scores)
+
+
+class TestReliabilityAwareRouting:
+    """Test reliability-aware deterministic ranking (Phase-6)"""
+
+    def setup_routeengine(self):
+        from backend.services.route_engine import RouteEngine
+        route_engine = RouteEngine()
+        route_engine.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
+        route_engine.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
+        route_engine.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
+        route_engine.routes_by_station = {"S1": ["route_1", "route_2"], "S2": ["route_1", "route_2"], "S3": ["route_1", "route_2"]}
+        route_engine.route_stop_index = {"route_1": {"S1": [0], "S2": [1], "S3": [2]}, "route_2": {"S1": [0], "S2": [1], "S3": [2]}}
+        route_engine.route_stop_departures = {"route_1": {"S1": ["08:00"], "S2": ["09:00"]}, "route_2": {"S1": ["08:00"], "S2": ["09:00"]}}
+        route_engine._is_loaded = True
+        return route_engine
+
+    def test_reliability_weight_zero_no_change(self, monkeypatch):
+        """When ROUTE_RELIABILITY_WEIGHT=0, ranking should be identical to baseline"""
+        from backend.config import Config
+        monkeypatch.setattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.0)
+
+        re = self.setup_routeengine()
+        # Two routes: one with high-reliability train, one with low-reliability
+        s1 = {"id": "seg_ab1", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:00", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "reliable_train", "mode": "train"}
+        s2 = {"id": "seg_bc1", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:30", "arrival": "10:30", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "reliable_train", "mode": "train"}
+
+        s3 = {"id": "seg_ab2", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:00", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "unreliable_train", "mode": "train"}
+        s4 = {"id": "seg_bc2", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:30", "arrival": "10:30", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "unreliable_train", "mode": "train"}
+
+        re.segments_map = {"seg_ab1": s1, "seg_bc1": s2, "seg_ab2": s3, "seg_bc2": s4}
+        re.route_segments = {"route_reliable": [s1, s2], "route_unreliable": [s3, s4]}
+
+        # Mock reliability service to return different scores
+        async def mock_get_train_reliabilities(train_ids):
+            return {"reliable_train": 0.9, "unreliable_train": 0.3}
+
+        monkeypatch.setattr("backend.services.route_engine.get_train_reliabilities", mock_get_train_reliabilities)
+
+        results = re.search_routes("A", "C", "2026-02-16")
+        assert len(results) >= 2
+
+        # Extract feasibility scores
+        scores = {r['id']: r['feasibility_score'] for r in results}
+
+        # With weight=0, both routes should have identical scores (no reliability penalty)
+        assert abs(scores.get('route_reliable', 0) - scores.get('route_unreliable', 0)) < 1e-6
+
+    def test_reliability_weight_positive_prefers_stable(self, monkeypatch):
+        """When ROUTE_RELIABILITY_WEIGHT > 0, stable routes should be preferred"""
+        from backend.config import Config
+        monkeypatch.setattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.25)
+
+        re = self.setup_routeengine()
+        # Two identical routes except for train reliability
+        s1 = {"id": "seg_ab1", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:00", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "reliable_train", "mode": "train"}
+        s2 = {"id": "seg_bc1", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:30", "arrival": "10:30", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "reliable_train", "mode": "train"}
+
+        s3 = {"id": "seg_ab2", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:00", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "unreliable_train", "mode": "train"}
+        s4 = {"id": "seg_bc2", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:30", "arrival": "10:30", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "unreliable_train", "mode": "train"}
+
+        re.segments_map = {"seg_ab1": s1, "seg_bc1": s2, "seg_ab2": s3, "seg_bc2": s4}
+        re.route_segments = {"route_reliable": [s1, s2], "route_unreliable": [s3, s4]}
+
+        # Mock reliability service
+        async def mock_get_train_reliabilities(train_ids):
+            return {"reliable_train": 0.9, "unreliable_train": 0.3}
+
+        monkeypatch.setattr("backend.services.route_engine.get_train_reliabilities", mock_get_train_reliabilities)
+
+        results = re.search_routes("A", "C", "2026-02-16")
+        assert len(results) >= 2
+
+        # Extract feasibility scores
+        scores = {r['id']: r['feasibility_score'] for r in results}
+
+        # Reliable route should have higher score
+        assert scores.get('route_reliable', 0) > scores.get('route_unreliable', 0)
+
+        # The difference should be approximately weight * (1 - unreliable) = 0.25 * (1 - 0.3) = 0.175
+        expected_penalty = 0.25 * (1 - 0.3)  # 0.175
+        actual_diff = scores['route_reliable'] - scores['route_unreliable']
+        assert abs(actual_diff - expected_penalty) < 0.01  # small tolerance for floating point
+
+    def test_reliability_metrics_recorded(self, monkeypatch):
+        """Test that reliability metrics are recorded when feature is enabled"""
+        from backend.config import Config
+        monkeypatch.setattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.25)
+
+        # Mock metrics
+        metrics_calls = {'applied': 0, 'avg_rel': [], 'score_delta': []}
+
+        class MockCounter:
+            def inc(self): metrics_calls['applied'] += 1
+
+        class MockHistogram:
+            def observe(self, val):
+                if 'reliability' in str(self):
+                    metrics_calls['avg_rel'].append(val)
+                else:
+                    metrics_calls['score_delta'].append(val)
+
+        monkeypatch.setattr("backend.services.route_engine.RMA_ROUTING_RELIABILITY_APPLIED_TOTAL", MockCounter())
+        monkeypatch.setattr("backend.services.route_engine.RMA_ROUTE_AVG_RELIABILITY", MockHistogram())
+        monkeypatch.setattr("backend.services.route_engine.RMA_ROUTE_SCORE_DELTA", MockHistogram())
+
+        re = self.setup_routeengine()
+        s1 = {"id": "seg_ab", "source_station_id": "S1", "dest_station_id": "S2", "departure": "08:00", "arrival": "09:00", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "test_train", "mode": "train"}
+        s2 = {"id": "seg_bc", "source_station_id": "S2", "dest_station_id": "S3", "departure": "09:30", "arrival": "10:30", "duration": 60, "cost": 100.0, "operating_days": "1111111", "vehicle_id": "test_train", "mode": "train"}
+
+        re.segments_map = {"seg_ab": s1, "seg_bc": s2}
+        re.route_segments = {"route_test": [s1, s2]}
+
+        async def mock_get_train_reliabilities(train_ids):
+            return {"test_train": 0.8}
+
+        monkeypatch.setattr("backend.services.route_engine.get_train_reliabilities", mock_get_train_reliabilities)
+
+        results = re.search_routes("A", "C", "2026-02-16")
+        assert len(results) >= 1
+
+        # Check metrics were recorded
+        assert metrics_calls['applied'] == 1  # One route processed
+        assert 0.8 in metrics_calls['avg_rel']  # Average reliability recorded
+        assert -0.05 in metrics_calls['score_delta']  # Penalty: 0.25 * (1-0.8) = 0.05, recorded as negative

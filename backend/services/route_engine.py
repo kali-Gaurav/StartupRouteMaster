@@ -18,6 +18,8 @@ from backend.etl.sqlite_to_postgres import REDIS_PUB_SUB_CHANNEL # New: Import P
 from backend.services.delay_predictor import delay_predictor  # New: Import delay predictor
 from backend.services.route_ranking_predictor import route_ranking_predictor  # New: Import route ranking predictor
 from backend.services.tatkal_demand_predictor import tatkal_demand_predictor  # New: Import tatkal demand predictor
+from backend.services.event_producer import publish_route_searched  # New: Import event publisher
+from backend.services.routemaster_client import get_train_reliabilities  # New: fetch train reliabilities from RMA
 
 logger = logging.getLogger(__name__)
 
@@ -305,9 +307,14 @@ class RouteEngine:
                 RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL,
                 RMA_CACHE_HIT_TOTAL,
                 RMA_CACHE_MISS_TOTAL,
+                ROUTING_LABELS_GENERATED_TOTAL,
+                ROUTING_ROUNDS_PROCESSED_TOTAL,
+                RMA_ROUTING_RELIABILITY_APPLIED_TOTAL,
+                RMA_ROUTE_AVG_RELIABILITY,
+                RMA_ROUTE_SCORE_DELTA,
             )
         except Exception:
-            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = RMA_CACHE_HIT_TOTAL = RMA_CACHE_MISS_TOTAL = None
+            RMA_RAPTOR_RUNTIME_SECONDS = RMA_RAPTOR_ROUNDS_TOTAL = RMA_RAPTOR_LABELS_GENERATED_TOTAL = RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = RMA_CACHE_HIT_TOTAL = RMA_CACHE_MISS_TOTAL = ROUTING_LABELS_GENERATED_TOTAL = ROUTING_ROUNDS_PROCESSED_TOTAL = RMA_ROUTING_RELIABILITY_APPLIED_TOTAL = RMA_ROUTE_AVG_RELIABILITY = RMA_ROUTE_SCORE_DELTA = None
 
         if source_id == dest_id:
             return []
@@ -517,6 +524,11 @@ class RouteEngine:
                 RMA_RAPTOR_ROUNDS_TOTAL.inc(self._last_metrics.get('rounds_processed', 0) or 0)
             if RMA_RAPTOR_LABELS_GENERATED_TOTAL is not None:
                 RMA_RAPTOR_LABELS_GENERATED_TOTAL.inc(self._last_metrics.get('labels_generated', 0) or 0)
+            # New routing stability metrics
+            if ROUTING_LABELS_GENERATED_TOTAL is not None:
+                ROUTING_LABELS_GENERATED_TOTAL.inc(self._last_metrics.get('labels_generated', 0) or 0)
+            if ROUTING_ROUNDS_PROCESSED_TOTAL is not None:
+                ROUTING_ROUNDS_PROCESSED_TOTAL.inc(self._last_metrics.get('rounds_processed', 0) or 0)
             if RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL is not None:
                 RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL.inc(self._last_metrics.get('transfer_expansions', 0) or 0)
         except Exception:
@@ -529,7 +541,7 @@ class RouteEngine:
         weekday_index = date_obj.weekday()  # Monday=0
         return len(operating_days) == 7 and operating_days[weekday_index] == "1"
 
-    def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None) -> List[Dict]:
+    async def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None) -> List[Dict]:
         if not self._is_loaded:
             raise RuntimeError("RouteEngine graph is not loaded.")
 
@@ -539,13 +551,13 @@ class RouteEngine:
             # treat empty list as a cache-miss so engine can recompute (helps tests & fresh data)
             if cached:
                 try:
-                    RMA_CACHE_HIT_TOTAL.inc()
+                    RMA_CACHE_HIT_TOTAL.inc()  # type: ignore
                 except Exception:
                     pass
                 return cached
             else:
                 try:
-                    RMA_CACHE_MISS_TOTAL.inc()
+                    RMA_CACHE_MISS_TOTAL.inc()  # type: ignore
                 except Exception:
                     pass
 
@@ -561,7 +573,7 @@ class RouteEngine:
             return []
 
         raw_paths = self._raptor_mvp(source_station_id, dest_station_id, date_obj, max_rounds=Config.MAX_TRANSFERS)
-        routes = [self._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
+        routes = [await self._construct_route_from_segment_list(source, destination, p, travel_date, budget_category) for p in raw_paths]
         routes = [r for r in routes if r]
 
         budget_limits = {"economy": 1000, "standard": 2000, "premium": 5000}
@@ -578,9 +590,28 @@ class RouteEngine:
             ttl = getattr(Config, 'ROUTE_CACHE_TTL_SECONDS', getattr(Config, 'CACHE_TTL_SECONDS', 600))
             cache_service.set(cache_key, routes, ttl_seconds=ttl)
 
+        # Fire-and-forget: publish route search event for analytics
+        if Config.KAFKA_ENABLE_EVENTS:
+            try:
+                # Calculate search latency (approximate)
+                search_latency = len(routes) * 0.1  # Rough estimate based on result count
+                asyncio.create_task(
+                    publish_route_searched(
+                        user_id=None,  # TODO: pass from API layer
+                        source=source,
+                        destination=destination,
+                        travel_date=travel_date,
+                        routes_shown=len(routes),
+                        search_latency_ms=search_latency,
+                        filters={"budget_category": budget_category}
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Failed to publish route search event: {e}")
+
         return routes
 
-    def _construct_route_from_segment_list(self, source: str, dest: str, segment_list: List[Dict], travel_date: str, budget_category: Optional[str]) -> Optional[Dict]:
+    async def _construct_route_from_segment_list(self, source: str, dest: str, segment_list: List[Dict], travel_date: str, budget_category: Optional[str]) -> Optional[Dict]:
         if not segment_list:
             return None
         total_cost = sum(s["cost"] for s in segment_list)
@@ -591,12 +622,22 @@ class RouteEngine:
         total_predicted_delay = 0.0
         for seg in segment_list:
             train_id = hash(seg.get('vehicle_id', 'unk')) % 10000
-            day_of_week = date_obj.weekday()
-            month = date_obj.month
-            dep_hour = int(seg['departure'].split(':')[0])
-            past_delay_avg = 0.0  # TODO: integrate historical delay data
-            weather_score = 0.5  # TODO: integrate weather API
-            delay = delay_predictor.predict_delay(train_id, day_of_week, month, dep_hour, past_delay_avg, weather_score)
+            
+            # Check for real-time delay updates first
+            real_time_delay = await delay_predictor.get_real_time_delay(train_id)
+            if real_time_delay:
+                # Use real-time delay information
+                delay = real_time_delay['delay_minutes']
+                logger.info(f"Using real-time delay for train {train_id}: {delay} minutes")
+            else:
+                # Fall back to ML prediction
+                day_of_week = date_obj.weekday()
+                month = date_obj.month
+                dep_hour = int(seg['departure'].split(':')[0])
+                past_delay_avg = 0.0  # TODO: integrate historical delay data
+                weather_score = 0.5  # TODO: integrate weather API
+                delay = delay_predictor.predict_delay(train_id, day_of_week, month, dep_hour, past_delay_avg, weather_score)
+            
             total_predicted_delay += delay
         segments_data = []
         station_ids = []
@@ -659,6 +700,38 @@ class RouteEngine:
             delay_penalty=total_predicted_delay
         )
 
+        # --- Reliability-aware deterministic adjustment ---
+        # If configured, query RouteMaster Agent for per-train reliability and
+        # apply a penalty to the feasibility score so lower-reliability trains
+        # are deprioritized deterministically before ML ranking.
+        avg_rel = 1.0
+        reliability_penalty = 0.0
+        try:
+            if getattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.0) > 0.0:
+                # collect unique vehicle/train identifiers from the route
+                train_ids = [str(s.get('vehicle_id')) for s in segment_list if s.get('vehicle_id')]
+                unique_trains = list({t for t in train_ids if t})
+                if unique_trains:
+                    rel_map = await get_train_reliabilities(unique_trains)
+                    vals = [rel_map.get(t, 1.0) for t in unique_trains]
+                    avg_rel = sum(vals) / len(vals) if vals else 1.0
+                    # penalty scales with (1 - avg_rel)
+                    reliability_penalty = float(getattr(Config, 'ROUTE_RELIABILITY_WEIGHT', 0.0)) * (1.0 - avg_rel)
+                    feasibility = feasibility - reliability_penalty
+
+                    # Record reliability-aware routing metrics
+                    if RMA_ROUTING_RELIABILITY_APPLIED_TOTAL is not None:
+                        RMA_ROUTING_RELIABILITY_APPLIED_TOTAL.inc()
+                    if RMA_ROUTE_AVG_RELIABILITY is not None:
+                        RMA_ROUTE_AVG_RELIABILITY.observe(avg_rel)
+                    if RMA_ROUTE_SCORE_DELTA is not None:
+                        RMA_ROUTE_SCORE_DELTA.observe(-reliability_penalty)  # negative because it's a penalty
+        except Exception:
+            # fail-open: do not penalize if RMA is unavailable
+            avg_rel = 1.0
+            reliability_penalty = 0.0
+
+```
         # Get Tatkal demand prediction
         current_time = datetime.now()
         route_info_for_tatkal = {

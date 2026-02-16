@@ -20,6 +20,24 @@ services:
       timeout: 5s
       retries: 5
 
+  routemaster_ml_db:
+    image: postgis/postgis:15-3.3
+    container_name: startupv2_routemaster_ml_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: routemaster
+      POSTGRES_PASSWORD: routemaster
+      POSTGRES_DB: routemaster_ml
+    volumes:
+      - routemaster_ml_pgdata:/var/lib/postgresql/data
+    ports:
+      - "55434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U routemaster -d routemaster_ml"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   routemaster_db:
     image: postgis/postgis:15-3.3
     container_name: startupv2_routemaster_db
@@ -311,3 +329,4 @@ volumes:
   pgdata: {}
   grafana_data: {}
   routemaster_pgdata: {}
+  routemaster_ml_pgdata: {}

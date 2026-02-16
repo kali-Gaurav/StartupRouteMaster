@@ -76,3 +76,16 @@ class Alert(Base):
     resolved = Column(Boolean, default=False)
     resolved_at = Column(DateTime, nullable=True)
     acknowledged_by = Column(String, nullable=True)
+
+
+class TrainReliabilityIndex(Base):
+    """Stores computed reliability scores for trains (historical records)."""
+    __tablename__ = "train_reliability_index"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    train_number = Column(String, index=True)
+    reliability_score = Column(Float)
+    avg_extraction_confidence = Column(Float)
+    schedule_drift_score = Column(Float)
+    delay_probability = Column(Float)
+    computed_at = Column(DateTime, default=datetime.utcnow)
+    window_minutes = Column(Integer, default=60)

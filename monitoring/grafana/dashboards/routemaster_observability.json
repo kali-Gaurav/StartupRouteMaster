@@ -30,6 +30,16 @@
         "query": "label_values(rma_proxy_health_score, proxy)",
         "multi": true,
         "includeAll": true
+      },
+      {
+        "type": "query",
+        "name": "train",
+        "label": "Train",
+        "datasource": "prometheus",
+        "query": "label_values(rma_train_reliability_score, train_number)",
+        "multi": false,
+        "includeAll": false,
+        "current": { "text": "", "value": "" }
       }
     ]
   },
@@ -169,33 +179,318 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [ { "expr": "sum(rate(rma_raptor_labels_generated_total[5m]))", "refId": "A" } ]
     },
+    {
+      "type": "timeseries",
+      "title": "Routing Labels Generated (rate)",
+      "id": 15,
+      "gridPos": { "x": 0, "y": 34, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(routing_labels_generated_total[5m]))", "legendFormat": "labels_generated", "refId": "A" } ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Routing Rounds Processed (rate)",
+      "id": 16,
+      "gridPos": { "x": 8, "y": 34, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "sum(rate(routing_rounds_processed_total[5m]))", "legendFormat": "rounds_processed", "refId": "A" } ]
+    },
 
-    { "type": "row", "title": "System Reliability Index", "gridPos": { "x": 0, "y": 34, "w": 24, "h": 1 }, "id": 400 },
+    { "type": "row", "title": "Selector Stability", "gridPos": { "x": 0, "y": 38, "w": 24, "h": 1 }, "id": 350 },
 
     {
       "type": "stat",
-      "title": "Reliability Score (%)",
-      "id": 15,
-      "gridPos": { "x": 0, "y": 35, "w": 6, "h": 4 },
+      "title": "Active Primary Selector",
+      "id": 17,
+      "gridPos": { "x": 0, "y": 39, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "expr": "rma_selector_active_primary{page_type=\"$source\"}", "legendFormat": "{{selector}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Selector Promotion Count (30d)",
+      "id": 18,
+      "gridPos": { "x": 6, "y": 39, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 }, "overrides": [] },
+      "targets": [
+        { "expr": "increase(rma_selector_promotions_total{page_type=\"$source\"}[30d])", "legendFormat": "promotions", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Primary Failure Rate (%)",
+      "id": 19,
+      "gridPos": { "x": 12, "y": 39, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
       "targets": [
-        {
-          "expr": "((sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m]))) * (1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1))) * avg(rma_proxy_health_score) * 100",
-          "refId": "A"
-        }
+        { "expr": "rma_selector_failure_rate{page_type=\"$source\"} * 100", "legendFormat": "failure_rate", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Fallback Usage % (by extractor)",
+      "id": 20,
+      "gridPos": { "x": 0, "y": 43, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        { "expr": "(sum(rate(rma_selector_fallback_total{source=\"$source\"}[5m])) by (source) / sum(rate(rma_extraction_attempts_total{source=\"$source\"}[5m])) by (source)) * 100", "legendFormat": "fallback_pct", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Selector Drift Score (derived)",
+      "id": 21,
+      "gridPos": { "x": 12, "y": 43, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 3 }, "overrides": [] },
+      "targets": [
+        { "expr": "rma_selector_failure_rate{page_type=\"$source\"} + (sum(rate(rma_selector_fallback_total{source=\"$source\"}[5m])) by (source) / sum(rate(rma_extraction_attempts_total{source=\"$source\"}[5m])) by (source)) + (increase(rma_selector_promotions_total{page_type=\"$source\"}[24h]) / 10)", "legendFormat": "selector_drift_score", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "title": "Event Streaming Intelligence", "gridPos": { "x": 0, "y": 47, "w": 24, "h": 1 }, "id": 500 },
+
+    {
+      "type": "timeseries",
+      "title": "Route Search Latency (P95)",
+      "id": 22,
+      "gridPos": { "x": 0, "y": 48, "w": 8, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(route_latency_ms_bucket[5m])) by (le))", "legendFormat": "p95_route_latency", "refId": "A" }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Reliability Components (trend)",
-      "id": 16,
-      "gridPos": { "x": 6, "y": 35, "w": 18, "h": 4 },
+      "title": "Event Publish Latency (P95)",
+      "id": 23,
+      "gridPos": { "x": 8, "y": 48, "w": 8, "h": 6 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
       "targets": [
-        { "expr": "(sum(rate(rma_extraction_success_total[5m])) / sum(rate(rma_extraction_attempts_total[5m]))) * 100", "legendFormat": "Extraction Success %", "refId": "A" },
-        { "expr": "avg(rma_proxy_health_score) * 100", "legendFormat": "Proxy Health (avg)", "refId": "B" },
-        { "expr": "(1 - (sum(rate(rma_validation_failures_total[5m])) / (sum(rate(rma_stations_extracted_total[5m])) + 1))) * 100", "legendFormat": "Validation Pass %", "refId": "C" }
+        { "expr": "histogram_quantile(0.95, sum(rate(event_publish_latency_ms_bucket[5m])) by (le))", "legendFormat": "p95_publish_latency", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Circuit Breaker State",
+      "id": 24,
+      "gridPos": { "x": 16, "y": 48, "w": 4, "h": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "mappings": [
+        { "options": { "0": { "text": "CLOSED", "color": "green" }, "1": { "text": "OPEN", "color": "red" } }, "type": "value" }
+      ] }, "overrides": [] },
+      "targets": [
+        { "expr": "circuit_breaker_state", "legendFormat": "state", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Circuit Breaker Opens (1h)",
+      "id": 25,
+      "gridPos": { "x": 20, "y": 48, "w": 4, "h": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        { "expr": "increase(circuit_breaker_opens_total[1h])", "legendFormat": "opens", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Event Publish Failures (rate)",
+      "id": 26,
+      "gridPos": { "x": 16, "y": 51, "w": 8, "h": 3 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        { "expr": "rate(event_publish_failures_total[5m])", "legendFormat": "publish_failures", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer Lag (seconds)",
+      "id": 27,
+      "gridPos": { "x": 0, "y": 54, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "consumer_lag_seconds", "legendFormat": "{{topic}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "ML Inference Latency (P95)",
+      "id": 28,
+      "gridPos": { "x": 12, "y": 54, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(ml_inference_latency_ms_bucket[5m])) by (le, model))", "legendFormat": "p95_{{model}}", "refId": "A" }
+      ]
+    },
+
+    { "type": "row", "title": "Train Reliability Intelligence", "gridPos": { "x": 0, "y": 60, "w": 24, "h": 1 }, "id": 29 },
+
+    {
+      "type": "table",
+      "title": "Top-20 Most Reliable Trains",
+      "id": 30,
+      "gridPos": { "x": 0, "y": 61, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "topk(20, rma_train_reliability_score)", "legendFormat": "{{train_number}}", "refId": "A" } ]
+    },
+
+    {
+      "type": "table",
+      "title": "Lowest Reliability Trains",
+      "id": 31,
+      "gridPos": { "x": 12, "y": 61, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "bottomk(20, rma_train_reliability_score)", "legendFormat": "{{train_number}}", "refId": "A" } ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Reliability Trend (selected train)",
+      "id": 32,
+      "gridPos": { "x": 0, "y": 67, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "rma_train_reliability_score{train_number=\"$train\"}", "legendFormat": "{{train_number}}", "refId": "A" } ]
+    },
+
+    {
+      "type": "heatmap",
+      "title": "Reliability Distribution (all trains)",
+      "id": 33,
+      "gridPos": { "x": 12, "y": 67, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "rma_train_reliability_score", "legendFormat": "{{train_number}}", "refId": "A" } ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Reliability Change (Δ 6h) - selected train",
+      "id": 34,
+      "gridPos": { "x": 0, "y": 71, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [ { "expr": "(rma_train_reliability_score{train_number=\"$train\"} - rma_train_reliability_score{train_number=\"$train\"} offset 6h) * 100", "refId": "A" } ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Reliability Computation Duration (p95)",
+      "id": 35,
+      "gridPos": { "x": 12, "y": 71, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [ { "expr": "histogram_quantile(0.95, sum(rate(rma_train_reliability_computation_seconds_bucket[5m])) by (le))", "refId": "A" } ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Reliability Updates (24h)",
+      "id": 36,
+      "gridPos": { "x": 18, "y": 71, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 }, "overrides": [] },
+      "targets": [ { "expr": "increase(rma_train_reliability_updates_total{batch=\"hourly\"}[24h])", "refId": "A" } ]
+    },
+
+    { "type": "row", "title": "ML Data Quality Monitoring", "gridPos": { "x": 0, "y": 75, "w": 24, "h": 1 }, "id": 600 },
+
+    {
+      "type": "stat",
+      "title": "Total Feature Records",
+      "id": 37,
+      "gridPos": { "x": 0, "y": 76, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 }, "overrides": [] },
+      "targets": [
+        { "expr": "ml_dataset_record_count{table_name=\"route_features\"}", "legendFormat": "records", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Missing Feature Rate",
+      "id": 38,
+      "gridPos": { "x": 4, "y": 76, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        { "expr": "ml_missing_feature_rate * 100", "legendFormat": "missing_rate", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Delay Label Coverage",
+      "id": 39,
+      "gridPos": { "x": 8, "y": 76, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        { "expr": "(1 - ml_dataset_missing_label_rate{target_variable=\"delay\"}) * 100", "legendFormat": "delay_labels", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Tatkal Label Coverage",
+      "id": 40,
+      "gridPos": { "x": 12, "y": 76, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        { "expr": "(1 - ml_dataset_missing_label_rate{target_variable=\"tatkal\"}) * 100", "legendFormat": "tatkal_labels", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "stat",
+      "title": "Booking Label Coverage",
+      "id": 41,
+      "gridPos": { "x": 16, "y": 76, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        { "expr": "(1 - ml_dataset_missing_label_rate{target_variable=\"booking\"}) * 100", "legendFormat": "booking_labels", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Feature Extraction Success Rate",
+      "id": 42,
+      "gridPos": { "x": 0, "y": 80, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        { "expr": "(sum(rate(ml_feature_extraction_attempts_total[5m])) - sum(rate(ml_feature_extraction_failures_total[5m]))) / sum(rate(ml_feature_extraction_attempts_total[5m])) * 100", "legendFormat": "success_rate", "refId": "A" }
+      ]
+    },
+
+    {
+      "type": "timeseries",
+      "title": "Label Delay Distribution",
+      "id": 43,
+      "gridPos": { "x": 12, "y": 80, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(ml_label_delay_seconds_bucket[5m])) by (le))", "legendFormat": "p95_delay", "refId": "A" },
+        { "expr": "histogram_quantile(0.50, sum(rate(ml_label_delay_seconds_bucket[5m])) by (le))", "legendFormat": "p50_delay", "refId": "B" }
       ]
     }
   ]

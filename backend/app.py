@@ -123,6 +123,15 @@ async def startup():
         start_reconciliation_worker()
         logger.info("Payment reconciliation worker initialized.")
 
+        # Start analytics consumer if events are enabled
+        if Config.KAFKA_ENABLE_EVENTS:
+            from backend.services.analytics_consumer import start_analytics_consumer
+            import asyncio
+            asyncio.create_task(start_analytics_consumer())
+            logger.info("Analytics consumer initialized.")
+        else:
+            logger.info("Analytics consumer disabled (KAFKA_ENABLE_EVENTS=false)")
+
         # Set up monthly ETL scheduler
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger

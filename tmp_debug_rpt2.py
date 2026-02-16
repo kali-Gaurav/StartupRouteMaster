@@ -30,6 +30,11 @@ for p in paths:
     print(' Path segments:', [seg['id'] for seg in p], ' total_time=', sum(seg['duration'] for seg in p), ' cost=', sum(seg['cost'] for seg in p))
 
 # Also show constructed routes
-routes = [re._construct_route_from_segment_list('A','C', p, None) for p in paths]
-for r in routes:
-    print('\nConstructed route id:', r['id'], 'feasibility=', r.get('feasibility_score'))
+import asyncio
+
+async def main():
+    routes = [await re._construct_route_from_segment_list('A','C', p, None) for p in paths]
+    for r in routes:
+        print('\nConstructed route id:', r['id'], 'feasibility=', r.get('feasibility_score'))
+
+asyncio.run(main())

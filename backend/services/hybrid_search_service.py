@@ -79,7 +79,7 @@ class HybridSearchService:
                 else:
                     internal_routes = []
             else:
-                internal_routes = self.route_engine.search_routes(
+                internal_routes = await self.route_engine.search_routes(
                     source=source,
                     destination=destination,
                     travel_date=travel_date,

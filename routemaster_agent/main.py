@@ -176,13 +176,20 @@ async def run_rma_tests(payload: dict):
 
 @app.on_event('startup')
 async def _rma_startup():
-    """Start background monitors (proxy health) when the app starts."""
+    """Start background monitors (proxy health) and periodic reliability job when the app starts."""
     global _proxy_monitor
     try:
         _proxy_monitor = ProxyMonitor(interval=int(os.getenv('RMA_PROXY_CHECK_INTERVAL', '300')), timeout=int(os.getenv('RMA_PROXY_CHECK_TIMEOUT', '5')), fail_threshold=float(os.getenv('RMA_PROXY_FAIL_THRESHOLD', '0.5')))
         _proxy_monitor.start()
     except Exception:
         _proxy_monitor = None
+
+    # start hourly reliability scheduler (best-effort)
+    try:
+        from routemaster_agent.intelligence.reliability_scheduler import start_scheduler
+        start_scheduler()
+    except Exception:
+        pass
 
 
 @app.on_event('shutdown')
@@ -191,6 +198,13 @@ async def _rma_shutdown():
     try:
         if _proxy_monitor:
             await _proxy_monitor.stop()
+    except Exception:
+        pass
+
+    # stop reliability scheduler if running
+    try:
+        from routemaster_agent.intelligence.reliability_scheduler import stop_scheduler
+        await stop_scheduler()
     except Exception:
         pass
 
@@ -231,6 +245,29 @@ async def detect_schedule_changes(payload: dict):
                 pass
 
     await browser_mgr.close()
+    return {"results": results}
+
+
+# --- Admin: reliability recompute ---------------------------------
+@app.post('/api/admin/reliability/recompute')
+async def admin_recompute_reliability(payload: dict):
+    """Recompute reliability for a list of trains.
+
+    Payload: {"trains": ["12345", "12951"]}
+    If `trains` omitted or empty, returns a 400 error to avoid accidental full recompute.
+    """
+    trains = payload.get('trains') or []
+    if not trains:
+        return {"error": "no trains provided"}, 400
+
+    from routemaster_agent.intelligence.reliability_scheduler import compute_reliability_for_train
+    results = {}
+    for tn in trains:
+        try:
+            score = compute_reliability_for_train(tn)
+            results[tn] = {"score": score}
+        except Exception as e:
+            results[tn] = {"error": str(e)}
     return {"results": results}
 
 

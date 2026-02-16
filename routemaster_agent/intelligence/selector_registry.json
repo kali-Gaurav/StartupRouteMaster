@@ -1,1 +1,24 @@
-{}
+{
+  "ntes_schedule": {
+    "primary": {
+      "selector": null,
+      "score": 0.0,
+      "success_count": 0,
+      "failure_count": 0,
+      "last_tested": null
+    },
+    "backups": [
+      {
+        "selector": "table.bad",
+        "score": null,
+        "success_count": 0,
+        "failure_count": 20,
+        "last_tested": "2026-02-15T17:33:46.426483"
+      }
+    ],
+    "semantic_fallback": true,
+    "last_updated": "2026-02-15T17:33:46.426483",
+    "last_promotion_timestamp": null,
+    "promotion_cooldown_until": null
+  }
+}

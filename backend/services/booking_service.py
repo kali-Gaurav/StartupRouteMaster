@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional, Dict, List, Any
 import logging
 from time import sleep
+import asyncio  # New: Import asyncio for event publishing
 
 from backend.models import Booking, Route as RouteModel, Payment, User
 # `Segment` model is optional (was removed/commented in models.py); import if present
@@ -12,6 +13,8 @@ except Exception:
     Segment = None
 from backend.schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
+from backend.services.event_producer import publish_booking_created  # New: Import event publisher
+from backend.config import Config  # New: Import config for Kafka check
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,24 @@ class BookingService:
                 
                 self.db.refresh(booking)
                 logger.info(f"Booking created (pending): {booking.id} on attempt {attempt + 1}")
+
+                # Fire-and-forget: publish booking event for analytics
+                if Config.KAFKA_ENABLE_EVENTS:
+                    try:
+                        # Extract segments from booking details (simplified)
+                        segments = booking_details.get('segments', [])
+                        asyncio.create_task(
+                            publish_booking_created(
+                                user_id=user_id,
+                                route_id=route_id,
+                                total_cost=amount_paid,
+                                segments=segments,
+                                booking_reference=str(booking.id)
+                            )
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to publish booking event: {e}")
+
                 return booking
 
             except DBAPIError as e:

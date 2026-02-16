@@ -82,4 +82,4 @@ if __name__ == '__main__':
     # quick smoke test
     sample = '<table class="table-striped"><tbody><tr><td>1</td><td>NDLS</td><td>06:00</td></tr></tbody></table>'
     sels = ['table.table-striped tbody tr', 'table tbody tr td:nth-child(2)']
-    print(test_selectors(sample, sels, expected_min_rows=1))
+    print(evaluate_selectors(sample, sels, expected_min_rows=1))

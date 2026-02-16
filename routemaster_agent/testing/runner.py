@@ -247,23 +247,14 @@ class TestRunner:
 
             # update global selector registry with best candidate for 'ntes_schedule' template
             try:
-                registry_path = Path(__file__).resolve().parents[2] / 'intelligence' / 'selector_registry.json'
-                if registry_path.exists():
-                    reg = json.loads(registry_path.read_text(encoding='utf-8') or '{}')
-                else:
-                    reg = {}
+                # report candidate test to selector registry manager (it will update backups)
+                from routemaster_agent.intelligence import selector_registry
                 best = selector_results[0] if selector_results else None
-                if best and best.get('score', 0) >= 0.75:
-                    tpl = reg.get('ntes_schedule', {})
-                    tpl.update({
-                        'primary': tpl.get('primary') or 'table.table-striped tbody tr',
-                        'backup_1': best.get('selector'),
-                        'confidence_score': best.get('score'),
-                        'last_tested': datetime.utcnow().isoformat(),
-                        'candidates_tested': len(selector_results)
-                    })
-                    reg['ntes_schedule'] = tpl
-                    registry_path.write_text(json.dumps(reg, indent=2), encoding='utf-8')
+                if best:
+                    rows = best.get('rows_count', 0)
+                    score = best.get('score', 0.0)
+                    success = score >= 0.75 and rows >= 3
+                    selector_registry.register_candidate_test('ntes_schedule', best.get('selector'), score, success)
             except Exception:
                 pass
         except Exception:

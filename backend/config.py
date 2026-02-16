@@ -35,10 +35,18 @@ class Config:
     NIGHT_LAYOVER_PENALTY = float(os.getenv("NIGHT_LAYOVER_PENALTY", "1.0"))
     FEASIBILITY_WEIGHT_DELAY = float(os.getenv("FEASIBILITY_WEIGHT_DELAY", "0.1"))
 
+    # Reliability-aware routing (Phase-6)
+    ROUTE_RELIABILITY_WEIGHT = float(os.getenv("ROUTE_RELIABILITY_WEIGHT", "0.0"))
+
     # ML Model paths
     ROUTE_RANKING_MODEL_PATH = os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl")
     DELAY_PREDICTOR_MODEL_PATH = os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl")
     TATKAL_DEMAND_MODEL_PATH = os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl")
+
+    # Kafka Configuration (Phase 4 Streaming)
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    KAFKA_ENABLE_EVENTS = os.getenv("KAFKA_ENABLE_EVENTS", "false").lower() in ("1", "true", "yes")
+    KAFKA_REQUEST_TIMEOUT_MS = int(os.getenv("KAFKA_REQUEST_TIMEOUT_MS", "5000"))
 
     # Redis graph storage + HMAC signing
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")

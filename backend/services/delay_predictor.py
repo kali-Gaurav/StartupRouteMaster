@@ -1,13 +1,16 @@
 import logging
 import pickle
 import os
+import time
+import asyncio
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
+from backend.utils.metrics import ML_INFERENCE_LATENCY_MS
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,12 @@ class DelayPredictor:
     def __init__(self):
         self.model = None
         self.is_trained = False
+        # Real-time delay updates from TrainDelayed events
+        self.in_memory_delay_map: Dict[int, Dict[str, Any]] = {}  # train_id -> delay info
+        # Thread safety for concurrent access
+        self._delay_map_lock = asyncio.Lock()
+        # TTL configuration: 30 minutes for real-time delays
+        self.DELAY_TTL_SECONDS = 30 * 60  # 30 minutes
         self.load_or_train_model()
 
     def load_or_train_model(self):
@@ -105,11 +114,83 @@ class DelayPredictor:
         }])
 
         try:
+            start_time = time.time()
             prediction = self.model.predict(features)[0]
+            latency_ms = (time.time() - start_time) * 1000
+            
+            # Record ML inference latency
+            if ML_INFERENCE_LATENCY_MS is not None:
+                ML_INFERENCE_LATENCY_MS.labels(model='delay_predictor').observe(latency_ms)
+            
             return max(0, prediction)  # Ensure non-negative
         except Exception as e:
             logger.error(f"Prediction failed: {e}")
             return 0.0
+
+    async def update_real_time_delay(self, train_id: int, delay_minutes: int, station_code: str, 
+                              scheduled_departure: str, estimated_departure: str, reason: Optional[str] = None):
+        """
+        Update in-memory delay map from TrainDelayed events for real-time intelligence.
+        Thread-safe with TTL cleanup.
+        
+        :param train_id: Train identifier
+        :param delay_minutes: Current delay in minutes
+        :param station_code: Station where delay was reported
+        :param scheduled_departure: Scheduled departure time
+        :param estimated_departure: Estimated departure time
+        :param reason: Reason for delay (if provided)
+        """
+        async with self._delay_map_lock:
+            # Clean up expired entries before adding new one
+            await self._cleanup_expired_delays()
+            
+            self.in_memory_delay_map[train_id] = {
+                'delay_minutes': delay_minutes,
+                'station_code': station_code,
+                'scheduled_departure': scheduled_departure,
+                'estimated_departure': estimated_departure,
+                'reason': reason,
+                'last_updated': datetime.utcnow(),
+                'expires_at': datetime.utcnow() + timedelta(seconds=self.DELAY_TTL_SECONDS),
+                'source': 'real_time_event'
+            }
+            logger.info(f"Updated real-time delay for train {train_id}: {delay_minutes} minutes at {station_code} (TTL: {self.DELAY_TTL_SECONDS}s)")
+
+    async def get_real_time_delay(self, train_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get real-time delay information for a train.
+        Thread-safe with TTL cleanup.
+        
+        :param train_id: Train identifier
+        :return: Delay information dict or None if not available/expired
+        """
+        async with self._delay_map_lock:
+            # Clean up expired entries
+            await self._cleanup_expired_delays()
+            
+            delay_info = self.in_memory_delay_map.get(train_id)
+            if delay_info:
+                # Double-check expiration (in case cleanup missed it)
+                if datetime.utcnow() > delay_info['expires_at']:
+                    del self.in_memory_delay_map[train_id]
+                    return None
+                return delay_info
+            return None
+
+    async def _cleanup_expired_delays(self):
+        """Remove expired delay entries to prevent memory leaks."""
+        now = datetime.utcnow()
+        expired_trains = [
+            train_id for train_id, delay_info in self.in_memory_delay_map.items()
+            if now > delay_info['expires_at']
+        ]
+        
+        for train_id in expired_trains:
+            del self.in_memory_delay_map[train_id]
+            logger.debug(f"Cleaned up expired delay for train {train_id}")
+        
+        if expired_trains:
+            logger.info(f"Cleaned up {len(expired_trains)} expired delay entries")
 
 # Global instance
 delay_predictor = DelayPredictor()

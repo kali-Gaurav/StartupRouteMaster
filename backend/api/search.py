@@ -16,7 +16,7 @@ from backend.services.hybrid_search_service import HybridSearchService
 from backend.config import Config
 from backend.api.websockets import manager as websocket_manager
 from backend.utils.limiter import limiter
-from backend.utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL
+from backend.utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -136,8 +136,10 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
         logger.error(f"An unexpected error occurred during search: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred during search.")
     finally:
-        SEARCH_LATENCY_SECONDS.labels(endpoint="/api/search").observe(time.time() - start_time)
+        duration = time.time() - start_time
+        SEARCH_LATENCY_SECONDS.labels(endpoint="/api/search").observe(duration)
         SEARCH_REQUESTS_TOTAL.labels(endpoint="/api/search", status=status_label).inc()
+        ROUTE_LATENCY_MS.observe(duration * 1000)  # Convert to milliseconds
 
 
 # --- Station Autocomplete Endpoint ---
