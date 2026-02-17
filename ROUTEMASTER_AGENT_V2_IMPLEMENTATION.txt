@@ -1,0 +1,296 @@
+# RouteMaster Agent v2 — Implementation Summary
+
+## Overview
+The RouteMaster Agent is a sophisticated autonomous railway data collection and ticketing agent powered by Gemini AI. It is designed to:
+- Autonomously navigate NTES (National Train Enquiry System) and IRCTC websites
+- Extract train schedules, live status, and seat availability
+- Make intelligent decisions based on visual page analysis and Gemini reasoning
+- Handle clicks, form filling, scrolling, table extraction, and multi-step workflows
+
+---
+
+## Architecture Layers
+
+### 1. AI Layer (`routemaster_agent/ai/`)
+
+#### **GeminiClient** (`gemini_client.py`) — Vision + Text LLM Integration
+- **Vision Methods:**
+  - `analyze_page_layout()` — detect page structure (tables, forms, buttons)
+  - `detect_form_fields()` — locate and categorize input fields
+  - `extract_table_structure()` — extract headers, rows, pagination info
+  - `extract_field()` — extract specific field values from screenshots
+  - `find_field_on_screen()` — locate field by name visually
+  - `detect_buttons()` — identify clickable buttons and their intent
+  - `analyze_page_intent()` — understand page type (search_form, results, etc)
+  - `detect_layout_changes()` — compare screenshots for page layout changes
+
+- **Text/Utility Methods:**
+  - `generate(prompt)` — **NEW** text-only generation with JSON parsing
+  - `crop_image()` — crop screenshot to region
+  - `extract_text_via_ocr()` — extract visible text from image
+  - `detect_tables()` — detect table(s) on page
+  - `extract_table_rows_from_image()` — extract row data from visual table
+  - `extract_from_screenshot()` — high-level structured extraction
+
+- **Features:**
+  - Multi-key support (load-balancing, fallback on rate-limits)
+  - Automatic retry with key rotation on 429/quota errors
+  - Async-first design with proper backoff
+
+#### **SkillTrainer** (`skill_trainer.py`) — **NEW** Gemini-Powered Action Sequencing
+- **Few-shot prompting:** Define scene (page context) + task → Gemini proposes JSON action sequence
+- **Action schema:** `{type, selector, target, value, wait_for, confidence}`
+  - Types: `click`, `input`, `select`, `scroll`, `wait`, `extract_table`, `extract_list`, `complete`, `fallback`
+- **Normalization:** Parse Gemini responses (list/dict/text), normalize to canonical action format
+- **Helper:** `actions_to_plan()` converts sequence to human-readable text for debugging
+
+#### **ReasoningController** (`reasoning_controller.py`) — Autonomous Decision Loop
+- **Updated `_think()` method:**
+  - Now accepts both legacy text responses and structured JSON from Gemini
+  - Returns `(thought: str, confidence: float)` normalized for agent consumption
+- **Updated `_parse_action_from_thought()` method:**
+  - **NEW** JSON-first parsing (looks for `action`, `actions`, or `steps` keys)
+  - Falls back to legacy string pattern-matching (e.g., "complete", "click", "input")
+  - Extracts numeric values from free text when needed
+
+#### **TaskPlanner** (`planner.py`) — High-level Task Orchestration
+- Plan generator for predefined task types: `update_train_schedule`, `collect_live_status`, `check_seat_availability`, etc.
+- Supports custom task planning via Gemini
+- Tracks estimated duration, resources, fallback strategies
+
+#### **AgentStateManager** (`agent_state_manager.py`) — Runtime State Tracking
+- Enum-based states: IDLE, PLANNING, NAVIGATING, EXTRACTING, VALIDATING, STORING, LEARNING, ERROR_RECOVERY
+- Metrics integration for observability
+- Persistence to disk for recovery on restart
+
+---
+
+### 2. Core Layer (`routemaster_agent/core/`)
+
+#### **VisionAI** (`vision_ai.py`) — Page Visual Understanding
+- **Key Methods:**
+  - `analyze_page_structure()` — detect tables, forms, buttons via visual or HTML analysis
+  - `detect_table_structure()` — extract table headers, rows, pagination
+  - `locate_data_field()` — find where a field is displayed on screen
+  - `detect_form_fields()` — get all form inputs with types and labels
+  - `detect_clickable_elements()` — identify buttons and links
+  - `detect_layout_changes()` — compare two screenshots for structural differences
+  - `extract_text_from_region()` — OCR text from specific screenshot region
+  - `analyze_page_intent()` — determine what page is for (search, results, etc)
+
+- **Fallback Strategy:**
+  1. HTML analysis (fast)
+  2. Gemini vision (robust, handles non-standard layouts)
+  3. Error handling with graceful degradation
+
+#### **NavigatorAI** (`navigator_ai.py`) — Intelligent Element Finding & Interaction
+- **Element Finding (multi-strategy fallback):**
+  - Strategy 1: Direct DOM label/for association
+  - Strategy 2: Gemini visual detection
+  - Strategy 3: Semantic search (placeholder, aria-label, name attribute)
+
+- **Key Methods:**
+  - `find_element_by_visual_label()` — locate input by label text
+  - `find_button_by_intent()` — locate button by semantic meaning (search, next, submit, etc)
+  - `find_table_on_page()` — detect table element
+  - `fill_input_and_trigger_event()` — **HARDENED** type with delays, trigger change events
+  - `wait_for_element_interactive()` — wait for element visibility + enabled state
+  - `handle_dropdown_selection()` — click dropdown and select by text
+  - `navigate_pagination()` — autonomously follow next buttons across pages
+  - `handle_dynamic_content_loading()` — wait for AJAX/infinite scroll
+  - `scroll_to_element()` — scroll element into view
+  - `get_page_structure()` — map all form fields, buttons, headings
+
+- **Features:**
+  - Playwright-based (async, headless, reliable)
+  - Human-like typing with configurable delays
+  - Multiple fallback paths for robustness
+
+#### **ExtractionAI** (`extractor_ai.py`) — Multi-Strategy Data Extraction
+- **Extraction with Confidence Scoring:**
+  - Strategy 1: CSS selector (fastest)
+  - Strategy 2: Semantic DOM search
+  - Strategy 3: Visual/OCR extraction (Gemini)
+  - Strategy 4: Gemini reasoning (most powerful)
+  - **NEW:** Improved input/textarea value handling in CSS strategy
+
+- **Key Methods:**
+  - `extract_with_confidence()` — extract fields with multi-strategy validation
+  - `extract_structured_data()` — autonomously infer schema and extract all relevant data
+  - `extract_table_data()` — extract all rows from table
+  - `extract_from_dynamic_content()` — retry extraction from AJAX content
+  - `_validate_extracted_value()` — **HARDENED** type checking (number, date, time, email, text)
+
+- **Features:**
+  - Returns confidence scores and alternative extraction methods
+  - Validation with detailed error messages
+  - Caching of successful extraction strategies
+
+#### **ReasoningLoop** (`reasoning_loop.py`) — Full OBSERVE→THINK→DECIDE→ACT→VERIFY→LEARN Cycle
+- **Orchestrates the full autonomous workflow:**
+  1. **OBSERVE:** Capture page state (screenshot, structure)
+  2. **THINK:** Analyze with Gemini or heuristics
+  3. **DECIDE:** Choose execution strategy based on analysis
+  4. **ACT:** Execute navigation actions (fill, click, scroll, etc)
+  5. **VERIFY:** Extract and validate data
+  6. **STORE:** Decide whether to save (NEW_INSERT, UPDATE, DUPLICATE, CONFLICT)
+  7. **LEARN:** Update memory with successful patterns
+
+- **Error Recovery:**
+  - `_attempt_recovery()` — intelligently retry on failure with different strategies
+  - Supports RESET_BROWSER, ROTATE_PROXY, CHANGE_UA, FALLBACK_API
+
+#### **DecisionEngine** (`decision_engine.py`) — Autonomous Decision-Making
+- **Key Methods:**
+  - `decide_data_validity()` — evaluate extracted data quality (0.0-1.0 confidence)
+  - `decide_storage_action()` — determine action (NEW_INSERT, UPDATE, DUPLICATE, CONFLICT)
+  - `decide_retry_strategy()` — recommend retry method based on error type
+  - `decide_source_priority()` — rank data sources by reliability
+  - `decide_data_freshness_requirement()` — check max age for data type
+  - **Helper methods:** `_compare_data()`, `_calculate_change_significance()`, `_has_suspicious_changes()`
+
+- **Features:**
+  - Heuristic-based decisions (no external calls)
+  - Field-level confidence aggregation
+  - Suspicious change detection (sudden status reversals, massive value jumps)
+
+---
+
+### 3. Infrastructure Layers
+
+#### **Metrics** (`metrics.py`) — Prometheus Instrumentation
+- **Agent State:** `RMA_AGENT_STATE` — track runtime state transitions
+- **Extraction:** Duration, attempts, failures, success counts
+- **Data Quality:** Validation failures, JSON schema errors
+- **Proxy Health:** Request counts, failure rates, health scores
+- **Selector Intelligence:** Promotion events, fallback usage, confidence scores
+- **Train Reliability:** Per-train reliability computation and updates
+- **Commands:** Request counts, success counts (for CLI/REST interface)
+
+#### **Command Interface** (`command_interface.py`) — REST API + WebSocket
+- **Endpoints:**
+  - `POST /api/agent/execute-command` — async command submission
+  - `GET /api/agent/command-status/{id}` — poll command progress
+  - `GET /api/agent/available-commands` — list supported task types
+  - `GET /api/agent/status` — agent health
+  - `WS /ws/agent` — real-time status updates via WebSocket
+
+---
+
+## Unit Tests Added
+
+### `test_core_helpers.py`
+- ✅ `test_compare_data_and_significance()` — DecisionEngine data comparison
+- ✅ `test_has_suspicious_changes_detects_status_and_large_number_changes()` — anomaly detection
+- ✅ `test_validate_extracted_value_basic_types()` — ExtractionAI field validation (number, date, time, email, text)
+
+### `test_skill_trainer.py`
+- ✅ `test_propose_actions_from_dummy_gemini()` — SkillTrainer action proposal and normalization
+- ✅ `test_actions_to_plan_formatting()` — action sequence formatting
+
+---
+
+## How It All Works Together for NTES / IRCTC / Disha
+
+### Example: Extract Train Schedule from NTES
+
+1. **User Command:**
+   ```json
+   { "type": "update_train_schedule", "train_number": "12345", "date": "17-Feb-2026" }
+   ```
+
+2. **Planning (TaskPlanner):**
+   - Breaks down task into steps: navigate → input train# → click search → wait → extract table → validate
+
+3. **Execution (ReasoningLoop):**
+   - **OBSERVE:** Screenshot NTES page, detect form input and search button (VisionAI)
+   - **THINK:** Gemini analyzes: "This is a train search form. Need to fill train#, click Get Schedule, then parse results table"
+   - **DECIDE:** SkillTrainer proposes JSON action sequence via few-shot prompting
+   - **ACT:** NavigatorAI fills "12345" in train# field, clicks "Get Schedule"
+   - **VERIFY:** ExtractionAI extracts table with columns (Station, Arrival, Departure, Distance)
+   - **STORE:** DecisionEngine checks validity (all critical fields present?) → decides STORE or REVIEW
+   - **LEARN:** Memory updated: "SkillTrainer→action_sequence_A succeeded for this page layout"
+
+4. **Result:**
+   ```json
+   {
+     "success": true,
+     "data": [
+       {"station": "HOWRAH JN", "arrival": "16:05", "halt": "0 min", ...},
+       {"station": "BARDHAMAN", "arrival": "16:57", "halt": "2 min", ...},
+       ...
+     ],
+     "confidence": 0.92,
+     "extraction_method": "table_extraction + semantic_validation"
+   }
+   ```
+
+### Example: Check Seat Availability (IRCTC + Disha)
+
+1. **User Command:**
+   ```json
+   { "type": "check_seat_availability", "from": "JP", "to": "KOTA", "date": "18-Feb-2026", "class": "SL" }
+   ```
+
+2. **Planning:** Search trains → detect results → click on train → check seat status (via popup or Disha)
+
+3. **Execution:**
+   - VisionAI detects IRCTC booking widget with origin/destination inputs
+   - Gemini via SkillTrainer: "Fill From='Jaipur', To='Kota Jn', click Search Trains"
+   - NavigatorAI exercises the action sequence
+   - ReasoningLoop extracts availability data (12 trains found, seat classes SL/3AC/2AC)
+   - DecisionEngine validates result quality
+
+4. **Future Enhancement (Disha):**
+   - If seats unavailable via IRCTC UI, fallback to asking AskDisha chatbot (NextGen AI Ticketing)
+   - Same SkillTrainer can propose: "Click Disha popup → voice/text input 'JP to KOTA on 18 Feb SL' → wait for response → extract"
+
+---
+
+## Key Design Decisions
+
+| Decision | Reason |
+|----------|--------|
+| **Gemini-First with Fallback** | Vision models are robust to layout changes; CSS selectors brittle |
+| **SkillTrainer + Few-Shot Prompting** | Allows agent to learn from examples without retraining; dynamic task support |
+| **Async/Playwright** | Fast, headless, handles modern JS-heavy sites |
+| **Multi-Strategy Extraction** | Combines speed (CSS) with robustness (Gemini vision) and flexibility (semantic search) |
+| **Metrics Everywhere** | Enables observability, auto-remediation, and continuous improvement |
+| **Structured JSON Actions** | Makes agent behavior reproducible, testable, and auditable |
+
+---
+
+## Current Status
+
+✅ **Implemented:**
+- AI layer: Gemini client + SkillTrainer + ReasoningController (JSON-aware)
+- Core layer: VisionAI, NavigatorAI, ExtractionAI, ReasoningLoop, DecisionEngine (all functional)
+- Unit tests: 5 new tests for core helpers + SkillTrainer (all passing)
+- Metrics & state management
+- REST API + WebSocket for command delivery
+
+⚠️ **Next Steps (Recommended):**
+1. **Scene Dataset:** Capture 20 annotated scenes (NTES + IRCTC + Disha) with ground-truth actions
+2. **Playwright Recorder:** Auto-record page interactions and build training dataset
+3. **Integration E2E Test:** Full OBSERVE→ACT→VERIFY loop with headless browser
+4. **Selector Promotion:** Auto-promote backup selectors when primary fails consistently
+5. **Chaos/Canary Tests:** Simulate layout changes, API outages; verify recovery
+
+---
+
+## Testing the Agent
+
+```bash
+# Unit tests (all passing)
+pytest -q routemaster_agent/tests
+
+# Start the agent API
+uvicorn routemaster_agent.main:app --reload
+
+# Example curl:
+curl -X POST http://localhost:8000/api/agent/execute-command \
+  -H "Content-Type: application/json" \
+  -d '{"command": "update_train_schedule", "parameters": {"train_number": "12345"}}'
+```
+
+---

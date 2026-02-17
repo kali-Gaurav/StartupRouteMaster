@@ -12,14 +12,16 @@ service BookingService {
 
 message BookingRequest {
   string user_id = 1;
-  string train_id = 2;
+  string trip_id = 2;  // CHANGED from train_id
   string from_stop_id = 3;
   string to_stop_id = 4;
   google.protobuf.Timestamp travel_date = 5;
   string quota_type = 6;
   string class_type = 7;
   repeated Passenger passengers = 8;
-  string payment_method_id = 9;
+  string payment_method = 9;  // CHANGED from payment_method_id
+  double total_amount = 10;  // NEW: total booking amount
+  string preferences = 11;  // NEW: JSON preferences
 }
 
 message Passenger {
@@ -30,11 +32,14 @@ message Passenger {
 }
 
 message BookingResponse {
-  string pnr = 1;
-  string status = 2; // PENDING, CONFIRMED, FAILED
-  double total_amount = 3;
-  string transaction_id = 4;
-  string error_message = 5;
+  bool success = 1;  // NEW: explicit success flag
+  string pnr = 2;
+  string booking_id = 3;  // NEW: booking identifier
+  string status = 4; // PENDING, CONFIRMED, WAITLIST, FAILED
+  double total_amount = 5;
+  string transaction_id = 6;
+  string message = 7;  // NEW: status message
+  string error_message = 8;
 }
 
 message StatusRequest {
@@ -44,8 +49,11 @@ message StatusRequest {
 message StatusResponse {
   string pnr = 1;
   string status = 2;
-  repeated string seat_numbers = 3;
-  google.protobuf.Timestamp booking_time = 4;
+  string payment_status = 3;  // NEW: separate payment status
+  repeated string seat_numbers = 4;
+  google.protobuf.Timestamp booking_time = 5;
+  int64 created_at_timestamp = 6;  // NEW: created at timestamp
+  string message = 7;  // NEW: status message
 }
 
 message CancelRequest {
@@ -55,6 +63,9 @@ message CancelRequest {
 
 message CancelResponse {
   bool success = 1;
-  double refund_amount = 2;
-  string cancellation_id = 3;
+  string pnr = 2;
+  double refund_amount = 3;
+  double cancellation_charge = 4;  // NEW: cancellation fee
+  string cancellation_id = 5;
+  string message = 6;  // NEW: status message
 }

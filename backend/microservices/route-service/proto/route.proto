@@ -17,6 +17,8 @@ message RouteRequest {
   int32 max_transfers = 4;
   string user_id = 5;
   repeated string preferences = 6;
+  int32 num_passengers = 7;
+  int32 num_alternatives = 8;  // NEW: number of alternative routes
 }
 
 message RouteResponse {
@@ -24,6 +26,7 @@ message RouteResponse {
   string search_id = 2;
   double latency_ms = 3;
   bool cached = 4;
+  int32 total_results = 5;  // NEW: total results count
 }
 
 message Route {
@@ -32,6 +35,7 @@ message Route {
   double total_duration_mins = 3;
   double total_price = 4;
   double reliability_score = 5;
+  int32 num_transfers = 6;  // NEW: number of transfers
 }
 
 message Leg {
@@ -48,22 +52,26 @@ message Leg {
 
 message GraphUpdateRequest {
   string train_number = 1;
-  string delay_type = 2;
-  int32 delay_minutes = 3;
-  string current_station_id = 4;
+  string trip_id = 2;  // NEW: for direct trip identification
+  string status = 3;   // NEW: delayed, cancelled, resumed
+  int32 delay_minutes = 4;
+  string current_station_id = 5;
 }
 
 message GraphUpdateResponse {
   bool success = 1;
   int32 affected_routes_count = 2;
+  string message = 3;  // NEW: detailed message
 }
 
 message ReachabilityRequest {
   string source_station_id = 1;
   google.protobuf.Timestamp start_time = 2;
   int32 max_duration_mins = 3;
+  int32 max_transfers = 4;  // NEW: max transfer constraint
 }
 
 message ReachabilityResponse {
-  map<string, int32> reachable_stations = 1; // station_id -> travel_time
+  string source_station_id = 1;
+  map<string, int32> reachable_stations = 2; // station_id -> travel_time
 }

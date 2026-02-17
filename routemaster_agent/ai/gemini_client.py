@@ -806,3 +806,190 @@ Return ONLY valid JSON array:
                 return []
 
         return []
+
+    async def generate(
+        self,
+        prompt: str,
+        parse_json: bool = True,
+        temperature: float = 0.0,
+        max_output_tokens: int | None = None,
+    ) -> Any:
+        """
+        Text-only generation helper for Gemini.
+
+        - Calls Gemini with a text prompt
+        - Attempts to parse JSON from the model output when `parse_json=True`
+        - Falls back to returning a dict with raw text under key "text"
+
+        Returns:
+            - Parsed JSON (dict/list) when possible
+            - Otherwise `{'text': <model output>}`
+        """
+        if not self.enabled:
+            logger.debug("Gemini disabled - generate() returning fallback")
+            return {'text': ''}
+
+        async def api_call():
+            model = genai.GenerativeModel(self.model)
+            # use the same generate_content interface used elsewhere (text-only)
+            if max_output_tokens:
+                # many genai SDKs accept max_output_tokens in generate_content kwargs; include if available
+                return await asyncio.to_thread(model.generate_content, [prompt])
+            return await asyncio.to_thread(model.generate_content, [prompt])
+
+        response = await self._call_with_fallback(api_call)
+        if not response:
+            return {'text': ''}
+
+        text = getattr(response, 'text', None) or str(response)
+
+        # Try to parse direct JSON first
+        if parse_json:
+            try:
+                parsed = json.loads(text)
+                return parsed
+            except Exception:
+                # try to extract first JSON object/array from the text
+                import re
+
+                m = re.search(r"(\{(?:.|\n)*\}|\[(?:.|\n)*\])", text)
+                if m:
+                    try:
+                        return json.loads(m.group(0))
+                    except Exception:
+                        pass
+
+                # try to parse simple key: value lines (best-effort)
+                simple = {}
+                for line in text.splitlines():
+                    if ':' in line:
+                        k, v = line.split(':', 1)
+                        simple[k.strip()] = v.strip().strip('"')
+                if simple:
+                    return simple
+
+        return {'text': text}
+
+    async def crop_image(self, screenshot: bytes, region: Dict[str, int]) -> bytes:
+        """Crop an image bytes to the provided region. Falls back to returning original bytes if PIL not available."""
+        try:
+            from PIL import Image
+            import io
+
+            img = Image.open(io.BytesIO(screenshot)).convert("RGBA")
+            x = int(region.get("x", 0))
+            y = int(region.get("y", 0))
+            w = int(region.get("width", img.width - x))
+            h = int(region.get("height", img.height - y))
+            cropped = img.crop((x, y, x + w, y + h))
+            out = io.BytesIO()
+            cropped.save(out, format="PNG")
+            return out.getvalue()
+        except Exception:
+            logger.debug("PIL not available or crop failed; returning original screenshot")
+            return screenshot
+
+    async def extract_text_via_ocr(self, image_bytes: bytes) -> str:
+        """Extract visible text from an image using Gemini vision (OCR-like)."""
+        if not self.enabled:
+            return ""
+
+        prompt = "Extract all visible text from the provided image and return plain text only."
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        async def api_call():
+            model = genai.GenerativeModel(self.model)
+            response = await asyncio.to_thread(
+                model.generate_content,
+                [
+                    {"mime_type": "image/png", "data": image_b64},
+                    prompt,
+                ],
+            )
+            return response
+
+        response = await self._call_with_fallback(api_call)
+        if response and getattr(response, "text", None):
+            return response.text.strip()
+        return ""
+
+    async def detect_tables(self, screenshot: bytes, hint: str = "") -> Optional[Dict[str, Any]]:
+        """Convenience wrapper that attempts to detect table(s) on an image and return structure."""
+        # Reuse extract_table_structure for the heavy lifting
+        result = await self.extract_table_structure(screenshot=screenshot, html="", hint=hint)
+        return result
+
+    async def extract_table_rows_from_image(self, screenshot: bytes, column_names: List[str] | None = None) -> List[Dict[str, Any]]:
+        """Ask Gemini to extract table rows from an image and return as list of row dicts."""
+        if not self.enabled:
+            return []
+
+        cols_hint = ", ".join(column_names) if column_names else ""
+        prompt = f"Extract all table rows as a JSON array of objects. Column names: {cols_hint}. Return only valid JSON."
+        image_b64 = base64.b64encode(screenshot).decode("utf-8")
+
+        async def api_call():
+            model = genai.GenerativeModel(self.model)
+            response = await asyncio.to_thread(
+                model.generate_content,
+                [
+                    {"mime_type": "image/png", "data": image_b64},
+                    prompt,
+                ],
+            )
+            return response
+
+        response = await self._call_with_fallback(api_call)
+        if response and getattr(response, "text", None):
+            try:
+                rows = json.loads(response.text)
+                if isinstance(rows, list):
+                    return rows
+            except Exception:
+                # try to extract JSON substring
+                import re
+
+                m = re.search(r"(\[\s*\{(?:.|\n)*\}\s*\])", response.text)
+                if m:
+                    try:
+                        return json.loads(m.group(0))
+                    except Exception:
+                        pass
+        return []
+
+    async def extract_from_screenshot(self, screenshot: bytes, html: str = "") -> Dict[str, Any]:
+        """High-level extraction: ask Gemini to convert screenshot+html into structured JSON data."""
+        if not self.enabled:
+            return {}
+
+        prompt = f"Given the screenshot and optional html, extract structured JSON data (rows/fields) you can find on the page. Return ONLY valid JSON. HTML (if provided): {html[:200]}"
+        image_b64 = base64.b64encode(screenshot).decode("utf-8")
+
+        async def api_call():
+            model = genai.GenerativeModel(self.model)
+            response = await asyncio.to_thread(
+                model.generate_content,
+                [
+                    {"mime_type": "image/png", "data": image_b64},
+                    prompt,
+                ],
+            )
+            return response
+
+        response = await self._call_with_fallback(api_call)
+        if response and getattr(response, "text", None):
+            try:
+                parsed = json.loads(response.text)
+                return parsed if isinstance(parsed, dict) else {"result": parsed}
+            except Exception:
+                # try to pull any JSON
+                import re
+
+                m = re.search(r"(\{(?:.|\n)*\}|\[(?:.|\n)*\])", response.text)
+                if m:
+                    try:
+                        parsed = json.loads(m.group(0))
+                        return parsed if isinstance(parsed, dict) else {"result": parsed}
+                    except Exception:
+                        pass
+        return {}

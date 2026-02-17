@@ -1,0 +1,147 @@
+version: '3.8'
+
+services:
+  # Route Service - RAPTOR-based routing with graph mutation
+  route-service:
+    build:
+      context: ../../
+      dockerfile: backend/microservices/route-service/Dockerfile
+    container_name: routemaster-route-service
+    ports:
+      - "50051:50051"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/routemaster
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - GRPC_VERBOSITY=debug
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - routemaster-network
+    healthcheck:
+      test: ["CMD", "grpcurl", "-plaintext", "localhost:50051", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ../../backend:/app/backend:ro
+    restart: unless-stopped
+
+  # Inventory Service - Seat allocation and availability
+  inventory-service:
+    build:
+      context: ../../
+      dockerfile: backend/microservices/inventory-service/Dockerfile
+    container_name: routemaster-inventory-service
+    ports:
+      - "50052:50052"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/routemaster
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - GRPC_VERBOSITY=debug
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - routemaster-network
+    healthcheck:
+      test: ["CMD", "grpcurl", "-plaintext", "localhost:50052", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ../../backend:/app/backend:ro
+    restart: unless-stopped
+
+  # Booking Service - Saga-based distributed transactions
+  booking-service:
+    build:
+      context: ../../
+      dockerfile: backend/microservices/booking-service/Dockerfile
+    container_name: routemaster-booking-service
+    ports:
+      - "50053:50053"
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/routemaster
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - GRPC_VERBOSITY=debug
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - routemaster-network
+    healthcheck:
+      test: ["CMD", "grpcurl", "-plaintext", "localhost:50053", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - ../../backend:/app/backend:ro
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: routemaster-postgres
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=routemaster
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - routemaster-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d routemaster"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: routemaster-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - routemaster-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # gRPC Gateway (optional - for HTTP/JSON access)
+  grpc-gateway:
+    image: grpcweb/grpc-web:latest
+    container_name: routemaster-grpc-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - BACKEND_URL=http://route-service:50051
+    depends_on:
+      - route-service
+      - inventory-service
+      - booking-service
+    networks:
+      - routemaster-network
+    restart: unless-stopped
+
+networks:
+  routemaster-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

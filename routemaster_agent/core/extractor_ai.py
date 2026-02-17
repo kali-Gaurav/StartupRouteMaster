@@ -353,10 +353,24 @@ class ExtractionAI:
                 try:
                     element = await page.query_selector(selector)
                     if element:
-                        value = await element.inner_text()
-                        if value:
-                            return {"value": value, "confidence": 0.8}
-                except:
+                        # prefer element.value for inputs, otherwise inner_text
+                        tag = (await (await element.get_property('tagName')).json_value()).lower() if await element.get_property('tagName') else ''
+                        if tag in ('input', 'textarea', 'select'):
+                            # try to read value attribute first
+                            val = await element.get_attribute('value')
+                            if not val:
+                                # fallback to input_value (works for input elements)
+                                try:
+                                    val = await element.input_value()
+                                except Exception:
+                                    val = val or ''
+                        else:
+                            val = await element.inner_text()
+
+                        if val:
+                            return {"value": val.strip(), "confidence": 0.8}
+                except Exception as e:
+                    logger.debug(f"CSS selector lookup failed for {selector}: {e}")
                     pass
 
             return None
@@ -486,7 +500,8 @@ class ExtractionAI:
 
             elif expected_type == "time":
                 import re
-                if re.match(r"\d{1,2}:\d{2}", value_str):
+                # validate HH:MM where HH is 0-23 and MM is 00-59
+                if re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", value_str):
                     return {"passed": True, "error": None}
                 return {"passed": False, "error": "Not a valid time"}
 

@@ -114,14 +114,42 @@ class ReasoningController:
         return observation
 
     async def _think(self, context: Dict[str, Any]) -> Tuple[str, float]:
-        """Use Gemini to analyze observation and generate thought."""
+        """Use Gemini to analyze observation and generate thought or structured action JSON.
+
+        Supports both legacy text 'thought' responses and structured JSON with an 'action' or 'actions' array.
+        """
         prompt = self._build_think_prompt(context)
         response = await self.gemini.generate(prompt)
 
-        thought = response.get('thought', 'Unable to determine next action')
-        confidence = float(response.get('confidence', 0.5))
+        # Normalize response: allow dict|list|string
+        thought = 'Unable to determine next action'
+        confidence = 0.5
 
-        return thought, confidence
+        try:
+            if isinstance(response, dict):
+                # prefer explicit thought and confidence
+                if 'thought' in response:
+                    thought = response['thought']
+                elif 'action' in response or 'actions' in response or 'steps' in response:
+                    # return JSON string so _parse_action_from_thought can decode
+                    thought = json.dumps(response)
+
+                confidence = float(response.get('confidence', response.get('layout_confidence', 0.5)))
+
+            elif isinstance(response, list):
+                # list of actions — stringify for parser
+                thought = json.dumps({'actions': response})
+                confidence = 0.9
+
+            else:
+                # string fallback
+                text = str(response)
+                thought = text[:4000]
+        except Exception:
+            thought = str(response)
+
+        return thought, float(confidence)
+
 
     def _build_think_prompt(self, context: Dict[str, Any]) -> str:
         """Build Gemini prompt for THINK stage."""
@@ -166,15 +194,40 @@ Return JSON with:
         return {'action': 'continue', 'next_action': action}
 
     def _parse_action_from_thought(self, thought: str) -> Dict[str, Any]:
-        """Parse action from Gemini thought (simplified)."""
-        if 'complete' in thought.lower():
+        """Parse action from Gemini thought.
+
+        Accepts either free-text reasoning (legacy) or structured JSON (preferred). When
+        JSON is provided it should contain either `action` or `actions` / `steps`.
+        """
+        # Try JSON first
+        try:
+            payload = json.loads(thought)
+            # single action
+            if isinstance(payload, dict) and payload.get('type'):
+                return payload
+            # wrapped action(s)
+            if isinstance(payload, dict) and 'action' in payload:
+                return payload['action']
+            if isinstance(payload, dict) and 'actions' in payload and isinstance(payload['actions'], list):
+                return payload['actions'][0]
+            if isinstance(payload, dict) and 'steps' in payload and isinstance(payload['steps'], list):
+                return payload['steps'][0]
+        except Exception:
+            pass
+
+        # Fallback — legacy string parsing
+        text = (thought or '').lower()
+        if 'complete' in text:
             return {'type': 'complete', 'result': {'status': 'success'}}
-        elif 'click' in thought.lower():
+        if 'click' in text:
             return {'type': 'click', 'target': 'button'}
-        elif 'input' in thought.lower():
-            return {'type': 'input', 'value': '12951'}
-        else:
-            return {'type': 'observe'}
+        if 'input' in text or 'enter' in text:
+            # try to extract a number-like token
+            import re
+            m = re.search(r"(\d{3,6})", thought)
+            return {'type': 'input', 'value': m.group(1) if m else ''}
+
+        return {'type': 'observe'}
 
     async def _act(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the decided action using tools."""

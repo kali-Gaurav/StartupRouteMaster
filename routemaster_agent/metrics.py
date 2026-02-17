@@ -118,6 +118,24 @@ RMA_TRAIN_RELIABILITY_SCORE = Gauge(
     ['train_number']
 )
 
+# Agent runtime state metric helper (exposed as a convenience wrapper)
+RMA_AGENT_STATE_GAUGE = Gauge(
+    'rma_agent_state',
+    'Agent runtime state (labelled). Use RMA_AGENT_STATE.state("state_name") to set current state.',
+    ['state']
+)
+
+class _AgentStateMetric:
+    def state(self, state_name: str):
+        try:
+            # mark current state label as 1 (Prometheus label semantics)
+            RMA_AGENT_STATE_GAUGE.labels(state=state_name).set(1)
+        except Exception:
+            pass
+
+# public wrapper used by AgentStateManager
+RMA_AGENT_STATE = _AgentStateMetric()
+
 # --- Train reliability computation metrics ---
 RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS = Histogram(
     'rma_train_reliability_computation_seconds',
@@ -128,6 +146,16 @@ RMA_TRAIN_RELIABILITY_UPDATES_TOTAL = Counter(
     'rma_train_reliability_updates_total',
     'Number of train reliability updates performed by the hourly job.',
     ['batch']
+)
+
+# --- Command / Control metrics ---
+RMA_COMMAND_REQUESTS_TOTAL = Counter(
+    'rma_command_requests_total',
+    'Total number of command requests received by the agent.'
+)
+RMA_COMMAND_SUCCESS_TOTAL = Counter(
+    'rma_command_success_total',
+    'Total number of successfully completed commands.'
 )
 
 # --- Route engine metrics (instrumented in backend) ---
@@ -155,4 +183,7 @@ __all__ = [
     'RMA_TRAIN_RELIABILITY_SCORE',
     'RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS',
     'RMA_TRAIN_RELIABILITY_UPDATES_TOTAL',
+    'RMA_COMMAND_REQUESTS_TOTAL',
+    'RMA_COMMAND_SUCCESS_TOTAL',
+    'RMA_AGENT_STATE',
 ]

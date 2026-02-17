@@ -18,13 +18,17 @@ message AvailabilityRequest {
   google.protobuf.Timestamp travel_date = 4;
   string quota_type = 5; // e.g., GENERAL, TATKAL
   string class_type = 6; // e.g., 2A, 3A, SL
+  int32 num_passengers = 7;  // NEW: number of passengers
 }
 
 message AvailabilityResponse {
-  int32 available_count = 1;
-  string status = 2; // e.g., AVAILABLE, RAC, WL
-  int32 prediction_accuracy = 3;
-  double price = 4;
+  string train_id = 1;  // NEW: for reference
+  int32 available_count = 2;
+  int32 total_seats = 3;  // NEW: total seats in segment
+  string status = 4; // e.g., AVAILABLE, WAITLIST, SOLD_OUT
+  int32 prediction_accuracy = 5;
+  double price = 6;
+  double occupancy_rate = 7;  // NEW: current occupancy rate
 }
 
 message LockRequest {
@@ -33,14 +37,17 @@ message LockRequest {
   string to_stop_id = 3;
   google.protobuf.Timestamp travel_date = 4;
   int32 count = 5;
-  string lock_token = 6;
-  int32 expiry_seconds = 7;
+  string user_id = 6;  // NEW: for distributed lock key
+  string lock_token = 7;
+  int32 ttl_seconds = 8;  // NEW: time-to-live for lock
 }
 
 message LockResponse {
   bool success = 1;
   string lock_id = 2;
-  string error_message = 3;
+  int32 expires_in_seconds = 3;  // NEW: lock expiry time
+  string message = 4;  // NEW: status message
+  string error_message = 5;
 }
 
 message ReleaseRequest {
@@ -49,14 +56,20 @@ message ReleaseRequest {
 
 message ReleaseResponse {
   bool success = 1;
+  string message = 2;  // NEW: status message
 }
 
 message AllocationRequest {
-  string lock_id = 1;
-  string pnr = 2;
+  string pnr = 1;
+  int32 num_passengers = 2;
+  repeated string preferences = 3;  // e.g., LB, UB, SL, SU
 }
 
 message AllocationResponse {
   bool success = 1;
-  repeated string seat_numbers = 2;
+  string pnr = 2;
+  repeated string seat_numbers = 3;
+  string coach = 4;  // NEW: coach number
+  string status = 5;  // NEW: allocation status
+  string message = 6;  // NEW: status message
 }

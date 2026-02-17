@@ -1,0 +1,422 @@
+MICROSERVICES INTEGRATION GUIDE
+================================
+
+This guide explains how to integrate the microservices with the main backend API.
+
+## Quick Start
+
+### 1. Import the gRPC Client Manager
+
+```python
+from backend.microservices.common.grpc_clients import grpc_clients
+```
+
+### 2. Use in Your Backend APIs
+
+#### Example: Integrating Route Service in Search API
+
+```python
+# backend/api/search.py
+from fastapi import APIRouter, Depends
+from backend.microservices.common.grpc_clients import grpc_clients
+from backend.microservices.route_service.src import route_pb2
+from google.protobuf.timestamp_pb2 import Timestamp
+from datetime import datetime
+
+router = APIRouter()
+
+@router.post("/search-routes")
+async def search_routes(request: SearchRequest):
+    """Search routes using gRPC microservice"""
+    
+    # Get client
+    client = grpc_clients.get_route_client()
+    
+    # Create proto request
+    dep_time = Timestamp()
+    dep_time.FromDatetime(request.departure_date)
+    
+    grpc_request = route_pb2.RouteRequest(
+        from_station_id=str(request.from_station_id),
+        to_station_id=str(request.to_station_id),
+        departure_date=dep_time,
+        max_transfers=request.max_transfers or 3,
+        num_passengers=request.num_passengers or 1,
+        num_alternatives=request.num_alternatives or 5
+    )
+    
+    try:
+        # Call gRPC service
+        response = await client.FindRoutes(grpc_request)
+        
+        # Convert proto response to JSON
+        routes = [
+            {
+                "route_id": route.route_id,
+                "legs": [
+                    {
+                        "train_number": leg.train_number,
+                        "departure": leg.departure_time.ToJsonString(),
+                        "arrival": leg.arrival_time.ToJsonString(),
+                        "duration": leg.duration_mins,
+                    }
+                    for leg in route.legs
+                ],
+                "total_duration": route.total_duration_mins,
+                "total_price": route.total_price,
+                "reliability": route.reliability_score,
+            }
+            for route in response.routes
+        ]
+        
+        return {
+            "success": True,
+            "search_id": response.search_id,
+            "routes": routes,
+            "latency_ms": response.latency_ms,
+        }
+    
+    except Exception as e:
+        logger.error(f"Route search failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+        }
+```
+
+#### Example: Integrating Inventory Service in Availability Check
+
+```python
+# backend/api/availability.py
+
+@router.get("/check-availability")
+async def check_availability(train_id: str, date: str, num_passengers: int = 1):
+    """Check seat availability using gRPC microservice"""
+    
+    client = grpc_clients.get_inventory_client()
+    
+    travel_date = Timestamp()
+    travel_date.FromDatetime(datetime.fromisoformat(date))
+    
+    request = inventory_pb2.AvailabilityRequest(
+        train_id=train_id,
+        from_stop_id="1",  # TODO: get from booking context
+        to_stop_id="5",    # TODO: get from booking context
+        travel_date=travel_date,
+        quota_type="general",
+        num_passengers=num_passengers
+    )
+    
+    response = await client.CheckAvailability(request)
+    
+    return {
+        "train_id": response.train_id,
+        "available": response.available_count,
+        "total": response.total_seats,
+        "status": response.status,
+        "occupancy": response.occupancy_rate,
+        "prediction_accuracy": response.prediction_accuracy,
+    }
+```
+
+#### Example: Integrating Booking Service
+
+```python
+# backend/api/bookings.py
+
+@router.post("/create-booking")
+async def create_booking(request: BookingRequest):
+    """Create booking using gRPC microservice"""
+    
+    client = grpc_clients.get_booking_client()
+    
+    travel_date = Timestamp()
+    travel_date.FromDatetime(request.travel_date)
+    
+    passengers = [
+        booking_pb2.Passenger(
+            name=p.name,
+            age=p.age,
+            gender=p.gender,
+            berth_preference=p.berth_preference,
+        )
+        for p in request.passengers
+    ]
+    
+    grpc_request = booking_pb2.BookingRequest(
+        user_id=request.user_id,
+        trip_id=request.trip_id,
+        from_stop_id=request.from_stop_id,
+        to_stop_id=request.to_stop_id,
+        travel_date=travel_date,
+        quota_type=request.quota_type,
+        passengers=passengers,
+        payment_method="razorpay",
+        total_amount=request.total_amount,
+    )
+    
+    response = await client.InitiateBooking(grpc_request)
+    
+    return {
+        "success": response.success,
+        "pnr": response.pnr,
+        "booking_id": response.booking_id,
+        "status": response.status,
+        "total_amount": response.total_amount,
+    }
+```
+
+## Architecture Integration
+
+```
+┌──────────────────────────────────────────┐
+│         FastAPI Main Backend             │
+│      (backend/app.py, backend/api/)      │
+└──────────────────┬───────────────────────┘
+                   │
+                   │ gRPC Calls
+                   ▼
+┌──────────────────────────────────────────┐
+│     gRPC Client Manager                  │
+│  (grpc_clients.get_*_client())            │
+└──────────────────┬───────────────────────┘
+                   │
+        ┌──────────┼──────────┐
+        │          │          │
+        ▼          ▼          ▼
+    ┌─────────┐ ┌──────────┐ ┌────────┐
+    │ Route   │ │Inventory │ │Booking │
+    │Service  │ │Service   │ │Service │
+    │:50051   │ │:50052    │ │:50053  │
+    └─────────┘ └──────────┘ └────────┘
+        │          │          │
+        └──────────┼──────────┘
+                   │
+                   ▼
+        ┌──────────────────────┐
+        │ PostgreSQL Database  │
+        │ Redis Cache          │
+        └──────────────────────┘
+```
+
+## Configuration
+
+Set environment variables for microservice endpoints:
+
+```bash
+# .env or environment
+ROUTE_SERVICE_HOST=localhost
+ROUTE_SERVICE_PORT=50051
+ROUTE_SERVICE_TIMEOUT=30
+
+INVENTORY_SERVICE_HOST=localhost
+INVENTORY_SERVICE_PORT=50052
+INVENTORY_SERVICE_TIMEOUT=30
+
+BOOKING_SERVICE_HOST=localhost
+BOOKING_SERVICE_PORT=50053
+BOOKING_SERVICE_TIMEOUT=60
+```
+
+Load in your config:
+
+```python
+# backend/config.py
+import os
+
+ROUTE_SERVICE_HOST = os.getenv("ROUTE_SERVICE_HOST", "localhost")
+ROUTE_SERVICE_PORT = int(os.getenv("ROUTE_SERVICE_PORT", 50051))
+ROUTE_SERVICE_TIMEOUT = int(os.getenv("ROUTE_SERVICE_TIMEOUT", 30))
+
+# ... similar for other services
+```
+
+Then use in client creation:
+
+```python
+from backend.config import ROUTE_SERVICE_HOST, ROUTE_SERVICE_PORT, ROUTE_SERVICE_TIMEOUT
+
+route_client = grpc_clients.get_route_client(
+    host=ROUTE_SERVICE_HOST,
+    port=ROUTE_SERVICE_PORT,
+    timeout_seconds=ROUTE_SERVICE_TIMEOUT
+)
+```
+
+## Error Handling
+
+Always handle gRPC exceptions:
+
+```python
+import grpc
+
+try:
+    response = await client.FindRoutes(request)
+except grpc.RpcError as e:
+    logger.error(f"gRPC error: {e.code()}, {e.details()}")
+    # Handle specific error codes
+    if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+        return {"error": "Request timeout"}
+    elif e.code() == grpc.StatusCode.UNAVAILABLE:
+        return {"error": "Service unavailable"}
+    else:
+        return {"error": "Service error"}
+except Exception as e:
+    logger.error(f"Unexpected error: {e}")
+    return {"error": "Internal error"}
+```
+
+## Testing Microservices
+
+### Run Integration Tests
+
+```bash
+# Start microservices first
+docker-compose -f backend/microservices/docker-compose.yml up -d
+
+# Run tests
+pytest backend/microservices/tests/test_integration.py -v -s
+
+# Specific test
+pytest backend/microservices/tests/test_integration.py::test_end_to_end_booking_flow -v -s
+```
+
+### Health Checks
+
+```bash
+# Check if services are healthy
+grpcurl -plaintext localhost:50051 list
+grpcurl -plaintext localhost:50052 list
+grpcurl -plaintext localhost:50053 list
+```
+
+## Monitoring
+
+### Service Logs
+
+```bash
+# Docker Compose logs
+docker-compose logs -f route-service
+docker-compose logs -f inventory-service
+docker-compose logs -f booking-service
+
+# Local service logs (check console output)
+```
+
+### Performance Metrics
+
+Track these metrics:
+
+```python
+import time
+
+start_time = time.time()
+response = await client.FindRoutes(request)
+latency = (time.time() - start_time) * 1000
+
+logger.info(f"Route search latency: {latency}ms")
+```
+
+### Circuit Breaker Status
+
+The circuit breaker automatically opens/closes based on failures:
+
+```python
+# Check circuit breaker state
+circuit_breaker = grpc_clients._circuit_breakers.get("route-service")
+print(f"Route service CB state: {circuit_breaker.fail_counter}")
+```
+
+## Production Deployment
+
+### Kubernetes
+
+```bash
+# Create ConfigMap for service endpoints
+kubectl create configmap microservices-config \
+  --from-literal=ROUTE_SERVICE_HOST=route-service.default.svc.cluster.local \
+  --from-literal=INVENTORY_SERVICE_HOST=inventory-service.default.svc.cluster.local \
+  --from-literal=BOOKING_SERVICE_HOST=booking-service.default.svc.cluster.local
+
+# Deploy microservices
+kubectl apply -f backend/microservices/k8s/
+
+# Verify deployment
+kubectl get pods -l app=routemaster
+kubectl get svc -l app=routemaster
+```
+
+### Docker Compose (Production)
+
+```bash
+# Set production environment
+export ENVIRONMENT=production
+export LOG_LEVEL=INFO
+
+# Scale services
+docker-compose -f backend/microservices/docker-compose.yml up -d --scale route-service=3
+
+# Monitor
+docker-compose ps
+docker-compose stats
+```
+
+## Troubleshooting
+
+### Service Won't Connect
+
+```bash
+# Check if service is running
+docker ps | grep route-service
+
+# Check service logs
+docker logs routemaster-route-service
+
+# Test gRPC port
+nc -zv localhost 50051
+```
+
+### Slow Requests
+
+```bash
+# Check database performance
+SELECT * FROM pg_stat_statements WHERE mean_time > 100;
+
+# Check Redis connection
+redis-cli INFO stats
+
+# Check service resource usage
+docker stats routemaster-route-service
+```
+
+### High Circuit Breaker Failures
+
+```python
+# Investigate circuit breaker
+cb = grpc_clients._circuit_breakers["route-service"]
+print(f"Failures: {cb.fail_counter}")
+print(f"Opened: {cb.opened}")
+```
+
+## Best Practices
+
+1. **Use Timeouts**: Always set appropriate timeouts for gRPC calls
+2. **Handle Errors**: Implement proper error handling and retry logic
+3. **Log Calls**: Log all gRPC calls for debugging
+4. **Monitor Health**: Check service health regularly
+5. **Cache Results**: Cache frequently requested data
+6. **Circuit Breaker**: Let circuit breaker handle failures automatically
+7. **Async/Await**: Use async calls for better performance
+8. **Pool Connections**: The client manager reuses connections
+
+## API Reference
+
+See `backend/microservices/README.md` for complete API documentation.
+
+## Support
+
+For issues or questions:
+1. Check the README.md in microservices folder
+2. Review test_integration.py for examples
+3. Check service logs in docker-compose output
+4. Verify proto definitions in proto/ folders
