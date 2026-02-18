@@ -115,3 +115,15 @@ If you run repo-level scripts (examples: `scripts/raptor_benchmark.py`, `scripts
 Both make `from backend.config import Config` (and legacy `from config import Config`) resolve consistently.
 
 See `DOW.md` for the full design, algorithm, and developer guide.
+
+---
+
+## Developer extras
+
+For optional developer tooling and the Streamlit annotation UI, install the dev extras:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+This will install `streamlit`, `pandas`, and common developer utilities used during local development and testing.

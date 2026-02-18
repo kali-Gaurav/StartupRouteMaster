@@ -16,11 +16,17 @@ try:
         RMA_SELECTOR_PROMOTIONS_TOTAL,
         RMA_SELECTOR_FAILURE_RATE,
         RMA_SELECTOR_ACTIVE_PRIMARY,
+        RMA_SELECTOR_SUCCESS_TOTAL,
+        RMA_SELECTOR_FAILURE_TOTAL,
+        RMA_SELECTOR_CONFIDENCE,
     )
 except Exception:
     RMA_SELECTOR_PROMOTIONS_TOTAL = None
     RMA_SELECTOR_FAILURE_RATE = None
     RMA_SELECTOR_ACTIVE_PRIMARY = None
+    RMA_SELECTOR_SUCCESS_TOTAL = None
+    RMA_SELECTOR_FAILURE_TOTAL = None
+    RMA_SELECTOR_CONFIDENCE = None
 
 
 def _get_registry_path() -> Path:
@@ -136,6 +142,22 @@ def record_selector_result(page_type: str, selector: str, success: bool):
             total = succ + fail
             rate = (fail / total) if total else 0.0
             RMA_SELECTOR_FAILURE_RATE.labels(page_type=page_type).set(round(rate, 4))
+    except Exception:
+        pass
+
+    # record success/failure counters for observability
+    try:
+        if success and 'RMA_SELECTOR_SUCCESS_TOTAL' in globals():
+            # increment success counter for selector (label by page_type + selector)
+            try:
+                RMA_SELECTOR_SUCCESS_TOTAL.labels(page_type=page_type, selector=selector).inc()
+            except Exception:
+                pass
+        if not success and 'RMA_SELECTOR_FAILURE_TOTAL' in globals():
+            try:
+                RMA_SELECTOR_FAILURE_TOTAL.labels(page_type=page_type, selector=selector).inc()
+            except Exception:
+                pass
     except Exception:
         pass
 

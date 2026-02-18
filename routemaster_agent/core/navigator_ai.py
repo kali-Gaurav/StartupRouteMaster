@@ -13,6 +13,10 @@ from typing import Optional, List, Dict, Any, Tuple
 from playwright.async_api import Page, Locator
 from datetime import datetime
 import logging
+import time
+
+# record selector successes/failures into selector registry
+from routemaster_agent.intelligence.selector_registry import record_selector_result, get_primary_selector, get_entry
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +27,24 @@ class NavigatorAI:
     Uses Gemini vision + semantic analysis for robust automation.
     """
 
-    def __init__(self, gemini_client=None):
+    def __init__(self, gemini_client=None, scene_recorder=None):
         """
         Initialize NavigatorAI.
 
         Args:
             gemini_client: GeminiClient instance for vision analysis
+            scene_recorder: optional SceneRecorder instance to persist interaction traces
         """
         self.gemini = gemini_client
         self.navigation_memory = {}  # Cache successful paths
         self.failed_attempts = {}  # Track failures for learning
+        self.scene_recorder = scene_recorder
+        self._scene_step = 0
+        # lazy import for scroll intelligence helper
+        self._scroller = None
 
     async def find_element_by_visual_label(
-        self, page: Page, label: str, element_type: str = "input"
+        self, page: Page, label: str, element_type: str = "input", page_type: Optional[str] = None
     ) -> Optional[Locator]:
         """
         Find an element by its visible label text using visual analysis.
@@ -44,11 +53,47 @@ class NavigatorAI:
             page: Playwright page object
             label: The label text to find (e.g., "Train Number", "From Station")
             element_type: Type of element (input, button, etc.)
+            page_type: Optional registry key (e.g. 'ntes_schedule') to record selector success/failure
 
         Returns:
             Locator object or None if not found
         """
         logger.info(f"Finding element with label: '{label}'")
+
+        # If page_type provided, try registry primary + backups first (fast path)
+        if page_type:
+            try:
+                entry = get_entry(page_type)
+                candidates = []
+                primary = entry.get('primary', {}).get('selector') if entry else None
+                if primary:
+                    candidates.append(primary)
+                for b in (entry.get('backups') or []):
+                    sel = b.get('selector')
+                    if sel and sel not in candidates:
+                        candidates.append(sel)
+
+                for sel in candidates:
+                    try:
+                        el = await page.query_selector(sel)
+                        if el:
+                            # record and return locator
+                            try:
+                                record_selector_result(page_type, sel, True)
+                            except Exception:
+                                pass
+                            logger.info(f"✓ Found element via registry selector (selector={sel})")
+                            return page.locator(sel)
+                        else:
+                            try:
+                                record_selector_result(page_type, sel, False)
+                            except Exception:
+                                pass
+                    except Exception:
+                        # invalid selector format / evaluation error — skip
+                        continue
+            except Exception:
+                pass
 
         # Strategy 1: Direct DOM search for associated labels
         try:
@@ -57,21 +102,31 @@ class NavigatorAI:
             for lbl in labels:
                 text = await lbl.inner_text()
                 if label.lower() in text.lower():
-                    # Get associated input
+                    # Get associated input via 'for' attribute
                     lbl_for = await lbl.get_attribute("for")
                     if lbl_for:
                         element = await page.query_selector(f"#{lbl_for}")
                         if element:
-                            logger.info(f"✓ Found element via label[@for] association")
-                            return page.locator(f"#{lbl_for}")
+                            selector = f"#{lbl_for}"
+                            logger.info(f"✓ Found element via label[@for] association (selector={selector})")
+                            if page_type:
+                                try:
+                                    record_selector_result(page_type, selector, True)
+                                except Exception:
+                                    pass
+                            return page.locator(selector)
 
-                    # Try next sibling
+                    # Try next sibling input (label sibling)
                     input_elem = await lbl.query_selector(f"{element_type}")
                     if input_elem:
-                        logger.info(f"✓ Found element as label sibling")
-                        return page.locator(
-                            f"label:has-text('{label}') >> {element_type}"
-                        )
+                        selector = f"label:has-text('{label}') >> {element_type}"
+                        logger.info(f"✓ Found element as label sibling (selector={selector})")
+                        if page_type:
+                            try:
+                                record_selector_result(page_type, selector, True)
+                            except Exception:
+                                pass
+                        return page.locator(selector)
         except Exception as e:
             logger.debug(f"Label search failed: {e}")
 
@@ -89,17 +144,23 @@ class NavigatorAI:
                             # Click at detected location to focus element
                             coords = element_data.get("coordinates")
                             if coords:
-                                await page.click(
-                                    f"[data-testid='{element_data.get('element_id')}']",
-                                    position=coords,
-                                    timeout=3000,
-                                )
+                                eid = element_data.get('element_id')
+                                selector = f"[data-testid='{eid}']" if eid else None
+                                if selector:
+                                    try:
+                                        await page.click(selector, position=coords, timeout=3000)
+                                    except Exception:
+                                        # fallback to click at coords
+                                        await page.mouse.click(coords.get('x', 0), coords.get('y', 0))
                                 logger.info(
                                     f"✓ Found element via visual detection (confidence: {element_data.get('match_score')})"
                                 )
-                                return page.locator(
-                                    f"[data-testid='{element_data.get('element_id')}']"
-                                )
+                                if page_type and selector:
+                                    try:
+                                        record_selector_result(page_type, selector, True)
+                                    except Exception:
+                                        pass
+                                return page.locator(selector if selector else f"[data-testid='{eid}']")
             except Exception as e:
                 logger.debug(f"Visual detection failed: {e}")
 
@@ -110,28 +171,53 @@ class NavigatorAI:
                 # Check placeholder
                 placeholder = await inp.get_attribute("placeholder")
                 if placeholder and label.lower() in placeholder.lower():
-                    logger.info(f"✓ Found element via placeholder match")
-                    return page.locator(inp)
+                    selector = f"{element_type}[placeholder*='{placeholder}']"
+                    logger.info(f"✓ Found element via placeholder match (selector={selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, selector, True)
+                        except Exception:
+                            pass
+                    return page.locator(selector)
 
                 # Check aria-label
                 aria_label = await inp.get_attribute("aria-label")
                 if aria_label and label.lower() in aria_label.lower():
-                    logger.info(f"✓ Found element via aria-label match")
-                    return page.locator(inp)
+                    selector = f"{element_type}[aria-label*='{aria_label}']"
+                    logger.info(f"✓ Found element via aria-label match (selector={selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, selector, True)
+                        except Exception:
+                            pass
+                    return page.locator(selector)
 
                 # Check name attribute
                 name = await inp.get_attribute("name")
                 if name and label.lower() in name.lower():
-                    logger.info(f"✓ Found element via name match")
-                    return page.locator(inp)
+                    selector = f"{element_type}[name='{name}']"
+                    logger.info(f"✓ Found element via name match (selector={selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, selector, True)
+                        except Exception:
+                            pass
+                    return page.locator(selector)
         except Exception as e:
             logger.debug(f"Semantic search failed: {e}")
 
+        if page_type:
+            try:
+                primary = get_primary_selector(page_type)
+                if primary:
+                    record_selector_result(page_type, primary, False)
+            except Exception:
+                pass
         logger.warning(f"✗ Could not find element with label: '{label}'")
         return None
 
     async def find_button_by_intent(
-        self, page: Page, intent: str
+        self, page: Page, intent: str, page_type: Optional[str] = None
     ) -> Optional[Locator]:
         """
         Find a button by its semantic meaning/intent.
@@ -139,11 +225,45 @@ class NavigatorAI:
         Args:
             page: Playwright page object
             intent: Button intent (e.g., "search", "next", "submit", "apply")
+            page_type: Optional registry key to record selector success/failure
 
         Returns:
             Locator object or None
         """
         logger.info(f"Finding button with intent: '{intent}'")
+
+        # If page_type provided, try registry selectors first
+        if page_type:
+            try:
+                entry = get_entry(page_type)
+                candidates = []
+                primary = entry.get('primary', {}).get('selector') if entry else None
+                if primary:
+                    candidates.append(primary)
+                for b in (entry.get('backups') or []):
+                    sel = b.get('selector')
+                    if sel and sel not in candidates:
+                        candidates.append(sel)
+
+                for sel in candidates:
+                    try:
+                        el = await page.query_selector(sel)
+                        if el:
+                            try:
+                                record_selector_result(page_type, sel, True)
+                            except Exception:
+                                pass
+                            logger.info(f"✓ Found button via registry selector (selector={sel})")
+                            return page.locator(sel)
+                        else:
+                            try:
+                                record_selector_result(page_type, sel, False)
+                            except Exception:
+                                pass
+                    except Exception:
+                        continue
+            except Exception:
+                pass
 
         # Strategy 1: Text match
         button_texts = [intent, intent.capitalize(), intent.upper()]
@@ -152,8 +272,14 @@ class NavigatorAI:
                 f"button:has-text('{text}'), input[type=button][value='{text}']"
             )
             if button:
-                logger.info(f"✓ Found button via text match: '{text}'")
-                return page.locator(f"button:has-text('{text}')")
+                selector = f"button:has-text('{text}')"
+                logger.info(f"✓ Found button via text match: '{text}' (selector={selector})")
+                if page_type:
+                    try:
+                        record_selector_result(page_type, selector, True)
+                    except Exception:
+                        pass
+                return page.locator(selector)
 
         # Strategy 2: Visual analysis with Gemini
         if self.gemini:
@@ -181,16 +307,35 @@ class NavigatorAI:
             for btn in buttons:
                 aria_label = await btn.get_attribute("aria-label")
                 if aria_label and intent.lower() in aria_label.lower():
-                    logger.info(f"✓ Found button via aria-label: {aria_label}")
-                    return page.locator(btn)
+                    selector = f"button[aria-label*='{aria_label}']"
+                    logger.info(f"✓ Found button via aria-label: {aria_label} (selector={selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, selector, True)
+                        except Exception:
+                            pass
+                    return page.locator(selector)
 
                 text = await btn.inner_text()
                 if intent.lower() in text.lower():
-                    logger.info(f"✓ Found button via text content: {text}")
-                    return page.locator(btn)
+                    selector = f"button:has-text('{text}')"
+                    logger.info(f"✓ Found button via text content: {text} (selector={selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, selector, True)
+                        except Exception:
+                            pass
+                    return page.locator(selector)
         except Exception as e:
             logger.debug(f"ARIA search failed: {e}")
 
+        if page_type:
+            try:
+                primary = get_primary_selector(page_type)
+                if primary:
+                    record_selector_result(page_type, primary, False)
+            except Exception:
+                pass
         logger.warning(f"✗ Could not find button with intent: '{intent}'")
         return None
 
@@ -237,7 +382,7 @@ class NavigatorAI:
         return None
 
     async def fill_input_and_trigger_event(
-        self, page: Page, element: Locator, value: str, delay_ms: int = 100
+        self, page: Page, element: Locator, value: str, delay_ms: int = 100, page_type: Optional[str] = None
     ) -> bool:
         """
         Fill input field with human-like typing and trigger change events.
@@ -247,32 +392,112 @@ class NavigatorAI:
             element: Locator of input element
             value: Value to fill
             delay_ms: Delay between keystrokes (simulates human typing)
+            page_type: Optional registry key to record selector success/failure
 
         Returns:
             True if successful
         """
+        selector = None
+        el_handle = None
+        is_locator = hasattr(element, "element_handle")
         try:
-            # Focus element
-            await element.focus()
+            start_time = time.monotonic()
+            # obtain an ElementHandle for robust operations
+            if is_locator:
+                try:
+                    el_handle = await element.element_handle()
+                except Exception:
+                    el_handle = None
+            else:
+                # element may already be an ElementHandle
+                el_handle = element
+
+            # compute friendly selector for metrics/registry when possible
+            if el_handle:
+                try:
+                    info = await page.evaluate(
+                        '(el) => ({ tag: el.tagName.toLowerCase(), id: el.id || "", name: el.name || "" })',
+                        el_handle,
+                    )
+                    selector = info.get('tag', '')
+                    if info.get('id'):
+                        selector += f"#{info['id']}"
+                    if info.get('name'):
+                        selector += f"[name='{info['name']}']"
+                except Exception:
+                    selector = None
+
+            # Focus element (use evaluate on handle for ElementHandle)
+            if is_locator and hasattr(element, 'focus'):
+                await element.focus()
+            elif el_handle:
+                await page.evaluate("el => el.focus()", el_handle)
             await asyncio.sleep(0.1)
 
             # Clear existing value
-            await element.fill("")
+            if is_locator and hasattr(element, 'fill'):
+                await element.fill("")
+            elif el_handle:
+                await page.evaluate("el => { if ('value' in el) el.value = ''; else el.innerText = ''; }", el_handle)
             await asyncio.sleep(0.1)
 
             # Type with delays (human-like)
-            await element.type(value, delay=delay_ms)
+            if is_locator and hasattr(element, 'type'):
+                await element.type(value, delay=delay_ms)
+            elif el_handle:
+                # fallback: set value directly and dispatch input event
+                await page.evaluate("(el, v) => { if ('value' in el) { el.value = v; el.dispatchEvent(new Event('input')); } else { el.innerText = v; } }", el_handle, value)
             await asyncio.sleep(0.2)
 
-            # Trigger change events that JS handlers might expect
-            await element.evaluate("el => el.dispatchEvent(new Event('change'))")
-            await element.evaluate("el => el.dispatchEvent(new Event('input'))")
+            # Trigger change/input events that JS handlers might expect
+            if is_locator and hasattr(element, 'evaluate'):
+                try:
+                    await element.evaluate("el => el.dispatchEvent(new Event('change'))")
+                    await element.evaluate("el => el.dispatchEvent(new Event('input'))")
+                except Exception:
+                    pass
+            elif el_handle:
+                try:
+                    await page.evaluate("el => { el.dispatchEvent(new Event('change')); el.dispatchEvent(new Event('input')); }", el_handle)
+                except Exception:
+                    pass
 
-            logger.info(f"✓ Filled input with value: '{value}'")
+                logger.info(f"✓ Filled input with value: '{value}' (selector={selector})")
+            if page_type and selector:
+                try:
+                    record_selector_result(page_type, selector, True)
+                except Exception:
+                    pass
+
+            # record scene step if recorder available (include timing + selector metadata)
+            try:
+                if self.scene_recorder:
+                    elapsed_ms = int((time.monotonic() - start_time) * 1000) if 'start_time' in locals() else None
+                    meta = {
+                        "strategy": "dom" if selector else None,
+                        "selector_confidence": None,
+                        "time_to_success_ms": elapsed_ms,
+                        "success": True,
+                    }
+                    self._scene_step += 1
+                    await self.scene_recorder.record_step(page, {"type": "input", "selector": selector, "value": value}, self._scene_step, metadata=meta)
+            except Exception:
+                pass
+
             return True
 
         except Exception as e:
             logger.error(f"Input fill failed: {e}")
+            if page_type:
+                try:
+                    # if we failed and have a primary registered, record a failure for it
+                    primary = get_primary_selector(page_type)
+                    if primary:
+                        record_selector_result(page_type, primary, False)
+                    elif selector:
+                        record_selector_result(page_type, selector, False)
+                except Exception:
+                    pass
             return False
 
     async def wait_for_element_interactive(
@@ -305,8 +530,47 @@ class NavigatorAI:
             logger.warning(f"Element wait timeout: {e}")
             return False
 
+    async def wait_for_dom_change(self, page: Page, baseline_selector: str = None, timeout_ms: int = 5000) -> bool:
+        """Wait for DOM changes.
+
+        - If baseline_selector provided, waits until the number of matching elements changes.
+        - Otherwise waits until page.content() length changes.
+        """
+        try:
+            if baseline_selector:
+                initial = await page.query_selector_all(baseline_selector)
+                initial_count = len(initial)
+                end_time = __import__('time').time() + (timeout_ms / 1000.0)
+                while __import__('time').time() < end_time:
+                    current = await page.query_selector_all(baseline_selector)
+                    if len(current) != initial_count:
+                        return True
+                    await asyncio.sleep(0.25)
+                return False
+
+            # fallback: monitor page content length
+            initial = await page.content()
+            end_time = __import__('time').time() + (timeout_ms / 1000.0)
+            while __import__('time').time() < end_time:
+                current = await page.content()
+                if len(current) != len(initial):
+                    return True
+                await asyncio.sleep(0.25)
+            return False
+        except Exception as e:
+            logger.debug(f"wait_for_dom_change failed: {e}")
+            return False
+
+    async def wait_for_network_idle(self, page: Page, timeout_ms: int = 5000) -> bool:
+        """Wait for network to become idle (wrapper around Playwright's networkidle)."""
+        try:
+            await page.wait_for_load_state('networkidle', timeout=timeout_ms)
+            return True
+        except Exception as e:
+            logger.debug(f"wait_for_network_idle: {e}")
+            return False
     async def handle_dropdown_selection(
-        self, page: Page, dropdown_selector: str, option_text: str
+        self, page: Page, dropdown_selector: str, option_text: str, page_type: Optional[str] = None
     ) -> bool:
         """
         Handle dropdown/select element selection.
@@ -315,32 +579,91 @@ class NavigatorAI:
             page: Playwright page object
             dropdown_selector: CSS selector for dropdown
             option_text: Text of option to select
+            page_type: Optional registry key to record selector success/failure
 
         Returns:
             True if successfully selected
         """
         try:
             dropdown = page.locator(dropdown_selector)
-            await dropdown.click()
-            await asyncio.sleep(0.3)
+            tag = None
+            try:
+                tag = (await dropdown.evaluate("el => el.tagName.toLowerCase()"))
+            except Exception:
+                tag = None
 
-            # Wait for options to appear
-            await page.wait_for_selector(
-                f"{dropdown_selector} + [role=listbox] [role=option], {dropdown_selector} ~ ul li, .dropdown-menu li",
-                timeout=5000,
-            )
+            # Native <select> handling
+            if tag == 'select':
+                try:
+                    await dropdown.select_option(label=option_text)
+                    logger.info(f"✓ Selected native select option: '{option_text}' (selector={dropdown_selector})")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, dropdown_selector, True)
+                        except Exception:
+                            pass
+                    return True
+                except Exception as e:
+                    logger.error(f"Native select failed: {e}")
+                    if page_type:
+                        try:
+                            record_selector_result(page_type, dropdown_selector, False)
+                        except Exception:
+                            pass
+                    return False
 
-            # Click matching option
-            await page.click(f"text={option_text}")
-            logger.info(f"✓ Selected dropdown option: '{option_text}'")
-            return True
+            # Otherwise treat as custom dropdown
+            try:
+                await dropdown.click()
+                await asyncio.sleep(0.3)
+
+                # Wait for options to appear
+                await page.wait_for_selector(
+                    f"{dropdown_selector} + [role=listbox] [role=option], {dropdown_selector} ~ ul li, .dropdown-menu li",
+                    timeout=5000,
+                )
+
+                # Click matching option
+                start_time = time.monotonic()
+                await page.click(f"text={option_text}")
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                logger.info(f"✓ Selected dropdown option: '{option_text}' (selector={dropdown_selector})")
+                if page_type:
+                    try:
+                        record_selector_result(page_type, dropdown_selector, True)
+                    except Exception:
+                        pass
+
+                # record scene step (with metadata)
+                try:
+                    if self.scene_recorder:
+                        meta = {"strategy": "dom", "selector_confidence": None, "time_to_success_ms": elapsed_ms, "success": True}
+                        self._scene_step += 1
+                        await self.scene_recorder.record_step(page, {"type": "select", "selector": dropdown_selector, "value": option_text}, self._scene_step, metadata=meta)
+                except Exception:
+                    pass
+
+                return True
+            except Exception as e:
+                logger.error(f"Dropdown selection failed: {e}")
+                if page_type:
+                    try:
+                        record_selector_result(page_type, dropdown_selector, False)
+                    except Exception:
+                        pass
+                return False
 
         except Exception as e:
             logger.error(f"Dropdown selection failed: {e}")
+            if page_type:
+                try:
+                    record_selector_result(page_type, dropdown_selector, False)
+                except Exception:
+                    pass
             return False
 
     async def navigate_pagination(
-        self, page: Page, max_pages: int = 5
+        self, page: Page, max_pages: int = 5, page_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Autonomously navigate multi-page results.
@@ -348,6 +671,7 @@ class NavigatorAI:
         Args:
             page: Playwright page object
             max_pages: Maximum pages to fetch
+            page_type: Optional registry key to record selector success/failure
 
         Returns:
             List of extracted data from each page
@@ -365,9 +689,17 @@ class NavigatorAI:
                 logger.info(f"Extracted page {pages_visited}")
 
                 # Find and click next button
-                next_button = await self.find_button_by_intent(page, "next")
+                next_button = await self.find_button_by_intent(page, "next", page_type=page_type)
                 if not next_button:
                     logger.info("No more pages - reached end")
+                    # record primary failure if page_type provided
+                    if page_type:
+                        try:
+                            primary = get_primary_selector(page_type)
+                            if primary:
+                                record_selector_result(page_type, primary, False)
+                        except Exception:
+                            pass
                     break
 
                 # Check if button is disabled
@@ -376,11 +708,41 @@ class NavigatorAI:
                     logger.info("Next button disabled - reached end")
                     break
 
+                # try to derive selector for metrics
+                try:
+                    sel = await page.evaluate("el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').join('.') : '')", await next_button.element_handle())
+                except Exception:
+                    sel = None
+
+                start_click = time.monotonic()
                 await next_button.click()
                 await page.wait_for_load_state("networkidle", timeout=10000)
+                elapsed_click_ms = int((time.monotonic() - start_click) * 1000)
+
+                if page_type and sel:
+                    try:
+                        record_selector_result(page_type, sel, True)
+                    except Exception:
+                        pass
+
+                # record pagination step (with metadata)
+                try:
+                    if self.scene_recorder:
+                        meta = {"strategy": "dom" if sel else None, "selector_confidence": None, "time_to_success_ms": elapsed_click_ms, "success": True}
+                        self._scene_step += 1
+                        await self.scene_recorder.record_step(page, {"type": "click", "selector": sel or 'next_button', "action": 'paginate'}, self._scene_step, metadata=meta)
+                except Exception:
+                    pass
 
             except Exception as e:
                 logger.error(f"Pagination error: {e}")
+                if page_type:
+                    try:
+                        primary = get_primary_selector(page_type)
+                        if primary:
+                            record_selector_result(page_type, primary, False)
+                    except Exception:
+                        pass
                 break
 
         logger.info(f"✓ Visited {pages_visited} pages")
@@ -434,6 +796,53 @@ class NavigatorAI:
             logger.error(f"Scroll failed: {e}")
             return False
 
+    async def smart_scroll(
+        self,
+        page: Page,
+        container_selector: str = None,
+        wait_for_selector: str = None,
+        max_scrolls: int = 5,
+        scroll_step: int = 400,
+        timeout_ms: int = 10000,
+    ) -> bool:
+        """Scroll intelligently on the page or inside a container.
+
+        - If `container_selector` provided, scroll that element; otherwise scroll window.
+        - If `wait_for_selector` provided, wait for it to appear after each scroll.
+        - Returns True when new content appears or `wait_for_selector` is found.
+        """
+        # defer import to avoid circulars in tests
+        if self._scroller is None:
+            from routemaster_agent.core.scroll_intelligence import ScrollIntelligence
+            self._scroller = ScrollIntelligence()
+
+        try:
+            # prefer scroller.perform_infinite_scroll when item selector provided
+            if wait_for_selector:
+                return await self._scroller.perform_infinite_scroll(page, item_selector=wait_for_selector, max_scrolls=max_scrolls, scroll_step=scroll_step)
+
+            # use the simpler behavior otherwise
+            for i in range(max_scrolls):
+                if container_selector:
+                    await page.eval_on_selector(container_selector, f"el => el.scrollBy(0, {scroll_step})")
+                else:
+                    await page.evaluate(f"window.scrollBy(0, {scroll_step})")
+
+                # allow dynamic content to load
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=int(timeout_ms / max_scrolls))
+                except Exception:
+                    pass
+
+                # small pause between scrolls
+                await asyncio.sleep(0.25)
+
+            logger.info("✓ smart_scroll: completed scrolling attempts")
+            return True
+
+        except Exception as e:
+            logger.error(f"smart_scroll failed: {e}")
+            return False
     async def get_page_structure(self, page: Page) -> Dict[str, Any]:
         """
         Analyze current page structure and layout.

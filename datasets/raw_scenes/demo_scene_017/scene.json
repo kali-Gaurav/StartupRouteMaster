@@ -1,0 +1,46 @@
+{
+  "scene_id": "demo_scene_017",
+  "meta": {
+    "task": "demo_record",
+    "template": 1,
+    "train_no": "10017",
+    "created_at": "2026-02-17T00:58:48.439066Z"
+  },
+  "created_at": "2026-02-17T00:58:48.440552Z",
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "input",
+        "selector": "input#from[name='from']",
+        "value": "JP"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_001.png",
+      "dom": "<html><head></head><body>\n        <label for=\"from\">From</label>\n        <input id=\"from\" name=\"from\" placeholder=\"From station\" style=\"\">\n        <label for=\"to\">To</label>\n        <input id=\"to\" name=\"to\" placeholder=\"To station\" style=\"\">\n        <button id=\"search\">Search Trains</button>\n        <div id=\"results\"><div class=\"item\">Train A</div></div>\n        <button id=\"load-more\">Load more</button>\n        <script>\n          document.getElementById('search').addEventListener('click', function() { document.getElementById('results').innerHTML = '<div class='item'>Train 10017</div>' });\n          document.getElementById('load-more').addEventListener('click', function() { const d=document.createElement('div'); d.className='item'; d.innerText='more'; document.getElementById('results').appendChild(d); });\n        </script>\n    </body></html>",
+      "timestamp": "2026-02-17T00:58:49.180470Z"
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "input",
+        "selector": "input#to[name='to']",
+        "value": "KOTA"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_002.png",
+      "dom": "<html><head></head><body>\n        <label for=\"from\">From</label>\n        <input id=\"from\" name=\"from\" placeholder=\"From station\" style=\"\">\n        <label for=\"to\">To</label>\n        <input id=\"to\" name=\"to\" placeholder=\"To station\" style=\"\">\n        <button id=\"search\">Search Trains</button>\n        <div id=\"results\"><div class=\"item\">Train A</div></div>\n        <button id=\"load-more\">Load more</button>\n        <script>\n          document.getElementById('search').addEventListener('click', function() { document.getElementById('results').innerHTML = '<div class='item'>Train 10017</div>' });\n          document.getElementById('load-more').addEventListener('click', function() { const d=document.createElement('div'); d.className='item'; d.innerText='more'; document.getElementById('results').appendChild(d); });\n        </script>\n    </body></html>",
+      "timestamp": "2026-02-17T00:58:49.757130Z"
+    }
+  ]
+}

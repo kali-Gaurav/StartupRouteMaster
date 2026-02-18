@@ -1,0 +1,29 @@
+{
+  "scene_id": "demo_scene_004",
+  "meta": {
+    "task": "demo_record",
+    "template": 0,
+    "train_no": "10004",
+    "created_at": "2026-02-17T00:58:19.852504Z"
+  },
+  "created_at": "2026-02-17T00:58:19.854012Z",
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "input",
+        "selector": "input#train_no[name='train_no']",
+        "value": "10004"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_001.png",
+      "dom": "<html><head></head><body>\n        <label for=\"train_no\">Train Number</label>\n        <input id=\"train_no\" name=\"train_no\" placeholder=\"Train no\" style=\"\">\n        <button id=\"get-schedule\">Get Schedule</button>\n        <div id=\"result-area\"></div>\n        <script>\n          document.getElementById('get-schedule').addEventListener('click', function() {\n            const tbody = document.getElementById('result-area');\n            tbody.innerHTML = '<div class=\"row\">Train 10004 - HOWRAH</div>';\n          });\n        </script>\n    </body></html>",
+      "timestamp": "2026-02-17T00:58:20.636691Z"
+    }
+  ]
+}

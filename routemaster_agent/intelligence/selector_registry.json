@@ -12,12 +12,26 @@
         "selector": "table.bad",
         "score": null,
         "success_count": 0,
-        "failure_count": 20,
-        "last_tested": "2026-02-15T17:33:46.426483"
+        "failure_count": 22,
+        "last_tested": "2026-02-17T01:06:46.181136"
+      },
+      {
+        "selector": "#train_no",
+        "score": null,
+        "success_count": 3,
+        "failure_count": 0,
+        "last_tested": "2026-02-17T01:06:46.205686"
+      },
+      {
+        "selector": "button:has-text('Get Schedule')",
+        "score": null,
+        "success_count": 1,
+        "failure_count": 0,
+        "last_tested": "2026-02-17T00:26:59.573225"
       }
     ],
     "semantic_fallback": true,
-    "last_updated": "2026-02-15T17:33:46.426483",
+    "last_updated": "2026-02-17T01:06:46.205686",
     "last_promotion_timestamp": null,
     "promotion_cooldown_until": null
   }

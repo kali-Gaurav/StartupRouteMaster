@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "site": "ntes",
+    "job_type": "schedule",
+    "url": "https://enquiry.indianrail.gov.in/mntes/",
+    "task": {"train_number": "12345"}
+  },
+  "steps": [
+    {"action": {"type": "input", "selector": "input[name='txtTrainNo']", "value": "12345"}},
+    {"action": {"type": "click", "selector": "button:has-text('Search')"}},
+    {"action": {"type": "wait", "selector": "table.schedule-results"}}
+  ]
+}

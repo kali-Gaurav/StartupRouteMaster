@@ -111,6 +111,25 @@ RMA_SELECTOR_ACTIVE_PRIMARY = Gauge(
     ['page_type', 'selector']
 )
 
+# New selector success/failure counters (per page_type + selector)
+RMA_SELECTOR_SUCCESS_TOTAL = Counter(
+    'rma_selector_success_total',
+    'Number of successful selector usages recorded.',
+    ['page_type', 'selector']
+)
+RMA_SELECTOR_FAILURE_TOTAL = Counter(
+    'rma_selector_failure_total',
+    'Number of failed selector attempts recorded.',
+    ['page_type', 'selector']
+)
+
+# Optional confidence gauge per selector (helps observability)
+RMA_SELECTOR_CONFIDENCE = Gauge(
+    'rma_selector_confidence',
+    'Observed confidence score for a selector (0.0-1.0).',
+    ['page_type', 'selector']
+)
+
 # per-train reliability score (0..1)
 RMA_TRAIN_RELIABILITY_SCORE = Gauge(
     'rma_train_reliability_score',
@@ -180,6 +199,12 @@ __all__ = [
     'RMA_SELECTOR_PRIMARY_FAILURES_TOTAL',
     'RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL',
     'RMA_EXTRACTION_CONFIDENCE',
+    'RMA_SELECTOR_PROMOTIONS_TOTAL',
+    'RMA_SELECTOR_FAILURE_RATE',
+    'RMA_SELECTOR_ACTIVE_PRIMARY',
+    'RMA_SELECTOR_SUCCESS_TOTAL',
+    'RMA_SELECTOR_FAILURE_TOTAL',
+    'RMA_SELECTOR_CONFIDENCE',
     'RMA_TRAIN_RELIABILITY_SCORE',
     'RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS',
     'RMA_TRAIN_RELIABILITY_UPDATES_TOTAL',

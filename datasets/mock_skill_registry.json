@@ -1,0 +1,62 @@
+{
+  "skills": [
+    {
+      "skill_id": "mock_search_1",
+      "skill_name": "mock_search_irctc",
+      "context": "search_form",
+      "confidence": 0.9,
+      "actions": [
+        {
+          "type": "input",
+          "selector": "#fromStation",
+          "value": "JP"
+        },
+        {
+          "type": "input",
+          "selector": "#toStation",
+          "value": "KOTA"
+        },
+        {
+          "type": "click",
+          "selector": "#searchButton"
+        }
+      ],
+      "metrics": {
+        "success_rate": 0.6485,
+        "avg_time_ms": 1200
+      }
+    },
+    {
+      "skill_id": "mock_results_low",
+      "skill_name": "mock_results_low_conf",
+      "context": "results_page",
+      "confidence": 0.4,
+      "actions": [
+        {
+          "type": "click",
+          "selector": "#firstResult"
+        }
+      ],
+      "metrics": {
+        "success_rate": 0.35,
+        "avg_time_ms": 800
+      }
+    },
+    {
+      "skill_id": "mock_fail_1",
+      "skill_name": "mock_flaky_skill",
+      "context": "search_form",
+      "confidence": 0.95,
+      "actions": [
+        {
+          "type": "click",
+          "selector": "#maybeFails"
+        }
+      ],
+      "metrics": {
+        "success_rate": 0.5,
+        "avg_time_ms": 2000
+      }
+    }
+  ]
+}

@@ -240,12 +240,102 @@ class VisionAI:
                 if visual_fields:
                     fields.extend(visual_fields)
 
-            logger.info(f"✓ Detected {len(fields)} form fields")
-            return fields
-
         except Exception as e:
             logger.error(f"Form field detection failed: {e}")
+
+        # --- Scroll / pagination helpers (Phase 1 additions) ---
+        return fields
+
+    async def detect_scrollable_regions(self, page: Page) -> List[Dict[str, Any]]:
+        """Detect scrollable regions on the page (overflowed containers or long lists).
+
+        Returns a list of regions with selector and approximate size.
+        """
+        regions = []
+        try:
+            # Find elements with overflow styles
+            candidates = await page.query_selector_all("*[style*='overflow']")
+            for c in candidates:
+                try:
+                    bbox = await c.bounding_box()
+                    if not bbox:
+                        continue
+                    # consider containers with height < content height as scrollable
+                    regions.append({
+                        "selector": await page.evaluate("(el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').join('.') : '')", c),
+                        "box": bbox,
+                        "scrollable": True,
+                    })
+                except Exception:
+                    continue
+
+            # Heuristic: long lists or containers with many children
+            lists = await page.query_selector_all("ul, ol, div")
+            for l in lists:
+                try:
+                    child_count = await l.evaluate("el => el.children.length")
+                    if child_count >= 8:
+                        bbox = await l.bounding_box()
+                        if bbox:
+                            regions.append({
+                                "selector": await page.evaluate("(el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').join('.') : '')", l),
+                                "box": bbox,
+                                "scrollable": True,
+                            })
+                except Exception:
+                    continue
+
+            # Deduplicate by selector
+            seen = set()
+            unique = []
+            for r in regions:
+                s = r.get("selector")
+                if s and s not in seen:
+                    seen.add(s)
+                    unique.append(r)
+
+            return unique
+        except Exception as e:
+            logger.debug(f"detect_scrollable_regions failed: {e}")
             return []
+
+    async def detect_infinite_scroll(self, page: Page) -> Optional[Dict[str, Any]]:
+        """Detect infinite-scroll patterns (load-more buttons, scroll-triggered loaders)."""
+        try:
+            # Look for explicit 'load more' buttons
+            load_more = await page.query_selector("button:has-text('Load more'), button:has-text('Show more'), a:has-text('Load more')")
+            if load_more:
+                selector = await page.evaluate("el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')", load_more)
+                return {"type": "button_load_more", "selector": selector}
+
+            # Look for elements that indicate lazy-loading (spinner, skeleton)
+            spinner = await page.query_selector(".spinner, .loading, .skeleton")
+            if spinner:
+                return {"type": "spinner_detected", "selector": await page.evaluate("el => el.tagName.toLowerCase() + (el.className || '')", spinner)}
+
+            return None
+        except Exception as e:
+            logger.debug(f"detect_infinite_scroll failed: {e}")
+            return None
+
+    async def detect_pagination(self, page: Page) -> Optional[Dict[str, Any]]:
+        """Detect classic pagination controls (next/prev links, page numbers)."""
+        try:
+            next_btn = await page.query_selector("a[rel='next'], button:has-text('Next'), .pagination .next")
+            if next_btn:
+                sel = await page.evaluate("el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').join('.') : '')", next_btn)
+                return {"is_paginated": True, "next_selector": sel}
+
+            # fallback: check for numbered pages
+            pages = await page.query_selector_all(".pagination a, .pager a")
+            if pages and len(pages) > 1:
+                return {"is_paginated": True, "next_selector": None}
+
+            return None
+        except Exception as e:
+            logger.debug(f"detect_pagination failed: {e}")
+            return None
+
 
     async def detect_clickable_elements(self, page: Page) -> List[Dict[str, Any]]:
         """

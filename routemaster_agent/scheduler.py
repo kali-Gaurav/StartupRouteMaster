@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 import asyncio
 
 from .ai.planner import TaskPlanner
-from .ai.reasoning_controller import ReasoningController
+from routemaster_agent.core.runtime_adapter import RuntimeReasoningAdapter
 from .ai.agent_state_manager import agent_state_manager, AgentState
 
 
@@ -19,7 +19,8 @@ class AutonomousScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
         self.planner = TaskPlanner()
-        self.controller = ReasoningController()
+        # Use the core ReasoningController via the runtime adapter so skills drive execution
+        self.controller = RuntimeReasoningAdapter()
         self.scheduled_jobs = {}
 
     async def initialize(self):
