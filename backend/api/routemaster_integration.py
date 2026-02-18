@@ -63,7 +63,7 @@ class TripDataSchema(BaseModel):
     destination_code: str = Field(..., description="Destination station code")
     stops: List[StopTimeSchema] = Field(..., description="List of stops")
     total_seats: int = Field(..., ge=50, le=2000)
-    route_type: str = Field("TRAIN", regex="^(TRAIN|BUS|FLIGHT)$")
+    route_type: str = Field("TRAIN", pattern="^(TRAIN|BUS|FLIGHT)$")
     service_dates: List[str] = Field(..., description="Dates in YYYY-MM-DD")
 
 
@@ -92,7 +92,7 @@ class TrainStateUpdateRequest(BaseModel):
     delay_minutes: int = Field(default=0, ge=0, le=1440)
     status: str = Field(
         default="on_time",
-        regex="^(on_time|delayed|cancelled|rescheduled|diverted)$"
+        pattern="^(on_time|delayed|cancelled|rescheduled|diverted)$"
     )
     platform_number: Optional[str] = None
     occupancy_rate: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -138,7 +138,7 @@ class PricingUpdateResponse(BaseModel):
 class RLFeedbackRequest(BaseModel):
     """RL model feedback/labeling."""
     user_id: Optional[str] = None
-    action: str = Field(..., regex="^(route_selected|route_rejected|booking_completed|booking_cancelled)$")
+    action: str = Field(..., pattern="^(route_selected|route_rejected|booking_completed|booking_cancelled)$")
     context: Dict[str, Any] = Field(default_factory=dict)
     reward: float = Field(ge=-1.0, le=1.0)
     timestamp: datetime = Field(default_factory=datetime.utcnow)

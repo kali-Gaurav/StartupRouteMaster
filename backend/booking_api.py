@@ -46,11 +46,11 @@ class AvailabilityCheckResponse(BaseModel):
 class PassengerInfo(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     age: int = Field(..., ge=1, le=120)
-    gender: str = Field(..., regex="^(M|F|O)$")  # Male, Female, Other
-    berth_preference: Optional[str] = Field(None, regex="^(LB|UB|SL|SIDE|NO_PREF)$")
+    gender: str = Field(..., pattern="^(M|F|O)$")  # Male, Female, Other
+    berth_preference: Optional[str] = Field(None, pattern="^(LB|UB|SL|SIDE|NO_PREF)$")
 
 class PaymentMethod(BaseModel):
-    type: str = Field(..., regex="^(CARD|UPI|NET_BANKING|WALLET)$")
+    type: str = Field(..., pattern="^(CARD|UPI|NET_BANKING|WALLET)$")
     details: Dict[str, Any]  # Encrypted payment details
 
 class BookingCreateRequest(BaseModel):

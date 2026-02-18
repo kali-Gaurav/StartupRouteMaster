@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, validator
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
@@ -65,24 +65,24 @@ class RouteSegmentSchema(BaseModel):
 
 
 class SearchRequestSchema(BaseModel):
-    source: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z\s\-]+$")
-    destination: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z\s\-]+$")
+    source: str = Field(..., min_length=2, max_length=100)  # Relaxed pattern (fuzzy matching handles typos)
+    destination: str = Field(..., min_length=2, max_length=100)
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
 
     # New fields for advanced features
     journey_type: Optional[str] = Field(None, pattern="^(single|connecting|circular|multi_city)$")
-    return_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # For circular journeys
+    return_date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     cities: Optional[List[str]] = Field(None, description="List of cities for multi-city booking (max 3)")
     passenger_type: Optional[str] = Field("adult", pattern="^(adult|child|senior|student)$")
-    concessions: Optional[List[str]] = Field(None, description="List of concessions (defence, freedom_fighter, divyang)")
+    concessions: Optional[List[str]] = Field(None, description="List of concessions")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "source": "Mumbai Central",
-                "destination": "Delhi",
+                "destination": "New Delhi",
                 "date": "2025-12-25",
                 "budget": "economy",
                 "multi_modal": True,
@@ -91,6 +91,79 @@ class SearchRequestSchema(BaseModel):
                 "concessions": []
             }
         }
+
+
+# NEW: Passenger Details Schema
+class PassengerDetailsSchema(BaseModel):
+    """Schema for passenger information in a booking."""
+    full_name: str = Field(..., min_length=1, max_length=255)
+    age: int = Field(..., ge=0, le=150)
+    gender: str = Field(..., pattern="^[MFO]$")  # M, F, O (Other)
+    phone_number: Optional[str] = None
+    email: Optional[EmailStr] = None
+    document_type: Optional[str] = None  # Aadhar, PAN, Passport
+    document_number: Optional[str] = None
+    concession_type: Optional[str] = None
+    concession_discount: float = Field(0.0, ge=0.0, le=100.0)
+    meal_preference: Optional[str] = None  # Veg, NonVeg, Jain
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "full_name": "John Doe",
+                "age": 35,
+                "gender": "M",
+                "phone_number": "+919876543210",
+                "email": "john@example.com",
+                "document_type": "Aadhar",
+                "document_number": "1234-5678-9012",
+                "concession_type": None,
+                "meal_preference": "Veg"
+            }
+        }
+
+
+# NEW: Booking Creation Schema
+class BookingCreateSchema(BaseModel):
+    """Schema for creating a new booking."""
+    route_id: str
+    travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    booking_details: dict  # Segments and route info
+    amount_paid: float = Field(..., gt=0)
+    passenger_details: Optional[List[PassengerDetailsSchema]] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "route_id": "route_123",
+                "travel_date": "2025-12-25",
+                "booking_details": {"segments": []},
+                "amount_paid": 5000.0,
+                "passenger_details": [
+                    {
+                        "full_name": "John Doe",
+                        "age": 35,
+                        "gender": "M",
+                        "phone_number": "+919876543210"
+                    }
+                ]
+            }
+        }
+
+
+# NEW: Booking Status Response
+class BookingStatusSchema(BaseModel):
+    """Schema for booking status information."""
+    pnr_number: str
+    booking_status: str  # pending, confirmed, waiting_list, cancelled
+    travel_date: str
+    amount_paid: float
+    created_at: datetime
+    updated_at: Optional[datetime]
+    passenger_count: int
+
+    class Config:
+        from_attributes = True
 
 
 class RouteSummarySchema(BaseModel):

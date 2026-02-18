@@ -1,5 +1,5 @@
 from playwright.async_api import async_playwright
-from routemaster_agent.proxy import ProxyManager, get_random_ua
+from proxy import ProxyManager, get_random_ua
 import os
 
 class BrowserManager:

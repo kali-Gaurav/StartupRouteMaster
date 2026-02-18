@@ -1,148 +1,216 @@
 from prometheus_client import Counter, Histogram, Gauge
 
-# --- Extraction metrics ---
-RMA_EXTRACTION_DURATION_SECONDS = Histogram(
-    'rma_extraction_duration_seconds',
-    'Histogram of extraction durations (seconds).',
-    ['source', 'train_number', 'proxy_id'],
-    buckets=(0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120)
-)
-RMA_EXTRACTION_ATTEMPTS_TOTAL = Counter(
-    'rma_extraction_attempts_total',
-    'Total number of extraction attempts.',
-    ['source', 'train_number', 'proxy_id']
-)
-RMA_EXTRACTION_FAILURES_TOTAL = Counter(
-    'rma_extraction_failures_total',
-    'Total number of extraction failures.',
-    ['source', 'train_number', 'proxy_id']
-)
-RMA_EXTRACTION_SUCCESS_TOTAL = Counter(
-    'rma_extraction_success_total',
-    'Total number of successful extractions.',
-    ['source', 'train_number', 'proxy_id']
-)
+# Wrap all metric definitions in a try/except to handle duplicate registration
+try:
+    # --- Extraction metrics ---
+    RMA_EXTRACTION_DURATION_SECONDS = Histogram(
+        'rma_extraction_duration_seconds',
+        'Histogram of extraction durations (seconds).',
+        ['source', 'train_number', 'proxy_id'],
+        buckets=(0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120)
+    )
+    RMA_EXTRACTION_ATTEMPTS_TOTAL = Counter(
+        'rma_extraction_attempts_total',
+        'Total number of extraction attempts.',
+        ['source', 'train_number', 'proxy_id']
+    )
+    RMA_EXTRACTION_FAILURES_TOTAL = Counter(
+        'rma_extraction_failures_total',
+        'Total number of extraction failures.',
+        ['source', 'train_number', 'proxy_id']
+    )
+    RMA_EXTRACTION_SUCCESS_TOTAL = Counter(
+        'rma_extraction_success_total',
+        'Total number of successful extractions.',
+        ['source', 'train_number', 'proxy_id']
+    )
 
-# --- Data quality / validation ---
-RMA_STATIONS_EXTRACTED_TOTAL = Counter(
-    'rma_stations_extracted_total',
-    'Number of station rows extracted per train.',
-    ['source', 'train_number']
-)
-RMA_VALIDATION_FAILURES_TOTAL = Counter(
-    'rma_validation_failures_total',
-    'Validation failures during data cleaning/parsing.',
-    ['source', 'train_number']
-)
-RMA_JSON_SCHEMA_FAILURES_TOTAL = Counter(
-    'rma_json_schema_failures_total',
-    'Failures while validating JSON schema for extracted payloads.',
-    ['source', 'train_number']
-)
-RMA_CSV_PARITY_FAILURES_TOTAL = Counter(
-    'rma_csv_parity_failures_total',
-    'CSV parity / export consistency failures.',
-    ['source', 'train_number']
-)
-RMA_DB_MISMATCH_TOTAL = Counter(
-    'rma_db_mismatch_total',
-    'Number of DB upsert/mismatch events detected.',
-    ['train_number']
-)
+    # --- Data quality / validation ---
+    RMA_STATIONS_EXTRACTED_TOTAL = Counter(
+        'rma_stations_extracted_total',
+        'Number of station rows extracted per train.',
+        ['source', 'train_number']
+    )
+    RMA_VALIDATION_FAILURES_TOTAL = Counter(
+        'rma_validation_failures_total',
+        'Validation failures during data cleaning/parsing.',
+        ['source', 'train_number']
+    )
+    RMA_JSON_SCHEMA_FAILURES_TOTAL = Counter(
+        'rma_json_schema_failures_total',
+        'Failures while validating JSON schema for extracted payloads.',
+        ['source', 'train_number']
+    )
+    RMA_CSV_PARITY_FAILURES_TOTAL = Counter(
+        'rma_csv_parity_failures_total',
+        'CSV parity / export consistency failures.',
+        ['source', 'train_number']
+    )
+    RMA_DB_MISMATCH_TOTAL = Counter(
+        'rma_db_mismatch_total',
+        'Number of DB upsert/mismatch events detected.',
+        ['train_number']
+    )
 
-# --- Proxy intelligence ---
-RMA_PROXY_REQUESTS_TOTAL = Counter(
-    'rma_proxy_requests_total',
-    'Number of HTTP requests attempted through a proxy.',
-    ['proxy']
-)
-RMA_PROXY_FAILURES_TOTAL = Counter(
-    'rma_proxy_failures_total',
-    'Number of failed proxy requests.',
-    ['proxy']
-)
-RMA_PROXY_DISABLED_TOTAL = Counter(
-    'rma_proxy_disabled_total',
-    'Number of times a proxy was auto-disabled by health checks.',
-    ['proxy']
-)
-RMA_PROXY_HEALTH_SCORE = Gauge(
-    'rma_proxy_health_score',
-    'Computed health score for a proxy (0.0-1.0).',
-    ['proxy']
-)
+    # --- Proxy intelligence ---
+    RMA_PROXY_REQUESTS_TOTAL = Counter(
+        'rma_proxy_requests_total',
+        'Number of HTTP requests attempted through a proxy.',
+        ['proxy']
+    )
+    RMA_PROXY_FAILURES_TOTAL = Counter(
+        'rma_proxy_failures_total',
+        'Number of failed proxy requests.',
+        ['proxy']
+    )
+    RMA_PROXY_DISABLED_TOTAL = Counter(
+        'rma_proxy_disabled_total',
+        'Number of times a proxy was auto-disabled by health checks.',
+        ['proxy']
+    )
+    RMA_PROXY_HEALTH_SCORE = Gauge(
+        'rma_proxy_health_score',
+        'Computed health score for a proxy (0.0-1.0).',
+        ['proxy']
+    )
 
-# --- Selector telemetry & extraction confidence ---
-RMA_SELECTOR_FALLBACK_TOTAL = Counter(
-    'rma_selector_fallback_total',
-    'Number of times selector fallback was used.',
-    ['source', 'train_number']
-)
-RMA_SELECTOR_PRIMARY_FAILURES_TOTAL = Counter(
-    'rma_selector_primary_failures_total',
-    'Number of times primary selector failed and fallback was attempted.',
-    ['source', 'train_number']
-)
-RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL = Counter(
-    'rma_selector_semantic_success_total',
-    'Number of times semantic/table heuristic successfully extracted data.',
-    ['source', 'train_number']
-)
-RMA_EXTRACTION_CONFIDENCE = Gauge(
-    'rma_extraction_confidence',
-    'Per-extraction confidence score (0.0-1.0).',
-    ['source', 'train_number']
-)
+    # --- Selector telemetry & extraction confidence ---
+    RMA_SELECTOR_FALLBACK_TOTAL = Counter(
+        'rma_selector_fallback_total',
+        'Number of times selector fallback was used.',
+        ['source', 'train_number']
+    )
+    RMA_SELECTOR_PRIMARY_FAILURES_TOTAL = Counter(
+        'rma_selector_primary_failures_total',
+        'Number of times primary selector failed and fallback was attempted.',
+        ['source', 'train_number']
+    )
+    RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL = Counter(
+        'rma_selector_semantic_success_total',
+        'Number of times semantic/table heuristic successfully extracted data.',
+        ['source', 'train_number']
+    )
+    RMA_EXTRACTION_CONFIDENCE = Gauge(
+        'rma_extraction_confidence',
+        'Per-extraction confidence score (0.0-1.0).',
+        ['source', 'train_number']
+    )
 
-# --- Selector promotion & registry metrics ---
-RMA_SELECTOR_PROMOTIONS_TOTAL = Counter(
-    'rma_selector_promotions_total',
-    'Number of times a backup selector was auto-promoted to primary.',
-    ['page_type']
-)
-RMA_SELECTOR_FAILURE_RATE = Gauge(
-    'rma_selector_failure_rate',
-    'Failure rate for the primary selector (0..1).',
-    ['page_type']
-)
-RMA_SELECTOR_ACTIVE_PRIMARY = Gauge(
-    'rma_selector_active_primary',
-    'Active primary selector identifier (gauge with selector label set to 1 for the active primary).',
-    ['page_type', 'selector']
-)
+    # --- Selector promotion & registry metrics ---
+    RMA_SELECTOR_PROMOTIONS_TOTAL = Counter(
+        'rma_selector_promotions_total',
+        'Number of times a backup selector was auto-promoted to primary.',
+        ['page_type']
+    )
+    RMA_SELECTOR_FAILURE_RATE = Gauge(
+        'rma_selector_failure_rate',
+        'Failure rate for the primary selector (0..1).',
+        ['page_type']
+    )
+    RMA_SELECTOR_ACTIVE_PRIMARY = Gauge(
+        'rma_selector_active_primary',
+        'Active primary selector identifier (gauge with selector label set to 1 for the active primary).',
+        ['page_type', 'selector']
+    )
 
-# New selector success/failure counters (per page_type + selector)
-RMA_SELECTOR_SUCCESS_TOTAL = Counter(
-    'rma_selector_success_total',
-    'Number of successful selector usages recorded.',
-    ['page_type', 'selector']
-)
-RMA_SELECTOR_FAILURE_TOTAL = Counter(
-    'rma_selector_failure_total',
-    'Number of failed selector attempts recorded.',
-    ['page_type', 'selector']
-)
+    # New selector success/failure counters (per page_type + selector)
+    RMA_SELECTOR_SUCCESS_TOTAL = Counter(
+        'rma_selector_success_total',
+        'Number of successful selector usages recorded.',
+        ['page_type', 'selector']
+    )
+    RMA_SELECTOR_FAILURE_TOTAL = Counter(
+        'rma_selector_failure_total',
+        'Number of failed selector attempts recorded.',
+        ['page_type', 'selector']
+    )
 
-# Optional confidence gauge per selector (helps observability)
-RMA_SELECTOR_CONFIDENCE = Gauge(
-    'rma_selector_confidence',
-    'Observed confidence score for a selector (0.0-1.0).',
-    ['page_type', 'selector']
-)
+    # Optional confidence gauge per selector (helps observability)
+    RMA_SELECTOR_CONFIDENCE = Gauge(
+        'rma_selector_confidence',
+        'Observed confidence score for a selector (0.0-1.0).',
+        ['page_type', 'selector']
+    )
 
-# per-train reliability score (0..1)
-RMA_TRAIN_RELIABILITY_SCORE = Gauge(
-    'rma_train_reliability_score',
-    'Computed reliability score for a train (0..1).',
-    ['train_number']
-)
+    # per-train reliability score (0..1)
+    RMA_TRAIN_RELIABILITY_SCORE = Gauge(
+        'rma_train_reliability_score',
+        'Computed reliability score for a train (0..1).',
+        ['train_number']
+    )
 
-# Agent runtime state metric helper (exposed as a convenience wrapper)
-RMA_AGENT_STATE_GAUGE = Gauge(
-    'rma_agent_state',
-    'Agent runtime state (labelled). Use RMA_AGENT_STATE.state("state_name") to set current state.',
-    ['state']
-)
+    # Agent runtime state metric helper (exposed as a convenience wrapper)
+    RMA_AGENT_STATE_GAUGE = Gauge(
+        'rma_agent_state',
+        'Agent runtime state (labelled). Use RMA_AGENT_STATE.state("state_name") to set current state.',
+        ['state']
+    )
+
+    # --- Train reliability computation metrics ---
+    RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS = Histogram(
+        'rma_train_reliability_computation_seconds',
+        'Duration of per-train reliability computation (seconds).',
+        ['batch']
+    )
+    RMA_TRAIN_RELIABILITY_UPDATES_TOTAL = Counter(
+        'rma_train_reliability_updates_total',
+        'Number of train reliability updates performed by the hourly job.',
+        ['batch']
+    )
+
+    # --- Command / Control metrics ---
+    RMA_COMMAND_REQUESTS_TOTAL = Counter(
+        'rma_command_requests_total',
+        'Total number of command requests received by the agent.'
+    )
+    RMA_COMMAND_SUCCESS_TOTAL = Counter(
+        'rma_command_success_total',
+        'Total number of successfully completed commands.'
+    )
+
+except ValueError:
+    # Metrics already registered - this can happen on module reload
+    # In this case, we try to retrieve them from the registry
+    import sys
+    from prometheus_client import REGISTRY
+    
+    # Get all registered metrics and store them
+    metrics_map = {}
+    for collector in list(REGISTRY._collector_to_names):
+        if hasattr(collector, '_name'):
+            metrics_map[collector._name] = collector
+    
+    # Assign from registry
+    RMA_EXTRACTION_DURATION_SECONDS = metrics_map.get('rma_extraction_duration_seconds')
+    RMA_EXTRACTION_ATTEMPTS_TOTAL = metrics_map.get('rma_extraction_attempts_total')
+    RMA_EXTRACTION_FAILURES_TOTAL = metrics_map.get('rma_extraction_failures_total')
+    RMA_EXTRACTION_SUCCESS_TOTAL = metrics_map.get('rma_extraction_success_total')
+    RMA_STATIONS_EXTRACTED_TOTAL = metrics_map.get('rma_stations_extracted_total')
+    RMA_VALIDATION_FAILURES_TOTAL = metrics_map.get('rma_validation_failures_total')
+    RMA_JSON_SCHEMA_FAILURES_TOTAL = metrics_map.get('rma_json_schema_failures_total')
+    RMA_CSV_PARITY_FAILURES_TOTAL = metrics_map.get('rma_csv_parity_failures_total')
+    RMA_DB_MISMATCH_TOTAL = metrics_map.get('rma_db_mismatch_total')
+    RMA_PROXY_REQUESTS_TOTAL = metrics_map.get('rma_proxy_requests_total')
+    RMA_PROXY_FAILURES_TOTAL = metrics_map.get('rma_proxy_failures_total')
+    RMA_PROXY_DISABLED_TOTAL = metrics_map.get('rma_proxy_disabled_total')
+    RMA_PROXY_HEALTH_SCORE = metrics_map.get('rma_proxy_health_score')
+    RMA_SELECTOR_FALLBACK_TOTAL = metrics_map.get('rma_selector_fallback_total')
+    RMA_SELECTOR_PRIMARY_FAILURES_TOTAL = metrics_map.get('rma_selector_primary_failures_total')
+    RMA_SELECTOR_SEMANTIC_SUCCESS_TOTAL = metrics_map.get('rma_selector_semantic_success_total')
+    RMA_EXTRACTION_CONFIDENCE = metrics_map.get('rma_extraction_confidence')
+    RMA_SELECTOR_PROMOTIONS_TOTAL = metrics_map.get('rma_selector_promotions_total')
+    RMA_SELECTOR_FAILURE_RATE = metrics_map.get('rma_selector_failure_rate')
+    RMA_SELECTOR_ACTIVE_PRIMARY = metrics_map.get('rma_selector_active_primary')
+    RMA_SELECTOR_SUCCESS_TOTAL = metrics_map.get('rma_selector_success_total')
+    RMA_SELECTOR_FAILURE_TOTAL = metrics_map.get('rma_selector_failure_total')
+    RMA_SELECTOR_CONFIDENCE = metrics_map.get('rma_selector_confidence')
+    RMA_TRAIN_RELIABILITY_SCORE = metrics_map.get('rma_train_reliability_score')
+    RMA_AGENT_STATE_GAUGE = metrics_map.get('rma_agent_state')
+    RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS = metrics_map.get('rma_train_reliability_computation_seconds')
+    RMA_TRAIN_RELIABILITY_UPDATES_TOTAL = metrics_map.get('rma_train_reliability_updates_total')
+    RMA_COMMAND_REQUESTS_TOTAL = metrics_map.get('rma_command_requests_total')
+    RMA_COMMAND_SUCCESS_TOTAL = metrics_map.get('rma_command_success_total')
+
 
 class _AgentStateMetric:
     def state(self, state_name: str):
@@ -152,33 +220,9 @@ class _AgentStateMetric:
         except Exception:
             pass
 
+
 # public wrapper used by AgentStateManager
 RMA_AGENT_STATE = _AgentStateMetric()
-
-# --- Train reliability computation metrics ---
-RMA_TRAIN_RELIABILITY_COMPUTATION_SECONDS = Histogram(
-    'rma_train_reliability_computation_seconds',
-    'Duration of per-train reliability computation (seconds).',
-    ['batch']
-)
-RMA_TRAIN_RELIABILITY_UPDATES_TOTAL = Counter(
-    'rma_train_reliability_updates_total',
-    'Number of train reliability updates performed by the hourly job.',
-    ['batch']
-)
-
-# --- Command / Control metrics ---
-RMA_COMMAND_REQUESTS_TOTAL = Counter(
-    'rma_command_requests_total',
-    'Total number of command requests received by the agent.'
-)
-RMA_COMMAND_SUCCESS_TOTAL = Counter(
-    'rma_command_success_total',
-    'Total number of successfully completed commands.'
-)
-
-# --- Route engine metrics (instrumented in backend) ---
-# Placeholders here for local imports if needed elsewhere in the agent.
 
 
 __all__ = [

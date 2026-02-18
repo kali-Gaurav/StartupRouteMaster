@@ -1,0 +1,99 @@
+{
+  "scene_id": "pilot_003",
+  "meta": {
+    "site": "irctc",
+    "job_type": "search",
+    "url": "https://www.irctc.co.in/nget/train-search",
+    "task": {
+      "origin": "JAIPUR",
+      "dest": "KOTA",
+      "date": "2026-02-18"
+    }
+  },
+  "created_at": "2026-02-18T10:36:53.687554Z",
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "input",
+        "selector": "input[placeholder='From']",
+        "value": "Jaipur"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_001.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:36:53.689044Z"
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "input",
+        "selector": "input[placeholder='To']",
+        "value": "Kota"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_002.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:36:53.690486Z"
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "input",
+        "selector": "input[id^='journeyDate']",
+        "value": "18/02/2026"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_003.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:36:53.691492Z"
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "click",
+        "selector": "button:has-text('Search Trains')"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_004.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:36:53.692600Z"
+    },
+    {
+      "step": 5,
+      "action": {
+        "type": "wait",
+        "selector": "#train-results"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_005.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:36:53.693608Z"
+    }
+  ]
+}

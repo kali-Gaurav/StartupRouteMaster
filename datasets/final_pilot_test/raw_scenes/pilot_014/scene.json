@@ -1,0 +1,63 @@
+{
+  "scene_id": "pilot_014",
+  "meta": {
+    "site": "ntes",
+    "job_type": "schedule",
+    "url": "https://enquiry.indianrail.gov.in/mntes/",
+    "task": {
+      "train_number": "12345"
+    }
+  },
+  "created_at": "2026-02-18T10:42:04.705600Z",
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "input",
+        "selector": "input[name='txtTrainNo']",
+        "value": "12345"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_001.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:42:04.706621Z"
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "click",
+        "selector": "button:has-text('Search')"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_002.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:42:04.708609Z"
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "wait",
+        "selector": "table.schedule-results"
+      },
+      "meta": {
+        "strategy": null,
+        "selector_confidence": null,
+        "time_to_success_ms": null,
+        "success": true
+      },
+      "screenshot": "step_003.png",
+      "dom": "<html><body>pilot mock</body></html>",
+      "timestamp": "2026-02-18T10:42:04.710613Z"
+    }
+  ]
+}

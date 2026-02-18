@@ -64,7 +64,7 @@ class Stop(Base):
     __tablename__ = "stops"
     __table_args__ = (
         Index("idx_stops_geom", "geom", postgresql_using="gist"),
-        Index("idx_stops_name_trgm", func.lower(Column("name")), postgresql_ops={"name": "gin_trgm_ops"}, postgresql_using="gin"),
+        Index("idx_stops_name_trgm", "name", postgresql_ops={"name": "gin_trgm_ops"}, postgresql_using="gin"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -78,10 +78,19 @@ class Stop(Base):
     geom = Column(Geometry("POINT", srid=4326), nullable=False)
     location_type = Column(Integer, default=0) # 0 for stop, 1 for station
     parent_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
+    
+    # NEW FIELDS FOR ADVANCED FEATURES
+    safety_score = Column(Float, default=50.0, nullable=False)  # 0-100 scale, default neutral
+    is_major_junction = Column(Boolean, default=False, nullable=False)  # Major transfer point
+    facilities_json = Column(JSON, default={}, nullable=False)  # {wifi: bool, lounge: bool, food: bool, accessible: bool, etc.}
+    wheelchair_accessible = Column(Boolean, default=False, nullable=False)
+    platform_count = Column(Integer, nullable=True)
+    distance_to_city_center_km = Column(Float, nullable=True)  # For travel time estimation
 
     parent_station = relationship("Stop", remote_side=[id])
     child_stops = relationship("Stop", back_populates="parent_station")
     stop_times = relationship("StopTime", back_populates="stop")
+    facilities = relationship("StationFacilities", back_populates="stop", uselist=False)
 
 class Route(Base):
     """Represents a single transit route in the GTFS sense (e.g., 'Blue Line')."""
@@ -102,7 +111,7 @@ class Calendar(Base):
     __tablename__ = "calendar"
 
     id = Column(Integer, primary_key=True)
-    service_id = Column(String(100), unique=True, nullable=False, index=True)
+    service_id = Column(String(100), unique=True, nullable=False, index=True)  # FIXED: make this unique for FK reference
     monday = Column(Boolean, nullable=False)
     tuesday = Column(Boolean, nullable=False)
     wednesday = Column(Boolean, nullable=False)
@@ -133,9 +142,14 @@ class Trip(Base):
     id = Column(Integer, primary_key=True)
     trip_id = Column(String(255), unique=True, nullable=False, index=True)
     route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=False, index=True)
-    service_id = Column(Integer, ForeignKey("calendar.id"), nullable=False, index=True)
+    service_id = Column(String(100), ForeignKey("calendar.service_id"), nullable=False, index=True)  # FIXED: string FK
     headsign = Column(String(255))
     direction_id = Column(Integer, index=True)
+    
+    # NEW FIELDS FOR ACCESSIBILITY & AMENITIES
+    bike_allowed = Column(Boolean, default=False, nullable=False)
+    wheelchair_accessible = Column(Boolean, default=False, nullable=False)
+    trip_headsign = Column(String(255), nullable=True)  # Alternative destination name shown to passengers
 
     route = relationship("Route", back_populates="trips")
     service = relationship("Calendar", back_populates="trips")
@@ -148,6 +162,7 @@ class StopTime(Base):
         UniqueConstraint('trip_id', 'stop_sequence', name='uq_trip_stop_sequence'),
         Index("idx_stop_times_stop_id", "stop_id"),
         Index("idx_stop_times_trip_id", "trip_id"),
+        CheckConstraint("arrival_time <= departure_time", name="arrival_before_departure"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -156,7 +171,14 @@ class StopTime(Base):
     arrival_time = Column(Time, nullable=False)
     departure_time = Column(Time, nullable=False)
     stop_sequence = Column(Integer, nullable=False)
-    cost = Column(Float, nullable=True) # Cost to travel from previous stop to this one
+    cost = Column(Float, nullable=False, default=0.0)  # Cost from previous stop (required for fare calculation)
+    
+    # NEW FIELDS FOR BOARDING RULES
+    pickup_type = Column(Integer, default=0, nullable=False)  # 0: Regular, 1: No pickup, 2: Phone arrange, 3: Coordinate with driver
+    drop_off_type = Column(Integer, default=0, nullable=False)  # 0: Regular, 1: No dropoff, 2: Phone arrange, 3: Coordinate with driver
+    
+    # Platform info
+    platform_number = Column(String(10), nullable=True)
     
     trip = relationship("Trip", back_populates="stop_times")
     stop = relationship("Stop", back_populates="stop_times")
@@ -165,15 +187,20 @@ class StopTime(Base):
 class Transfer(Base):
     """Defines transfer rules between stops."""
     __tablename__ = "transfers"
+    __table_args__ = (
+        UniqueConstraint("from_stop_id", "to_stop_id", "route_id", name="uq_transfer_route"),
+    )
 
     id = Column(Integer, primary_key=True)
     from_stop_id = Column(Integer, ForeignKey("stops.id"), nullable=False)
     to_stop_id = Column(Integer, ForeignKey("stops.id"), nullable=False)
-    transfer_type = Column(Integer, nullable=False, default=0) # 0: Recommended, 2: Timed transfer
+    route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=True)  # NEW: Optional specific route
+    transfer_type = Column(Integer, nullable=False, default=0) # 0: Recommended, 1: Timed, 2: Minimum required
     min_transfer_time = Column(Integer, nullable=False) # In seconds
 
     from_stop = relationship("Stop", foreign_keys=[from_stop_id])
     to_stop = relationship("Stop", foreign_keys=[to_stop_id])
+    route = relationship("Route")
 
 # ==============================================================================
 # MODELS REQUIRING ADAPTATION
@@ -182,33 +209,85 @@ class Transfer(Base):
 class Booking(Base):
     __tablename__ = "bookings"
     __table_args__ = (
-        # Original constraint is now problematic, needs re-evaluation
-        # UniqueConstraint("user_id", "route_id", "travel_date", name="uq_user_route_travel_date"),
+        Index("idx_bookings_pnr", "pnr_number"),
+        Index("idx_bookings_user_travel", "user_id", "travel_date"),
+        Index("idx_bookings_status", "booking_status"),
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    pnr_number = Column(String(10), unique=True, nullable=False, index=True)  # NEW: 6-10 digit PNR
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
-    travel_date = Column(Date, nullable=False) # Corrected data type from String
-    payment_status = Column(String(50), default="pending")
-    amount_paid = Column(Float, default=39.0)
-    booking_details = Column(JSON, nullable=False) # May store summary of the booked path
+    travel_date = Column(Date, nullable=False, index=True)
+    
+    # Booking Status (NEW: enum-like validation)
+    booking_status = Column(String(50), default="pending", nullable=False, index=True)
+    # Valid states: pending, confirmed, waiting_list, cancelled (no lowercase 'payment_status')
+    
+    amount_paid = Column(Float, default=0.0, nullable=False)
+    booking_details = Column(JSON, nullable=False)  # Store segments JSON
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # --- Deprecated / Transitional Fields ---
-    route_id = Column(String(36), ForeignKey("precalculated_routes.id"), nullable=True) # FK to old, deprecated table
-    
-    # --- New Fields ---
-    # A booking could be for one or more trips
-    # For now, this is a placeholder. A real implementation might need a many-to-many table.
+    # Deprecated fields (for backward compatibility only, will be removed)
+    route_id = Column(String(36), ForeignKey("precalculated_routes.id"), nullable=True)
     trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True)
+    payment_status = Column(String(50), nullable=True)  # DEPRECATED: use payment relationship instead
 
     user = relationship("User", back_populates="bookings")
     payment = relationship("Payment", back_populates="booking", uselist=False)
     review = relationship("Review", back_populates="booking", uselist=False)
-
-    # Relationships to be carefully managed during transition
+    passenger_details = relationship("PassengerDetails", back_populates="booking", cascade="all, delete-orphan")
     route = relationship("PrecalculatedRoute", back_populates="bookings")
     trip = relationship("Trip")
+
+    def validate_status_transition(self, new_status: str) -> bool:
+        """Validate state machine transitions."""
+        valid_transitions = {
+            "pending": ["confirmed", "waiting_list", "cancelled"],
+            "confirmed": ["cancelled"],
+            "waiting_list": ["confirmed", "cancelled"],
+            "cancelled": []
+        }
+        return new_status in valid_transitions.get(self.booking_status, [])
+
+
+class PassengerDetails(Base):
+    """NEW: Stores passenger details for a booking (required for train tickets)."""
+    __tablename__ = "passenger_details"
+    __table_args__ = (
+        Index("idx_passenger_booking", "booking_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=False, index=True)
+    
+    # Passenger info
+    full_name = Column(String(255), nullable=False)
+    age = Column(Integer, nullable=False)
+    gender = Column(String(10), nullable=False)  # M, F, O (Other)
+    phone_number = Column(String(20), nullable=True)
+    email = Column(String(255), nullable=True)
+    
+    # Identity document
+    document_type = Column(String(50), nullable=True)  # Aadhar, PAN, Passport, etc.
+    document_number = Column(String(50), nullable=True)
+    
+    # Seat assignment
+    coach_number = Column(String(10), nullable=True)
+    seat_number = Column(String(10), nullable=True)
+    berth_type = Column(String(20), nullable=True)  # Upper, Middle, Lower, Side, Center
+    
+    # Concessions
+    concession_type = Column(String(50), nullable=True)  # Defence, StudentDiscount, SeniorCitizen, etc.
+    concession_discount = Column(Float, default=0.0, nullable=False)
+    
+    # Meal preferences
+    meal_preference = Column(String(20), nullable=True)  # Veg, NonVeg, Jain
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    booking = relationship("Booking", back_populates="passenger_details")
 
 class UnlockedRoute(Base):
     __tablename__ = "unlocked_routes"
@@ -353,6 +432,144 @@ class RLFeedbackLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
+
+
+# ==============================================================================
+# NEW MISSING MODELS (ESSENTIAL FOR ADVANCED FEATURES)
+# ==============================================================================
+
+class RouteShape(Base):
+    """NEW: Defines the actual track geometry/path for a route."""
+    __tablename__ = "route_shapes"
+    __table_args__ = (
+        Index("idx_route_shapes_route", "route_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=False, index=True)
+    shape_id = Column(String(100), nullable=False, unique=True)
+    
+    # Geometry path (line string)
+    geometry = Column(Geometry("LINESTRING", srid=4326), nullable=False)
+    
+    # Sequence for multiple segments
+    sequence = Column(Integer, default=0, nullable=False)
+    distance_traveled = Column(Float, nullable=False)  # Cumulative distance from start
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    route = relationship("Route")
+
+
+class Frequency(Base):
+    """NEW: For routes that don't have fixed schedules (high-frequency service)."""
+    __tablename__ = "frequencies"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "start_time", name="uq_trip_start_time"),
+        Index("idx_frequencies_trip", "trip_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=False, index=True)
+    
+    start_time = Column(Time, nullable=False)  # Service starts at this time
+    end_time = Column(Time, nullable=False)    # Service ends at this time
+    headway_secs = Column(Integer, nullable=False)  # Seconds between departures
+    exact_times = Column(Boolean, default=False)  # If False, times are approximate
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    trip = relationship("Trip")
+
+
+class StationFacilities(Base):
+    """NEW: Detailed facilities available at each station."""
+    __tablename__ = "station_facilities"
+    __table_args__ = (
+        Index("idx_station_facilities_stop", "stop_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    stop_id = Column(Integer, ForeignKey("stops.id"), nullable=False, unique=True, index=True)
+    
+    # Facilities
+    wifi_available = Column(Boolean, default=False)
+    lounge_available = Column(Boolean, default=False)
+    food_available = Column(Boolean, default=False)
+    wheelchair_accessible = Column(Boolean, default=False)
+    parking_available = Column(Boolean, default=False)
+    baby_care = Column(Boolean, default=False)
+    medical_clinic = Column(Boolean, default=False)
+    lost_found = Column(Boolean, default=False)
+    cloakroom = Column(Boolean, default=False)
+    
+    # Operating hours
+    opening_time = Column(Time, nullable=True)
+    closing_time = Column(Time, nullable=True)
+    
+    # Safety & security
+    cctv_available = Column(Boolean, default=False)
+    police_presence = Column(Boolean, default=False)
+    women_waiting_room = Column(Boolean, default=False)
+    
+    # Contact
+    emergency_contact = Column(String(20), nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    stop = relationship("Stop", back_populates="facilities")
+
+
+# ==============================================================================
+# NEW MODELS FOR BOOKING WORKFLOW
+# ==============================================================================
+
+class CancellationRule(Base):
+    """NEW: Defines cancellation charges for different routes/timeframes."""
+    __tablename__ = "cancellation_rules"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=True)  # NULL = apply to all routes
+    
+    # Hours before departure
+    hours_before_departure = Column(Integer, nullable=False)  # e.g., 48 hours
+    
+    # Refund percentage
+    refund_percentage = Column(Float, nullable=False)  # 0.0 to 100.0
+    
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    route = relationship("Route")
+
+
+class WaitingListRequest(Base):
+    """NEW: Waiting list management when route is fully booked."""
+    __tablename__ = "waiting_list"
+    __table_args__ = (
+        Index("idx_waiting_list_booking", "booking_id"),
+        Index("idx_waiting_list_status", "status"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=False, unique=True)
+    
+    # Waiting list position (lower = higher priority)
+    position = Column(Integer, nullable=False)
+    
+    # Status
+    status = Column(String(50), default="waiting", nullable=False)  # waiting, confirmed, expired, cancelled
+    
+    # Notification
+    notification_sent = Column(Boolean, default=False)
+    confirmed_at = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    booking = relationship("Booking")
 
 
 # ==============================================================================

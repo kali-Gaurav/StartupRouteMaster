@@ -93,7 +93,7 @@ class RAPTOR:
             
             if final_round != -1:
                 # Reconstruct path and add to results
-                reconstructed_route = self._reconstruct_route(source_pk_id, destination_pk_id, final_round, earliest_arrival_per_round, previous_per_round)
+                reconstructed_route = self._reconstruct_route(source_pk_id, destination_pk_id, final_round, earliest_arrival_per_round, previous_per_round, current_date)
                 if reconstructed_route:
                     routes_found.append(reconstructed_route)
 
@@ -188,8 +188,12 @@ class RAPTOR:
             
         Q.update(Q_new) # Update the main Q set for the next round
 
-    def _reconstruct_route(self, source_pk_id: int, destination_pk_id: int, final_round: int, earliest_arrival_per_round: Dict, previous_per_round: Dict) -> Optional[dict]:
-        """Reconstructs a route from the previous_per_round data structure."""
+    def _reconstruct_route(self, source_pk_id: int, destination_pk_id: int, final_round: int, earliest_arrival_per_round: Dict, previous_per_round: Dict, current_date: date) -> Optional[dict]:
+        """Reconstructs a route from the previous_per_round data structure.
+
+        Args:
+            current_date: date used to convert StopTime times to datetimes for duration calculations.
+        """
         current_stop_pk_id = destination_pk_id
         current_round = final_round
         path_segments = []

@@ -62,6 +62,17 @@ class SceneRecorder:
 
         # normalize metadata
         meta = metadata or {}
+        
+        # Ensure timestamps are strictly increasing
+        import asyncio
+        now = datetime.utcnow().isoformat() + "Z"
+        if self._scene["steps"]:
+            last_ts = self._scene["steps"][-1]["timestamp"]
+            # if same timestamp, wait 1ms and retry
+            while now <= last_ts:
+                await asyncio.sleep(0.001)
+                now = datetime.utcnow().isoformat() + "Z"
+        
         step_record = {
             "step": step,
             "action": action,
@@ -73,7 +84,7 @@ class SceneRecorder:
             },
             "screenshot": screenshot_name,
             "dom": dom,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": now,
         }
         self._scene["steps"].append(step_record)
         self._write_scene_json()

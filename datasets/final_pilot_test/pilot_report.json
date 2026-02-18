@@ -1,0 +1,114 @@
+{
+  "timestamp": "2026-02-18T10:42:05.181643Z",
+  "num_scenes": 20,
+  "dry_run": true,
+  "recorded": 20,
+  "labeled": 20,
+  "qa_results": {
+    "total": 20,
+    "passed": 20,
+    "failed": 0,
+    "details": [
+      {
+        "scene": "pilot_000",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_001",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_002",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_003",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_004",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_005",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_006",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_007",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_008",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_009",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_010",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_011",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_012",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_013",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_014",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_015",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_016",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_017",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_018",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "scene": "pilot_019",
+        "ok": true,
+        "errors": []
+      }
+    ]
+  }
+}

@@ -6,7 +6,7 @@ import time
 import requests
 
 # instrumentation
-from routemaster_agent.metrics import (
+from metrics import (
     RMA_PROXY_REQUESTS_TOTAL,
     RMA_PROXY_FAILURES_TOTAL,
     RMA_PROXY_DISABLED_TOTAL,

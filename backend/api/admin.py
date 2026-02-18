@@ -70,7 +70,7 @@ async def get_booking_stats(
 
 @router.get("/bookings/filter")
 async def filter_bookings(
-    status: str = Query(None, regex="^(pending|completed|failed)$"),
+    status: str = Query(None, pattern="^(pending|completed|failed)$"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     _: bool = Depends(verify_admin_token),

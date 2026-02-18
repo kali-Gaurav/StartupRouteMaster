@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from routemaster_agent.proxy import ProxyManager
+from proxy import ProxyManager
 
 
 class ProxyMonitor:

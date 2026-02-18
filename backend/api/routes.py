@@ -5,7 +5,7 @@ import logging
 
 from backend.database import get_db
 from backend.schemas import RouteDetailSchema, UserRead
-from backend.models import Route as RouteModel, User
+from backend.database.models import Route as RouteModel, User
 from backend.services.unlock_service import UnlockService
 from backend.api.dependencies import get_current_user # Assuming get_current_user is defined here or in a similar dependencies file
 

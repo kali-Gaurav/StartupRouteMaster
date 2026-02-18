@@ -1,3 +1,11 @@
+import sys
+import os
+
+# Add parent directory to path so 'routemaster_agent' module is importable
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Also add current directory for local imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -5,15 +13,15 @@ from typing import List, Optional
 import asyncio
 from prometheus_client import generate_latest
 
-from routemaster_agent.scrapers.browser import BrowserManager
-from routemaster_agent.scrapers.ntes_agent import NTESAgent
-from routemaster_agent.scrapers.disha_agent import AskDishaAgent
-from routemaster_agent.pipeline.processor import DataPipeline
-from routemaster_agent.cache import cache
-from routemaster_agent.monitoring.proxy_monitor import ProxyMonitor
-from routemaster_agent.command_interface import CommandInterface
-from routemaster_agent.ai.agent_state_manager import agent_state_manager
-from routemaster_agent.scheduler import AutonomousScheduler
+from scrapers.browser import BrowserManager
+from scrapers.ntes_agent import NTESAgent
+from scrapers.disha_agent import AskDishaAgent
+from pipeline.processor import DataPipeline
+from cache import cache
+from monitoring.proxy_monitor import ProxyMonitor
+from command_interface import CommandInterface
+from ai.agent_state_manager import agent_state_manager
+from scheduler import AutonomousScheduler
 
 app = FastAPI(title="RouteMaster AI Agent")
 _proxy_monitor: Optional[ProxyMonitor] = None
@@ -38,14 +46,14 @@ class EnrichRequest(BaseModel):
 
 
 @app.post("/api/unlock-route-details")
-async def unlock_route(request: RouteRequest, background_tasks: BackgroundTasks):
+async def unlock_route(request: RouteRequest):
     """
     1. Fetches Schedule + Live Status (NTES)
     2. Verifies Seat/Fare (Ask Disha)
     3. Returns enriched data for Frontend to display
     """
     browser_mgr = BrowserManager()
-    browser, context = await browser_mgr.get_browser()
+    browser, context = await browser_mgr.get_browser(headless=False, slow_mo=100)
     page = await context.new_page()
 
     ntes = NTESAgent()
@@ -65,9 +73,8 @@ async def unlock_route(request: RouteRequest, background_tasks: BackgroundTasks)
             request.travel_date,
         )
 
-        # persist DB asynchronously (do not block response)
-        # pipeline.update_database is async -> schedule it with create_task
-        background_tasks.add_task(asyncio.create_task, pipeline.update_database(schedule, live_status))
+        # persist to DB (wait for completion)
+        await pipeline.update_database(schedule, live_status)
 
         return {
             "status": "success",
@@ -96,7 +103,7 @@ async def enrich_trains(req: EnrichRequest, background_tasks: BackgroundTasks):
         return {"cached": True, "result": cached}
 
     browser_mgr = BrowserManager()
-    browser, context = await browser_mgr.get_browser()
+    browser, context = await browser_mgr.get_browser(headless=False, slow_mo=100)
     ntes = NTESAgent()
     disha = AskDishaAgent()
     pipeline = DataPipeline()
@@ -226,10 +233,11 @@ async def detect_schedule_changes(payload: dict):
         return {"error": "no train_numbers provided"}
 
     browser_mgr = BrowserManager()
-    browser, context = await browser_mgr.get_browser()
+    browser, context = await browser_mgr.get_browser(headless=False, slow_mo=100)
     ntes = NTESAgent()
     results = []
     for tn in train_numbers:
+        print(f"[{tn}] Processing...")
         page = await context.new_page()
         try:
             raw = await ntes.get_schedule(page, tn)
@@ -422,24 +430,34 @@ async def resolve_rma_alert(alert_id: int):
 
 
 @app.post("/api/batch-enrich-schedule")
-async def batch_schedule(train_numbers: List[str], background_tasks: BackgroundTasks):
-    """Backward-compatible simple batch endpoint (keeps previous behavior)."""
+async def batch_schedule(train_numbers: List[str]):
+    """Backward-compatible simple batch endpoint (processes trains and waits for completion)."""
+    results = []
     for tn in train_numbers:
-        background_tasks.add_task(asyncio.create_task, _background_fetch_and_store(tn))
+        result = await _background_fetch_and_store(tn)
+        results.append(result)
 
-    return {"message": "Batch processing started"}
+    return {"message": "Batch processing completed", "results": results}
 
 
 async def _background_fetch_and_store(train_number: str):
     browser_mgr = BrowserManager()
-    browser, context = await browser_mgr.get_browser()
+    browser, context = await browser_mgr.get_browser(headless=False, slow_mo=100)
     page = await context.new_page()
     try:
         ntes = NTESAgent()
         pipeline = DataPipeline()
+        print(f"[{train_number}] Fetching schedule...")
         schedule = await ntes.get_schedule(page, train_number)
+        print(f"[{train_number}] Fetching live status...")
         live = await ntes.get_live_status(page, train_number)
+        print(f"[{train_number}] Saving to database...")
         await pipeline.update_database(schedule, live)
+        print(f"[{train_number}] Complete!")
+        return {"train": train_number, "status": "success", "schedule": bool(schedule), "live": bool(live)}
+    except Exception as e:
+        print(f"[{train_number}] Error: {e}")
+        return {"train": train_number, "status": "error", "error": str(e)}
     finally:
         await browser_mgr.close()
 
@@ -459,3 +477,18 @@ async def shutdown_event():
     autonomous_scheduler.stop()
     await command_interface.shutdown()
     agent_state_manager.save_state_to_file()  # Save state for recovery
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    
+    host = os.getenv("RMA_HOST", "0.0.0.0")
+    port = int(os.getenv("RMA_PORT", "8000"))
+    
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info"
+    )

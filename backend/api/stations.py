@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 import logging
 
 from backend.database import get_db
-from backend.models import StationMaster
+from backend.database.models import StationMaster
 from backend.services.cache_service import cache_service
 
 router = APIRouter(prefix="/api/stations", tags=["stations"])

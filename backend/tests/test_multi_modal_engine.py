@@ -69,9 +69,11 @@ class TestMultiModalRouteEngine:
         # Mock calendar
         engine.calendar_map = {
             1: {
-                'service_id': 'S1', 'monday': True, 'tuesday': True, 'wednesday': True,
+                'service_id': 'S1',
+                'monday': True, 'tuesday': True, 'wednesday': True,
                 'thursday': True, 'friday': True, 'saturday': True, 'sunday': True,
-                'start_date': date(2025, 1, 1), 'end_date': date(2025, 12, 31)
+                'start_date': date.today() - timedelta(days=365),
+                'end_date': date.today() + timedelta(days=365)
             }
         }
 
@@ -80,7 +82,7 @@ class TestMultiModalRouteEngine:
 
     def test_single_journey_search(self, engine):
         """Test single journey search"""
-        travel_date = date(2025, 12, 25)
+        travel_date = date.today() + timedelta(days=30)
         journeys = engine.search_single_journey(1, 3, travel_date)
 
         assert len(journeys) > 0
@@ -95,7 +97,7 @@ class TestMultiModalRouteEngine:
     def test_connecting_journeys(self, engine):
         """Test connecting journey search"""
         # First get individual journeys
-        travel_date = date(2025, 12, 25)
+        travel_date = date.today() + timedelta(days=30)
         individual_journeys = engine.search_single_journey(1, 3, travel_date)
 
         # Search for connecting options
@@ -103,6 +105,36 @@ class TestMultiModalRouteEngine:
 
         # Should find combinations if multiple journeys exist
         assert isinstance(connecting, list)
+
+    # walk-connector test removed by request (walk transfers are not part of core deployment).
+
+    def test_transfer_min_time_validation(self, engine):
+        """Ensure explicit transfer min_transfer_time is enforced"""
+        # Make explicit transfer very large (2 hours) so short layover is invalid
+        engine.transfers_map[2] = [{'to_stop_id': 1, 'transfer_type': 0, 'min_transfer_time': 7200}]
+
+        # Journey 1 arrives at 'Airport' (stop 2) at 07:00
+        j1 = {
+            'source': 'Central Station',
+            'destination': 'Airport',
+            'departure_date': '2025-12-25',
+            'segments': [{'departure_time': datetime.strptime('06:00:00', '%H:%M:%S').time(), 'arrival_time': datetime.strptime('07:00:00', '%H:%M:%S').time(), 'duration_minutes': 60}],
+            'total_cost': 100.0,
+            'total_duration_minutes': 60
+        }
+        # Journey 2 departs from 'Central Station' (stop 1) at 07:30 -> 30 min layover (insufficient)
+        j2 = {
+            'source': 'Central Station',
+            'destination': 'Delhi Station',
+            'departure_date': '2025-12-25',
+            'segments': [{'departure_time': datetime.strptime('07:30:00', '%H:%M:%S').time(), 'arrival_time': datetime.strptime('14:00:00', '%H:%M:%S').time(), 'duration_minutes': 390}],
+            'total_cost': 1500.0,
+            'total_duration_minutes': 390
+        }
+
+        results = engine.search_connecting_journeys([j1, j2], min_layover=5, max_layover=180)
+        # Since transfer min time required is 120 minutes, the 30 minute layover should be rejected
+        assert results == []
 
     def test_circular_journey(self, engine):
         """Test circular (round-trip) journey"""

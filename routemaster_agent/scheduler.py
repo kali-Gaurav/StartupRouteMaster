@@ -10,9 +10,9 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 import asyncio
 
-from .ai.planner import TaskPlanner
-from routemaster_agent.core.runtime_adapter import RuntimeReasoningAdapter
-from .ai.agent_state_manager import agent_state_manager, AgentState
+from ai.planner import TaskPlanner
+from core.runtime_adapter import RuntimeReasoningAdapter
+from ai.agent_state_manager import agent_state_manager, AgentState
 
 
 class AutonomousScheduler:

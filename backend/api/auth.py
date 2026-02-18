@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 from backend.database import get_db
 from backend.services.user_service import UserService
 from backend.utils.security import create_access_token, decode_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, credentials_exception
-from backend.models import User
+from backend.database.models import User
 from backend.api.dependencies import get_current_user
 from backend.services.cache_service import cache_service
 

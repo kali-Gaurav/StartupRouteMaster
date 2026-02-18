@@ -6,7 +6,7 @@ import structlog
 
 from slowapi.errors import RateLimitExceeded
 
-from backend.config import Config
+from backend.database.config import Config
 from backend.database import init_db, close_db
 from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets
 from backend.utils.limiter import limiter
@@ -19,7 +19,7 @@ import redis.asyncio as aioredis
 # Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from backend.services.route_engine import route_engine
+from backend.core.route_engine import route_engine
 from backend.database import SessionLocal
 from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
 
@@ -83,6 +83,9 @@ app.include_router(websockets.router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
+# New integrated search with full journey reconstruction
+from backend.api import integrated_search
+app.include_router(integrated_search.router)
 
 
 @app.on_event("startup")

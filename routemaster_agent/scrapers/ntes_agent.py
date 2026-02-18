@@ -8,7 +8,7 @@ class NTESAgent:
     BASE_URL = "https://enquiry.indianrail.gov.in/mntes/"
 
     async def get_schedule(self, page: Page, train_no: str):
-        from routemaster_agent.metrics import (
+        from metrics import (
             RMA_EXTRACTION_ATTEMPTS_TOTAL,
             RMA_EXTRACTION_FAILURES_TOTAL,
             RMA_EXTRACTION_SUCCESS_TOTAL,
@@ -21,15 +21,19 @@ class NTESAgent:
         source_label = 'ntes_schedule'
         # per-extraction confidence (1.0 = high)
         confidence = 1.0
+        print(RMA_EXTRACTION_ATTEMPTS_TOTAL)
         RMA_EXTRACTION_ATTEMPTS_TOTAL.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).inc()
         timer = RMA_EXTRACTION_DURATION_SECONDS.labels(source=source_label, train_number=train_no, proxy_id=proxy_id).time()
         try:
+            print("Going to ", self.BASE_URL)
             await page.goto(self.BASE_URL)
+            print("Clicking Train Schedule")
             await page.click("text=Train Schedule")
 
             # Type train number like a human (typeahead on site requires events)
             filled = False
             try:
+                print("Filling train number with typing...")
                 await page.wait_for_selector("input#trainNo, input[name='trainNo']", timeout=5000)
                 selector = "input#trainNo" if await page.query_selector("input#trainNo") else "input[name='trainNo']"
                 await page.click(selector)
@@ -68,6 +72,7 @@ class NTESAgent:
                 except Exception:
                     pass
 
+            print("Waiting for schedule")
             # Wait for schedule rows to appear (long timeout)
             await page.wait_for_selector("table.table-striped tbody tr", timeout=30000)
 
@@ -77,6 +82,8 @@ class NTESAgent:
                 train_name = await page.inner_text("#trainNameElement")
             except Exception:
                 train_name = ""
+
+            print(train_name)
 
             # consult selector registry for primary selector for this page type
             try:
