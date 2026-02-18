@@ -30,6 +30,7 @@ from math import radians, cos, sin, asin, sqrt
 import redis
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
+from .performance_validators import PerformanceValidator
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,7 @@ class RaptorRouter:
         self.db = db_session
         self.transfer_validator = transfer_validator
         self.logger = logging.getLogger(__name__)
+        self.performance_validator = PerformanceValidator()
     
     def find_shortest_path(
         self,
@@ -396,6 +398,11 @@ class RaptorRouter:
         direct_trips = self._find_direct_trips(
             source_stop, departure_time, travel_date, mode_filters
         )
+
+        # RT-098: High fan-out station detection (heuristic check)
+        if len(direct_trips) > 200:
+            if not self.performance_validator.validate_high_fan_out_station(len(direct_trips), threshold=200):
+                self.logger.warning("RT-098: high fan-out station (%d direct trips)", len(direct_trips))
         
         for trip in direct_trips:
             for i, stop_time in enumerate(trip.stop_times):

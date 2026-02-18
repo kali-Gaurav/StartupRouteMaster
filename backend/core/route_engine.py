@@ -39,6 +39,9 @@ from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, cache_ro
 from .route_validators import RouteValidator
 from .multimodal_validators import MultimodalValidator
 from .fare_availability_validators import FareAndAvailabilityValidator
+from .performance_validators import PerformanceValidator
+from .api_security_validators import APISecurityValidator
+from .data_integrity_validators import DataIntegrityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +246,9 @@ class OptimizedRAPTOR:
         self.validator = RouteValidator()
         self.multimodal_validator = MultimodalValidator()
         self.fare_availability_validator = FareAndAvailabilityValidator()
+        self.performance_validator = PerformanceValidator()
+        self.api_security_validator = APISecurityValidator()
+        self.data_integrity_validator = DataIntegrityValidator()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
@@ -270,8 +276,13 @@ class OptimizedRAPTOR:
 
         # Check cache first
         await multi_layer_cache.initialize()
+        cache_start = _time.time()
         cached_result = await multi_layer_cache.get_route_query(cache_query)
+        cache_elapsed_ms = (_time.time() - cache_start) * 1000.0
         if cached_result:
+            # RT-093: validate cache-hit performance
+            if not self.performance_validator.validate_cache_hit_performance(cache_elapsed_ms, expected_max_ms=50.0):
+                logger.warning("RT-093: cache-hit latency exceeded threshold (%.2fms)", cache_elapsed_ms)
             logger.info(f"Route cache hit for {source_stop_id} -> {dest_stop_id}")
             # Convert cached data back to Route objects
             return self._deserialize_cached_routes(cached_result)
@@ -294,7 +305,12 @@ class OptimizedRAPTOR:
         start_time = _time.time()
 
         # Build time-dependent graph
+        graph_build_start = _time.time()
         graph = await self._build_graph(departure_date)
+        graph_build_ms = (_time.time() - graph_build_start) * 1000.0
+        # RT-096: validate graph rebuild performance (warn on regression)
+        if not self.performance_validator.validate_graph_rebuild_performance(graph_build_ms, threshold_ms=1500.0):
+            logger.warning("RT-096: graph rebuild time high (%.2fms)", graph_build_ms)
 
         # Initialize RAPTOR structures
         routes_by_round: Dict[int, List[Route]] = defaultdict(list)
@@ -1396,4 +1412,296 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
             return False
 
         logger.info("All fare and availability validations (RT-071 to RT-090) passed")
+        return True
+
+    def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:
+        """
+        Validate an API request using all RT-111 to RT-130 security checks.
+        
+        Args:
+            request: API request object to validate
+            security_context: Security context for the request
+            validation_config: Configuration for validation parameters
+        
+        Returns:
+            Boolean indicating if request passes all validations
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        # RT-111: Invalid parameters rejected
+        if not self.api_security_validator.validate_invalid_parameters_rejected(request):
+            logger.warning("RT-111: Invalid parameters validation failed")
+            return False
+
+        # RT-112: Missing required fields
+        required_fields = validation_config.get('required_fields', [])
+        if not self.api_security_validator.validate_missing_required_fields(request, required_fields):
+            logger.warning("RT-112: Missing required fields validation failed")
+            return False
+
+        # RT-113: Injection attack resistance
+        if not self.api_security_validator.validate_injection_attack_resistance(request):
+            logger.warning("RT-113: Injection attack resistance validation failed")
+            return False
+
+        # RT-114: Auth token validation
+        if not self.api_security_validator.validate_auth_token_validation(security_context):
+            logger.warning("RT-114: Auth token validation failed")
+            return False
+
+        # RT-115: Unauthorized access blocked
+        required_permissions = validation_config.get('required_permissions', [])
+        if not self.api_security_validator.validate_unauthorized_access_blocked(security_context, required_permissions):
+            logger.warning("RT-115: Unauthorized access validation failed")
+            return False
+
+        # RT-116: Large payload rejection
+        if not self.api_security_validator.validate_large_payload_rejection(request):
+            logger.warning("RT-116: Large payload rejection validation failed")
+            return False
+
+        # RT-117: Rate limit enforcement
+        user_id = security_context.user_id or request.source_ip
+        rate_limit_info = validation_config.get('rate_limit_info')
+        if rate_limit_info:
+            if not self.api_security_validator.validate_rate_limit_enforcement(user_id, rate_limit_info):
+                logger.warning("RT-117: Rate limit enforcement validation failed")
+                return False
+
+        # RT-118: Error message sanitization
+        # This is typically applied to error responses, tested separately
+
+        # RT-119: API version compatibility
+        if not self.api_security_validator.validate_api_version_compatibility(request):
+            logger.warning("RT-119: API version compatibility validation failed")
+            return False
+
+        # RT-120: Schema backward compatibility
+        expected_schema = validation_config.get('expected_schema', {})
+        if expected_schema:
+            if not self.api_security_validator.validate_schema_backward_compatibility(request.parameters, expected_schema):
+                logger.warning("RT-120: Schema backward compatibility validation failed")
+                return False
+
+        # RT-121: Replay attack prevention
+        nonce = validation_config.get('nonce', '')
+        previous_requests = validation_config.get('previous_requests', [])
+        if not self.api_security_validator.validate_replay_attack_prevention(request, nonce, previous_requests):
+            logger.warning("RT-121: Replay attack prevention validation failed")
+            return False
+
+        # RT-122: Request signature validation
+        secret_key = validation_config.get('secret_key', '')
+        provided_signature = validation_config.get('provided_signature', '')
+        if secret_key and provided_signature:
+            if not self.api_security_validator.validate_request_signature_validation(request, secret_key, provided_signature):
+                logger.warning("RT-122: Request signature validation failed")
+                return False
+
+        # RT-123: CORS policy correctness
+        allowed_origins = validation_config.get('allowed_origins', [])
+        if allowed_origins:
+            if not self.api_security_validator.validate_cors_policy_correctness(request, allowed_origins):
+                logger.warning("RT-123: CORS policy correctness validation failed")
+                return False
+
+        # RT-124: HTTPS enforcement
+        if not self.api_security_validator.validate_https_enforcement(request):
+            logger.warning("RT-124: HTTPS enforcement validation failed")
+            return False
+
+        # RT-125: Input encoding safety
+        if not self.api_security_validator.validate_input_encoding_safety(request):
+            logger.warning("RT-125: Input encoding safety validation failed")
+            return False
+
+        # RT-126: DOS attack simulation
+        if not self.api_security_validator.validate_dos_attack_simulation(request):
+            logger.warning("RT-126: DOS attack simulation validation failed")
+            return False
+
+        # RT-127: Session expiration handling
+        if not self.api_security_validator.validate_session_expiration_handling(security_context):
+            logger.warning("RT-127: Session expiration handling validation failed")
+            return False
+
+        # RT-128: Audit logging correctness
+        audit_log = validation_config.get('audit_log', [])
+        if not self.api_security_validator.validate_audit_logging_correctness(request, security_context, audit_log):
+            logger.warning("RT-128: Audit logging correctness validation failed")
+            return False
+
+        # RT-129: Sensitive data masking
+        # This is typically applied to response data, tested separately
+
+        # RT-130: Token refresh logic
+        token_refresh_interval = validation_config.get('token_refresh_interval_minutes', 15)
+        if not self.api_security_validator.validate_token_refresh_logic(security_context, token_refresh_interval):
+            logger.warning("RT-130: Token refresh logic validation failed")
+            return False
+
+        logger.info("All API and security validations (RT-111 to RT-130) passed")
+        return True
+
+    def validate_data_integrity(self, validation_config: dict = None) -> bool:
+        """
+        Validate data integrity and consistency using all RT-131 to RT-150 checks.
+        
+        Args:
+            validation_config: Configuration for validation parameters
+        
+        Returns:
+            Boolean indicating if data passes all integrity checks
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        # RT-131: Station graph connectivity
+        stations = validation_config.get('stations', [])
+        transfers = validation_config.get('transfers', [])
+        if stations and transfers:
+            if not self.data_integrity_validator.validate_station_graph_connectivity(stations, transfers):
+                logger.warning("RT-131: Station graph connectivity validation failed")
+                return False
+
+        # RT-132: Orphan nodes detection
+        if stations and transfers:
+            if not self.data_integrity_validator.validate_orphan_nodes_detection(stations, transfers):
+                logger.warning("RT-132: Orphan nodes detection validation failed")
+                return False
+
+        # RT-133: Duplicate station IDs
+        if stations:
+            if not self.data_integrity_validator.validate_duplicate_station_ids(stations):
+                logger.warning("RT-133: Duplicate station IDs validation failed")
+                return False
+
+        # RT-134: Trip continuity validation
+        trips = validation_config.get('trips', [])
+        for trip in trips:
+            if not self.data_integrity_validator.validate_trip_continuity(trip):
+                logger.warning(f"RT-134: Trip continuity validation failed for trip {trip.trip_id}")
+                return False
+
+        # RT-135: Missing timestamps handling
+        if trips:
+            if not self.data_integrity_validator.validate_missing_timestamps_handling(trips):
+                logger.warning("RT-135: Missing timestamps handling validation failed")
+                return False
+
+        # RT-136: Negative durations rejected
+        if trips:
+            if not self.data_integrity_validator.validate_negative_durations_rejected(trips):
+                logger.warning("RT-136: Negative durations rejected validation failed")
+                return False
+
+        # RT-137: Time ordering in stops
+        for trip in trips:
+            if not self.data_integrity_validator.validate_time_ordering_in_stops(trip):
+                logger.warning(f"RT-137: Time ordering in stops validation failed for trip {trip.trip_id}")
+                return False
+
+        # RT-138: Distance monotonic increase
+        for trip in trips:
+            if not self.data_integrity_validator.validate_distance_monotonic_increase(trip):
+                logger.warning(f"RT-138: Distance monotonic increase validation failed for trip {trip.trip_id}")
+                return False
+
+        # RT-139: Data import validation
+        dataset = validation_config.get('dataset')
+        data_rows = validation_config.get('data_rows', [])
+        if dataset and data_rows:
+            if not self.data_integrity_validator.validate_data_import_validation(dataset, data_rows):
+                logger.warning("RT-139: Data import validation failed")
+                return False
+
+        # RT-140: Partial dataset recovery
+        original_data = validation_config.get('original_data', [])
+        corrupted_indices = validation_config.get('corrupted_indices', [])
+        if original_data:
+            if not self.data_integrity_validator.validate_partial_dataset_recovery(original_data, corrupted_indices):
+                logger.warning("RT-140: Partial dataset recovery validation failed")
+                return False
+
+        # RT-141: Index corruption recovery
+        primary_index = validation_config.get('primary_index', {})
+        backup_index = validation_config.get('backup_index', {})
+        if primary_index or backup_index:
+            if not self.data_integrity_validator.validate_index_corruption_recovery(primary_index, backup_index):
+                logger.warning("RT-141: Index corruption recovery validation failed")
+                return False
+
+        # RT-142: Cache vs DB consistency
+        cache_data = validation_config.get('cache_data', {})
+        db_data = validation_config.get('db_data', {})
+        if cache_data or db_data:
+            if not self.data_integrity_validator.validate_cache_vs_db_consistency(cache_data, db_data):
+                logger.warning("RT-142: Cache vs DB consistency validation failed")
+                return False
+
+        # RT-143: Graph rebuild determinism
+        graph_v1 = validation_config.get('graph_v1', {})
+        graph_v2 = validation_config.get('graph_v2', {})
+        if graph_v1 or graph_v2:
+            if not self.data_integrity_validator.validate_graph_rebuild_determinism(graph_v1, graph_v2):
+                logger.warning("RT-143: Graph rebuild determinism validation failed")
+                return False
+
+        # RT-144: Realtime merge consistency
+        static_data = validation_config.get('static_data', {})
+        realtime_data = validation_config.get('realtime_data', {})
+        merged_data = validation_config.get('merged_data', {})
+        if static_data or realtime_data or merged_data:
+            if not self.data_integrity_validator.validate_realtime_merge_consistency(static_data, realtime_data, merged_data):
+                logger.warning("RT-144: Realtime merge consistency validation failed")
+                return False
+
+        # RT-145: Timezone mismatch detection
+        if stations:
+            if not self.data_integrity_validator.validate_timezone_mismatch_detection(stations):
+                logger.warning("RT-145: Timezone mismatch detection validation failed")
+                return False
+
+        # RT-146: Station coordinate sanity
+        if stations:
+            if not self.data_integrity_validator.validate_station_coordinate_sanity(stations):
+                logger.warning("RT-146: Station coordinate sanity validation failed")
+                return False
+
+        # RT-147: GTFS spec compliance
+        required_fields = validation_config.get('gtfs_required_fields', [])
+        data_sample = validation_config.get('gtfs_data_sample', [])
+        if dataset and required_fields and data_sample:
+            if not self.data_integrity_validator.validate_gtfs_spec_compliance(dataset, required_fields, data_sample):
+                logger.warning("RT-147: GTFS spec compliance validation failed")
+                return False
+
+        # RT-148: Referential integrity
+        valid_route_ids = validation_config.get('valid_route_ids', set())
+        valid_service_ids = validation_config.get('valid_service_ids', set())
+        if trips and (valid_route_ids or valid_service_ids):
+            if not self.data_integrity_validator.validate_referential_integrity(trips, valid_route_ids, valid_service_ids):
+                logger.warning("RT-148: Referential integrity validation failed")
+                return False
+
+        # RT-149: Snapshot rollback correctness
+        snapshot_before = validation_config.get('snapshot_before', {})
+        snapshot_after = validation_config.get('snapshot_after', {})
+        original_data_snapshot = validation_config.get('original_data_snapshot', {})
+        if snapshot_before or snapshot_after:
+            if not self.data_integrity_validator.validate_snapshot_rollback_correctness(snapshot_before, snapshot_after, original_data_snapshot):
+                logger.warning("RT-149: Snapshot rollback correctness validation failed")
+                return False
+
+        # RT-150: Data version migration
+        old_version = validation_config.get('old_version')
+        new_version = validation_config.get('new_version')
+        migration_successful = validation_config.get('migration_successful', False)
+        if old_version and new_version:
+            if not self.data_integrity_validator.validate_data_version_migration(old_version, new_version, migration_successful):
+                logger.warning("RT-150: Data version migration validation failed")
+                return False
+
+        logger.info("All data integrity and consistency validations (RT-131 to RT-150) passed")
         return True
