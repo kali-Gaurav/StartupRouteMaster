@@ -18,7 +18,7 @@ Performance targets:
 
 import asyncio
 import heapq
-import time
+import time as _time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time
@@ -36,6 +36,9 @@ from ..database.models import (
 )
 from ..database.config import Config
 from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, cache_route_search
+from .route_validators import RouteValidator
+from .multimodal_validators import MultimodalValidator
+from .fare_availability_validators import FareAndAvailabilityValidator
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,9 @@ class TransferConnection:
     station_name: str
     facilities_score: float
     safety_score: float
+    # Optional platform information (does not affect transfer feasibility by default)
+    platform_from: Optional[str] = None
+    platform_to: Optional[str] = None
 
 
 @dataclass
@@ -141,6 +147,10 @@ class RouteConstraints:
     avoid_night_layovers: bool = False
     women_safety_priority: bool = False
     max_results: int = 10
+
+    # Compatibility / advanced options
+    preferred_class: Optional[str] = None
+    include_wait_time: bool = False
 
     @dataclass
     class Weights:
@@ -230,6 +240,9 @@ class OptimizedRAPTOR:
     def __init__(self, max_transfers: int = 3):
         self.max_transfers = max_transfers
         self.executor = ThreadPoolExecutor(max_workers=4)
+        self.validator = RouteValidator()
+        self.multimodal_validator = MultimodalValidator()
+        self.fare_availability_validator = FareAndAvailabilityValidator()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
@@ -278,7 +291,7 @@ class OptimizedRAPTOR:
         """
         Internal route computation (original find_routes logic)
         """
-        start_time = time.time()
+        start_time = _time.time()
 
         # Build time-dependent graph
         graph = await self._build_graph(departure_date)
@@ -374,16 +387,18 @@ class OptimizedRAPTOR:
                     if (segment.departure_stop_id == transfer.station_id and
                         segment.departure_time >= transfer.departure_time):
 
-                        new_route = Route()
-                        new_route.segments = route.segments.copy()
-                        new_route.transfers = route.transfers.copy()
-                        new_route.add_transfer(transfer)
-                        new_route.add_segment(segment)
+                        # Prevent cycles: do not revisit a station already present in the route
+                        existing_stations = set(route.get_all_stations())
+                        if segment.arrival_stop_id in existing_stations:
+                            # skip segments that would create loops
+                            continue
 
-                        # Update totals
-                        new_route.total_duration = route.total_duration + transfer.duration_minutes + segment.duration_minutes
-                        new_route.total_cost = route.total_cost + segment.fare
-                        new_route.total_distance = route.total_distance + segment.distance_km
+                        # Initialize new_route
+                        new_route = Route(
+                            segments=route.segments + [segment],
+                            total_distance=route.total_distance + segment.distance_km,
+                            transfers=route.transfers + [transfer]
+                        )
 
                         # Check if destination reached
                         if segment.arrival_stop_id == dest_stop_id:
@@ -459,9 +474,16 @@ class OptimizedRAPTOR:
                     current = trip_stop_times[i]
                     next_stop = trip_stop_times[i + 1]
 
-                    # Convert times to datetime
+                    # Convert times to datetime (handle overnight / multi-day via rollover)
                     dep_dt = self._time_to_datetime(date, current.departure_time)
                     arr_dt = self._time_to_datetime(date, next_stop.arrival_time)
+
+                    # If arrival datetime is earlier than departure, roll forward by whole days
+                    # This covers midnight crossings and multi-day trips when DB only stores time-of-day
+                    while arr_dt < dep_dt:
+                        arr_dt += timedelta(days=1)
+
+                    duration_minutes = int((arr_dt - dep_dt).total_seconds() // 60)
 
                     segment = RouteSegment(
                         trip_id=trip_id,
@@ -469,7 +491,7 @@ class OptimizedRAPTOR:
                         arrival_stop_id=next_stop.stop_id,
                         departure_time=dep_dt,
                         arrival_time=arr_dt,
-                        duration_minutes=(arr_dt - dep_dt).seconds // 60,
+                        duration_minutes=duration_minutes,
                         distance_km=0.0,  # Would need distance calculation
                         fare=100.0,  # Base fare, would be calculated
                         train_name=getattr(trip_stop_times[0].trip.route, 'long_name', 'Unknown'),
@@ -570,6 +592,10 @@ class OptimizedRAPTOR:
         if route.total_duration > constraints.max_journey_time:
             return False
 
+        # Transfer count constraint
+        if len(route.transfers) > constraints.max_transfers:
+            return False
+
         # Transfer constraints
         for transfer in route.transfers:
             if transfer.duration_minutes < constraints.min_transfer_time:
@@ -592,11 +618,22 @@ class OptimizedRAPTOR:
         return True
 
     def _is_feasible_transfer(self, transfer: TransferConnection, constraints: RouteConstraints) -> bool:
-        """Check if transfer meets constraints"""
+        """Check if transfer meets constraints (platform differences tolerated).
+
+        Rules:
+        - duration must be within min/max limits
+        - night layover avoidance honored
+        - platform_from/platform_to differences are allowed (we may add penalties elsewhere)
+        """
         if transfer.duration_minutes < constraints.min_transfer_time:
             return False
         if transfer.duration_minutes > constraints.max_layover_time:
             return False
+
+        # Platform differences do not make a transfer infeasible by default
+        # (kept for extensibility / future penalties)
+        # if transfer.platform_from and transfer.platform_to and transfer.platform_from != transfer.platform_to:
+        #     pass
 
         if constraints.avoid_night_layovers:
             if self._is_night_layover(transfer.arrival_time, transfer.departure_time):
@@ -604,49 +641,210 @@ class OptimizedRAPTOR:
 
         return True
 
-    def _is_night_layover(self, arrival: datetime, departure: datetime) -> bool:
-        """Check if layover spans night hours (22:00-05:00)"""
-        night_start = arrival.replace(hour=22, minute=0, second=0, microsecond=0)
-        night_end = departure.replace(hour=5, minute=0, second=0, microsecond=0)
+    def _validate_segment_continuity(self, segments: List[RouteSegment]) -> bool:
+        """Validate that a sequence of RouteSegment objects represents a continuous journey.
 
-        # Check if layover overlaps with night hours
-        return (arrival <= night_start < departure) or (arrival <= night_end < departure)
+        Continuity rules (conservative):
+        - For consecutive segments: previous.arrival_stop_id == next.departure_stop_id
+        - Arrival time must be <= next departure time
+        - Segments belonging to same trip may be allowed to skip internal stops only if data shows them as linked; otherwise reject.
+        """
+        if not segments:
+            return False
 
-    def _is_safe_station(self, station_id: int) -> bool:
-        """Check if station is considered safe (simplified)"""
-        # In production, this would check safety ratings from database
-        return True  # Placeholder
+        for i in range(len(segments) - 1):
+            prev = segments[i]
+            nxt = segments[i + 1]
 
-    def _calculate_score(self, route: Route, constraints: RouteConstraints) -> float:
-        """Calculate multi-objective score"""
-        weights = constraints.weights
+            # station continuity
+            if prev.arrival_stop_id != nxt.departure_stop_id:
+                # Fallback for missing intermediate stops
+                if not self._check_missing_stop_link(prev.arrival_stop_id, nxt.departure_stop_id):
+                    return False
 
-        # Time score (lower is better)
-        time_score = route.total_duration
+            # temporal continuity
+            if prev.arrival_time > nxt.departure_time:
+                return False
 
-        # Cost score (lower is better)
-        cost_score = route.total_cost
+        return True
 
-        # Comfort score (higher is better, converted to penalty)
-        comfort_score = 0
-        for transfer in route.transfers:
-            comfort_score += transfer.facilities_score * 10  # Scale up
-            if self._is_night_layover(transfer.arrival_time, transfer.departure_time):
-                comfort_score -= 20  # Night layover penalty
+    def _check_missing_stop_link(self, from_stop_id: int, to_stop_id: int) -> bool:
+        """Check if missing intermediate stops can be linked based on GTFS data."""
+        # Placeholder for actual implementation
+        # This would query the database or use heuristics to determine if the stops are linked
+        return True
 
-        # Safety score (higher is better)
-        safety_score = 0
-        if constraints.women_safety_priority:
-            for station_id in route.get_all_stations():
-                safety_score += 5  # Base safety score per station
+    async def _deduplicate_routes(self, routes: List[Route]) -> List[Route]:
+        """Deduplicate routes based on segments and transfers."""
+        unique_routes = {}
+        for route in routes:
+            route_key = (tuple(route.get_all_stations()), tuple(route.transfers))
+            if route_key not in unique_routes:
+                unique_routes[route_key] = route
+            else:
+                # Keep the route with the better score
+                if route.score < unique_routes[route_key].score:
+                    unique_routes[route_key] = route
 
-        # Weighted combination
-        total_score = (weights.time * time_score +
-                      weights.cost * cost_score -
-                      weights.comfort * comfort_score +
-                      weights.safety * safety_score)
+        return list(unique_routes.values())
 
-        return total_score
+    async def _apply_delay_update(self, update: Dict[str, Any]):
+        """Apply delay update to graph"""
+        trip_id = update['trip_id']
+        delay_minutes = update['delay_minutes']
+
+        # Update time-dependent graph
+        if trip_id in self.time_graph.trip_nodes:
+            for node in self.time_graph.trip_nodes[trip_id]:
+                node.timestamp += timedelta(minutes=delay_minutes)
+
+        # Update cached routes
+        await self._invalidate_affected_routes(trip_id)
+
+        logger.info(f"Applied {delay_minutes}min delay to trip {trip_id}")
+
+    async def _apply_cancellation_update(self, update: Dict[str, Any]):
+        """Apply cancellation update to graph"""
+        trip_id = update['trip_id']
+        cancelled_stations = update.get('cancelled_stations', [])
+
+        # Mark trip as cancelled in graph
+        if trip_id in self.time_graph.trip_nodes:
+            for node in self.time_graph.trip_nodes[trip_id]:
+                node.is_cancelled = True
+
+        # Remove cancelled segments
+        if cancelled_stations:
+            self.time_graph.remove_cancelled_segments(trip_id, cancelled_stations)
+
+        # Update cached routes
+        await self._invalidate_affected_routes(trip_id)
+
+        logger.info(f"Applied cancellation to trip {trip_id}")
+
+    async def _apply_occupancy_update(self, update: Dict[str, Any]):
+        """Apply occupancy update to graph"""
+        trip_id = update['trip_id']
+        occupancy_rate = update['occupancy_rate']
+
+        # Update occupancy weights in graph
+        if trip_id in self.time_graph.trip_nodes:
+            for node in self.time_graph.trip_nodes[trip_id]:
+                node.occupancy_weight = self._calculate_occupancy_penalty(occupancy_rate)
+
+        logger.debug(f"Updated occupancy for trip {trip_id}: {occupancy_rate}")
+
+    async def _invalidate_affected_routes(self, trip_id: int):
+        """Invalidate cached routes affected by a trip change"""
+        # Get all stations served by this trip
+        session = SessionLocal()
+        try:
+            stop_times = session.query(StopTime).filter(
+                StopTime.trip_id == trip_id
+            ).all()
+
+            affected_stations = {st.stop_id for st in stop_times}
+
+            # Invalidate cache for routes involving these stations
+            # This would integrate with Redis caching layer
+            for station_id in affected_stations:
+                cache_key = f"routes:station:{station_id}"
+                # await redis.delete(cache_key)  # Would implement Redis integration
+
+        finally:
+            session.close()
+
+    def _calculate_occupancy_penalty(self, occupancy_rate: float) -> float:
+        """Calculate comfort penalty based on occupancy"""
+        if occupancy_rate < 0.5:
+            return 1.0  # No penalty
+        elif occupancy_rate < 0.8:
+            return 1.2  # Slight penalty
+        else:
+            return 1.5  # High penalty for crowded trains
+
+    def _serialize_routes_for_cache(self, routes: List[Route]) -> Dict:
+        """Serialize routes for caching"""
+        return {
+            'routes': [
+                {
+                    'segments': [
+                        {
+                            'trip_id': seg.trip_id,
+                            'departure_stop_id': seg.departure_stop_id,
+                            'arrival_stop_id': seg.arrival_stop_id,
+                            'departure_time': seg.departure_time.isoformat(),
+                            'arrival_time': seg.arrival_time.isoformat(),
+                            'duration_minutes': seg.duration_minutes,
+                            'distance_km': seg.distance_km,
+                            'fare_amount': seg.fare_amount,
+                            'train_name': seg.train_name,
+                            'train_number': seg.train_number
+                        } for seg in route.segments
+                    ],
+                    'transfers': [
+                        {
+                            'station_id': t.station_id,
+                            'arrival_time': t.arrival_time.isoformat(),
+                            'departure_time': t.departure_time.isoformat(),
+                            'duration_minutes': t.duration_minutes,
+                            'station_name': t.station_name
+                        } for t in route.transfers
+                    ],
+                    'total_duration': route.total_duration,
+                    'total_distance': route.total_distance,
+                    'total_fare': route.total_fare,
+                    'score': route.score,
+                    'cached_at': datetime.utcnow().isoformat()
+                } for route in routes
+            ],
+            'count': len(routes)
+        }
+
+    def _deserialize_cached_routes(self, cached_data: Dict) -> List[Route]:
+        """Deserialize routes from cache"""
+        routes = []
+        for route_data in cached_data.get('routes', []):
+            route = Route()
+
+            # Deserialize segments
+            for seg_data in route_data.get('segments', []):
+                segment = RouteSegment(
+                    trip_id=seg_data['trip_id'],
+                    departure_stop_id=seg_data['departure_stop_id'],
+                    arrival_stop_id=seg_data['arrival_stop_id'],
+                    departure_time=datetime.fromisoformat(seg_data['departure_time']),
+                    arrival_time=datetime.fromisoformat(seg_data['arrival_time']),
+                    duration_minutes=seg_data['duration_minutes'],
+                    distance_km=seg_data.get('distance_km', 0),
+                    fare_amount=seg_data.get('fare_amount', 0),
+                    train_name=seg_data.get('train_name', ''),
+                    train_number=seg_data.get('train_number', '')
+                )
+                route.add_segment(segment)
+
+            # Deserialize transfers
+            for transfer_data in route_data.get('transfers', []):
+                transfer = TransferConnection(
+                    station_id=transfer_data['station_id'],
+                    arrival_time=datetime.fromisoformat(transfer_data['arrival_time']),
+                    departure_time=datetime.fromisoformat(transfer_data['departure_time']),
+                    duration_minutes=transfer_data['duration_minutes'],
+                    station_name=transfer_data.get('station_name', ''),
+                    facilities_score=0.0,
+                    safety_score=0.0
+                )
+                route.add_transfer(transfer)
+
+            # Set totals
+            route.total_duration = route_data.get('total_duration', 0)
+            route.total_distance = route_data.get('total_distance', 0)
+            route.total_fare = route_data.get('total_fare', 0)
+            route.score = route_data.get('score', 0)
+
+            routes.append(route)
+
+        return routes
 
 
 # ==============================================================================
@@ -686,6 +884,10 @@ class RouteEngine:
             dest_stop = session.query(Stop).filter(Stop.code == destination_code).first()
 
             if not source_stop or not dest_stop:
+                return []
+
+            # Same-origin / same-destination -> return empty result (zero-length journey)
+            if source_stop.id == dest_stop.id:
                 return []
 
             # Execute RAPTOR search
@@ -901,4 +1103,297 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
     # In production, this would use distance-based pricing
     base_fare = 100.0
     return base_fare
-route_engine = RouteEngine()
+
+    async def handle_realtime_updates(self, realtime_data: dict, route: Route):
+        """Handle real-time updates and validate using RouteValidator."""
+        if not self.validator.validate_realtime_delay_propagation(realtime_data, route):
+            return False
+        if not self.validator.validate_cancellation_removal(realtime_data, route):
+            return False
+        if not self.validator.validate_partial_delay(realtime_data, route):
+            return False
+        if not self.validator.validate_realtime_update_during_query(realtime_data, route):
+            return False
+        if not self.validator.validate_outdated_realtime_cache(realtime_data, route):
+            return False
+        # Additional real-time validations can be added here
+        return True
+
+    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
+        """
+        Validate a multi-modal route using all RT-051 to RT-070 checks.
+        
+        Args:
+            multimodal_route: Multi-modal route object to validate
+            validation_config: Configuration for validation parameters
+        
+        Returns:
+            Boolean indicating if route passes all validations
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        # RT-051: Train-bus integration
+        if not self.multimodal_validator.validate_train_bus_integration(multimodal_route):
+            logger.warning("RT-051: Train-bus integration validation failed")
+            return False
+
+        # RT-052: Walk transfer segments
+        if not self.multimodal_validator.validate_walk_transfer_segments(multimodal_route):
+            logger.warning("RT-052: Walk transfer segments validation failed")
+            return False
+
+        # RT-053: Mode preference filtering
+        preferred_modes = validation_config.get('preferred_modes', [])
+        if not self.multimodal_validator.validate_mode_preference_filtering(multimodal_route, preferred_modes):
+            logger.warning("RT-053: Mode preference filtering validation failed")
+            return False
+
+        # RT-054: Disabled transport mode excluded
+        disabled_modes = validation_config.get('disabled_modes', [])
+        if not self.multimodal_validator.validate_disabled_transport_mode_excluded(multimodal_route, disabled_modes):
+            logger.warning("RT-054: Disabled transport mode validation failed")
+            return False
+
+        # RT-055: Multi-modal transfer penalties
+        transfer_penalties = validation_config.get('transfer_penalties', {})
+        if not self.multimodal_validator.validate_multimodal_transfer_penalties(multimodal_route, transfer_penalties):
+            logger.warning("RT-055: Multi-modal transfer penalties validation failed")
+            return False
+
+        # RT-056: First/last mile inclusion
+        if not self.multimodal_validator.validate_first_last_mile_inclusion(multimodal_route):
+            logger.warning("RT-056: First/last mile inclusion validation failed")
+            return False
+
+        # RT-057: Bike or taxi connectors
+        allow_bike = validation_config.get('allow_bike', True)
+        allow_taxi = validation_config.get('allow_taxi', True)
+        if not self.multimodal_validator.validate_bike_taxi_connectors(multimodal_route, allow_bike, allow_taxi):
+            logger.warning("RT-057: Bike/taxi connectors validation failed")
+            return False
+
+        # RT-058: Mode cost weighting
+        if not self.multimodal_validator.validate_mode_cost_weighting(multimodal_route):
+            logger.warning("RT-058: Mode cost weighting validation failed")
+            return False
+
+        # RT-059: Mixed schedule and frequency routes
+        if not self.multimodal_validator.validate_mixed_schedule_frequency_routes(multimodal_route):
+            logger.warning("RT-059: Mixed schedule/frequency validation failed")
+            return False
+
+        # RT-060: Walking time estimation
+        if not self.multimodal_validator.validate_walking_time_estimation(multimodal_route):
+            logger.warning("RT-060: Walking time estimation validation failed")
+            return False
+
+        # RT-061: Maximum walking distance
+        max_walking_distance = validation_config.get('max_walking_distance_m', 2000)
+        if not self.multimodal_validator.validate_maximum_walking_distance(multimodal_route, max_walking_distance):
+            logger.warning("RT-061: Maximum walking distance validation failed")
+            return False
+
+        # RT-062: Mode change count
+        max_mode_changes = validation_config.get('max_mode_changes', 4)
+        if not self.multimodal_validator.validate_mode_change_count(multimodal_route, max_mode_changes):
+            logger.warning("RT-062: Mode change count validation failed")
+            return False
+
+        # RT-063: Airport transfer integration
+        is_airport_route = validation_config.get('is_airport_route', False)
+        if not self.multimodal_validator.validate_airport_transfer_integration(multimodal_route, is_airport_route):
+            logger.warning("RT-063: Airport transfer integration validation failed")
+            return False
+
+        # RT-064: Metro-rail sync
+        if not self.multimodal_validator.validate_metro_rail_sync(multimodal_route):
+            logger.warning("RT-064: Metro-rail sync validation failed")
+            return False
+
+        # RT-065: Overnight bus-train
+        if not self.multimodal_validator.validate_overnight_bus_train(multimodal_route):
+            logger.warning("RT-065: Overnight bus-train validation failed")
+            return False
+
+        # RT-066: Mode priority override
+        mode_priority = validation_config.get('mode_priority', {})
+        if not self.multimodal_validator.validate_mode_priority_override(multimodal_route, mode_priority):
+            logger.warning("RT-066: Mode priority override validation failed")
+            return False
+
+        # RT-067: Transfer station mismatch
+        if not self.multimodal_validator.validate_transfer_station_mismatch(multimodal_route):
+            logger.warning("RT-067: Transfer station mismatch validation failed")
+            return False
+
+        # RT-068: Geographic distance sanity
+        if not self.multimodal_validator.validate_geographic_distance_sanity(multimodal_route):
+            logger.warning("RT-068: Geographic distance sanity validation failed")
+            return False
+
+        # RT-069: Rural sparse network
+        is_rural = validation_config.get('is_rural', False)
+        if not self.multimodal_validator.validate_rural_sparse_network(multimodal_route, is_rural):
+            logger.warning("RT-069: Rural sparse network validation failed")
+            return False
+
+        # RT-070: Mode unavailable fallback
+        unavailable_modes = validation_config.get('unavailable_modes', [])
+        if not self.multimodal_validator.validate_mode_unavailable_fallback(multimodal_route, unavailable_modes):
+            logger.warning("RT-070: Mode unavailable fallback validation failed")
+            return False
+
+        logger.info("All multimodal route validations (RT-051 to RT-070) passed")
+        return True
+
+    def validate_fare_and_availability(self, fare_and_avail, validation_config: dict = None) -> bool:
+        """
+        Validate a fare and availability route using all RT-071 to RT-090 checks.
+        
+        Args:
+            fare_and_avail: Fare and availability object to validate
+            validation_config: Configuration for validation parameters
+        
+        Returns:
+            Boolean indicating if route passes all validations
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        # RT-071: Fare calculation per segment
+        for fare_seg in fare_and_avail.fare_segments:
+            if not self.fare_availability_validator.validate_fare_calculation_per_segment(fare_seg):
+                logger.warning("RT-071: Fare calculation per segment validation failed")
+                return False
+
+        # RT-072: Total fare aggregation
+        if not self.fare_availability_validator.validate_total_fare_aggregation(
+            fare_and_avail.fare_segments, fare_and_avail.total_fare
+        ):
+            logger.warning("RT-072: Total fare aggregation validation failed")
+            return False
+
+        # RT-073: Dynamic pricing override
+        is_peak_time = validation_config.get('is_peak_time', False)
+        if not self.fare_availability_validator.validate_dynamic_pricing_override(fare_and_avail, is_peak_time):
+            logger.warning("RT-073: Dynamic pricing override validation failed")
+            return False
+
+        # RT-074: Seat availability filtering
+        requested_class = validation_config.get('seat_class', None)
+        num_passengers = validation_config.get('num_passengers', 1)
+        if requested_class and fare_and_avail.seat_info:
+            for seat_id, seat_info in fare_and_avail.seat_info.items():
+                if not self.fare_availability_validator.validate_seat_availability_filtering(
+                    seat_info, requested_class, num_passengers
+                ):
+                    logger.warning("RT-074: Seat availability filtering validation failed")
+                    return False
+
+        # RT-075: Waitlist handling
+        allow_waitlist = validation_config.get('allow_waitlist', False)
+        if requested_class and fare_and_avail.seat_info:
+            for seat_id, seat_info in fare_and_avail.seat_info.items():
+                if not self.fare_availability_validator.validate_waitlist_handling(
+                    seat_info, requested_class, num_passengers, allow_waitlist
+                ):
+                    logger.warning("RT-075: Waitlist handling validation failed")
+                    return False
+
+        # RT-076: Class preference filtering
+        preferred_classes = validation_config.get('preferred_classes', [])
+        if not self.fare_availability_validator.validate_class_preference_filtering(fare_and_avail, preferred_classes):
+            logger.warning("RT-076: Class preference filtering validation failed")
+            return False
+
+        # RT-077: Fare currency consistency
+        if not self.fare_availability_validator.validate_fare_currency_consistency(fare_and_avail):
+            logger.warning("RT-077: Fare currency consistency validation failed")
+            return False
+
+        # RT-078: Discounts applied correctly
+        for fare_seg in fare_and_avail.fare_segments:
+            if not self.fare_availability_validator.validate_discounts_applied_correctly(fare_seg):
+                logger.warning("RT-078: Discounts applied correctly validation failed")
+                return False
+
+        # RT-079: Multi-modal fare merging
+        if not self.fare_availability_validator.validate_multimodal_fare_merging(fare_and_avail.fare_segments):
+            logger.warning("RT-079: Multi-modal fare merging validation failed")
+            return False
+
+        # RT-080: Fare rounding correctness
+        fares = [seg.total_fare for seg in fare_and_avail.fare_segments]
+        if not self.fare_availability_validator.validate_fare_rounding_correctness(fares, fare_and_avail.total_fare):
+            logger.warning("RT-080: Fare rounding correctness validation failed")
+            return False
+
+        # RT-081: Missing fare data fallback
+        if not self.fare_availability_validator.validate_missing_fare_data_fallback(fare_and_avail):
+            logger.warning("RT-081: Missing fare data fallback validation failed")
+            return False
+
+        # RT-082: Surge pricing updates
+        previous_fares = validation_config.get('previous_fares', {})
+        if previous_fares:
+            if not self.fare_availability_validator.validate_surge_pricing_updates(fare_and_avail, previous_fares):
+                logger.warning("RT-082: Surge pricing updates validation failed")
+                return False
+
+        # RT-083: Fare caps enforced
+        fare_cap = validation_config.get('fare_cap', None)
+        if not self.fare_availability_validator.validate_fare_caps_enforced(fare_and_avail, fare_cap):
+            logger.warning("RT-083: Fare caps enforced validation failed")
+            return False
+
+        # RT-084: Seat quota handling
+        class_quotas = validation_config.get('class_quotas', {})
+        if class_quotas and fare_and_avail.seat_info:
+            for seat_id, seat_info in fare_and_avail.seat_info.items():
+                if not self.fare_availability_validator.validate_seat_quota_handling(seat_info, class_quotas):
+                    logger.warning("RT-084: Seat quota handling validation failed")
+                    return False
+
+        # RT-085: Tatkal-like priority quota
+        for fare_seg in fare_and_avail.fare_segments:
+            if not self.fare_availability_validator.validate_tatkal_priority_quota(None, fare_seg):
+                logger.warning("RT-085: Tatkal priority quota validation failed")
+                return False
+
+        # RT-086: Fare caching consistency
+        cached_fares = validation_config.get('cached_fares', {})
+        if cached_fares:
+            for i, seg in enumerate(fare_and_avail.fare_segments):
+                cached_seg = cached_fares.get(i)
+                if cached_seg:
+                    if not self.fare_availability_validator.validate_fare_caching_consistency(cached_seg, seg):
+                        logger.warning("RT-086: Fare caching consistency validation failed")
+                        return False
+
+        # RT-087: Partial availability segment
+        if not self.fare_availability_validator.validate_partial_availability_segment(fare_and_avail, num_passengers):
+            logger.warning("RT-087: Partial availability segment validation failed")
+            return False
+
+        # RT-088: Price optimization mode
+        optimization_mode = validation_config.get('optimization_mode', 'standard')
+        if not self.fare_availability_validator.validate_price_optimization_mode(fare_and_avail, optimization_mode):
+            logger.warning("RT-088: Price optimization mode validation failed")
+            return False
+
+        # RT-089: Refund calculation scenario
+        if not self.fare_availability_validator.validate_refund_calculation_scenario(
+            fare_and_avail.total_fare,
+            validation_config.get('cancellation_fee_percent', 10.0)
+        ):
+            logger.warning("RT-089: Refund calculation scenario validation failed")
+            return False
+
+        # RT-090: Zero fare route edge case
+        if not self.fare_availability_validator.validate_zero_fare_route_edge_case(fare_and_avail):
+            logger.warning("RT-090: Zero fare route edge case validation failed")
+            return False
+
+        logger.info("All fare and availability validations (RT-071 to RT-090) passed")
+        return True

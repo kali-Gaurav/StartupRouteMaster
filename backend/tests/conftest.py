@@ -48,7 +48,11 @@ def sample_user(db_session):
 
 @pytest.fixture
 def sample_agency(db_session):
-    """Create a sample agency for testing"""
+    """Create (or return existing) a sample agency for testing."""
+    existing = db_session.query(Agency).filter_by(agency_id="TEST_AGENCY_001").first()
+    if existing:
+        return existing
+
     agency = Agency(
         agency_id="TEST_AGENCY_001",
         name="Test Railway Corporation",
@@ -63,73 +67,45 @@ def sample_agency(db_session):
 
 @pytest.fixture
 def sample_stops(db_session, sample_agency):
-    """Create sample stops for testing"""
-    stops = [
-        Stop(
-            stop_id="NDLS",
-            code="NDLS",
-            name="New Delhi",
-            city="Delhi",
-            state="Delhi",
-            latitude=28.6431,
-            longitude=77.1064,
-            geom="SRID=4326;POINT(77.1064 28.6431)",
-            location_type=1,
-            safety_score=85.0,
-            is_major_junction=True,
-            facilities_json={"wifi": True, "food": True, "rest_room": True}
-        ),
-        Stop(
-            stop_id="MMCT",
-            code="MMCT",
-            name="Mumbai Central",
-            city="Mumbai",
-            state="Maharashtra",
-            latitude=18.9688,
-            longitude=72.8194,
-            geom="SRID=4326;POINT(72.8194 18.9688)",
-            location_type=1,
-            safety_score=78.0,
-            is_major_junction=True,
-            facilities_json={"wifi": True, "food": True, "rest_room": True}
-        ),
-        Stop(
-            stop_id="PUNE",
-            code="PUNE",
-            name="Pune Junction",
-            city="Pune",
-            state="Maharashtra",
-            latitude=18.5286,
-            longitude=73.8395,
-            geom="SRID=4326;POINT(73.8395 18.5286)",
-            location_type=1,
-            safety_score=72.0,
-            is_major_junction=False,
-            facilities_json={"wifi": False, "food": True, "rest_room": False}
-        ),
-        Stop(
-            stop_id="BLR",
-            code="BLRC",
-            name="Bangalore City Junction",
-            city="Bangalore",
-            state="Karnataka",
-            latitude=12.9716,
-            longitude=77.5946,
-            geom="SRID=4326;POINT(77.5946 12.9716)",
-            location_type=1,
-            safety_score=75.0,
-            is_major_junction=True,
-            facilities_json={"wifi": True, "food": True, "rest_room": True}
-        ),
-    ]
-    db_session.add_all(stops)
-    db_session.commit()
-    return {s.stop_id: s for s in stops}
+    """Create sample stops for testing (idempotent)"""
+    desired = {
+        "NDLS": dict(code="NDLS", name="New Delhi", city="Delhi", state="Delhi", latitude=28.6431, longitude=77.1064, geom="SRID=4326;POINT(77.1064 28.6431)", location_type=1, safety_score=85.0, is_major_junction=True, facilities_json={"wifi": True, "food": True, "rest_room": True}),
+        "MMCT": dict(code="MMCT", name="Mumbai Central", city="Mumbai", state="Maharashtra", latitude=18.9688, longitude=72.8194, geom="SRID=4326;POINT(72.8194 18.9688)", location_type=1, safety_score=78.0, is_major_junction=True, facilities_json={"wifi": True, "food": True, "rest_room": True}),
+        "PUNE": dict(code="PUNE", name="Pune Junction", city="Pune", state="Maharashtra", latitude=18.5286, longitude=73.8395, geom="SRID=4326;POINT(73.8395 18.5286)", location_type=1, safety_score=72.0, is_major_junction=False, facilities_json={"wifi": False, "food": True, "rest_room": False}),
+        "BLR": dict(code="BLRC", name="Bangalore City Junction", city="Bangalore", state="Karnataka", latitude=12.9716, longitude=77.5946, geom="SRID=4326;POINT(77.5946 12.9716)", location_type=1, safety_score=75.0, is_major_junction=True, facilities_json={"wifi": True, "food": True, "rest_room": True}),
+    }
+
+    # Query existing stops to avoid UNIQUE constraint errors when fixture is reused
+    existing = {s.stop_id: s for s in db_session.query(Stop).filter(Stop.stop_id.in_(list(desired.keys()))).all()}
+    to_create = []
+    for sid, props in desired.items():
+        if sid in existing:
+            continue
+        to_create.append(Stop(stop_id=sid, **props))
+
+    if to_create:
+        db_session.add_all(to_create)
+        db_session.commit()
+        # Refresh mapping with newly created rows
+        existing.update({s.stop_id: s for s in to_create})
+
+    # Return mapping accessible by both stop_id and station code (tests reference both)
+    result = {}
+    for s in existing.values():
+        result[s.stop_id] = s
+        if getattr(s, 'code', None):
+            result[s.code] = s
+
+    return result
 
 
 @pytest.fixture
 def sample_calendar(db_session):
-    """Create sample calendar for testing"""
+    """Create sample calendar for testing (idempotent)"""
+    existing = db_session.query(Calendar).filter_by(service_id="WKD_001").first()
+    if existing:
+        return existing
+
     calendar = Calendar(
         service_id="WKD_001",
         monday=True,
@@ -149,7 +125,11 @@ def sample_calendar(db_session):
 
 @pytest.fixture
 def sample_route(db_session, sample_agency):
-    """Create sample route for testing"""
+    """Create sample route for testing (idempotent)"""
+    existing = db_session.query(Route).filter_by(route_id="TRAIN_RAJ_001").first()
+    if existing:
+        return existing
+
     route = Route(
         route_id="TRAIN_RAJ_001",
         agency_id=sample_agency.id,

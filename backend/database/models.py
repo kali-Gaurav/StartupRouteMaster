@@ -56,6 +56,8 @@ class Agency(Base):
     name = Column(String(255), nullable=False)
     url = Column(String(255), nullable=False)
     timezone = Column(String(50), nullable=False)
+    # Optional language code (GTFS 'agency_lang')
+    language = Column(String(10), nullable=True)
 
     routes = relationship("Route", back_populates="agency")
 
@@ -101,6 +103,9 @@ class Route(Base):
     agency_id = Column(Integer, ForeignKey("agency.id"), nullable=False, index=True)
     short_name = Column(String(50))
     long_name = Column(String(255), nullable=False)
+    # Optional descriptive fields used by tests and UI
+    description = Column(String(512), nullable=True)
+    url = Column(String(255), nullable=True)
     route_type = Column(Integer, nullable=False, index=True) # 0: Tram, 1: Subway, 2: Rail, 3: Bus
 
     agency = relationship("Agency", back_populates="routes")

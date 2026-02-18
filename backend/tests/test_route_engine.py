@@ -303,7 +303,8 @@ class TestParetoPruning:
         route_engine._is_loaded = True
         return route_engine
 
-    def test_pareto_pruning_multiple_options(self):
+    @pytest.mark.asyncio
+    async def test_pareto_pruning_multiple_options(self):
         """Test that only Pareto-optimal routes are returned when multiple paths exist."""
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
@@ -509,7 +510,8 @@ class TestFeasibilityScoring:
         route_engine._is_loaded = True
         return route_engine
 
-    def test_safer_layover_preferred(self):
+    @pytest.mark.asyncio
+    async def test_safer_layover_preferred(self):
         re = self.setup_routeengine()
         # stations A, B (unsafe), D (safe), C
         re.stations_map = {
@@ -532,16 +534,27 @@ class TestFeasibilityScoring:
         re.segments_map = {"seg_ab": s1, "seg_bc": s2, "seg_ad": s3, "seg_dc": s4}
         re.route_segments = {"route_1": [s1, s2], "route_2": [s3, s4]}
 
-        results = re.search_routes("A", "C", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 2
-        # The route via D (safe layover) should have higher feasibility_score than via B (unsafe)
-        scores = {tuple(seg['from'] for seg in r['segments']): r['feasibility_score'] for r in results}
+
+        # Treat `score` on the returned Route dataclass as the feasibility score
+        scores = {}
+        for r in results:
+            # build a human-readable path signature from segment departure station names (if available)
+            path_signature = tuple(
+                re.stations_map.get(seg.departure_station, {}).get('name') if hasattr(seg, 'departure_station') else seg.get('from')
+                for seg in r.segments
+            )
+            scores[path_signature] = getattr(r, 'score', None)
+
         route_via_b = scores.get(("A", "B"))
         route_via_d = scores.get(("A", "D"))
         assert route_via_d is not None and route_via_b is not None
         assert route_via_d > route_via_b
 
-    def test_night_layover_penalized(self):
+    @pytest.mark.asyncio
+    async def test_night_layover_penalized(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A", "safety_score": 60}, "S2": {"name": "B", "safety_score": 60}, "S3": {"name": "C", "safety_score": 60}}
         re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
@@ -557,12 +570,22 @@ class TestFeasibilityScoring:
         re.segments_map = {"s1": s1, "s2": s2, "s3": s3, "s4": s4}
         re.route_segments = {"route_day": [s1, s2], "route_night": [s3, s4]}
 
-        results = re.search_routes("A", "C", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 2
-        # find feasibility scores
-        scores = [r['feasibility_score'] for r in results]
+
+        # Treat `score` on the returned Route dataclass as the feasibility score
+        scores = [getattr(r, 'score', None) for r in results]
+
         # night route must have strictly lower feasibility score due to night-layover penalty
-        night_scores = [r['feasibility_score'] for r in results if any(seg['departure_time']=="22:30" or seg['arrival_time']=="23:30" for seg in r['segments'])]
-        day_scores = [r['feasibility_score'] for r in results if any(seg['departure_time']=="08:00" for seg in r['segments'])]
+        night_scores = [r.score for r in results if any(
+            (hasattr(seg, 'departure_time') and seg.departure_time.strftime('%H:%M') == '22:30') or
+            (hasattr(seg, 'arrival_time') and seg.arrival_time.strftime('%H:%M') == '23:30')
+            for seg in r.segments
+        )]
+        day_scores = [r.score for r in results if any(
+            (hasattr(seg, 'departure_time') and seg.departure_time.strftime('%H:%M') == '08:00')
+            for seg in r.segments
+        )]
         assert night_scores and day_scores
         assert max(day_scores) > max(night_scores)
