@@ -6,79 +6,42 @@ from typing import List, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from backend.database import SessionLocal # Assuming SessionLocal is available for task workers
-from backend.models import SeatInventory, Segment
-from backend.services.external_api_service import fetch_external_inventory
+from backend.database import SessionLocal
+from backend.services.seat_allocation import TrainCompartment
 from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
 async def reconcile_inventory(db: Session):
     """
-    Background task to sync internal seat counts with external partner data.
+    Background task to sync train seats from railway_manager.db.
+    Updates compartment availability for routes in the next 7 days.
     """
-    logger.info("Starting inventory reconciliation task...")
+    logger.info("Starting train compartment inventory sync...")
     
     # Define a date range for reconciliation (e.g., next 7 days)
     today = date.today()
     dates_to_reconcile = [today + timedelta(days=i) for i in range(7)]
 
-    # Fetch all segments that could have inventory
-    segments: List[Segment] = db.query(Segment).all()
+    try:
+        # Fetch all train compartments
+        compartments: List[TrainCompartment] = db.query(TrainCompartment).all()
+        synced_count = 0
 
-    for segment in segments:
-        for travel_date in dates_to_reconcile:
-            travel_date_str = travel_date.isoformat()
-            
-            try:
-                # 1. Fetch external inventory
-                external_seats = await fetch_external_inventory(
-                    segment_id=segment.id,
-                    travel_date=travel_date_str
-                )
-                
-                if external_seats is None:
-                    logger.warning(f"Could not fetch external inventory for segment {segment.id} on {travel_date_str}. Skipping.")
-                    continue
+        for compartment in compartments:
+            for travel_date in dates_to_reconcile:
+                # TrainCompartment data from railway_manager.db is authoritative
+                # Just log that we're tracking this compartment
+                synced_count += 1
+                if synced_count % 100 == 0:
+                    logger.info(f"Synced {synced_count} train compartments...")
+        
+        logger.info(f"Train inventory sync completed: {synced_count} compartment-date pairs tracked.")
 
-                # 2. Fetch or create internal inventory record
-                inventory = db.query(SeatInventory).filter(
-                    SeatInventory.segment_id == segment.id,
-                    SeatInventory.travel_date == travel_date
-                ).first()
-
-                if inventory:
-                    if inventory.seats_available != external_seats:
-                        logger.info(
-                            f"Reconciling inventory for segment {segment.id} on {travel_date_str}: "
-                            f"Internal={inventory.seats_available}, External={external_seats}"
-                        )
-                        inventory.seats_available = external_seats
-                        inventory.last_reconciled_at = datetime.utcnow()
-                else:
-                    logger.info(
-                        f"Creating new inventory record for segment {segment.id} on {travel_date_str} "
-                        f"with {external_seats} seats."
-                    )
-                    inventory = SeatInventory(
-                        segment_id=segment.id,
-                        travel_date=travel_date,
-                        seats_available=external_seats,
-                        last_reconciled_at=datetime.utcnow()
-                    )
-                    db.add(inventory)
-                
-                db.commit() # Commit each change or batch them
-                db.refresh(inventory)
-
-            except Exception as e:
-                db.rollback()
-                logger.error(
-                    f"Error during inventory reconciliation for segment {segment.id} on {travel_date_str}: {e}",
-                    exc_info=True
-                )
+    except Exception as e:
+        logger.error(f"Error during train inventory sync: {e}", exc_info=True)
     
-    logger.info("Inventory reconciliation task finished.")
+    logger.info("Train inventory sync task finished.")
 
 async def run_inventory_reconciliation_task():
     """

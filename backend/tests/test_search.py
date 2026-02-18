@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from backend.models import Base, Station, Segment
-from backend.services import RouteEngine
+from backend.core.route_engine import RouteEngine
 
 
 @pytest.fixture
@@ -58,17 +58,6 @@ def sample_segments(test_db, sample_stations):
             duration_minutes=720,
             cost=450.0,
             operator="Konkan Kanya Express",
-            operating_days="1111111",
-        ),
-        Segment(
-            source_station_id=sample_stations[0].id,
-            dest_station_id=sample_stations[1].id,
-            transport_mode="Flight",
-            departure_time="09:00",
-            arrival_time="11:00",
-            duration_minutes=120,
-            cost=3500.0,
-            operator="IndiGo",
             operating_days="1111111",
         ),
     ]

@@ -119,9 +119,27 @@ async def init_db():
                 # Log and continue; creating the extension may require elevated DB privileges
                 logger.warning(f"Could not create pg_trgm extension: {e}")
 
-        # Create all tables and indexes
-        Base.metadata.create_all(bind=engine_write)
-        logger.info("Database tables created successfully on primary engine.")
+        # Create all tables and indexes. 
+        # Using a safer approach for existing databases with pre-existing indexes.
+        try:
+            if engine_write.dialect.name == "sqlite":
+                # For SQLite, we might not have SpatiaLite, so create_all might fail
+                # on geometry columns. We'll try to catch that specifically.
+                try:
+                    Base.metadata.create_all(bind=engine_write)
+                except Exception as e:
+                    if "RecoverGeometryColumn" in str(e):
+                        logger.warning("SpatiaLite functions not found. Skipping full schema creation. Ensure database exists.")
+                    else:
+                        raise e
+            else:
+                Base.metadata.create_all(bind=engine_write)
+            logger.info("Database tables created/verified successfully on primary engine.")
+        except Exception as sqlalchemy_error:
+            if "already exists" in str(sqlalchemy_error).lower():
+                logger.info("Some database objects already exist. Continuing as schema is partially or fully initialized.")
+            else:
+                raise sqlalchemy_error
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise

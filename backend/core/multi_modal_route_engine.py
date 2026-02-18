@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 class MultiModalRouteEngine:
     """
-    Multi-modal RAPTOR-based routing engine for GTFS transit data.
-    Supports transfers between different transport modes (tram, subway, rail, bus).
+    RAPTOR-based routing engine for GTFS transit data, specialized for railway networks.
+    Supports transfers between different train services.
     Features connecting journeys, circular trips, multi-city booking, and fare calculation.
     """
 
@@ -294,8 +294,8 @@ class MultiModalRouteEngine:
     def _multi_modal_raptor(self, source_stop_id: int, dest_stop_id: int, travel_date: date,
                            max_transfers: int = MAX_TRANSFERS) -> List[Dict]:
         """
-        Multi-modal RAPTOR algorithm implementation.
-        Returns list of journey options with transfers between modes.
+        RAPTOR algorithm implementation.
+        Returns list of journey options with transfers.
         """
         if source_stop_id == dest_stop_id:
             return []
@@ -474,12 +474,14 @@ class MultiModalRouteEngine:
                         'mode': self._route_type_to_mode(route_info['route_type']),
                         'from_stop': self.stops_map[current_st['stop_id']]['name'],
                         'to_stop': self.stops_map[next_st['stop_id']]['name'],
+                        'from_stop_id': current_st['stop_id'],
+                        'to_stop_id': next_st['stop_id'],
                         'departure_time': self._minutes_to_time(dep_time),
                         'arrival_time': self._minutes_to_time(arr_time),
                         'duration_minutes': duration,
                         'cost': cost,
                         'route_name': route_info['long_name'],
-                        'trip_id': trip_info['trip_id']
+                        'trip_id': trip_id  # This is the internal PK
                     })
                     total_duration += duration
 
@@ -500,17 +502,14 @@ class MultiModalRouteEngine:
             return None
 
     def _route_type_to_mode(self, route_type: int) -> str:
-        """Convert GTFS route type to mode string."""
+        """Convert GTFS route type to mode string (Trains only)."""
         mapping = {
-            0: 'tram',
-            1: 'subway',
-            2: 'rail',
-            3: 'bus'
+            2: 'rail'
         }
-        return mapping.get(route_type, 'unknown')
+        return mapping.get(route_type, 'rail')  # Default to rail for this system
 
     def _compute_feasibility_score(self, *, total_time_minutes: float, total_cost: float, safety_score: float, transfers: int, layover_penalty: float = 0.0) -> float:
-        """Compute feasibility score for connecting / multimodal journeys.
+        """Compute feasibility score for connecting journeys.
         Keeps the same weighting strategy as the main RouteEngine.
         """
         wt = getattr(Config, 'FEASIBILITY_WEIGHT_TIME', 1.0)
@@ -859,24 +858,19 @@ class MultiModalRouteEngine:
     def calculate_fare_with_concessions(self, journey: Dict, passenger_type: str = 'adult',
                                       concessions: List[str] = None) -> Dict:
         """
-        Calculate fare with mode-specific pricing and concessions.
+        Calculate fare with passenger-specific pricing and concessions.
         passenger_type: 'adult', 'child', 'senior', 'student'
         concessions: List of applicable concessions
         """
         base_cost = journey['total_cost']
-        mode_multipliers = {
-            'tram': 1.0,
-            'bus': 1.0,
-            'subway': 1.2,
-            'rail': 1.5
-        }
+        
+        # In a trains-only system, we use a single multiplier for rail or 1.0
+        rail_multiplier = 1.0
 
-        # Apply mode-specific pricing
+        # Apply pricing
         adjusted_cost = 0
         for segment in journey['segments']:
-            mode = segment['mode']
-            multiplier = mode_multipliers.get(mode, 1.0)
-            adjusted_cost += segment['cost'] * multiplier
+            adjusted_cost += segment['cost'] * rail_multiplier
 
         # Apply passenger type discounts
         passenger_discounts = {
@@ -906,9 +900,7 @@ class MultiModalRouteEngine:
             'passenger_type': passenger_type,
             'concessions_applied': concessions or [],
             'mode_breakdown': {
-                mode: sum(s['cost'] * mode_multipliers.get(s['mode'], 1.0)
-                         for s in journey['segments'] if s['mode'] == mode)
-                for mode in set(s['mode'] for s in journey['segments'])
+                'rail': adjusted_cost
             }
         }
 

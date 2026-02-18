@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from unittest.mock import Mock, patch
 
@@ -26,22 +26,19 @@ class TestMultiModalRouteEngine:
         engine.stops_map = {
             1: {'stop_id': 'S1', 'name': 'Central Station', 'city': 'Mumbai', 'lat': 19.0760, 'lon': 72.8777},
             2: {'stop_id': 'S2', 'name': 'Airport', 'city': 'Mumbai', 'lat': 19.0896, 'lon': 72.8656},
-            3: {'stop_id': 'S3', 'name': 'Delhi Station', 'city': 'Delhi', 'lat': 28.6139, 'lon': 77.2090},
-            4: {'stop_id': 'S4', 'name': 'Bus Terminal', 'city': 'Delhi', 'lat': 28.6139, 'lon': 77.2090}
+            3: {'stop_id': 'S3', 'name': 'Delhi Station', 'city': 'Delhi', 'lat': 28.6139, 'lon': 77.2090}
         }
 
         # Mock routes
         engine.routes_map = {
             1: {'route_id': 'R1', 'agency_id': 1, 'short_name': 'Express', 'long_name': 'Mumbai-Delhi Express', 'route_type': 2},  # Rail
-            2: {'route_id': 'R2', 'agency_id': 1, 'short_name': 'Metro', 'long_name': 'Mumbai Metro', 'route_type': 1},  # Subway
-            3: {'route_id': 'R3', 'agency_id': 2, 'short_name': 'Bus', 'long_name': 'Mumbai-Delhi Bus', 'route_type': 3}  # Bus
+            2: {'route_id': 'R2', 'agency_id': 1, 'short_name': 'Metro', 'long_name': 'Mumbai Metro', 'route_type': 1}  # Subway
         }
 
         # Mock trips
         engine.trips_map = {
             1: {'trip_id': 'T1', 'route_id': 1, 'service_id': 1, 'headsign': 'Delhi', 'direction_id': 0},
-            2: {'trip_id': 'T2', 'route_id': 2, 'service_id': 1, 'headsign': 'Airport', 'direction_id': 0},
-            3: {'trip_id': 'T3', 'route_id': 3, 'service_id': 1, 'headsign': 'Delhi', 'direction_id': 0}
+            2: {'trip_id': 'T2', 'route_id': 2, 'service_id': 1, 'headsign': 'Airport', 'direction_id': 0}
         }
 
         # Mock stop times
@@ -53,10 +50,6 @@ class TestMultiModalRouteEngine:
             2: [  # Metro trip
                 {'stop_id': 1, 'arrival_time': '07:00:00', 'departure_time': '07:02:00', 'stop_sequence': 1, 'cost': 0.0},
                 {'stop_id': 2, 'arrival_time': '07:30:00', 'departure_time': '07:32:00', 'stop_sequence': 2, 'cost': 50.0}
-            ],
-            3: [  # Bus trip
-                {'stop_id': 1, 'arrival_time': '08:00:00', 'departure_time': '08:05:00', 'stop_sequence': 1, 'cost': 0.0},
-                {'stop_id': 4, 'arrival_time': '16:00:00', 'departure_time': '16:05:00', 'stop_sequence': 2, 'cost': 300.0}
             ]
         }
 
@@ -171,7 +164,7 @@ class TestMultiModalRouteEngine:
         journey = {
             'segments': [
                 {'mode': 'rail', 'cost': 500.0},
-                {'mode': 'bus', 'cost': 300.0}
+                {'mode': 'rail', 'cost': 300.0}
             ],
             'total_cost': 800.0
         }

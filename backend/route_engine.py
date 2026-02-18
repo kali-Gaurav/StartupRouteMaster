@@ -861,12 +861,14 @@ class RouteEngine:
 
             # Deserialize transfers
             for transfer_data in route_data.get('transfers', []):
-                transfer = TransferInfo(
+                transfer = TransferConnection(
                     station_id=transfer_data['station_id'],
                     arrival_time=datetime.fromisoformat(transfer_data['arrival_time']),
                     departure_time=datetime.fromisoformat(transfer_data['departure_time']),
                     duration_minutes=transfer_data['duration_minutes'],
-                    station_name=transfer_data.get('station_name', '')
+                    station_name=transfer_data.get('station_name', ''),
+                    facilities_score=0.0,
+                    safety_score=0.0
                 )
                 route.add_transfer(transfer)
 

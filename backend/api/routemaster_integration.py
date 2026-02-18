@@ -63,7 +63,7 @@ class TripDataSchema(BaseModel):
     destination_code: str = Field(..., description="Destination station code")
     stops: List[StopTimeSchema] = Field(..., description="List of stops")
     total_seats: int = Field(..., ge=50, le=2000)
-    route_type: str = Field("TRAIN", pattern="^(TRAIN|BUS|FLIGHT)$")
+    route_type: str = Field("TRAIN", pattern="^TRAIN$")
     service_dates: List[str] = Field(..., description="Dates in YYYY-MM-DD")
 
 

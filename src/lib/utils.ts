@@ -28,27 +28,25 @@ export const getSafeRedirectUrl = (path: string = "/"): string => {
   return `${base}${safePath}`;
 };
 
-/** Backend root-level paths (no /api prefix). Backend mounts these at root (app.py or api/main). */
-const ROOT_PATHS = ["/routes", "/fares", "/stations", "/trains", "/chat", "/sos", "/health", "/metrics", "/stats"];
-const isRootPath = (p: string) => {
-  const pathOnly = p.split("?")[0];
-  return ROOT_PATHS.some((r) => pathOnly === r || pathOnly.startsWith(r + "/"));
-};
-
 /**
  * Get the Railway Backend API base URL (backend FastAPI).
- * Path: /chat, /health (root) or /user/123/stats (becomes /api/user/...).
  * Development: http://localhost:8000 + path.
  * Production: VITE_RAILWAY_API_URL + path, or /api + path for API routes when same-origin.
  */
 export const getRailwayApiUrl = (path: string): string => {
   const p = path.startsWith("/") ? path : `/${path}`;
-  const useApiPrefix = !p.startsWith("/api") && !isRootPath(p);
+  // Ensure /api prefix if not already present, except for absolute URLs
+  const useApiPrefix = !p.startsWith("/api") && !p.startsWith("http");
   const apiPath = useApiPrefix ? `/api${p}` : p;
+  
   const base = import.meta.env.VITE_RAILWAY_API_URL;
-  if (base) return base.replace(/\/$/, "") + (base.includes("/api") ? p : apiPath);
-  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-    return `http://localhost:8000${useApiPrefix ? `/api${p}` : p}`;
+  if (base) {
+    return base.replace(/\/$/, "") + (base.includes("/api") ? p : apiPath);
   }
+  
+  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return `http://localhost:8000${apiPath}`;
+  }
+  
   return apiPath;
 };

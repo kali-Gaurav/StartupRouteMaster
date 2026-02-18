@@ -501,5 +501,4 @@ async def get_cached_ml_features(feature_key: str, compute_func, ttl_hours: int 
     # Cache features
     await multi_layer_cache.set_ml_features(feature_key, features, ttl_hours)
 
-    return features</content>
-<parameter name="filePath">c:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\multi_layer_cache.py
+    return features

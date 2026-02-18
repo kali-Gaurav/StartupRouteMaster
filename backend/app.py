@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from backend.database.config import Config
 from backend.database import init_db, close_db
 from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets
+from backend.booking_api import router as booking_router
 from backend.utils.limiter import limiter
 
 # FastAPI-Cache
@@ -20,6 +21,7 @@ import redis.asyncio as aioredis
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from backend.core.route_engine import route_engine
+from backend.core.multi_modal_route_engine import multi_modal_route_engine
 from backend.database import SessionLocal
 from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
 
@@ -80,6 +82,7 @@ app.include_router(status.router)
 app.include_router(sos.router)
 app.include_router(flow.router)
 app.include_router(websockets.router)
+app.include_router(booking_router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
@@ -109,7 +112,7 @@ async def startup():
             async def _warmup():
                 db_w = _SessionLocal()
                 try:
-                    route_engine.load_graph_from_db(db_w)
+                    multi_modal_route_engine.load_graph_from_db(db_w)
                 finally:
                     db_w.close()
             import asyncio
@@ -118,7 +121,7 @@ async def startup():
         else:
             db = _SessionLocal()
             try:
-                route_engine.load_graph_from_db(db)
+                multi_modal_route_engine.load_graph_from_db(db)
             finally:
                 db.close()
 

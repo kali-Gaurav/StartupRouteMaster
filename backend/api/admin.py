@@ -155,9 +155,9 @@ async def reload_route_engine_graph(
     if token != Config.ADMIN_API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
-        from backend.services.route_engine import route_engine
-        route_engine.load_graph_from_db(db)
-        return {"status": "success", "message": "Route engine graph reloaded."}
+        from backend.core.multi_modal_route_engine import multi_modal_route_engine
+        multi_modal_route_engine.load_graph_from_db(db)
+        return {"status": "success", "message": "Multi-modal route engine graph reloaded."}
     except Exception as e:
         logger.error(f"Failed to reload route engine graph: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reload graph: {e}")

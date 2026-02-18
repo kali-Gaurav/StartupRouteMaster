@@ -18,17 +18,9 @@ import { ackFlow } from "@/api/flow";
 import { cn } from "@/lib/utils";
 import { toast, Toast } from "@/hooks/use-toast";
 import { logEvent, logPerf } from "@/lib/observability";
-import { RouteSourceToggle, RouteSource } from "@/components/RouteSourceToggle";
-
-const DAYS_OF_WEEK = [
-  { key: "Mon", label: "Monday" },
-  { key: "Tue", label: "Tuesday" },
-  { key: "Wed", label: "Wednesday" },
-  { key: "Thu", label: "Thursday" },
-  { key: "Fri", label: "Friday" },
-  { key: "Sat", label: "Saturday" },
-  { key: "Sun", label: "Sunday" },
-];
+import { RouteSourceToggle, type RouteSource } from "@/components/RouteSourceToggle";
+import { isRouteUnlocked } from "@/lib/paymentApi";
+import { useAuth } from "@/context/AuthContext";
 
 const Index = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -68,6 +60,7 @@ const Index = () => {
     openUnlockPayment, // Get openUnlockPayment from context
     lastUnlockedRouteId, // Get lastUnlockedRouteId from context
   } = useBookingFlowContext();
+  const { token } = useAuth();
 
   useEffect(() => {
     getStatsRailway()
@@ -81,6 +74,37 @@ const Index = () => {
       setUnlockedRouteIds(prev => new Set(prev).add(lastUnlockedRouteId));
     }
   }, [lastUnlockedRouteId]);
+
+  // When user logs in (token becomes available) re-check unlocked status for visible routes
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        if (!token || allRoutes.length === 0) return;
+        const toCheck = allRoutes.filter((r) => !unlockedRouteIds.has(r.id));
+        if (toCheck.length === 0) return;
+
+        const checks = await Promise.all(
+          toCheck.map((r) => isRouteUnlocked(r.id).catch(() => ({ is_unlocked: false })))
+        );
+        if (!mounted) return;
+        const newlyUnlocked = new Set<string>();
+        checks.forEach((res, idx) => {
+          if (res?.is_unlocked) newlyUnlocked.add(toCheck[idx].id);
+        });
+        if (newlyUnlocked.size > 0) {
+          setUnlockedRouteIds((prev) => {
+            const merged = new Set(prev);
+            for (const id of newlyUnlocked) merged.add(id);
+            return merged;
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to reconcile unlocked routes after login", e);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [token]);
 
   const handleUnlockRoute = useCallback(async (route: Route) => {
     if (!origin || !destination || !travelDate) {
@@ -262,6 +286,31 @@ const Index = () => {
       const allResults = mapBackendRoutesToRoutes(data, origCode, destCode);
       setOptimalRoutes(allResults.slice(0, 10));
       setAllRoutes(allResults);
+
+      // If user is authenticated, check which routes are already unlocked server-side
+      (async () => {
+        try {
+          if (allResults.length > 0 && token) {
+            const checks = await Promise.all(
+              allResults.map((r) => isRouteUnlocked(r.id).catch(() => ({ is_unlocked: false })))
+            );
+            const unlocked = new Set<string>();
+            checks.forEach((res, idx) => {
+              if (res?.is_unlocked) unlocked.add(allResults[idx].id);
+            });
+            if (unlocked.size > 0) {
+              setUnlockedRouteIds((prev) => {
+                const merged = new Set(prev);
+                for (const id of unlocked) merged.add(id);
+                return merged;
+              });
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to fetch unlocked routes:", e);
+        }
+      })();
+
       setViewMode("optimal");
       setDisplayedAlternatives(5);
       setSearchError(null);

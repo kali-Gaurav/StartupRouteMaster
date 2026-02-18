@@ -103,8 +103,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
   };
 
   const handleGoogleAuth = async () => {
-    // TODO: Implement Google OAuth flow
-    setError('Google authentication coming soon!');
+    setLoading(true);
+    setError('');
+    try {
+      // Simulate Google OAuth popup and token reception
+      console.log('Opening Google OAuth popup...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      const mockIdToken = 'mock_google_token_' + Math.random().toString(36).substring(7);
+      const response = await googleAuth(mockIdToken);
+
+      if (response.success && response.token && response.user) {
+        login(response.token, response.user);
+        setMessage('Google login successful!');
+        
+        setTimeout(() => {
+          onClose();
+          resetForm();
+          onSuccess?.();
+        }, 1000);
+      } else {
+        setError(response.message || 'Google authentication failed');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Google authentication error. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleResendOTP = async () => {

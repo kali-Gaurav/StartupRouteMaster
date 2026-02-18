@@ -15,7 +15,7 @@ from sqlalchemy import (
     Enum, Numeric
 )
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import enum
 
@@ -113,7 +113,7 @@ class Seat(Base):
 
     # Relationships
     coach = relationship("Coach", back_populates="seats")
-    inventory_items = relationship("SeatInventory", back_populates="seat", cascade="all, delete-orphan")
+    # inventory_items = relationship("CoachSeatInventory", back_populates="seat", cascade="all, delete-orphan")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -121,7 +121,7 @@ class Seat(Base):
         return f"<Seat(coach={self.coach_id}, seat={self.seat_number}, type={self.seat_type.value})>"
 
 
-class SeatInventory(Base):
+class CoachSeatInventory(Base):
     """Seat inventory for specific train segments and dates"""
     __tablename__ = "seat_inventory"
     __table_args__ = (
@@ -129,6 +129,7 @@ class SeatInventory(Base):
         Index("idx_seat_inventory_trip_date", "trip_id", "date"),
         Index("idx_seat_inventory_segment", "segment_from_stop_id", "segment_to_stop_id"),
         Index("idx_seat_inventory_quota", "quota_type"),
+        {"extend_existing": True}
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -152,7 +153,7 @@ class SeatInventory(Base):
     trip = relationship("Trip")
     segment_from_stop = relationship("Stop", foreign_keys=[segment_from_stop_id])
     segment_to_stop = relationship("Stop", foreign_keys=[segment_to_stop_id])
-    seat = relationship("Seat", back_populates="inventory_items", uselist=False)
+    # seat = relationship("Seat", back_populates="inventory_items", uselist=False)
 
     # Metadata
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -160,6 +161,8 @@ class SeatInventory(Base):
 
     def __repr__(self):
         return f"<SeatInventory(trip={self.trip_id}, segment={self.segment_from_stop_id}-{self.segment_to_stop_id}, quota={self.quota_type.value}, available={self.available_seats})>"
+
+SeatInventory = CoachSeatInventory
 
 
 class QuotaInventory(Base):
@@ -178,7 +181,7 @@ class QuotaInventory(Base):
     max_allocation = Column(Integer, nullable=False)  # Quota limit
 
     # Relationships
-    inventory = relationship("SeatInventory", backref="quota_allocations")
+    inventory = relationship("CoachSeatInventory", backref="quota_allocations")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -209,7 +212,7 @@ class WaitlistQueue(Base):
     expired_at = Column(DateTime, nullable=True)
 
     # Relationships
-    inventory = relationship("SeatInventory", backref="waitlist_entries")
+    inventory = relationship("CoachSeatInventory", backref="waitlist_entries")
     user = relationship("User", backref="waitlist_entries")
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -260,6 +263,7 @@ class PassengerDetail(Base):
     __tablename__ = "passenger_details"
     __table_args__ = (
         Index("idx_passenger_details_pnr", "pnr_id"),
+        {"extend_existing": True}
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))

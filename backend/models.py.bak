@@ -19,7 +19,7 @@ from datetime import datetime
 import uuid
 from geoalchemy2 import Geometry, func
 
-from .session import Base
+from backend.database import Base
 
 
 # ==============================================================================
@@ -75,7 +75,7 @@ class Stop(Base):
     state = Column(String(255))
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
+    geom = Column(Geometry("POINT", srid=4326), nullable=False)
     location_type = Column(Integer, default=0) # 0 for stop, 1 for station
     parent_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
     
@@ -154,7 +154,6 @@ class Trip(Base):
     route = relationship("Route", back_populates="trips")
     service = relationship("Calendar", back_populates="trips")
     stop_times = relationship("StopTime", back_populates="trip", cascade="all, delete-orphan")
-    coaches = relationship("Coach", back_populates="train", cascade="all, delete-orphan")
     
 class StopTime(Base):
     """The arrival and departure of a trip at a specific stop."""
@@ -257,7 +256,6 @@ class PassengerDetails(Base):
     __tablename__ = "passenger_details"
     __table_args__ = (
         Index("idx_passenger_booking", "booking_id"),
-        {"extend_existing": True}
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -330,7 +328,6 @@ class Disruption(Base):
 
 class SeatInventory(Base):
     __tablename__ = 'seat_inventory'
-    __table_args__ = {'extend_existing': True}
     # Unique constraint needs to be updated
     # __table_args__ = (
     #     UniqueConstraint('segment_id', 'travel_date', name='uq_segment_travel_date'),
@@ -453,7 +450,7 @@ class RouteShape(Base):
     shape_id = Column(String(100), nullable=False, unique=True)
     
     # Geometry path (line string)
-    geometry = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
+    geometry = Column(Geometry("LINESTRING", srid=4326), nullable=False)
     
     # Sequence for multiple segments
     sequence = Column(Integer, default=0, nullable=False)
@@ -600,7 +597,7 @@ class PrecalculatedRoute(Base):
 class Vehicle(Base):
     __tablename__ = "vehicles"
     __table_args__ = (
-        CheckConstraint("type IN ('train', 'bus', 'flight')", name="vehicle_type_check"),
+        CheckConstraint("type IN ('train')", name="vehicle_type_check"),
     )
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     vehicle_number = Column(String(50), nullable=False)
@@ -616,7 +613,7 @@ class Station(Base):
     city = Column(String(255), nullable=False, index=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
+    geom = Column(Geometry("POINT", srid=4326), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     segments_from = relationship("Segment", foreign_keys="Segment.source_station_id", back_populates="source_station")
     segments_to = relationship("Segment", foreign_keys="Segment.dest_station_id", back_populates="dest_station")
