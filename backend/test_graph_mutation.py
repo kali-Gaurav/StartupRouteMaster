@@ -16,15 +16,12 @@ import json
 import sys
 import os
 
-# Add backend to path
-sys.path.insert(0, os.path.dirname(__file__))
-
-from train_state_service import (
+from backend.train_state_service import (
     TrainState,
     TrainStateStore,
     GraphMutationEngine
 )
-from graph_mutation_service import (
+from backend.graph_mutation_service import (
     apply_delay,
     cancel_train,
     update_location,
@@ -35,7 +32,7 @@ from graph_mutation_service import (
     LocationUpdateRequest,
     OccupancyUpdateRequest
 )
-from route_engine import OptimizedRAPTOR
+from backend.route_engine import OptimizedRAPTOR
 
 
 class TestTrainState:
@@ -87,12 +84,12 @@ class TestTrainStateStore:
     """Test TrainStateStore functionality"""
 
     @pytest.fixture
-    async def store(self):
+    def store(self):
         """Create a test store instance"""
         store = TrainStateStore()
         # Mock Redis for testing
         store.redis = AsyncMock()
-        yield store
+        return store
 
     @pytest.mark.asyncio
     async def test_get_train_state_from_redis(self, store):
@@ -169,10 +166,10 @@ class TestGraphMutationEngine:
         return engine
 
     @pytest.fixture
-    async def mutation_engine(self, route_engine):
+    def mutation_engine(self, route_engine):
         """Create a test mutation engine"""
         engine = GraphMutationEngine(route_engine)
-        await engine.train_state_store.initialize()
+        # skip async initialization in tests and inject mocked redis
         engine.train_state_store.redis = AsyncMock()
         return engine
 
@@ -281,8 +278,8 @@ class TestIntegration:
         """Test complete mutation flow from API to graph"""
         # This would test the full integration
         # For now, just verify components can be imported
-        from train_state_service import TrainState, TrainStateStore
-        from graph_mutation_service import router
+        from backend.train_state_service import TrainState, TrainStateStore
+        from backend.graph_mutation_service import router
 
         assert TrainState is not None
         assert TrainStateStore is not None
@@ -290,7 +287,7 @@ class TestIntegration:
 
     def test_database_model(self):
         """Test that the TrainState model is properly defined"""
-        from models import TrainState as DBTrainState
+        from backend.models import TrainState as DBTrainState
 
         # Check that the model has the expected columns
         assert hasattr(DBTrainState, 'trip_id')

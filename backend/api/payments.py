@@ -686,3 +686,14 @@ async def report_payout(
     logger.info(f"Commission payout reported: {tracking_id} - {amount} {currency}")
 
     return {"success": True, "message": "Payout recorded successfully"}
+
+
+# -----------------------------------------------------------------------------
+# Utilities: unlocked routes
+# -----------------------------------------------------------------------------
+@router.get("/unlocked-routes")
+async def get_unlocked_routes_endpoint(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Return route IDs previously unlocked by the current user."""
+    unlock_service = UnlockService(db)
+    unlocked = unlock_service.get_unlocked_routes_by_user(str(current_user.id))
+    return {"routes": [u.route_id for u in unlocked]}

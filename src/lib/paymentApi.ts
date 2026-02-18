@@ -90,8 +90,12 @@ export const getBookingHistory = async (signal?: AbortSignal): Promise<any> => {
   return await response.json();
 };
 
-export const isRouteUnlocked = async (routeId: string): Promise<{ is_unlocked: boolean }> => {
-  const response = await fetchWithAuth(`/payments/is_route_unlocked?route_id=${routeId}`);
+
+/**
+ * Bulk: get all unlocked route IDs for the current authenticated user.
+ */
+export const getUnlockedRoutes = async (): Promise<{ routes: string[] }> => {
+  const response = await fetchWithAuth('/payments/unlocked-routes');
   return await response.json();
 };
 

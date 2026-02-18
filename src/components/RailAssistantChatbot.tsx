@@ -160,6 +160,23 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
 
         addMessage("assistant", reply.replace(/\*\*/g, ""), actions.length ? actions : undefined);
 
+        // Dispatch UI-friendly suggestion events when backend returns action buttons
+        if (Array.isArray(actions) && actions.length > 0) {
+          try {
+            const suggestions = actions.map((a: any) => {
+              // Try to parse route-like labels (e.g. "Delhi to Mumbai" or "NDLS - BCT")
+              const label: string = String(a.label ?? "");
+              const routeMatch = label.match(/\s*([^\-–—:→]+?)\s*(?:to|\-|→|\u2013|\u2014)\s*([^\-–—:→]+?)\s*$/i);
+              const fromName = routeMatch ? routeMatch[1].trim() : undefined;
+              const toName = routeMatch ? routeMatch[2].trim() : undefined;
+              return { label, type: a.type, value: a.value, fromName, toName };
+            });
+            window.dispatchEvent(new CustomEvent("rail-assistant-suggestions", { detail: { suggestions } }));
+          } catch (e) {
+            /* non-fatal */
+          }
+        }
+
         if (data.trigger_search && data.collected) {
           const triggered = await resolveAndTriggerSearch(data.collected, data.correlation_id);
           if (triggered) addMessage("assistant", "✓ Search done! Check the results above.", undefined);

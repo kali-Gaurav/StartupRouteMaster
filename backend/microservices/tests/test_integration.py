@@ -15,10 +15,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 # Import gRPC client manager
 from backend.microservices.common.grpc_clients import grpc_clients
 
-# Import proto messages
-from backend.microservices.route_service.src import route_pb2
-from backend.microservices.inventory_service.src import inventory_pb2
-from backend.microservices.booking_service.src import booking_pb2
+# Import proto messages (proto src dirs are added to sys.path by grpc_clients)
+import route_pb2
+import inventory_pb2
+import booking_pb2
 from google.protobuf.timestamp_pb2 import Timestamp
 
 

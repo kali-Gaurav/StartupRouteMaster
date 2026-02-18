@@ -60,6 +60,11 @@ class Config:
     EXTERNAL_API_TIMEOUT_MS = int(os.getenv("EXTERNAL_API_TIMEOUT_MS", "500")) # New: Timeout for external API calls
     SIMULATE_AVAILABILITY_CHECK_FAILURE_RATE = float(os.getenv("SIMULATE_AVAILABILITY_CHECK_FAILURE_RATE", "0.1")) # New: Simulate failure for availability checks
 
+    # NTES / GPS external source configuration (used by graph mutation service)
+    NTES_API_KEY = os.getenv("NTES_API_KEY", "")
+    NTES_BASE_URL = os.getenv("NTES_BASE_URL", "")
+    GPS_API_ENDPOINT = os.getenv("GPS_API_ENDPOINT", "")
+
     # Inventory Reconciliation
     INVENTORY_RECONCILIATION_INTERVAL_SECONDS = int(os.getenv("INVENTORY_RECONCILIATION_INTERVAL_SECONDS", "900")) # 15 minutes
     PAYMENT_RECONCILIATION_INTERVAL_MINUTES = int(os.getenv("PAYMENT_RECONCILIATION_INTERVAL_MINUTES", "15"))

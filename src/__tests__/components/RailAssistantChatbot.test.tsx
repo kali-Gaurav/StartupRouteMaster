@@ -14,3 +14,29 @@ test('renders Rail Assistant Chatbot', () => {
   const el = screen.queryByText(/chatbot|search|rail/i);
   expect(el || document.body).toBeTruthy();
 });
+
+test('dispatches suggestion event when backend returns actions', async () => {
+  const mockResponse = {
+    ok: true,
+    json: async () => ({ reply: 'Here are suggestions', actions: [{ label: 'Delhi to Mumbai', type: 'intent', value: 'search' }] }),
+  } as any;
+  // @ts-ignore
+  const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(mockResponse);
+  const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+  render(<RailAssistantChatbot onSearchRequest={noop} onSortChange={noop} onNavigate={noop} />);
+
+  // Type into input and send
+  const input = screen.getByPlaceholderText(/Type or Ask Rail Assistant/i) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: 'show me trains' } });
+  const sendBtn = screen.getByRole('button', { name: /send/i }) || screen.getAllByRole('button').find(b => b.querySelector('svg'));
+  // Click send (use any available send button)
+  fireEvent.click(sendBtn as Element);
+
+  // Wait for async processing
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+  expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'rail-assistant-suggestions' }));
+
+  fetchSpy.mockRestore();
+  dispatchSpy.mockRestore();
+});

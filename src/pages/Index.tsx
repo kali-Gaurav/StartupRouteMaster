@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 import { toast, Toast } from "@/hooks/use-toast";
 import { logEvent, logPerf } from "@/lib/observability";
 import { RouteSourceToggle, type RouteSource } from "@/components/RouteSourceToggle";
-import { isRouteUnlocked } from "@/lib/paymentApi";
+import { getUnlockedRoutes } from "@/lib/paymentApi";
 import { useAuth } from "@/context/AuthContext";
 
 const Index = () => {
@@ -35,7 +35,7 @@ const Index = () => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isFromCache, setIsFromCache] = useState(false);
   const [routeSource, setRouteSource] = useState<RouteSource>("live"); // "live" or "cached"
-  const [dateWindow, setDateWindow] = useState(1); // ±N days around travel date
+  const [dateWindow] = useState(1); // ±N days around travel date
   const [sortBy, setSortBy] = useState<"duration" | "cost" | "score">("duration");
   /** Client-side sort preset for results (instant, no re-fetch). */
   const [sortPreset, setSortPreset] = useState<"duration" | "cost" | "reliable">("duration");
@@ -81,21 +81,14 @@ const Index = () => {
     (async () => {
       try {
         if (!token || allRoutes.length === 0) return;
-        const toCheck = allRoutes.filter((r) => !unlockedRouteIds.has(r.id));
-        if (toCheck.length === 0) return;
-
-        const checks = await Promise.all(
-          toCheck.map((r) => isRouteUnlocked(r.id).catch(() => ({ is_unlocked: false })))
-        );
+        const resp = await getUnlockedRoutes().catch(() => ({ routes: [] }));
         if (!mounted) return;
-        const newlyUnlocked = new Set<string>();
-        checks.forEach((res, idx) => {
-          if (res?.is_unlocked) newlyUnlocked.add(toCheck[idx].id);
-        });
-        if (newlyUnlocked.size > 0) {
+        const unlockedSet = new Set<string>(resp?.routes ?? []);
+        const newlyUnlocked = allRoutes.filter((r) => unlockedSet.has(r.id)).map((r) => r.id);
+        if (newlyUnlocked.length > 0) {
           setUnlockedRouteIds((prev) => {
             const merged = new Set(prev);
-            for (const id of newlyUnlocked) merged.add(id);
+            newlyUnlocked.forEach((id) => merged.add(id));
             return merged;
           });
         }
@@ -104,6 +97,25 @@ const Index = () => {
       }
     })();
     return () => { mounted = false; };
+  }, [token, allRoutes]);
+
+  // Consolidated helper: fetch bulk unlocked IDs and merge into visible route set
+  const reconcileUnlockedRoutes = useCallback(async (visibleRoutes: Route[]) => {
+    if (!token || visibleRoutes.length === 0) return;
+    try {
+      const resp = await getUnlockedRoutes().catch(() => ({ routes: [] }));
+      const unlockedSet = new Set<string>(resp?.routes ?? []);
+      const visibleUnlocked = visibleRoutes.filter((r) => unlockedSet.has(r.id)).map((r) => r.id);
+      if (visibleUnlocked.length > 0) {
+        setUnlockedRouteIds((prev) => {
+          const merged = new Set(prev);
+          visibleUnlocked.forEach((id) => merged.add(id));
+          return merged;
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to reconcile unlocked routes:", e);
+    }
   }, [token]);
 
   const handleUnlockRoute = useCallback(async (route: Route) => {
@@ -165,6 +177,19 @@ const Index = () => {
     correlationId?: string;
   } | null>(null);
 
+  // Suggestions emitted by Rail Assistant (chatbot) — shown as chips under the station inputs
+  const [chatSuggestions, setChatSuggestions] = useState<Array<{ label: string; type?: string; value?: string; fromName?: string; toName?: string }>>([]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { suggestions?: any[] };
+      if (!detail?.suggestions || !Array.isArray(detail.suggestions)) return;
+      setChatSuggestions(detail.suggestions.slice(0, 6));
+    };
+    window.addEventListener("rail-assistant-suggestions", handler as EventListener);
+    return () => window.removeEventListener("rail-assistant-suggestions", handler as EventListener);
+  }, []);
+
   useEffect(() => {
     const handler = (e: CustomEvent<{ fromCode: string; toCode: string; date?: string; correlationId?: string }>) => {
       runSearchFromCodes(e.detail.fromCode, e.detail.toCode, e.detail.date, e.detail.correlationId);
@@ -198,6 +223,15 @@ const Index = () => {
     const temp = origin;
     setOrigin(destination);
     setDestination(temp);
+  };
+
+  const handleSuggestionClick = (s: { label: string; fromName?: string; toName?: string }) => {
+    // Prefer parsed names if available; otherwise use the label and let runSearchFromCodes resolve it
+    const from = s.fromName ?? s.label.split(/\s+(?:to|\-|→)\s+/i)[0];
+    const to = s.toName ?? s.label.split(/\s+(?:to|\-|→)\s+/i)[1];
+    if (!from || !to) return;
+    setChatSuggestions([]);
+    runSearchFromCodes(from, to, undefined, undefined);
   };
 
   const handleSearch = async () => {
@@ -287,34 +321,15 @@ const Index = () => {
       setOptimalRoutes(allResults.slice(0, 10));
       setAllRoutes(allResults);
 
-      // If user is authenticated, check which routes are already unlocked server-side
-      (async () => {
-        try {
-          if (allResults.length > 0 && token) {
-            const checks = await Promise.all(
-              allResults.map((r) => isRouteUnlocked(r.id).catch(() => ({ is_unlocked: false })))
-            );
-            const unlocked = new Set<string>();
-            checks.forEach((res, idx) => {
-              if (res?.is_unlocked) unlocked.add(allResults[idx].id);
-            });
-            if (unlocked.size > 0) {
-              setUnlockedRouteIds((prev) => {
-                const merged = new Set(prev);
-                for (const id of unlocked) merged.add(id);
-                return merged;
-              });
-            }
-          }
-        } catch (e) {
-          console.warn("Failed to fetch unlocked routes:", e);
-        }
-      })();
+          // Reconcile unlocked routes in bulk (keeps network calls consolidated)
+      reconcileUnlockedRoutes(allResults);
 
       setViewMode("optimal");
       setDisplayedAlternatives(5);
       setSearchError(null);
-      setIsFromCache(routeSource === "cached"); // Mark as cached if using cached source
+      // In this code path we've already handled the `cached` early-return above,
+      // so here the active source is the live backend — mark not-from-cache.
+      setIsFromCache(false);
       if (flowCorrelationIdRef.current) {
         ackFlow(flowCorrelationIdRef.current, "ROUTE_RENDERED").finally(() => {
           flowCorrelationIdRef.current = null;
@@ -386,6 +401,8 @@ const Index = () => {
       }
     } finally {
       setIsSearching(false);
+      // Allow chatbot to trigger subsequent searches again
+      hasTriggeredChatbotSearch.current = false;
     }
   };
 
@@ -590,6 +607,22 @@ const Index = () => {
                 >
                   <ArrowLeftRight className="w-5 h-5" />
                 </button>
+
+                {/* Chatbot suggestions (if any) */}
+                {chatSuggestions.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="text-xs font-semibold text-muted-foreground mr-2 self-center">Suggestions from Assistant:</span>
+                    {chatSuggestions.map((s, i) => (
+                      <button
+                        key={`${s.label}-${i}`}
+                        onClick={() => handleSuggestionClick(s as any)}
+                        className="px-3 py-1.5 rounded-full text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="mb-6 px-6">

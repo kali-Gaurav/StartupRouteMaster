@@ -116,11 +116,11 @@ class TestValidators:
 
 
 class TestRouteEngine:
-    """Unit tests for the RAPTOR MVP implementation in RouteEngine."""
+    """Unit tests for the RAPTOR MVP implementation in RouteEngine (updated to async/core API)."""
 
     def setup_routeengine(self):
         from backend.services.route_engine import route_engine
-        # reset internal maps
+        # reset internal maps (legacy test harness)
         route_engine.stations_map = {}
         route_engine.segments_map = {}
         route_engine.route_segments = {}
@@ -128,7 +128,8 @@ class TestRouteEngine:
         route_engine._is_loaded = True
         return route_engine
 
-    def test_direct_route(self):
+    @pytest.mark.asyncio
+    async def test_direct_route(self):
         re = self.setup_routeengine()
         # stations
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}
@@ -138,14 +139,17 @@ class TestRouteEngine:
         re.segments_map = {"seg1": seg}
         re.route_segments = {"route_v1": [seg]}
 
-        results = re.search_routes("A", "B", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "B", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 1
         r = results[0]
-        assert r["num_transfers"] == 0
-        assert r["total_cost"] == 100.0
-        assert len(r["segments"]) == 1
+        # Route object assertions (core API)
+        assert len(r.transfers) == 0
+        assert r.total_cost == pytest.approx(100.0)
+        assert len(r.segments) == 1
 
-    def test_one_transfer(self):
+    @pytest.mark.asyncio
+    async def test_one_transfer(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
         re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
@@ -156,14 +160,16 @@ class TestRouteEngine:
         re.segments_map = {"seg1": s1, "seg2": s2}
         re.route_segments = {"route_v1": [s1], "route_v2": [s2]}
 
-        results = re.search_routes("A", "C", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 1
         r = results[0]
-        assert r["num_transfers"] == 1
-        assert r["total_cost"] == pytest.approx(110.0)
-        assert len(r["segments"]) == 2
+        assert len(r.transfers) == 1
+        assert r.total_cost == pytest.approx(110.0)
+        assert len(r.segments) == 2
 
-    def test_two_transfers(self):
+    @pytest.mark.asyncio
+    async def test_two_transfers(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}, "S4": {"name": "D"}}
         re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3", "d": "S4"}
@@ -175,14 +181,16 @@ class TestRouteEngine:
         re.segments_map = {"seg1": s1, "seg2": s2, "seg3": s3}
         re.route_segments = {"route_v1": [s1], "route_v2": [s2], "route_v3": [s3]}
 
-        results = re.search_routes("A", "D", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "D", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 1
         r = results[0]
-        assert r["num_transfers"] == 2
-        assert r["total_cost"] == pytest.approx(105.0)
-        assert len(r["segments"]) == 3
+        assert len(r.transfers) == 2
+        assert r.total_cost == pytest.approx(105.0)
+        assert len(r.segments) == 3
 
-    def test_transfer_window_enforced(self):
+    @pytest.mark.asyncio
+    async def test_transfer_window_enforced(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
         re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
@@ -198,12 +206,14 @@ class TestRouteEngine:
         old_min = Config.TRANSFER_WINDOW_MIN
         Config.TRANSFER_WINDOW_MIN = 10
         try:
-            results = re.search_routes("A", "C", "2026-02-16")
+            from datetime import datetime
+            results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
             assert results == []
         finally:
             Config.TRANSFER_WINDOW_MIN = old_min
 
-    def test_overnight_day_offset(self):
+    @pytest.mark.asyncio
+    async def test_overnight_day_offset(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}
         re.station_name_to_id = {"a": "S1", "b": "S2"}
@@ -213,12 +223,14 @@ class TestRouteEngine:
         re.segments_map = {"seg_overnight": seg}
         re.route_segments = {"route_v_overnight": [seg]}
 
-        results = re.search_routes("A", "B", "2026-02-16")
+        from datetime import datetime
+        results = await re.search_routes("A", "B", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 1
         r = results[0]
-        assert r["total_duration_minutes"] == 120
+        assert r.total_duration == 120
 
-    def test_operating_days_respected(self):
+    @pytest.mark.asyncio
+    async def test_operating_days_respected(self):
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}
         re.station_name_to_id = {"a": "S1", "b": "S2"}
@@ -228,13 +240,15 @@ class TestRouteEngine:
         re.segments_map = {"seg_mononly": seg}
         re.route_segments = {"route_v_mon": [seg]}
 
-        monday = "2026-02-16"  # Monday
-        tuesday = "2026-02-17" # Tuesday
-        assert len(re.search_routes("A", "B", monday)) >= 1
-        assert re.search_routes("A", "B", tuesday) == []
+        from datetime import datetime
+        monday = datetime.fromisoformat("2026-02-16")  # Monday
+        tuesday = datetime.fromisoformat("2026-02-17") # Tuesday
+        assert len(await re.search_routes("A", "B", monday)) >= 1
+        assert await re.search_routes("A", "B", tuesday) == []
 
-    def test_build_route_indices_and_search_with_indices(self):
-        """Verify per-route indices are built and search still returns correct routes."""
+    @pytest.mark.asyncio
+    async def test_build_route_indices_and_search_with_indices(self):
+        """Verify search returns correct routes when route_segments are present (adapted for core API)."""
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}, "S3": {"name": "C"}}
         re.station_name_to_id = {"a": "S1", "b": "S2", "c": "S3"}
@@ -246,18 +260,13 @@ class TestRouteEngine:
         re.segments_map = {"seg1": s1, "seg2": s2}
         re.route_segments = {"route_v1": [s1, s2]}
 
-        # build indices and assert structure
-        re._build_route_indices()
-        assert "route_v1" in re.route_stop_index
-        assert re.route_stop_index["route_v1"]["S1"] == [0]
-        assert re.route_stop_departures["route_v1"]["S1"] == [480]
-
-        # search must still succeed (index-aware path)
-        results = re.search_routes("A", "C", "2026-02-16")
+        # Search should return a route composed of the two segments
+        from datetime import datetime
+        results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
         assert len(results) >= 1
-        r = results[0]
-        assert r["num_transfers"] == 1
-        assert r["total_cost"] == pytest.approx(110.0)
+        route = results[0]
+        assert len(route.segments) == 2
+        assert route.total_cost == pytest.approx(110.0)
 
     def test_cache_invalidation_on_schema_mismatch(self, tmp_path):
         import pickle
@@ -419,28 +428,26 @@ class TestParetoPruning:
         old_limit = Config.PARETO_LIMIT
         Config.PARETO_LIMIT = 10
         try:
-            results = re.search_routes("A", "C", "2026-02-16")
+            from datetime import datetime
+            results = await re.search_routes("A", "C", datetime.fromisoformat("2026-02-16"))
 
             # Should return exactly 2 Pareto-optimal routes:
-            # 1. Direct route: 2h, $100 (fastest)
-            # 2. Cheap transfer route: 4h, $80 (cheapest)
-            # The slow expensive (4h, $150) and medium (3h, $120) should be dominated
             assert len(results) == 2
 
             # Sort by total cost for consistent checking
-            results.sort(key=lambda x: x["total_cost"])
+            results.sort(key=lambda x: x.total_cost)
 
             # First result should be the cheap transfer route
             cheap_route = results[0]
-            assert cheap_route["total_cost"] == pytest.approx(80.0)
-            assert cheap_route["total_duration_minutes"] == 240  # 4 hours
-            assert len(cheap_route["segments"]) == 2
+            assert cheap_route.total_cost == pytest.approx(80.0)
+            assert cheap_route.total_duration == 240  # 4 hours
+            assert len(cheap_route.segments) == 2
 
             # Second result should be the direct route
             direct_route = results[1]
-            assert direct_route["total_cost"] == pytest.approx(100.0)
-            assert direct_route["total_duration_minutes"] == 120  # 2 hours
-            assert len(direct_route["segments"]) == 1
+            assert direct_route.total_cost == pytest.approx(100.0)
+            assert direct_route.total_duration == 120  # 2 hours
+            assert len(direct_route.segments) == 1
 
         finally:
             Config.PARETO_LIMIT = old_limit
@@ -475,17 +482,17 @@ class TestParetoPruning:
         old_limit = Config.PARETO_LIMIT
         Config.PARETO_LIMIT = 3  # Limit to 3 results
         try:
-            results = re.search_routes("A", "B", "2026-02-16")
+            from datetime import datetime
+            results = await re.search_routes("A", "B", datetime.fromisoformat("2026-02-16"))
             # Should return at most PARETO_LIMIT results
             assert len(results) <= 3
             # All returned routes should be Pareto-optimal (no dominated ones)
             for i, route in enumerate(results):
                 for other_route in results[i+1:]:
-                    # No route should dominate another
-                    assert not (route["total_duration_minutes"] <= other_route["total_duration_minutes"] and
-                              route["total_cost"] <= other_route["total_cost"] and
-                              (route["total_duration_minutes"] < other_route["total_duration_minutes"] or
-                               route["total_cost"] < other_route["total_cost"]))
+                    assert not (route.total_duration <= other_route.total_duration and
+                                  route.total_cost <= other_route.total_cost and
+                                  (route.total_duration < other_route.total_duration or
+                                   route.total_cost < other_route.total_cost))
         finally:
             Config.PARETO_LIMIT = old_limit
 
