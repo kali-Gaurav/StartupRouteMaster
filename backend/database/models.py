@@ -78,7 +78,9 @@ class Stop(Base):
     state = Column(String(255))
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility    departure_buckets = relationship("StopDepartureBucket", back_populates="stop", cascade="all, delete-orphan")    location_type = Column(Integer, default=0) # 0 for stop, 1 for station
+    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
+    
+    location_type = Column(Integer, default=0) # 0 for stop, 1 for station
     parent_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
     
     # NEW FIELDS FOR ADVANCED FEATURES
@@ -93,6 +95,7 @@ class Stop(Base):
     child_stops = relationship("Stop", back_populates="parent_station")
     stop_times = relationship("StopTime", back_populates="stop")
     facilities = relationship("StationFacilities", back_populates="stop", uselist=False)
+    departure_buckets = relationship("StopDepartureBucket", back_populates="stop", cascade="all, delete-orphan")
 
 class Route(Base):
     """Represents a single transit route in the GTFS sense (e.g., 'Blue Line')."""
@@ -205,6 +208,7 @@ class Transfer(Base):
     route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=True)  # NEW: Optional specific route
     transfer_type = Column(Integer, nullable=False, default=0) # 0: Recommended, 1: Timed, 2: Minimum required
     min_transfer_time = Column(Integer, nullable=False) # In seconds
+    walking_time_minutes = Column(Integer, default=5, nullable=False) # Additional field for Phase 4
 
     from_stop = relationship("Stop", foreign_keys=[from_stop_id])
     to_stop = relationship("Stop", foreign_keys=[to_stop_id])
@@ -656,6 +660,32 @@ class Segment(Base):
     vehicle = relationship("Vehicle", back_populates="segments")
     trip = relationship("Trip", back_populates="segments", lazy='joined')
     # SeatInventory now references `stop_time_id`; remove direct Segment->SeatInventory relationship to avoid FK mismatch in tests
+
+class StationDeparture(Base):
+    """
+    Optimized station-centric departure table (Phase 1).
+    Explicitly stores departures for fast lookup without complex joins.
+    """
+    __tablename__ = "station_departures_indexed"
+    __table_args__ = (
+        Index("idx_station_dep_time", "station_id", "departure_time"),
+        Index("idx_station_dep_day", "station_id", "operating_days"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    station_id = Column(Integer, ForeignKey("stops.id"), nullable=False, index=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=False, index=True)
+    departure_time = Column(Time, nullable=False, index=True)
+    arrival_time_at_next = Column(Time, nullable=True)
+    next_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
+    operating_days = Column(String(7), nullable=False, default="1111111") # MTWTFSS
+    train_number = Column(String(50), nullable=True)
+    distance_to_next = Column(Float, nullable=True)
+
+    station = relationship("Stop", foreign_keys=[station_id])
+    next_station = relationship("Stop", foreign_keys=[next_station_id])
+    trip = relationship("Trip")
+
 
 class TimeIndexKey(Base):
     """Maps entity (trip/vehicle/segment) -> integer key used inside time-index bitsets."""

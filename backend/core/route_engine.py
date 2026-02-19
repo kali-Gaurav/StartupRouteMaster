@@ -2220,7 +2220,7 @@ def get_station_by_code(code: str) -> Optional[Stop]:
 
 
 
-    def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:z
+    def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:
         """
         Validate an API request using all RT-111 to RT-130 security checks.
         

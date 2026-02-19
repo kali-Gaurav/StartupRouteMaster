@@ -10,9 +10,8 @@ Phase 2 — Memory Graph + Snapshot System
 Phase 3 — Hybrid Hub-RAPTOR Routing
 Phase 4 — Transfer Intelligence Layer
 Phase 5 — Real-Time Mutation Engine
-Phase 6 — AI / ML Layer
-Phase 7 — National Distributed Architecture
-Phase 8 — Production Engineering Excellence
+Phase 6 — National Distributed Architecture
+Phase 7 — Production Engineering Excellence
 
 
 Each phase builds on previous.
@@ -333,56 +332,11 @@ IRCTC-level accuracy
 
 Passenger notifications
 
-🚀 PHASE 6 — AI / ML LAYER
-
-Now intelligence.
-
-Models to Build
-1. Route Ranking Model
-
-Predict which route user prefers.
-
-Model:
-
-LightGBM / XGBoost
 
 
-Features:
-
-Price
-
-Duration
-
-Transfers
-
-Reliability
-
-User history
-
-2. Delay Prediction Model
-
-Use:
-
-Temporal Graph Neural Network
 
 
-Predict delays before they happen.
-
-3. Demand Forecasting
-
-Predict busy routes.
-
-Helps caching.
-
-What You Achieve
-
-Personalized routing
-
-Better predictions
-
-Competitive advantage
-
-🚀 PHASE 7 — NATIONAL DISTRIBUTED ARCHITECTURE
+🚀 PHASE 6 — NATIONAL DISTRIBUTED ARCHITECTURE
 
 Now scale system.
 
@@ -415,7 +369,7 @@ Low latency nationwide
 
 Fault tolerance
 
-🚀 PHASE 8 — PRODUCTION ENGINEERING
+🚀 PHASE 7 — PRODUCTION ENGINEERING
 
 Now reliability.
 

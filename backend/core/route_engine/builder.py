@@ -15,11 +15,13 @@ from sqlalchemy.orm import joinedload, Session
 from ...database import SessionLocal
 from ...database.models import (
     Stop, Trip, StopTime, Route as GTFRoute,
-    Calendar, CalendarDate, Transfer, TimeIndexKey, StopDepartureBucket, Segment
+    Calendar, CalendarDate, Transfer, TimeIndexKey, StopDepartureBucket, Segment, StationDeparture
 )
 from ...utils.graph_utils import haversine_distance
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .data_structures import RouteSegment, TransferConnection
+from .regions import RegionManager
+from .snapshot_manager import SnapshotManager
 
 logger = logging.getLogger(__name__)
 
@@ -44,32 +46,21 @@ class GraphBuilder:
     Implements Phase 0 (Segment Table Population) and Phase 1 (Time-Series Indexing).
     """
 
-    def __init__(self, executor: Optional[ThreadPoolExecutor] = None):
+    def __init__(self, executor: Optional[ThreadPoolExecutor] = None, 
+                 snapshot_manager: Optional[SnapshotManager] = None):
         self.executor = executor or ThreadPoolExecutor(max_workers=4)
+        self.snapshot_manager = snapshot_manager or SnapshotManager()
 
     async def build_graph(self, date: datetime) -> TimeDependentGraph:
         """Build optimized time-dependent graph for the given date"""
-        graph = TimeDependentGraph()
-
         # Use thread pool for database operations
         loop = asyncio.get_event_loop()
-        db_graph = await loop.run_in_executor(
+        db_graph_data = await loop.run_in_executor(
             self.executor, self._build_graph_sync, date
         )
 
-        # Transfer data to graph
-        graph.departures_by_stop = db_graph['departures']
-        graph.arrivals_by_stop = db_graph['arrivals']
-        graph.trip_segments = db_graph['segments']
-        graph.transfer_graph = db_graph['transfers']
-        graph.stop_cache = db_graph['stops']
-
-        # Attach precomputed indexes (if present)
-        graph.route_patterns = db_graph.get('route_patterns', defaultdict(list))
-        graph.transfer_cache = db_graph.get('transfer_cache', {})
-
-        # Build stop_index for bitset operations
-        graph.build_stop_index()
+        # Create TimeDependentGraph instance
+        graph = TimeDependentGraph(snapshot=db_graph_data['snapshot_data'])
 
         # Load in-memory station/stop time-index (best-effort)
         try:
@@ -78,6 +69,9 @@ class GraphBuilder:
             logger.info("Loaded StationTimeIndex into graph.")
         except Exception as e:
             logger.debug("StationTimeIndex not available: %s", e)
+        
+        # Save the snapshot
+        self.snapshot_manager.save_snapshot(graph.snapshot)
 
         return graph
 
@@ -128,17 +122,35 @@ class GraphBuilder:
             except Exception:
                 populate_segments = False
 
+            # Check if we need to populate StationDeparture table (Phase 1)
+            try:
+                existing_station_deps = session.query(StationDeparture).count()
+                populate_station_deps = (existing_station_deps == 0)
+            except Exception:
+                populate_station_deps = False
+
             # Cache for time-index key ids to avoid DB churn
             _key_cache: Dict[int, int] = {}
             bucket_map: Dict[tuple, set] = {}
             
-            # Batch for new segments
+            # Batch for new segments and departures
             new_segments_batch = []
+            new_station_deps_batch = []
 
             # Process each trip
             for trip_id, trip_stop_times in trip_groups.items():
                 if len(trip_stop_times) < 2:
                     continue
+
+                # Get operating days for the trip
+                operating_days = "1111111"
+                try:
+                    cal = trip_stop_times[0].trip.service
+                    if cal:
+                        days = [cal.monday, cal.tuesday, cal.wednesday, cal.thursday, cal.friday, cal.saturday, cal.sunday]
+                        operating_days = "".join(["1" if d else "0" for d in days])
+                except Exception:
+                    pass
 
                 # Sort by sequence
                 trip_stop_times.sort(key=lambda x: x.stop_sequence)
@@ -167,10 +179,9 @@ class GraphBuilder:
                     # Convert departure time
                     dep_dt = self._time_to_datetime(date, current.departure_time)
 
-                    # Build in-memory graph departures (existing behavior)
+                    # Prepare stop/time bookkeeping (do not duplicate departures list entries)
                     self_stop_id = current.stop_id
                     self_depart_dt = dep_dt
-                    departures[self_stop_id].append((self_depart_dt, trip_id))
 
                     # if building index, add key to bucket_map for this stop/time
                     if build_stop_index:
@@ -205,6 +216,10 @@ class GraphBuilder:
                         except Exception:
                             distance_km = 0.0
 
+                    # Basic fare calculation (e.g. 1.2 INR per KM heuristic)
+                    fare_estimate = round(float(distance_km or 0.0) * 1.2, 2)
+                    if fare_estimate < 10.0: fare_estimate = 60.0 # Min fare
+
                     segment = RouteSegment(
                         trip_id=trip_id,
                         departure_stop_id=current.stop_id,
@@ -213,7 +228,7 @@ class GraphBuilder:
                         arrival_time=arr_dt,
                         duration_minutes=duration_minutes,
                         distance_km=round(float(distance_km or 0.0), 3),
-                        fare=100.0,  # TODO: compute from fares table / ML pricing
+                        fare=fare_estimate,
                         train_name=getattr(trip_stop_times[0].trip.route, 'long_name', 'Unknown'),
                         train_number=str(trip_id)
                     )
@@ -226,11 +241,11 @@ class GraphBuilder:
                     # Add to arrivals index
                     arrivals[next_stop.stop_id].append((arr_dt, trip_id))
                     
-                    # Add to Segment table population batch
+                    # Add to Segment table population batch (Phase 0)
                     if populate_segments:
                         new_segment = Segment(
                             id=str(uuid.uuid4()),
-                            source_station_id=str(current.stop_id), # Assumes Stop.id can be cast to string or mapped
+                            source_station_id=str(current.stop_id),
                             dest_station_id=str(next_stop.stop_id),
                             trip_id=trip_id,
                             transport_mode='train',
@@ -239,9 +254,25 @@ class GraphBuilder:
                             arrival_day_offset=arrival_day_offset or 0,
                             duration_minutes=duration_minutes,
                             distance_km=segment.distance_km,
-                            cost=segment.fare
+                            cost=segment.fare,
+                            operating_days=operating_days
                         )
                         new_segments_batch.append(new_segment)
+                    
+                    # Add to StationDeparture population batch (Phase 1)
+                    if populate_station_deps:
+                        new_dep = StationDeparture(
+                            id=str(uuid.uuid4()),
+                            station_id=current.stop_id,
+                            trip_id=trip_id,
+                            departure_time=current.departure_time,
+                            arrival_time_at_next=next_stop.arrival_time,
+                            next_station_id=next_stop.stop_id,
+                            operating_days=operating_days,
+                            train_number=str(trip_id),
+                            distance_to_next=segment.distance_km
+                        )
+                        new_station_deps_batch.append(new_dep)
 
                 segments[trip_id] = trip_segments
 
@@ -334,6 +365,16 @@ class GraphBuilder:
                     logger.error("Failed to persist Segments: %s", e)
                     session.rollback()
 
+            # Persist StationDepartures (Phase 1)
+            if populate_station_deps and new_station_deps_batch:
+                try:
+                    logger.info(f"Persisting {len(new_station_deps_batch)} station departures (Phase 1)...")
+                    session.bulk_save_objects(new_station_deps_batch)
+                    session.commit()
+                except Exception as e:
+                    logger.error("Failed to persist StationDepartures: %s", e)
+                    session.rollback()
+
             return {
                 'departures': departures,
                 'arrivals': arrivals,
@@ -341,7 +382,17 @@ class GraphBuilder:
                 'transfers': transfers,
                 'stops': stops,
                 'route_patterns': route_patterns,
-                'transfer_cache': transfer_cache
+                'transfer_cache': transfer_cache,
+                'snapshot_data': StaticGraphSnapshot(
+                    date=date,
+                    departures_by_stop=departures,
+                    arrivals_by_stop=arrivals,
+                    trip_segments=segments,
+                    transfer_graph=transfers,
+                    stop_cache=stops,
+                    route_patterns=route_patterns,
+                    transfer_cache=transfer_cache
+                )
             }
 
         finally:

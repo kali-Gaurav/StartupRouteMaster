@@ -1,8 +1,12 @@
+from __future__ import annotations
 from typing import List, TYPE_CHECKING
-from datetime import datetime
+from datetime import datetime, timedelta
 
-if TYPE_CHECKING:
-    from ..route_engine import Route, RouteSegment, TransferConnection, RouteConstraints
+# Import at runtime for type hints to avoid NameError
+from ..route_engine.data_structures import Route, RouteSegment, TransferConnection
+from ..route_engine.constraints import RouteConstraints
+from ...database import SessionLocal
+from ...database.models import Segment # For check_missing_stop_link
 
 class RouteValidator:
     """Class to handle route validation logic."""
@@ -49,7 +53,26 @@ class RouteValidator:
 
     def check_missing_stop_link(self, from_stop_id: int, to_stop_id: int) -> bool:
         """Check if missing intermediate stops can be linked based on GTFS data."""
-        return True
+        # This is a simplified check. A full implementation would involve:
+        # 1. Checking if there's a direct segment between these two stops.
+        # 2. Checking if they belong to the same route and appear consecutively in any trip's stop_times.
+        
+        # For now, we can check if a segment *could* exist between them.
+        session = SessionLocal()
+        try:
+            # Check if any segment directly connects these two stops
+            segment_exists = session.query(Segment).filter(
+                Segment.source_station_id == str(from_stop_id),
+                Segment.dest_station_id == str(to_stop_id)
+            ).first()
+            if segment_exists:
+                return True
+            
+            # Additional logic could go here to check if they are on the same line etc.
+            
+            return False # If no direct segment, assume no implicit link for now
+        finally:
+            session.close()
 
     def _is_night_layover(self, arrival_time: datetime, departure_time: datetime) -> bool:
         """Check if the layover occurs at night."""
@@ -60,26 +83,68 @@ class RouteValidator:
         return True
 
     def validate_realtime_delay_propagation(self, delay_data: dict, route: Route) -> bool:
-        """Validate real-time delay propagation (RT-031)."""
-        # Placeholder for actual implementation
+        """
+        Validate real-time delay propagation (RT-031).
+        Checks if a delay in an early segment makes a later transfer impossible.
+        """
+        if not route.segments: return True
+        
+        current_delay = timedelta(0)
+        for i, segment in enumerate(route.segments):
+            # Apply delay if trip_id matches
+            trip_delay = delay_data.get(segment.trip_id, 0)
+            current_delay = max(current_delay, timedelta(minutes=trip_delay))
+            
+            # Check feasibility of next transfer
+            if i < len(route.transfers):
+                transfer = route.transfers[i]
+                nxt_segment = route.segments[i+1]
+                
+                actual_arrival = segment.arrival_time + current_delay
+                if actual_arrival + timedelta(minutes=transfer.duration_minutes) > nxt_segment.departure_time:
+                    # Delay exceeded transfer window
+                    return False
         return True
 
-    def validate_cancellation_removal(self, cancellation_data: dict, route: Route) -> bool:
-        """Validate route removal on cancellation (RT-032)."""
-        # Placeholder for actual implementation
+    def validate_cancellation_removal(self, cancellation_data: List[int], route: Route) -> bool:
+        """
+        Validate route removal on cancellation (RT-032).
+        Returns False if any segment in the route belongs to a cancelled trip.
+        """
+        cancelled_trips = set(cancellation_data or [])
+        for segment in route.segments:
+            if segment.trip_id in cancelled_trips:
+                return False
         return True
 
     def validate_partial_delay(self, delay_data: dict, route: Route) -> bool:
-        """Validate partial delay affecting downstream stops (RT-033)."""
-        # Placeholder for actual implementation
-        return True
+        """
+        Validate partial delay affecting downstream stops (RT-033).
+        Similar to RT-031 but specifically ensures arrival times are updated.
+        """
+        return self.validate_realtime_delay_propagation(delay_data, route)
 
     def validate_realtime_update_during_query(self, update_data: dict, route: Route) -> bool:
-        """Validate real-time update during query (RT-034)."""
-        # Placeholder for actual implementation
-        return True
+        """
+        Validate real-time update during query (RT-034).
+        Ensures the route returned is consistent with updates received mid-flight.
+        """
+        delays = update_data.get('delays', {})
+        cancellations = update_data.get('cancellations', [])
+        
+        if not self.validate_cancellation_removal(cancellations, route):
+            return False
+        return self.validate_realtime_delay_propagation(delays, route)
 
     def validate_outdated_realtime_cache(self, cache_data: dict, route: Route) -> bool:
-        """Validate outdated real-time cache ignored (RT-035)."""
-        # Placeholder for actual implementation
+        """
+        Validate outdated real-time cache ignored (RT-035).
+        Checks if the cache timestamp is too old.
+        """
+        timestamp = cache_data.get('timestamp')
+        if not timestamp: return True
+        
+        # If cache is older than 5 minutes, consider it outdated for real-time
+        if (datetime.utcnow() - timestamp).total_seconds() > 300:
+            return False
         return True

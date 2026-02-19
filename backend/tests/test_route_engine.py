@@ -453,7 +453,8 @@ class TestParetoPruning:
         finally:
             Config.PARETO_LIMIT = old_limit
 
-    def test_pareto_limit_enforced(self):
+    @pytest.mark.asyncio
+    async def test_pareto_limit_enforced(self):
         """Test that PARETO_LIMIT is respected when more optimal routes exist."""
         re = self.setup_routeengine()
         re.stations_map = {"S1": {"name": "A"}, "S2": {"name": "B"}}

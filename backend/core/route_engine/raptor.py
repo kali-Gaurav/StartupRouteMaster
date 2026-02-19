@@ -18,23 +18,33 @@ from ..validator.validation_manager import create_validation_manager_with_defaul
 
 from .data_structures import Route, RouteSegment, TransferConnection, UserContext
 from .constraints import RouteConstraints
-from .graph import TimeDependentGraph
+from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .builder import GraphBuilder
 from .hub import HubManager, HubConnectivityTable
+from .snapshot_manager import SnapshotManager
+from .transfer_intelligence import TransferIntelligenceManager # New import
 
 logger = logging.getLogger(__name__)
 
 class OptimizedRAPTOR:
     """Production-optimized RAPTOR algorithm implementation"""
 
-    def __init__(self, max_transfers: int = 3, validation_manager=None):
+    def __init__(self, max_transfers: int = 3, validation_manager=None, 
+                 graph_builder: Optional[GraphBuilder] = None, 
+                 snapshot_manager: Optional[SnapshotManager] = None):
         self.max_transfers = max_transfers
         self.executor = ThreadPoolExecutor(max_workers=4)
         # Keep the performance validator locally (used for timing checks in the engine)
         self.performance_validator = PerformanceValidator()
         # Use ValidationManager to orchestrate all other validation logic
         self.validation_manager = validation_manager or create_validation_manager_with_defaults()
-        self.graph_builder = GraphBuilder(self.executor)
+        
+        # Injected dependencies for graph management
+        self.graph_builder = graph_builder or GraphBuilder(self.executor)
+        self.snapshot_manager = snapshot_manager or SnapshotManager()
+        
+        # Phase 4: Transfer Intelligence Manager
+        self.transfer_intelligence_manager = TransferIntelligenceManager(SessionLocal)
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
@@ -47,7 +57,7 @@ class OptimizedRAPTOR:
             dest_stop_id: Destination station ID
             departure_date: Journey date
             constraints: Route constraints and weights
-            graph: Optional pre-built graph to use
+            graph: Optional pre-built graph to use (expected from RailwayRouteEngine)
 
         Returns:
             List of ranked routes
@@ -88,16 +98,31 @@ class OptimizedRAPTOR:
                              graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """
         Internal route computation with frequency-aware Range-RAPTOR.
+        This method is now primarily used by the main engine, which provides the graph.
+        For internal calls (e.g., HubManager precomputation), it might build its own graph.
         """
         start_time = _time.time()
 
         # Build time-dependent graph if not provided
         if graph is None:
             graph_build_start = _time.time()
-            graph = await self.graph_builder.build_graph(departure_date)
+            # Attempt to load from snapshot first
+            snapshot = self.snapshot_manager.load_snapshot(departure_date)
+            if snapshot:
+                graph = TimeDependentGraph(snapshot=snapshot)
+                logger.info(f"Loaded graph from snapshot for {departure_date.date()}")
+            else:
+                graph = await self.graph_builder.build_graph(departure_date)
+                logger.info(f"Built graph from database for {departure_date.date()}")
+            
             graph_build_ms = (_time.time() - graph_build_start) * 1000.0
             if not self.performance_validator.validate_graph_rebuild_performance(graph_build_ms, threshold_ms=1500.0):
                 logger.warning("RT-096: graph rebuild time high (%.2fms)", graph_build_ms)
+
+        # If graph is still None, something is wrong
+        if graph is None:
+            raise RuntimeError("TimeDependentGraph could not be loaded or built.")
+
 
         # Use Range‑RAPTOR if requested (search departure ± window) — reuse the built graph
         if constraints.range_minutes > 0 or constraints.adaptive_range:
@@ -311,9 +336,15 @@ class OptimizedRAPTOR:
         return arrival.hour < 5 or departure.hour < 5
 
     def _is_safe_station(self, station_id: int) -> bool:
-        """Check if station is considered safe"""
-        # Placeholder
-        return True
+        """Check if station is considered safe based on safety_score."""
+        session = SessionLocal()
+        try:
+            stop = session.query(Stop).filter(Stop.id == station_id).first()
+            if stop and getattr(stop, 'safety_score', 50.0) < 40.0: # Threshold for 'unsafe'
+                return False
+            return True
+        finally:
+            session.close()
 
     async def _deduplicate_routes(self, routes: List[Route], graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """Deduplicate + dominance-prune routes."""
@@ -491,13 +522,23 @@ class OptimizedRAPTOR:
         # Estimate reliability
         reliability = await self._estimate_route_reliability(route, constraints)
         route.reliability = reliability
-        
+
+        # Phase 4: Calculate Transfer Risk and apply to score
+        transfer_risk_penalty = 0.0
+        if route.transfers and route.segments:
+            for i, transfer in enumerate(route.transfers):
+                previous_segment_trip_id = route.segments[i].trip_id if i < len(route.segments) else None
+                risk = await self.transfer_intelligence_manager.calculate_transfer_risk(
+                    transfer, previous_segment_trip_id, route, constraints
+                )
+                transfer_risk_penalty += risk * 100 # Scale risk to penalty points
+
         # Apply reliability bias to score: lower is better, so high reliability reduces score
         # bias = (1.0 - weight) + (weight * (1.0 / reliability))
         weight = constraints.reliability_weight if hasattr(constraints, 'reliability_weight') else 0.5
         reliability_penalty = (1.0 / max(0.1, reliability)) * weight * 10.0
         
-        return base_score + reliability_penalty
+        return base_score + reliability_penalty + transfer_risk_penalty
 
     # --- Validation Facades ---
     def validate_resilience(self, validation_config: dict = None) -> bool:
@@ -609,35 +650,67 @@ class OptimizedRAPTOR:
 class HybridRAPTOR(OptimizedRAPTOR):
     """Hybrid Hub-RAPTOR Implementation (Phase 3)"""
 
-    def __init__(self, hub_manager: HubManager, max_transfers: int = 3):
-        super().__init__(max_transfers)
+    def __init__(self, hub_manager: HubManager, max_transfers: int = 3,
+                 graph_builder: Optional[GraphBuilder] = None, 
+                 snapshot_manager: Optional[SnapshotManager] = None):
+        super().__init__(max_transfers, graph_builder=graph_builder, snapshot_manager=snapshot_manager)
         self.hub_manager = hub_manager
+        self._hub_table: Optional[HubConnectivityTable] = None # Make it private and optional
+
+    def set_hub_table(self, hub_table: HubConnectivityTable):
+        self._hub_table = hub_table
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """Hybrid Search Flow (Step 3)"""
-        
-        # 1. Standard RAPTOR logic for the whole path
+        # RailwayRouteEngine should always provide the graph.
+        # If it's None here, it means this find_routes was called directly,
+        # so we build it.
+        if graph is None:
+             graph = await self._get_graph_for_internal_use(departure_date)
+
+        # 1. Standard RAPTOR logic for the whole path (local search)
         standard_routes = await super().find_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
-        # 2. Hybrid Hub Search logic
-        if graph is None:
-             graph = await self.graph_builder.build_graph(departure_date)
-
+        # 2. Hybrid Hub Search logic (Phase 3)
         source_hubs = self.hub_manager.get_nearest_hubs(source_stop_id, graph)
         dest_hubs = self.hub_manager.get_nearest_hubs(dest_stop_id, graph)
 
-        if not source_hubs or not dest_hubs:
-            return standard_routes
-
         hub_routes = []
-        # In a full implementation, we would perform local searches to hubs
-        # and merge with Hub-to-Hub precomputations.
-        # For now, we perform the Pareto merge of the best options found.
+        if source_hubs and dest_hubs and self._hub_table: # Check if hub_table is set
+            # Step 3.1: Hub Search Flow - Identification (Source -> Hubs)
+            for s_hub_id, s_travel_time in source_hubs:
+                for d_hub_id, d_travel_time in dest_hubs:
+                    # Step 3.2: Hub Search Flow - Fast Backbone (Hub -> Hub)
+                    hub_dist = self._hub_table.get_min_time(s_hub_id, d_hub_id) # Use _hub_table
+                    
+                    if hub_dist is not None:
+                        # Construct a skeleton route representing the Hub backbone
+                        # In production, we'd fetch the best trip segments here.
+                        route = Route()
+                        # Add a dummy cost and duration representing the backbone
+                        route.total_duration = s_travel_time + hub_dist + d_travel_time
+                        route.reliability = 0.95 # Generic backbone reliability
+                        hub_routes.append(route)
 
-        # 3. Pareto Merge
+        # 3. Pareto Merge (Step 4)
         return self._pareto_merge(standard_routes, hub_routes)
+
+    async def _get_graph_for_internal_use(self, date: datetime) -> TimeDependentGraph:
+        """
+        Internal method for HybridRAPTOR to get a graph if not provided externally.
+        This is for cases like HubManager precomputation which needs a graph.
+        """
+        # Attempt to load from snapshot first
+        snapshot = self.snapshot_manager.load_snapshot(date)
+        if snapshot:
+            graph = TimeDependentGraph(snapshot=snapshot)
+            logger.debug(f"HybridRAPTOR internal: Loaded graph from snapshot for {date.date()}")
+        else:
+            graph = await self.graph_builder.build_graph(date)
+            logger.debug(f"HybridRAPTOR internal: Built graph from database for {date.date()}")
+        return graph
 
     def _pareto_merge(self, routes_a: List[Route], routes_b: List[Route]) -> List[Route]:
         """Merge results and choose best (Step 4: Pareto Merge)"""
@@ -646,14 +719,28 @@ class HybridRAPTOR(OptimizedRAPTOR):
         if not combined:
             return []
             
-        # Basic dominance pruning based on time and cost
-        combined.sort(key=lambda r: (r.total_duration, r.total_cost))
+        # Multi-dimensional dominance pruning
+        # (duration, cost, transfers, reliability)
+        combined.sort(key=lambda r: (r.total_duration, r.total_cost, len(r.transfers)))
         
         pareto_front = []
-        min_cost = float('inf')
         for r in combined:
-            if r.total_cost < min_cost:
+            is_dominated = False
+            for p in pareto_front:
+                # p dominates r if p is better or equal in all dimensions and strictly better in one
+                if (p.total_duration <= r.total_duration and 
+                    p.total_cost <= r.total_cost and 
+                    len(p.transfers) <= len(r.transfers) and
+                    p.reliability >= r.reliability):
+                    
+                    if (p.total_duration < r.total_duration or 
+                        p.total_cost < r.total_cost or 
+                        len(p.transfers) < len(r.transfers) or
+                        p.reliability > r.reliability):
+                        is_dominated = True
+                        break
+            
+            if not is_dominated:
                 pareto_front.append(r)
-                min_cost = r.total_cost
                     
         return pareto_front[:10]
