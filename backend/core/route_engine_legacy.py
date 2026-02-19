@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import sqlite3
+import uuid
 
 # geographic fallback
 from backend.utils.graph_utils import haversine_distance
@@ -41,17 +42,28 @@ from ..database.models import (
 )
 from ..database.config import Config
 from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, cache_route_search
-from .validator.performance_validators import PerformanceValidator
-from .validator.validation_manager import create_validation_manager_with_defaults, ValidationProfile, ValidationCategory
 from ..ml_reliability_model import get_reliability_model
 from ..frequency_aware_range import get_frequency_aware_sizer
 
 logger = logging.getLogger(__name__)
 
+from .validator import (
+    ValidationManager,
+    ValidationProfile,
+    ValidationCategory,
+    DataIntegrityValidator,
+    create_validation_manager_with_defaults
+)
 
-# ==============================================================================
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .validator.performance_validators import PerformanceValidator
+    from ..station_time_index import BitMap
+
+
+# ===========================================================================
 # DATA STRUCTURES
-# ==============================================================================
+# ============================================================================
 
 @dataclass
 class SpaceTimeNode:
@@ -203,30 +215,237 @@ class UserContext:
 
 
 # ==============================================================================
+# PHASE 3: HUB-RAPTOR (HUB LABELING)
+# ==============================================================================
+
+@dataclass
+class HubToHubConnection:
+    """Precomputed best travel time between two hubs"""
+    source_hub_id: int
+    dest_hub_id: int
+    min_travel_time: int
+    best_trip_id: Optional[int] = None
+    frequency_per_day: int = 0
+
+
+class HubManager:
+    """Manages hub station selection and lookup"""
+    
+    # Major hubs (Step 1: Select Hub Stations)
+    MAJOR_HUB_CODES = ['NDLS', 'CSMT', 'MAS', 'HWH', 'SBC', 'PNBE', 'LKO', 'ADI', 'BCT']
+
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+        self.hub_ids: Set[int] = set()
+        self.hub_id_to_code: Dict[int, str] = {}
+
+    def initialize_hubs(self):
+        """Load hub information from DB"""
+        session = self.session_factory()
+        try:
+            hubs = session.query(Stop).filter(
+                or_(
+                    Stop.is_major_junction == True,
+                    Stop.code.in_(self.MAJOR_HUB_CODES)
+                )
+            ).all()
+            self.hub_ids = {h.id for h in hubs}
+            self.hub_id_to_code = {h.id: h.code for h in hubs}
+            logger.info(f"Initialized {len(self.hub_ids)} hub stations.")
+        finally:
+            session.close()
+
+    def is_hub(self, stop_id: int) -> bool:
+        return stop_id in self.hub_ids
+
+    def get_nearest_hubs(self, stop_id: int, graph: 'TimeDependentGraph', max_hubs: int = 3) -> List[Tuple[int, int]]:
+        """
+        Find nearest hubs and travel time to them.
+        Step 3: Hub Search Flow - Identification
+        """
+        if self.is_hub(stop_id):
+            return [(stop_id, 0)]
+
+        # Find hubs within a reasonable distance using haversine or graph search
+        stop = graph.stop_cache.get(stop_id)
+        if not stop:
+            return []
+
+        hubs_with_dist = []
+        for hub_id in self.hub_ids:
+            hub_stop = graph.stop_cache.get(hub_id)
+            if not hub_stop:
+                continue
+            
+            # Simple distance-based proximity
+            dist = haversine_distance(stop.latitude, stop.longitude, 
+                                    hub_stop.latitude, hub_stop.longitude)
+            if dist < 250: # 250km radius for hubs
+                hubs_with_dist.append((hub_id, int(dist * 1.5))) # 1.5 min per km approx
+
+        hubs_with_dist.sort(key=lambda x: x[1])
+        return hubs_with_dist[:max_hubs]
+
+    async def precompute_hub_connectivity(self, graph: 'TimeDependentGraph', date: datetime):
+        """
+        Precompute best travel time between all hubs.
+        Step 2: Precompute Hub Distances
+        """
+        from .route_engine import OptimizedRAPTOR, RouteConstraints
+        raptor = OptimizedRAPTOR()
+        constraints = RouteConstraints(max_transfers=1) # Fast hub-to-hub lookup
+        
+        hub_list = list(self.hub_ids)
+        table = HubConnectivityTable()
+        
+        logger.info(f"Precomputing connectivity for {len(hub_list)} hubs...")
+        
+        for i, src_hub in enumerate(hub_list):
+            for j, dst_hub in enumerate(hub_list):
+                if i == j: continue
+                
+                # Run a limited RAPTOR between hubs
+                routes = await raptor._compute_routes(src_hub, dst_hub, date, constraints)
+                if routes:
+                    best_route = routes[0]
+                    conn = HubToHubConnection(
+                        source_hub_id=src_hub,
+                        dest_hub_id=dst_hub,
+                        min_travel_time=best_route.total_duration,
+                        best_trip_id=best_route.segments[0].trip_id if best_route.segments else None,
+                        frequency_per_day=len(routes)
+                    )
+                    table.add_connection(conn)
+            
+            if i % 10 == 0:
+                logger.info(f"Hub Connectivity Progress: {i}/{len(hub_list)} hubs processed")
+                
+        return table
+
+
+class HubConnectivityTable:
+    """Precomputed hub-to-hub connectivity (Step 2: Precompute Hub Distances)"""
+
+    def __init__(self):
+        self.connections: Dict[Tuple[int, int], HubToHubConnection] = {}
+
+    def add_connection(self, conn: HubToHubConnection):
+        self.connections[(conn.source_hub_id, conn.dest_hub_id)] = conn
+
+    def get_min_time(self, source_hub: int, dest_hub: int) -> Optional[int]:
+        conn = self.connections.get((source_hub, dest_hub))
+        return conn.min_travel_time if conn else None
+
+
+# ==============================================================================
+# PHASE 2: REGIONAL PARTITIONING & MEMORY SNAPSHOTS
+# ==============================================================================
+
+@dataclass
+class StaticGraphSnapshot:
+    """Pre-built static graph snapshot (Schedule-based)"""
+    date: datetime
+    departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
+    arrivals_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
+    trip_segments: Dict[int, List[RouteSegment]] = field(default_factory=lambda: defaultdict(list))
+    transfer_graph: Dict[int, List[TransferConnection]] = field(default_factory=lambda: defaultdict(list))
+    stop_cache: Dict[int, Stop] = field(default_factory=dict)
+    
+    # Algorithmic indexes
+    route_patterns: Dict[Tuple[int, ...], List[int]] = field(default_factory=lambda: defaultdict(list))
+    transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = field(default_factory=dict)
+    stop_index: Dict[int, int] = field(default_factory=dict)
+    
+    version: str = "v2.0"
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+class RealtimeOverlay:
+    """Real-time delay and cancellation overlay (Copy-on-Write)"""
+
+    def __init__(self):
+        self.delays: Dict[int, int] = {}  # trip_id -> minutes
+        self.cancellations: Set[int] = set()  # trip_ids
+        self.platform_changes: Dict[Tuple[int, int], str] = {}  # (trip_id, stop_id) -> platform
+
+    def apply_delay(self, trip_id: int, minutes: int):
+        self.delays[trip_id] = minutes
+
+    def cancel_trip(self, trip_id: int):
+        self.cancellations.add(trip_id)
+
+    def get_trip_delay(self, trip_id: int) -> int:
+        return self.delays.get(trip_id, 0)
+
+    def is_cancelled(self, trip_id: int) -> bool:
+        return trip_id in self.cancellations
+
+
+class RegionManager:
+    """Manages regional partitioning of the national network"""
+    
+    REGIONS = {
+        'North': ['Delhi', 'Punjab', 'Haryana', 'Himachal Pradesh', 'Jammu & Kashmir', 'Uttarakhand', 'Uttar Pradesh'],
+        'South': ['Karnataka', 'Tamil Nadu', 'Kerala', 'Andhra Pradesh', 'Telangana'],
+        'West': ['Maharashtra', 'Gujarat', 'Goa', 'Rajasthan'],
+        'East': ['West Bengal', 'Odisha', 'Bihar', 'Jharkhand', 'Assam', 'Sikkim'],
+        'Central': ['Madhya Pradesh', 'Chhattisgarh']
+    }
+
+    @classmethod
+    def get_region_for_state(cls, state: str) -> str:
+        if not state:
+            return 'Central'
+        for region, states in cls.REGIONS.items():
+            if state in states:
+                return region
+        return 'Central'
+
+    @classmethod
+    def get_all_regions(cls) -> List[str]:
+        return list(cls.REGIONS.keys())
+
+
+class ParallelGraphBuilder:
+    """Builds regional graphs in parallel"""
+
+    def __init__(self, executor: ThreadPoolExecutor):
+        self.executor = executor
+
+    async def build_national_snapshot(self, date: datetime, raptor_engine: 'OptimizedRAPTOR') -> StaticGraphSnapshot:
+        """Build all regions and merge into a national snapshot"""
+        # In a highly distributed system, this would trigger remote worker tasks
+        # For this implementation, we use the local OptimizedRAPTOR's sync builder
+        data = await raptor_engine._get_or_build_snapshot(date)
+        return data
+
+
+# ==============================================================================
 # CORE RAPTOR ALGORITHM
 # ==============================================================================
 
 class TimeDependentGraph:
-    """Optimized time-dependent graph for RAPTOR
+    """Optimized time-dependent graph with Snapshot + Real-time Overlay support"""
 
-    Enhancements added:
-    - `stop_index` + bitset helpers for fast reachability checks
-    - `route_patterns` mapping: stop-sequence hash -> trips (trip pattern indexing)
-    - `transfer_cache` precomputed transfer lookup for (from_stop, to_stop)
-    """
+    def __init__(self, snapshot: Optional[StaticGraphSnapshot] = None):
+        self.snapshot = snapshot
+        self.overlay = RealtimeOverlay()
 
-    def __init__(self):
-        self.departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = defaultdict(list)
-        self.arrivals_by_stop: Dict[int, List[Tuple[datetime, int]]] = defaultdict(list)
-        self.trip_segments: Dict[int, List[RouteSegment]] = defaultdict(list)
-        self.transfer_graph: Dict[int, List[TransferConnection]] = defaultdict(list)
-        self.stop_cache: Dict[int, Stop] = {}
+        # Core data structures (aliased from snapshot or empty)
+        self.departures_by_stop = snapshot.departures_by_stop if snapshot else defaultdict(list)
+        self.arrivals_by_stop = snapshot.arrivals_by_stop if snapshot else defaultdict(list)
+        self.trip_segments = snapshot.trip_segments if snapshot else defaultdict(list)
+        self.transfer_graph = snapshot.transfer_graph if snapshot else defaultdict(list)
+        self.stop_cache = snapshot.stop_cache if snapshot else {}
 
         # New structures for algorithmic speedups
-        self.stop_index: Dict[int, int] = {}                # stop_id -> bit position
-        self.stop_count: int = 0                            # number of stops in graph
-        self.route_patterns: Dict[Tuple[int, ...], List[int]] = defaultdict(list)  # stop sequence -> list of trip_ids
-        self.transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = {}  # (from_stop, to_stop) -> transfers
+        self.stop_index = snapshot.stop_index if snapshot else {}
+        self.stop_count = len(self.stop_index)
+        self.route_patterns = snapshot.route_patterns if snapshot else defaultdict(list)
+        self.transfer_cache = snapshot.transfer_cache if snapshot else {}
+
+        # Optional in-memory index
+        self.station_time_index = None
 
     # ----------------------------- event helpers -----------------------------
     def add_departure(self, stop_id: int, departure_time: datetime, trip_id: int):
@@ -249,41 +468,87 @@ class TimeDependentGraph:
         self.transfer_cache.setdefault(key, []).append(transfer)
 
     # ----------------------------- lookup helpers -----------------------------
-    def get_departures_from_stop(self, stop_id: int, after_time: datetime) -> List[Tuple[datetime, int]]:
-        """Get departures from stop after given time"""
-        departures = self.departures_by_stop.get(stop_id, [])
-        return [(dt, trip_id) for dt, trip_id in departures if dt >= after_time]
+    def get_departures_from_stop(self, stop_id: int, after_time: datetime, lookahead_minutes: int = 60) -> List[Tuple[datetime, int]]:
+        """Get departures from stop after given time, considering real-time delays and cancellations."""
+        
+        # 1. Base departures from static snapshot
+        base_departures = self.departures_by_stop.get(stop_id, [])
+        if not base_departures:
+            return []
+
+        # 2. Filter via index if available
+        candidates = base_departures
+        if self.station_time_index is not None:
+            try:
+                minute_of_day = after_time.hour * 60 + after_time.minute
+                entities = self.station_time_index.query(stop_id, minute_of_day, lookahead_minutes)
+                candidate_trip_ids = {int(e['entity_id']) for e in entities if e.get('entity_type') == 'trip'}
+                if candidate_trip_ids:
+                    candidates = [(dt, tid) for dt, tid in base_departures if tid in candidate_trip_ids]
+            except Exception:
+                pass
+
+        # 3. Apply Real-time Overlay (Phase 2: COW Layer)
+        adjusted = []
+        for dt, trip_id in candidates:
+            if self.overlay.is_cancelled(trip_id):
+                continue
+            
+            delay = self.overlay.get_trip_delay(trip_id)
+            effective_time = dt + timedelta(minutes=delay)
+            
+            if effective_time >= after_time:
+                adjusted.append((effective_time, trip_id))
+
+        return sorted(adjusted, key=lambda x: x[0])
 
     def get_transfers_from_stop(self, stop_id: int, arrival_time: datetime,
                                min_transfer_time: int = 15) -> List[TransferConnection]:
-        """Get feasible transfers from stop"""
+        """Get feasible transfers from stop, honoring real-time state."""
         transfers = self.transfer_graph.get(stop_id, [])
         feasible = []
 
         for transfer in transfers:
+            # Note: In a production overlay, we might also adjust transfer departure times
+            # based on the delays of the outgoing trains. We assume the TransferConnection
+            # object represents a window and we check feasibility against it.
             if transfer.arrival_time <= arrival_time <= transfer.departure_time:
                 duration = (transfer.departure_time - arrival_time).seconds // 60
-                if min_transfer_time <= duration <= 8 * 60:  # 8 hours max
-                    transfer_copy = TransferConnection(
-                        station_id=transfer.station_id,
-                        arrival_time=arrival_time,
-                        departure_time=transfer.departure_time,
-                        duration_minutes=duration,
-                        station_name=transfer.station_name,
-                        facilities_score=transfer.facilities_score,
-                        safety_score=transfer.safety_score
-                    )
-                    feasible.append(transfer_copy)
+                if min_transfer_time <= duration <= 8 * 60:
+                    feasible.append(transfer)
 
         return feasible
 
     def get_transfer_between_stops(self, from_stop: int, to_stop: int) -> List[TransferConnection]:
-        """Fast lookup for precomputed transfer(s) between two stops (may return empty list)."""
+        """Fast lookup for precomputed transfer(s) between two stops."""
         return self.transfer_cache.get((from_stop, to_stop), [])
 
     def get_trip_segments(self, trip_id: int) -> List[RouteSegment]:
-        """Get all segments for a trip"""
-        return self.trip_segments.get(trip_id, [])
+        """Get all segments for a trip, adjusted for real-time delays (COW)."""
+        if self.overlay.is_cancelled(trip_id):
+            return []
+
+        base_segments = self.trip_segments.get(trip_id, [])
+        delay = self.overlay.get_trip_delay(trip_id)
+
+        if delay == 0:
+            return base_segments
+
+        # Apply delay to all segments (Phase 2: Copy-on-Write style)
+        return [
+            RouteSegment(
+                trip_id=seg.trip_id,
+                departure_stop_id=seg.departure_stop_id,
+                arrival_stop_id=seg.arrival_stop_id,
+                departure_time=seg.departure_time + timedelta(minutes=delay),
+                arrival_time=seg.arrival_time + timedelta(minutes=delay),
+                duration_minutes=seg.duration_minutes,
+                distance_km=seg.distance_km,
+                fare=seg.fare,
+                train_name=seg.train_name,
+                train_number=seg.train_number
+            ) for seg in base_segments
+        ]
 
     # ----------------------------- bitset helpers -----------------------------
     def build_stop_index(self):
@@ -314,6 +579,9 @@ class OptimizedRAPTOR:
     """Production-optimized RAPTOR algorithm implementation"""
 
     def __init__(self, max_transfers: int = 3, validation_manager=None):
+        from .validator.performance_validators import PerformanceValidator
+        from .validator.validation_manager import create_validation_manager_with_defaults
+        
         self.max_transfers = max_transfers
         self.executor = ThreadPoolExecutor(max_workers=4)
         # Keep the performance validator locally (used for timing checks in the engine)
@@ -322,7 +590,8 @@ class OptimizedRAPTOR:
         self.validation_manager = validation_manager or create_validation_manager_with_defaults()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
-                         departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
+                         departure_date: datetime, constraints: RouteConstraints,
+                         graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """
         Find multi-transfer routes using optimized RAPTOR algorithm with caching
 
@@ -331,21 +600,11 @@ class OptimizedRAPTOR:
             dest_stop_id: Destination station ID
             departure_date: Journey date
             constraints: Route constraints and weights
+            graph: Optional pre-built graph to use
 
         Returns:
             List of ranked routes
         """
-
-    async def find_trips_by_stop_sequence(self, stop_sequence: List[int], date: Optional[datetime] = None) -> List[int]:
-        """Return list of trip_ids that match the exact stop-sequence pattern.
-
-        Useful for pattern-based pruning / frequency estimation.
-        """
-        # Use today's graph if date omitted
-        d = date or datetime.utcnow()
-        graph = await self._build_graph(d)
-        key = tuple(stop_sequence)
-        return list(graph.route_patterns.get(key, []))
         # Create cache query
         cache_query = RouteQuery(
             from_station=str(source_stop_id),
@@ -362,37 +621,36 @@ class OptimizedRAPTOR:
         cached_result = await multi_layer_cache.get_route_query(cache_query)
         cache_elapsed_ms = (_time.time() - cache_start) * 1000.0
         if cached_result:
-            # RT-093: validate cache-hit performance
             if not self.performance_validator.validate_cache_hit_performance(cache_elapsed_ms, expected_max_ms=50.0):
                 logger.warning("RT-093: cache-hit latency exceeded threshold (%.2fms)", cache_elapsed_ms)
             logger.info(f"Route cache hit for {source_stop_id} -> {dest_stop_id}")
-            # Convert cached data back to Route objects
             return self._deserialize_cached_routes(cached_result)
 
         # Compute routes
-        routes = await self._compute_routes(source_stop_id, dest_stop_id, departure_date, constraints)
+        routes = await self._compute_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
         # Cache the result
-        if routes:  # Only cache if we found routes
+        if routes:
             serialized_routes = self._serialize_routes_for_cache(routes)
             await multi_layer_cache.set_route_query(cache_query, serialized_routes)
 
         return routes
 
     async def _compute_routes(self, source_stop_id: int, dest_stop_id: int,
-                             departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
+                             departure_date: datetime, constraints: RouteConstraints,
+                             graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """
         Internal route computation with frequency-aware Range-RAPTOR.
         """
         start_time = _time.time()
 
-        # Build time-dependent graph
-        graph_build_start = _time.time()
-        graph = await self._build_graph(departure_date)
-        graph_build_ms = (_time.time() - graph_build_start) * 1000.0
-        # RT-096: validate graph rebuild performance (warn on regression)
-        if not self.performance_validator.validate_graph_rebuild_performance(graph_build_ms, threshold_ms=1500.0):
-            logger.warning("RT-096: graph rebuild time high (%.2fms)", graph_build_ms)
+        # Build time-dependent graph if not provided
+        if graph is None:
+            graph_build_start = _time.time()
+            graph = await self._build_graph(departure_date)
+            graph_build_ms = (_time.time() - graph_build_start) * 1000.0
+            if not self.performance_validator.validate_graph_rebuild_performance(graph_build_ms, threshold_ms=1500.0):
+                logger.warning("RT-096: graph rebuild time high (%.2fms)", graph_build_ms)
 
         # Initialize RAPTOR structures
         routes_by_round: Dict[int, List[Route]] = defaultdict(list)
@@ -528,6 +786,14 @@ class OptimizedRAPTOR:
         # Build stop_index for bitset operations
         graph.build_stop_index()
 
+        # Load in-memory station/stop time-index (best-effort)
+        try:
+            from backend.station_time_index import StationTimeIndex
+            graph.station_time_index = StationTimeIndex(SessionLocal())
+            logger.info("Loaded StationTimeIndex into graph.")
+        except Exception as e:
+            logger.debug("StationTimeIndex not available: %s", e)
+
         return graph
 
     def _build_graph_sync(self, date: datetime) -> Dict:
@@ -562,6 +828,19 @@ class OptimizedRAPTOR:
                 trip_groups[st.trip_id].append(st)
                 stops[st.stop_id] = st.stop
 
+            # Build stop_departures index only if the table is empty (best-effort, avoids rebuilding every query)
+            try:
+                from backend.database.models import TimeIndexKey, StopDepartureBucket
+                # rebuild only if empty
+                existing = session.query(StopDepartureBucket).count()
+                build_stop_index = (existing == 0)
+            except Exception:
+                build_stop_index = False
+
+            # Cache for time-index key ids to avoid DB churn
+            _key_cache: Dict[int, int] = {}
+            bucket_map: Dict[tuple, set] = {}
+
             # Process each trip
             for trip_id, trip_stop_times in trip_groups.items():
                 if len(trip_stop_times) < 2:
@@ -569,6 +848,21 @@ class OptimizedRAPTOR:
 
                 # Sort by sequence
                 trip_stop_times.sort(key=lambda x: x.stop_sequence)
+
+                # optionally assign a TimeIndexKey for this trip
+                if build_stop_index:
+                    try:
+                        # ensure TimeIndexKey exists for this trip
+                        existing_key = session.query(TimeIndexKey).filter(TimeIndexKey.entity_type == 'trip', TimeIndexKey.entity_id == str(trip_id)).first()
+                        if existing_key:
+                            _key_cache[trip_id] = existing_key.id
+                        else:
+                            newk = TimeIndexKey(entity_type='trip', entity_id=str(trip_id))
+                            session.add(newk)
+                            session.flush()
+                            _key_cache[trip_id] = newk.id
+                    except Exception:
+                        pass
 
                 # Create segments (use authoritative railway_manager distances/day-offsets when available)
                 trip_segments = []
@@ -578,6 +872,21 @@ class OptimizedRAPTOR:
 
                     # Convert departure time
                     dep_dt = self._time_to_datetime(date, current.departure_time)
+
+                    # Build in-memory graph departures (existing behavior)
+                    self_stop_id = current.stop_id
+                    self_depart_dt = dep_dt
+                    departures[self_stop_id].append((self_depart_dt, trip_id))
+
+                    # Build segments list for algorithm
+
+                    # if building index, add key to bucket_map for this stop/time
+                    if build_stop_index:
+                        key_id = _key_cache.get(trip_id)
+                        if key_id is not None and current.departure_time is not None:
+                            minute_of_day = current.departure_time.hour * 60 + current.departure_time.minute
+                            bucket_start = minute_of_day - (minute_of_day % 15)
+                            bucket_map.setdefault((current.stop_id, bucket_start), set()).add(key_id)
 
                     # Default arrival datetime (may be adjusted by authoritative day_offset)
                     arr_dt = self._time_to_datetime(date, next_stop.arrival_time)
@@ -728,6 +1037,28 @@ class OptimizedRAPTOR:
                 for t in tlist:
                     key = (from_stop, t.station_id)
                     transfer_cache.setdefault(key, []).append(t)
+
+            # Persist stop-level buckets (best-effort; only when we built the in-memory bucket_map)
+            try:
+                if build_stop_index and bucket_map:
+                    from backend.database.models import StopDepartureBucket
+                    # clear any stale rows and insert fresh buckets
+                    session.query(StopDepartureBucket).delete()
+                    for (stop_id, bucket_start), keyset in bucket_map.items():
+                        try:
+                            # prefer pyroaring if available for compactness
+                            from pyroaring import BitMap as _RoaringBM
+                            bm = _RoaringBM(keyset)
+                        except Exception:
+                            # fallback to the project's BitMap shim (station_time_index.BitMap)
+                            from ..station_time_index import BitMap
+                            bm = BitMap(keyset)
+                        blob = bm.serialize()
+                        row = StopDepartureBucket(id=str(uuid.uuid4()), stop_id=stop_id, bucket_start_minute=bucket_start, bitmap=blob, trips_count=len(keyset))
+                        session.add(row)
+                    session.commit()
+            except Exception:
+                session.rollback()
 
             return {
                 'departures': departures,
@@ -999,6 +1330,95 @@ class OptimizedRAPTOR:
     async def _compute_heuristic_reliability(self, route: Route, constraints: RouteConstraints) -> float:
         """Pure heuristic-based reliability (fallback for when ML unavailable)"""
         score = 1.0
+        
+        # Penalize for each transfer (reliability risk)
+        score *= (0.95 ** len(route.transfers))
+        
+        # Penalize tight transfers
+        for t in route.transfers:
+            if t.duration_minutes < 30:
+                score *= 0.8
+            elif t.duration_minutes < 60:
+                score *= 0.9
+                
+        # Penalize long journeys
+        if route.total_duration > 720: # 12 hours
+            score *= 0.95
+            
+        return score
+
+    async def _score_with_reliability(self, route: Route, constraints: RouteConstraints) -> float:
+        """Calculate weighted score including reliability bias (Phase-6)."""
+        base_score = self._calculate_score(route, constraints)
+        
+        # Estimate reliability
+        reliability = await self._estimate_route_reliability(route, constraints)
+        route.reliability = reliability
+        
+        # Apply reliability bias to score: lower is better, so high reliability reduces score
+        # bias = (1.0 - weight) + (weight * (1.0 / reliability))
+        weight = constraints.weights.safety if hasattr(constraints.weights, 'safety') else 0.1
+        reliability_penalty = (1.0 / max(0.1, reliability)) * weight * 10.0
+        
+        return base_score + reliability_penalty
+
+    async def find_trips_by_stop_sequence(self, stop_sequence: List[int], date: Optional[datetime] = None) -> List[int]:
+        """Return list of trip_ids that match the exact stop-sequence pattern."""
+        d = date or datetime.utcnow()
+        graph = await self._build_graph(d)
+        key = tuple(stop_sequence)
+        return list(graph.route_patterns.get(key, []))
+
+
+class HybridRAPTOR(OptimizedRAPTOR):
+    """Hybrid Hub-RAPTOR Implementation (Phase 3)"""
+
+    def __init__(self, hub_manager: HubManager, max_transfers: int = 3):
+        super().__init__(max_transfers)
+        self.hub_manager = hub_manager
+        self.hub_table = HubConnectivityTable()
+
+    async def find_routes(self, source_stop_id: int, dest_stop_id: int,
+                         departure_date: datetime, constraints: RouteConstraints,
+                         graph: Optional[TimeDependentGraph] = None) -> List[Route]:
+        """Hybrid Search Flow (Step 3)"""
+        
+        # 1. Standard RAPTOR logic for the whole path
+        standard_routes = await super().find_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
+
+        # 2. Hybrid Hub Search logic
+        source_hubs = self.hub_manager.get_nearest_hubs(source_stop_id, graph)
+        dest_hubs = self.hub_manager.get_nearest_hubs(dest_stop_id, graph)
+
+        if not source_hubs or not dest_hubs:
+            return standard_routes
+
+        hub_routes = []
+        # In a full implementation, we would perform local searches to hubs
+        # and merge with Hub-to-Hub precomputations.
+        # For now, we perform the Pareto merge of the best options found.
+
+        # 3. Pareto Merge
+        return self._pareto_merge(standard_routes, hub_routes)
+
+    def _pareto_merge(self, routes_a: List[Route], routes_b: List[Route]) -> List[Route]:
+        """Merge results and choose best (Step 4: Pareto Merge)"""
+        combined = routes_a + routes_b
+        
+        if not combined:
+            return []
+            
+        # Basic dominance pruning based on time and cost
+        combined.sort(key=lambda r: (r.total_duration, r.total_cost))
+        
+        pareto_front = []
+        min_cost = float('inf')
+        for r in combined:
+            if r.total_cost < min_cost:
+                pareto_front.append(r)
+                min_cost = r.total_cost
+                    
+        return pareto_front[:10]
         session = SessionLocal()
         try:
             # segment-level signals (train delay history / live state)
@@ -1380,6 +1800,8 @@ class RouteEngine:
     """Main route engine interface"""
 
     def __init__(self):
+        from .validator.validation_manager import create_validation_manager_with_defaults
+        
         self.raptor = OptimizedRAPTOR(max_transfers=3)
         self.validation_manager = create_validation_manager_with_defaults()
 
@@ -1438,6 +1860,7 @@ class RouteEngine:
 
     def validate_resilience(self, validation_config: dict = None) -> bool:
         """Facade: run resilience (RT-171—RT-200) validations via OptimizedRAPTOR."""
+        from .validator.validation_manager import ValidationProfile, ValidationCategory
         return self.raptor.validate_resilience(validation_config)
 
     def validate_production_excellence(self, validation_config: dict = None) -> bool:
@@ -1695,6 +2118,98 @@ class RouteEngine:
 # UTILITY FUNCTIONS
 # ==============================================================================
 
+# ==============================================================================
+# PUBLIC API - RAILWAY ROUTE ENGINE
+# ==============================================================================
+
+class RailwayRouteEngine:
+    """
+    The main coordinator for all route-finding operations.
+    Integrates Snapshots, Real-time Overlays, and Hybrid Hub-RAPTOR.
+    """
+
+    def __init__(self):
+        # Phase 3: Hub Management
+        self.hub_manager = HubManager(SessionLocal)
+        self.hub_manager.initialize_hubs()
+        
+        # Phase 2: Parallel building & Hybrid Raptor
+        self.raptor = HybridRAPTOR(self.hub_manager, max_transfers=3)
+        self.executor = ThreadPoolExecutor(max_workers=8)
+        self.graph_builder = ParallelGraphBuilder(self.executor)
+        
+        # State
+        self.current_snapshot: Optional[StaticGraphSnapshot] = None
+        self.last_snapshot_time: Optional[datetime] = None
+        self.current_overlay: RealtimeOverlay = RealtimeOverlay()
+
+    async def _get_current_graph(self, date: datetime) -> TimeDependentGraph:
+        """Get or rebuild the graph, ensuring snapshot is fresh"""
+        # Step 1: Static Snapshot (Daily build)
+        if not self.current_snapshot or (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400:
+            logger.info("Building fresh static graph snapshot...")
+            self.current_snapshot = await self.raptor._get_or_build_snapshot(date)
+            self.last_snapshot_time = datetime.utcnow()
+            
+        graph = TimeDependentGraph(self.current_snapshot)
+        
+        # Step 2: Overlay Layer (Copy-on-Write)
+        graph.apply_overlay(self.current_overlay)
+        
+        return graph
+
+    async def search_routes(self, source_code: str, destination_code: str,
+                           departure_date: datetime,
+                           constraints: Optional[RouteConstraints] = None,
+                           user_context: Optional[UserContext] = None) -> List[Route]:
+        """Search routes using Hybrid RAPTOR with Snapshot+Overlay support"""
+        if constraints is None:
+            constraints = RouteConstraints()
+
+        # Step 1 & 2: Get current graph with Snapshot + Overlay
+        graph = await self._get_current_graph(departure_date)
+
+        session = SessionLocal()
+        try:
+            source_stop = session.query(Stop).filter(Stop.code == source_code).first()
+            dest_stop = session.query(Stop).filter(Stop.code == destination_code).first()
+
+            if not source_stop or not dest_stop:
+                return []
+
+            # Execute RAPTOR search with pre-built graph
+            routes = await self.raptor.find_routes(
+                source_stop.id, dest_stop.id, departure_date, constraints, graph=graph
+            )
+
+            if user_context:
+                # Personalization ranking
+                pass
+
+            return routes
+
+        finally:
+            session.close()
+
+    async def apply_realtime_updates(self, updates: List[Dict[str, Any]]):
+        """Apply real-time updates to the overlay (COW style)"""
+        for update in updates:
+            trip_id = update.get('trip_id')
+            update_type = update.get('type')
+
+            if update_type == 'delay':
+                delay_min = update.get('delay_minutes', 0)
+                self.current_overlay.apply_delay(trip_id, delay_min)
+            elif update_type == 'cancellation':
+                self.current_overlay.cancel_trip(trip_id)
+
+        logger.info(f"Applied {len(updates)} realtime updates to overlay layer")
+
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
 def get_station_by_code(code: str) -> Optional[Stop]:
     """Get station by code"""
     session = SessionLocal()
@@ -1704,15 +2219,8 @@ def get_station_by_code(code: str) -> Optional[Stop]:
         session.close()
 
 
-def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> float:
-    """Calculate fare for a segment (simplified)"""
-    # In production, this would use distance-based pricing
-    base_fare = 100.0
-    return base_fare
 
-
-
-    def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:
+    def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:z
         """
         Validate an API request using all RT-111 to RT-130 security checks.
         

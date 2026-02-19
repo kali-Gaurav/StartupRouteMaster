@@ -8,12 +8,13 @@ from sqlalchemy import (
     ForeignKey,
     JSON,
     Text,
+    LargeBinary,
     CheckConstraint,
     UniqueConstraint,
     Date,
     Index,
     Time,
-)
+) 
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -77,8 +78,7 @@ class Stop(Base):
     state = Column(String(255))
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
-    location_type = Column(Integer, default=0) # 0 for stop, 1 for station
+    geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility    departure_buckets = relationship("StopDepartureBucket", back_populates="stop", cascade="all, delete-orphan")    location_type = Column(Integer, default=0) # 0 for stop, 1 for station
     parent_station_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
     
     # NEW FIELDS FOR ADVANCED FEATURES
@@ -160,6 +160,8 @@ class Trip(Base):
     service = relationship("Calendar", back_populates="trips")
     stop_times = relationship("StopTime", back_populates="trip", cascade="all, delete-orphan")
     coaches = relationship("Coach", back_populates="train", cascade="all, delete-orphan")
+    # Back-reference for legacy/denormalized segments (kept for compatibility / ETL checks)
+    segments = relationship("Segment", back_populates="trip")
     
 class StopTime(Base):
     """The arrival and departure of a trip at a specific stop."""
@@ -625,23 +627,92 @@ class Station(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     segments_from = relationship("Segment", foreign_keys="Segment.source_station_id", back_populates="source_station")
     segments_to = relationship("Segment", foreign_keys="Segment.dest_station_id", back_populates="dest_station")
+    departure_buckets = relationship("StationDepartureBucket", back_populates="station", cascade="all, delete-orphan")
 
 class Segment(Base):
     __tablename__ = "segments"
+    __table_args__ = (
+        Index("idx_segments_src_dest_dep", "source_station_id", "dest_station_id", "departure_time"),
+    )
+
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     source_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
     dest_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
     vehicle_id = Column(String(36), ForeignKey("vehicles.id"), nullable=True, index=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True, index=True)
+
     transport_mode = Column(String(50), nullable=False)
-    departure_time = Column(String(8), nullable=False)
-    arrival_time = Column(String(8), nullable=False)
+    departure_time = Column(Time, nullable=False)
+    arrival_time = Column(Time, nullable=False)
+    arrival_day_offset = Column(Integer, nullable=True)
+
     duration_minutes = Column(Integer, nullable=False)
+    distance_km = Column(Float, nullable=True)
     cost = Column(Float, nullable=False)
     operating_days = Column(String(7), nullable=False, default="1111111")
+
     source_station = relationship("Station", foreign_keys=[source_station_id], back_populates="segments_from")
     dest_station = relationship("Station", foreign_keys=[dest_station_id], back_populates="segments_to")
     vehicle = relationship("Vehicle", back_populates="segments")
+    trip = relationship("Trip", back_populates="segments", lazy='joined')
     # SeatInventory now references `stop_time_id`; remove direct Segment->SeatInventory relationship to avoid FK mismatch in tests
+
+class TimeIndexKey(Base):
+    """Maps entity (trip/vehicle/segment) -> integer key used inside time-index bitsets."""
+    __tablename__ = "time_index_keys"
+    __table_args__ = (
+        UniqueConstraint('entity_type', 'entity_id', name='uq_time_index_key'),
+        Index("idx_time_index_entity", "entity_type", "entity_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    entity_type = Column(String(50), nullable=False, index=True)  # 'trip' | 'vehicle' | 'segment'
+    entity_id = Column(String(255), nullable=False, index=True)   # actual id (trip.id or vehicle.uuid)
+
+
+class StationDepartureBucket(Base):
+    """Station-centric time buckets containing a compact bitset of available trips/vehicles.
+
+    - bucket_start_minute: minutes since midnight floored to bucket interval (e.g. 08:00 -> 480)
+    - bitmap: serialized Roaring bitmap (stored as BYTEA/LargeBinary)
+    """
+    __tablename__ = "station_departures"
+    __table_args__ = (
+        UniqueConstraint('station_id', 'bucket_start_minute', name='uq_station_bucket'),
+        Index("idx_station_departures_station_bucket", "station_id", "bucket_start_minute"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
+    bucket_start_minute = Column(Integer, nullable=False, index=True)
+    bitmap = Column(LargeBinary, nullable=False, default=b"")
+    trips_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    station = relationship("Station", back_populates="departure_buckets")
+
+
+class StopDepartureBucket(Base):
+    """Stop-centric time buckets keyed by GTFS `stops.id` (integer).
+
+    This is the lookup table the route engine will use for memory-backed
+    earliest-departure queries.
+    """
+    __tablename__ = "stop_departures"
+    __table_args__ = (
+        UniqueConstraint('stop_id', 'bucket_start_minute', name='uq_stop_bucket'),
+        Index("idx_stop_departures_stop_bucket", "stop_id", "bucket_start_minute"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    stop_id = Column(Integer, ForeignKey("stops.id"), nullable=False, index=True)
+    bucket_start_minute = Column(Integer, nullable=False, index=True)
+    bitmap = Column(LargeBinary, nullable=False, default=b"")
+    trips_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    stop = relationship("Stop", back_populates="departure_buckets")
+
 
 class StationMaster(Base):
     __tablename__ = "stations_master"

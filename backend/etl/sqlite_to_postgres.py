@@ -6,12 +6,37 @@ from typing import Dict, List, Optional
 import logging
 import os
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, and_
+from sqlalchemy import create_engine, and_, text
 from sqlalchemy.orm import sessionmaker
 from geoalchemy2.functions import ST_MakePoint # Import ST_MakePoint function
+try:
+    from pyroaring import BitMap  # Roaring bitmaps for compact, fast bit operations
+except Exception:
+    # Fallback lightweight BitMap shim (uses Python set + pickle for serialization).
+    import pickle
+    class BitMap:
+        def __init__(self, iterable=None):
+            self._s = set(iterable or [])
+        def __ior__(self, other):
+            self._s |= (other._s if isinstance(other, BitMap) else set(other))
+            return self
+        def __or__(self, other):
+            return BitMap(self._s | (other._s if isinstance(other, BitMap) else set(other)))
+        def __iter__(self):
+            return iter(self._s)
+        def serialize(self):
+            return pickle.dumps(sorted(self._s))
+        @classmethod
+        def deserialize(cls, blob):
+            try:
+                data = pickle.loads(blob)
+            except Exception:
+                data = []
+            return BitMap(data)
+
 
 # Import models directly to avoid circular dependency issues with app-level modules
-from backend.models import Base, Station, Segment, Vehicle 
+from backend.models import Base, Station, Segment, Vehicle, TimeIndexKey, StationDepartureBucket
 
 # Add imports for Redis and Config
 import redis
@@ -233,7 +258,11 @@ class PostgresLoader:
         
         geom = None
         if lat is not None and lon is not None:
-            geom = ST_MakePoint(lon, lat)
+            # Only use ST_MakePoint if dialect is postgresql/postgis, otherwise use null or string
+            if self.db.bind.dialect.name == 'postgresql':
+                geom = ST_MakePoint(lon, lat)
+            else:
+                geom = f"POINT({lon} {lat})"
 
         new_station = Station(
             id=str(uuid.uuid4()), 
@@ -266,21 +295,140 @@ class PostgresLoader:
         return new_vehicle.id
 
     def create_segment(self, segment_data: Dict) -> bool:
-        existing = self.db.query(Segment).filter(
-            and_(
-                Segment.source_station_id == segment_data["source_station_id"],
-                Segment.dest_station_id == segment_data["dest_station_id"],
-                Segment.vehicle_id == segment_data["vehicle_id"],
-                Segment.departure_time == segment_data["departure_time"],
-            )
-        ).first()
+        """Create or skip a Segment row.
+
+        Normalizes `departure_time`/`arrival_time` to Python time objects so the
+        DB `Time` column receives the correct type. Also accepts optional
+        `trip_id`, `distance_km`, and `arrival_day_offset` keys coming from
+        the SQLite source.
+        """
+        # normalize times (accept 'HH:MM' strings or datetime.time objects)
+        def _to_time(val):
+            if val is None:
+                return None
+            # _parse_time_flexible returns a datetime; convert to time
+            if isinstance(val, str):
+                try:
+                    return _parse_time_flexible(val).time()
+                except Exception:
+                    # fallback: try HH:MM
+                    try:
+                        return datetime.strptime(val.strip(), "%H:%M").time()
+                    except Exception:
+                        return None
+            if hasattr(val, 'hour') and hasattr(val, 'minute'):
+                return val if isinstance(val, type(datetime.utcnow().time())) else val
+            return None
+
+        dep_time = _to_time(segment_data.get("departure_time"))
+        arr_time = _to_time(segment_data.get("arrival_time"))
+
+        # build query filter that matches existing segments robustly
+        q = self.db.query(Segment).filter(
+            Segment.source_station_id == segment_data["source_station_id"],
+            Segment.dest_station_id == segment_data["dest_station_id"],
+            Segment.vehicle_id == segment_data.get("vehicle_id"),
+        )
+        if dep_time is not None:
+            q = q.filter(Segment.departure_time == dep_time)
+
+        existing = q.first()
         if not existing:
-            self.db.add(Segment(**segment_data))
+            # prepare payload for model (ensure correct types)
+            payload = {
+                "id": segment_data.get("id") or str(uuid.uuid4()),
+                "source_station_id": segment_data["source_station_id"],
+                "dest_station_id": segment_data["dest_station_id"],
+                "vehicle_id": segment_data.get("vehicle_id"),
+                "trip_id": segment_data.get("trip_id"),
+                "transport_mode": segment_data.get("transport_mode", "train"),
+                "departure_time": dep_time,
+                "arrival_time": arr_time,
+                "arrival_day_offset": segment_data.get("arrival_day_offset"),
+                "duration_minutes": int(segment_data.get("duration_minutes") or 0),
+                "distance_km": float(segment_data.get("distance_km") or 0.0),
+                "cost": float(segment_data.get("cost") or 0.0),
+                "operating_days": segment_data.get("operating_days", "1111111"),
+            }
+            self.db.add(Segment(**payload))
             return True
         return False
 
     def close(self):
         self.db.close()
+
+    # -------------------------
+    # Time-index / bucket builder
+    # -------------------------
+    def get_or_create_time_index_key(self, entity_type: str, entity_id: str) -> int:
+        """Return an integer key for (entity_type, entity_id). Creates row when missing."""
+        if entity_id is None:
+            raise ValueError("entity_id is required")
+        existing = self.db.query(TimeIndexKey).filter(TimeIndexKey.entity_type == entity_type, TimeIndexKey.entity_id == entity_id).first()
+        if existing:
+            return existing.id
+        new = TimeIndexKey(entity_type=entity_type, entity_id=entity_id)
+        self.db.add(new)
+        self.db.commit()
+        self.db.refresh(new)
+        return new.id
+
+    def build_station_departure_index(self, bucket_minutes: int = 15) -> int:
+        """Build station -> bucket -> roaring bitmap index from `segments` table.
+
+        - Uses TimeIndexKey to assign small integer keys to entities (trip or vehicle)
+        - Persists serialized Roaring bitmaps into `station_departures` table
+        - Returns number of buckets created/updated
+        """
+        logger.info(f"Building station departure index with {bucket_minutes}-minute buckets...")
+
+        # Collect mappings (station_id, bucket_start) -> set(key_ids)
+        bucket_map: Dict[tuple, set] = {}
+        segments = self.db.query(Segment).all()
+        for s in segments:
+            if not s.source_station_id or not s.departure_time:
+                continue
+            # entity mapping: prefer trip.id else vehicle.uuid
+            if s.trip_id:
+                entity_type = 'trip'
+                entity_id = str(s.trip_id)
+            else:
+                entity_type = 'vehicle'
+                entity_id = s.vehicle_id
+            try:
+                key_id = self.get_or_create_time_index_key(entity_type, entity_id)
+            except Exception:
+                continue
+
+            minute_of_day = (s.departure_time.hour * 60) + s.departure_time.minute
+            bucket_start = minute_of_day - (minute_of_day % bucket_minutes)
+            k = (s.source_station_id, bucket_start)
+            bucket_map.setdefault(k, set()).add(key_id)
+
+        # Persist buckets
+        created_or_updated = 0
+        for (station_id, bucket_start), keyset in bucket_map.items():
+            if len(keyset) == 0:
+                continue
+            bm = BitMap(keyset)
+            blob = bm.serialize()
+            row = self.db.query(StationDepartureBucket).filter(StationDepartureBucket.station_id == station_id, StationDepartureBucket.bucket_start_minute == bucket_start).first()
+            if row:
+                row.bitmap = blob
+                row.trips_count = len(keyset)
+            else:
+                new_row = StationDepartureBucket(
+                    id=str(uuid.uuid4()),
+                    station_id=station_id,
+                    bucket_start_minute=bucket_start,
+                    bitmap=blob,
+                    trips_count=len(keyset),
+                )
+                self.db.add(new_row)
+            created_or_updated += 1
+        self.db.commit()
+        logger.info(f"Built {created_or_updated} station departure buckets.")
+        return created_or_updated
 
 def validate_etl_data(db: Session, station_code_to_id: Dict[str, str], segments_created: int) -> Dict[str, int]:
     """
@@ -296,28 +444,28 @@ def validate_etl_data(db: Session, station_code_to_id: Dict[str, str], segments_
 
     try:
         # Check for orphaned segments (segments with invalid station references)
-        orphaned_query = db.execute("""
+        orphaned_query = db.execute(text("""
             SELECT COUNT(*) FROM segments s
             WHERE NOT EXISTS (SELECT 1 FROM stations st WHERE st.id = s.source_station_id)
             OR NOT EXISTS (SELECT 1 FROM stations st WHERE st.id = s.dest_station_id)
-        """)
+        """))
         validation_results['orphaned_segments'] = orphaned_query.scalar() or 0
 
         # Check for segments with invalid durations
-        invalid_duration_query = db.execute("""
+        invalid_duration_query = db.execute(text("""
             SELECT COUNT(*) FROM segments WHERE duration_minutes <= 0 OR duration_minutes > 1440
-        """)
+        """))
         validation_results['invalid_durations'] = invalid_duration_query.scalar() or 0
 
         # Check for duplicate segments (same source, dest, vehicle, departure time)
-        duplicate_query = db.execute("""
+        duplicate_query = db.execute(text("""
             SELECT COUNT(*) FROM (
                 SELECT source_station_id, dest_station_id, vehicle_id, departure_time, COUNT(*)
                 FROM segments
                 GROUP BY source_station_id, dest_station_id, vehicle_id, departure_time
                 HAVING COUNT(*) > 1
             ) duplicates
-        """)
+        """))
         validation_results['duplicate_segments'] = duplicate_query.scalar() or 0
 
         # Total validation errors
@@ -395,6 +543,13 @@ def run_etl(sqlite_path: str = DEFAULT_SQLITE_PATH, db_url: str | None = None):
         loader.db.commit()
         results['segments_created'] = created
         logger.info(f"✅ Committed all segments. Created {created} segments.")
+
+        # Build station-centric time-index (15-minute buckets)
+        try:
+            buckets = loader.build_station_departure_index(bucket_minutes=15)
+            logger.info(f"✅ Built station departure index ({buckets} buckets).")
+        except Exception as e:
+            logger.warning(f"Failed to build station departure index: {e}")
 
         # Validate data integrity after ETL
         validation_results = validate_etl_data(loader.db, station_code_to_id, created)

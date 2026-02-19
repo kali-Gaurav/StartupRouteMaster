@@ -210,10 +210,15 @@ def migrate_trips_and_stop_times(db: Session):
             source_stop_id = stop_id_map.get(first_segment.source_station_id)
             if not source_stop_id: continue
 
+            # Accept either a string ("HH:MM") or a time object returned by the DB
+            dep_val = first_segment.departure_time
             try:
-                dep_time_obj = time.fromisoformat(first_segment.departure_time)
-            except ValueError:
-                logger.warning(f"Invalid time format '{first_segment.departure_time}' for vehicle {vehicle_id}. Skipping first stop.")
+                if isinstance(dep_val, str):
+                    dep_time_obj = time.fromisoformat(dep_val)
+                else:
+                    dep_time_obj = dep_val
+            except Exception:
+                logger.warning(f"Invalid time format '{dep_val}' for vehicle {vehicle_id}. Skipping first stop.")
                 continue
 
             new_stop_times.append(StopTime(
@@ -230,15 +235,22 @@ def migrate_trips_and_stop_times(db: Session):
                 dest_stop_id = stop_id_map.get(segment.dest_station_id)
                 if not dest_stop_id: continue
 
+                # Accept string or time object for arrival/departure times
                 try:
-                    arr_time_obj = time.fromisoformat(segment.arrival_time)
-                    # For the last stop, departure can be the same as arrival
-                    dep_time_obj_next = time.fromisoformat(trip_segments[i+1].departure_time) if i + 1 < len(trip_segments) else arr_time_obj
-                except ValueError:
+                    arr_val = segment.arrival_time
+                    if isinstance(arr_val, str):
+                        arr_time_obj = time.fromisoformat(arr_val)
+                    else:
+                        arr_time_obj = arr_val
+
+                    if i + 1 < len(trip_segments):
+                        next_dep_val = trip_segments[i+1].departure_time
+                        dep_time_obj_next = time.fromisoformat(next_dep_val) if isinstance(next_dep_val, str) else next_dep_val
+                    else:
+                        dep_time_obj_next = arr_time_obj
+                except Exception:
                     logger.warning(f"Invalid time format in segment for vehicle {vehicle_id}. Skipping stop.")
                     continue
-                except IndexError: # Last segment
-                    dep_time_obj_next = arr_time_obj
 
                 new_stop_times.append(StopTime(
                     trip_id=trip.id,

@@ -47,10 +47,7 @@ conn.close()
 
 md = []
 md.append('# railway_manager.db — architecture & data inventory ✅\n')
-md.append(f'**Location:** `backend/railway_manager.db`  
-**File size:** {stat.st_size} bytes ({size_kb:.2f} KB)  
-**Last modified:** {modified}  
-')
+md.append(f'**Location:** `backend/railway_manager.db`\n**File size:** {stat.st_size} bytes ({size_kb:.2f} KB)\n**Last modified:** {modified}\n')
 md.append('---\n')
 md.append('## Summary\n')
 md.append(f'- **Total tables/views inspected:** {len(rows)}\n')

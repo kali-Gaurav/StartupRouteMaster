@@ -13,7 +13,6 @@ from .validation_manager import (
     ValidationProfile,
     ValidationCategory,
     ValidationResult,
-    BaseValidator,
     create_validation_manager_with_defaults,
 )
 
@@ -34,7 +33,6 @@ __all__ = [
     "ValidationProfile",
     "ValidationCategory",
     "ValidationResult",
-    "BaseValidator",
     "create_validation_manager_with_defaults",
     # Individual validators
     "RouteValidator",

@@ -1,12 +1,13 @@
-from typing import List
+from typing import List, TYPE_CHECKING
 from datetime import datetime
-from ..route_engine import Route, RouteSegment, TransferConnection
-from ..route_engine import RouteConstraints
+
+if TYPE_CHECKING:
+    from ..route_engine import Route, RouteSegment, TransferConnection, RouteConstraints
 
 class RouteValidator:
     """Class to handle route validation logic."""
 
-    def validate_route_constraints(self, route: Route, constraints: RouteConstraints) -> bool:
+    def validate_route_constraints(self, route: 'Route', constraints: 'RouteConstraints') -> bool:
         """Validate route against all constraints"""
         if route.total_duration > constraints.max_journey_time:
             return False
