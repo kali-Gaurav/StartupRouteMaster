@@ -8,7 +8,8 @@ from enum import Enum
 from dataclasses import dataclass, asdict
 import json
 
-from backend.services.journey_reconstruction import JourneyOption, SegmentDetail
+# Consolidated route engine provides journey-related utilities
+from backend.core.route_engine import RouteSegment, TransferConnection
 
 
 class VerificationStatus(str, Enum):

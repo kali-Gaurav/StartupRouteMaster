@@ -21,7 +21,6 @@ import redis.asyncio as aioredis
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from backend.core.route_engine import route_engine
-from backend.core.multi_modal_route_engine import multi_modal_route_engine
 from backend.database import SessionLocal
 from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
 

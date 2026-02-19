@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from backend.database import get_db
 from backend.schemas import SearchRequestSchema
-from backend.core.multi_modal_route_engine import multi_modal_route_engine
+from backend.core.route_engine import route_engine
 from backend.database.models import StationMaster, Station, Disruption
 from backend.services.cache_service import cache_service
 from backend.services.station_service import StationService
@@ -56,9 +56,8 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
                 detail=f"Invalid request: {validator.get_error_message()}"
             )
 
-        # Ensure the multi-modal engine is loaded
-        if not multi_modal_route_engine._is_loaded:
-            multi_modal_route_engine.load_graph_from_db(db)
+        # Ensure the route engine is initialized
+        # route_engine is a singleton initialized at module load
 
         # Parse travel date
         travel_date = validate_date_string(search_request.date, allow_past=False)
@@ -92,74 +91,53 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
 
         logger.info(f"Request {request_id}: Resolved to stops {source_stop.stop_id} -> {dest_stop.stop_id}")
 
-        # Search for journeys based on request type
-        routes = []
-        
-        if getattr(search_request, 'journey_type', 'single') == 'connecting':
-            logger.info(f"Request {request_id}: Searching connecting journeys")
-            individual_journeys = multi_modal_route_engine.search_single_journey(
-                source_stop_id, dest_stop_id, travel_date
-            )
-            if individual_journeys:
-                routes = multi_modal_route_engine.search_connecting_journeys(individual_journeys)
-        
-        elif getattr(search_request, 'journey_type', 'single') == 'circular':
-            logger.info(f"Request {request_id}: Searching circular journeys")
-            if hasattr(search_request, 'return_date') and search_request.return_date:
-                return_date = validate_date_string(search_request.return_date, allow_past=False)
-                if return_date:
-                    outward_journeys = multi_modal_route_engine.search_single_journey(
-                        source_stop_id, dest_stop_id, travel_date
-                    )
-                    if outward_journeys:
-                        routes = multi_modal_route_engine.search_circular_journey(
-                            outward_journeys[0], return_date
-                        )
-            else:
-                logger.warning(f"Request {request_id}: Circular journey requested without return date")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Circular journey requires return_date"
-                )
-        
-        elif getattr(search_request, 'journey_type', 'single') == 'multi_city':
-            logger.info(f"Request {request_id}: Searching multi-city journeys")
-            if hasattr(search_request, 'cities') and search_request.cities:
-                routes = multi_modal_route_engine.search_multi_city_journey(
-                    search_request.cities, [travel_date] * len(search_request.cities)
-                )
-        
-        else:  # Single journey (default)
-            logger.info(f"Request {request_id}: Searching single journey")
-            routes = multi_modal_route_engine.search_single_journey(
-                source_stop_id, dest_stop_id, travel_date
-            )
+        # Search for routes using the main route engine
+        routes = await route_engine.raptor.find_routes(
+            source_stop_id,
+            dest_stop_id,
+            travel_date,
+            route_engine.raptor.RouteConstraints() if hasattr(route_engine.raptor, 'RouteConstraints') else None
+        )
 
         # NEW: Log if no routes found
         if not routes:
             logger.warning(f"Request {request_id}: No routes found for {search_request.source} -> {search_request.destination} on {travel_date}")
 
-        # Apply fare calculation with concessions
-        passenger_type = getattr(search_request, 'passenger_type', 'adult')
-        concessions = getattr(search_request, 'concessions', [])
-
+        # Convert RouteSegment objects to dict format for response
+        routes_data = []
         for route in routes:
-            try:
-                fare_info = multi_modal_route_engine.calculate_fare_with_concessions(
-                    route, passenger_type, concessions
-                )
-                route['fare_details'] = fare_info
-            except Exception as e:
-                logger.warning(f"Request {request_id}: Failed to calculate fare: {e}")
-                route['fare_details'] = {'error': str(e)}
-
-        # Simulate real-time delays
-        for route in routes:
-            try:
-                route_with_delays = multi_modal_route_engine.simulate_real_time_delays(route, db)
-                route.update(route_with_delays)
-            except Exception as e:
-                logger.warning(f"Request {request_id}: Failed to simulate delays: {e}")
+            route_dict = {
+                'segments': [
+                    {
+                        'trip_id': seg.trip_id,
+                        'departure_stop_id': seg.departure_stop_id,
+                        'arrival_stop_id': seg.arrival_stop_id,
+                        'departure_time': seg.departure_time.isoformat(),
+                        'arrival_time': seg.arrival_time.isoformat(),
+                        'duration_minutes': seg.duration_minutes,
+                        'distance_km': seg.distance_km,
+                        'fare': seg.fare,
+                        'train_name': seg.train_name,
+                        'train_number': seg.train_number
+                    } for seg in route.segments
+                ],
+                'transfers': [
+                    {
+                        'station_id': t.station_id,
+                        'arrival_time': t.arrival_time.isoformat(),
+                        'departure_time': t.departure_time.isoformat(),
+                        'duration_minutes': t.duration_minutes,
+                        'station_name': t.station_name,
+                        'facilities_score': t.facilities_score,
+                        'safety_score': t.safety_score
+                    } for t in route.transfers
+                ],
+                'total_duration': route.total_duration,
+                'total_distance': route.total_distance,
+                'total_fare': route.total_fare,
+                'score': route.score
+            }
+            routes_data.append(route_dict)
 
         # Check for disruptions
         try:
@@ -181,18 +159,18 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
 
         response_data = {
             "request_id": request_id,
-            "routes": routes,
+            "routes": routes_data,
             "disruption_alerts": disruption_alerts,
             "source": search_request.source,
             "destination": search_request.destination,
             "travel_date": str(travel_date),
-            "total_options": len(routes),
-            "message": f"Found {len(routes)} options" if routes else "No routes available"
+            "total_options": len(routes_data),
+            "message": f"Found {len(routes_data)} options" if routes_data else "No routes available"
         }
         status_label = "success"
 
         duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"Request {request_id}: Search completed in {duration_ms}ms, found {len(routes)} routes")
+        logger.info(f"Request {request_id}: Search completed in {duration_ms}ms, found {len(routes_data)} routes")
 
         return response_data
 

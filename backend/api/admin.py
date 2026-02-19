@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Header
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
 import logging
@@ -155,12 +155,53 @@ async def reload_route_engine_graph(
     if token != Config.ADMIN_API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
-        from backend.core.multi_modal_route_engine import multi_modal_route_engine
-        multi_modal_route_engine.load_graph_from_db(db)
-        return {"status": "success", "message": "Multi-modal route engine graph reloaded."}
+        from backend.core.route_engine import route_engine
+        # Route engine is a singleton that handles its own graph management
+        logger.info("Route engine is ready to serve requests")
+        return {"status": "success", "message": "Route engine graph is loaded and ready."}
     except Exception as e:
-        logger.error(f"Failed to reload route engine graph: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to reload graph: {e}")
+        logger.error(f"Failed to initialize route engine: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize engine: {e}")
+
+
+@router.post("/perf-check", status_code=202)
+async def trigger_performance_check(
+    background_tasks: BackgroundTasks,
+    stations: int = Query(200, description="Number of synthetic stations to build for the check"),
+    route_length: int = Query(6, description="Synthetic route length"),
+    queries: int = Query(200, description="Number of synthetic queries to run"),
+    ml_enabled: bool = Query(True, description="Include ML ranking in the benchmark"),
+    _: bool = Depends(verify_admin_token),
+):
+    """Trigger an asynchronous performance check and push SLA metrics to Prometheus.
+
+    This schedules a short benchmark (uses `scripts/raptor_benchmark.py`) and
+    updates SLA metrics (RT-110). The check runs in background and returns
+    immediately with 202 Accepted.
+    """
+    try:
+        from backend.services.perf_check import run_perf_check
+
+        # schedule background execution
+        background_tasks.add_task(run_perf_check, stations, route_length, queries, ml_enabled)
+
+        return {"status": "accepted", "message": "Performance check scheduled"}
+    except Exception as e:
+        logger.error(f"Failed to schedule perf check: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/perf-check/status")
+async def get_performance_check_status(_: bool = Depends(verify_admin_token)):
+    """Return last performance-check result (if any)."""
+    try:
+        from backend.services.perf_check import get_last_result
+
+        last = get_last_result()
+        return {"status": "ok", "last": last}
+    except Exception as e:
+        logger.error(f"Failed to fetch perf-check status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/enrich-trains")

@@ -30,9 +30,16 @@ from math import radians, cos, sin, asin, sqrt
 import redis
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
-from .performance_validators import PerformanceValidator
 
 logger = logging.getLogger(__name__)
+
+
+# Temporary placeholder for PerformanceValidator
+class PerformanceValidator:
+    """Placeholder performance validator."""
+    def validate_high_fan_out_station(self, fan_out_count: int, threshold: int = 200) -> bool:
+        """Validate high fan-out station."""
+        return fan_out_count <= threshold
 
 
 # ============================================================================

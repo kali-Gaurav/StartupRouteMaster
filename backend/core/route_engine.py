@@ -25,6 +25,11 @@ from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional, Set, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import os
+import sqlite3
+
+# geographic fallback
+from backend.utils.graph_utils import haversine_distance
 
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import joinedload
@@ -32,16 +37,14 @@ from sqlalchemy.orm import joinedload
 from ..database import SessionLocal
 from ..database.models import (
     Stop, Trip, StopTime, Route as GTFRoute,
-    Calendar, CalendarDate, Transfer
+    Calendar, CalendarDate, Transfer, TrainState
 )
 from ..database.config import Config
 from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, cache_route_search
-from .route_validators import RouteValidator
-from .multimodal_validators import MultimodalValidator
-from .fare_availability_validators import FareAndAvailabilityValidator
-from .performance_validators import PerformanceValidator
-from .api_security_validators import APISecurityValidator
-from .data_integrity_validators import DataIntegrityValidator
+from .validator.performance_validators import PerformanceValidator
+from .validator.validation_manager import create_validation_manager_with_defaults, ValidationProfile, ValidationCategory
+from ..ml_reliability_model import get_reliability_model
+from ..frequency_aware_range import get_frequency_aware_sizer
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +80,16 @@ class RouteSegment:
     duration_minutes: int
     distance_km: float
     fare: float
-    train_name: str
-    train_number: str
+    fare_amount: Optional[float] = None
+    train_name: str = ""
+    train_number: str = ""
+
+    def __post_init__(self):
+        # backward-compatible alias: keep `fare` and `fare_amount` in sync
+        if (self.fare is None or self.fare == 0) and self.fare_amount:
+            self.fare = float(self.fare_amount)
+        if self.fare_amount is None:
+            self.fare_amount = float(self.fare or 0.0)
 
     @property
     def departure_station(self) -> int:
@@ -114,6 +125,15 @@ class Route:
     total_distance: float = 0.0
     score: float = 0.0
     ml_score: float = 0.0
+
+    @property
+    def total_fare(self) -> float:
+        # backward-compatible alias used across older serializers
+        return self.total_cost
+
+    @total_fare.setter
+    def total_fare(self, v: float):
+        self.total_cost = v
 
     def add_segment(self, segment: RouteSegment):
         """Add a segment and update totals"""
@@ -151,6 +171,14 @@ class RouteConstraints:
     women_safety_priority: bool = False
     max_results: int = 10
 
+    # Range-RAPTOR (search window)
+    range_minutes: int = 0             # 0 = disabled; otherwise departure ± range_minutes/2
+    range_step_minutes: int = 15      # granularity when scanning the window
+    adaptive_range: bool = True       # let engine pick window based on distance/frequency
+
+    # Reliability weighting (0..1) used to bias route score by reliability/confidence
+    reliability_weight: float = 0.5
+
     # Compatibility / advanced options
     preferred_class: Optional[str] = None
     include_wait_time: bool = False
@@ -179,7 +207,13 @@ class UserContext:
 # ==============================================================================
 
 class TimeDependentGraph:
-    """Optimized time-dependent graph for RAPTOR"""
+    """Optimized time-dependent graph for RAPTOR
+
+    Enhancements added:
+    - `stop_index` + bitset helpers for fast reachability checks
+    - `route_patterns` mapping: stop-sequence hash -> trips (trip pattern indexing)
+    - `transfer_cache` precomputed transfer lookup for (from_stop, to_stop)
+    """
 
     def __init__(self):
         self.departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = defaultdict(list)
@@ -188,6 +222,13 @@ class TimeDependentGraph:
         self.transfer_graph: Dict[int, List[TransferConnection]] = defaultdict(list)
         self.stop_cache: Dict[int, Stop] = {}
 
+        # New structures for algorithmic speedups
+        self.stop_index: Dict[int, int] = {}                # stop_id -> bit position
+        self.stop_count: int = 0                            # number of stops in graph
+        self.route_patterns: Dict[Tuple[int, ...], List[int]] = defaultdict(list)  # stop sequence -> list of trip_ids
+        self.transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = {}  # (from_stop, to_stop) -> transfers
+
+    # ----------------------------- event helpers -----------------------------
     def add_departure(self, stop_id: int, departure_time: datetime, trip_id: int):
         """Add departure event"""
         self.departures_by_stop[stop_id].append((departure_time, trip_id))
@@ -203,7 +244,11 @@ class TimeDependentGraph:
     def add_transfer(self, from_stop: int, transfer: TransferConnection):
         """Add transfer capability"""
         self.transfer_graph[from_stop].append(transfer)
+        # populate transfer_cache for fast two-stop lookups
+        key = (from_stop, transfer.station_id)
+        self.transfer_cache.setdefault(key, []).append(transfer)
 
+    # ----------------------------- lookup helpers -----------------------------
     def get_departures_from_stop(self, stop_id: int, after_time: datetime) -> List[Tuple[datetime, int]]:
         """Get departures from stop after given time"""
         departures = self.departures_by_stop.get(stop_id, [])
@@ -232,23 +277,49 @@ class TimeDependentGraph:
 
         return feasible
 
+    def get_transfer_between_stops(self, from_stop: int, to_stop: int) -> List[TransferConnection]:
+        """Fast lookup for precomputed transfer(s) between two stops (may return empty list)."""
+        return self.transfer_cache.get((from_stop, to_stop), [])
+
     def get_trip_segments(self, trip_id: int) -> List[RouteSegment]:
         """Get all segments for a trip"""
         return self.trip_segments.get(trip_id, [])
+
+    # ----------------------------- bitset helpers -----------------------------
+    def build_stop_index(self):
+        """Construct stop_index and stop_count (call after stop_cache is populated)."""
+        self.stop_index = {stop_id: idx for idx, stop_id in enumerate(sorted(self.stop_cache.keys()))}
+        self.stop_count = len(self.stop_index)
+
+    def stations_to_bitset(self, station_ids: List[int]) -> int:
+        """Return an integer bitset representing the provided station IDs."""
+        bitset = 0
+        for sid in station_ids:
+            pos = self.stop_index.get(sid)
+            if pos is not None:
+                bitset |= (1 << pos)
+        return bitset
+
+    def route_to_bitset(self, route: 'Route') -> int:
+        """Return bitset representing all stations visited by a route."""
+        return self.stations_to_bitset(route.get_all_stations())
+
+    def pattern_for_trip(self, trip_id: int) -> Tuple[int, ...]:
+        """Return canonical stop-sequence tuple for a trip (used in pattern indexing)."""
+        segs = self.trip_segments.get(trip_id, [])
+        return tuple(seg.departure_stop_id for seg in segs) + ((segs[-1].arrival_stop_id,) if segs else ())
 
 
 class OptimizedRAPTOR:
     """Production-optimized RAPTOR algorithm implementation"""
 
-    def __init__(self, max_transfers: int = 3):
+    def __init__(self, max_transfers: int = 3, validation_manager=None):
         self.max_transfers = max_transfers
         self.executor = ThreadPoolExecutor(max_workers=4)
-        self.validator = RouteValidator()
-        self.multimodal_validator = MultimodalValidator()
-        self.fare_availability_validator = FareAndAvailabilityValidator()
+        # Keep the performance validator locally (used for timing checks in the engine)
         self.performance_validator = PerformanceValidator()
-        self.api_security_validator = APISecurityValidator()
-        self.data_integrity_validator = DataIntegrityValidator()
+        # Use ValidationManager to orchestrate all other validation logic
+        self.validation_manager = validation_manager or create_validation_manager_with_defaults()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
@@ -264,6 +335,17 @@ class OptimizedRAPTOR:
         Returns:
             List of ranked routes
         """
+
+    async def find_trips_by_stop_sequence(self, stop_sequence: List[int], date: Optional[datetime] = None) -> List[int]:
+        """Return list of trip_ids that match the exact stop-sequence pattern.
+
+        Useful for pattern-based pruning / frequency estimation.
+        """
+        # Use today's graph if date omitted
+        d = date or datetime.utcnow()
+        graph = await self._build_graph(d)
+        key = tuple(stop_sequence)
+        return list(graph.route_patterns.get(key, []))
         # Create cache query
         cache_query = RouteQuery(
             from_station=str(source_stop_id),
@@ -300,7 +382,7 @@ class OptimizedRAPTOR:
     async def _compute_routes(self, source_stop_id: int, dest_stop_id: int,
                              departure_date: datetime, constraints: RouteConstraints) -> List[Route]:
         """
-        Internal route computation (original find_routes logic)
+        Internal route computation with frequency-aware Range-RAPTOR.
         """
         start_time = _time.time()
 
@@ -317,59 +399,52 @@ class OptimizedRAPTOR:
         earliest_arrival: Dict[int, datetime] = {}
         best_routes: Dict[str, Route] = {}
 
-        # Round 0: Direct connections from source
-        source_departures = graph.get_departures_from_stop(source_stop_id, departure_date)
+        # Use Range‑RAPTOR if requested (search departure ± window) — reuse the built graph
+        if constraints.range_minutes > 0 or constraints.adaptive_range:
+            # adaptive window sizing when requested
+            if constraints.range_minutes == 0 and constraints.adaptive_range:
+                # Use frequency-aware window sizer
+                sizer = await get_frequency_aware_sizer()
+                
+                # Get distance estimate
+                src = graph.stop_cache.get(source_stop_id)
+                dst = graph.stop_cache.get(dest_stop_id)
+                distance_km = None
+                if src and dst:
+                    try:
+                        distance_km = haversine_distance(src.latitude, src.longitude, dst.latitude, dst.longitude)
+                    except Exception:
+                        distance_km = None
 
-        for dep_time, trip_id in source_departures[:50]:  # Limit initial departures
-            segments = graph.get_trip_segments(trip_id)
-            for segment in segments:
-                if segment.departure_stop_id == source_stop_id and segment.departure_time >= dep_time:
-                    route = Route()
-                    route.add_segment(segment)
+                # Compute frequency-aware window
+                constraints.range_minutes = await sizer.get_range_window_minutes(
+                    origin_stop_id=source_stop_id,
+                    destination_stop_id=dest_stop_id,
+                    search_date=departure_date.date(),
+                    base_range_minutes=60,
+                    distance_km=distance_km,
+                )
+                logger.debug(f"Frequency-aware Range-RAPTOR window: {constraints.range_minutes} minutes")
 
-                    # Check if this segment reaches destination
-                    if segment.arrival_stop_id == dest_stop_id:
-                        if self._validate_route_constraints(route, constraints):
-                            score = self._calculate_score(route, constraints)
-                            route.score = score
-                            key = f"direct_{trip_id}"
-                            if key not in best_routes or score < best_routes[key].score:
-                                best_routes[key] = route
-                    else:
-                        routes_by_round[0].append(route)
-                    break  # Only add first matching segment per trip
+            half = constraints.range_minutes // 2
+            step = max(5, constraints.range_step_minutes)
+            departure_times = [departure_date + timedelta(minutes=m) for m in range(-half, half + 1, step)]
 
-        # RAPTOR rounds (transfers)
-        for round_num in range(1, self.max_transfers + 1):
-            if not routes_by_round[round_num - 1]:
-                break
+            collected = []
+            # run searches across the time-window (sequential to keep memory predictable)
+            for dt in departure_times:
+                gathered = await self._search_single_departure(graph, source_stop_id, dest_stop_id, dt, constraints)
+                collected.extend(gathered)
 
-            current_routes = routes_by_round[round_num - 1]
+            # Deduplicate and sort (primary: score, secondary: -reliability)
+            unique = await self._deduplicate_routes(collected, graph)
+            unique.sort(key=lambda r: (r.score, -r.reliability))
+            return unique[:constraints.max_results]
 
-            # Process routes in parallel batches
-            batch_size = 10
-            for i in range(0, len(current_routes), batch_size):
-                batch = current_routes[i:i + batch_size]
-                transfer_routes = await asyncio.gather(*[
-                    self._process_route_transfers(route, graph, dest_stop_id, constraints)
-                    for route in batch
-                ])
-
-                for route_list in transfer_routes:
-                    routes_by_round[round_num].extend(route_list)
-
-        # Collect all valid routes to destination
-        all_routes = []
-        for key, route in best_routes.items():
-            if self._validate_route_constraints(route, constraints):
-                all_routes.append(route)
-
-        # Sort by score
-        all_routes.sort(key=lambda r: r.score)
-
-        logger.info(".2f")
-
-        return all_routes[:constraints.max_results]
+        # Single-departure search (default behavior)
+        single_routes = await self._search_single_departure(graph, source_stop_id, dest_stop_id, departure_date, constraints)
+        single_routes.sort(key=lambda r: (r.score, -r.reliability))
+        return single_routes[:constraints.max_results]
 
     async def _process_route_transfers(self, route: Route, graph: TimeDependentGraph,
                                       dest_stop_id: int, constraints: RouteConstraints) -> List[Route]:
@@ -419,7 +494,7 @@ class OptimizedRAPTOR:
                         # Check if destination reached
                         if segment.arrival_stop_id == dest_stop_id:
                             if self._validate_route_constraints(new_route, constraints):
-                                score = self._calculate_score(new_route, constraints)
+                                score = await self._score_with_reliability(new_route, constraints)
                                 new_route.score = score
                                 new_routes.append(new_route)
                         elif len(new_route.transfers) < constraints.max_transfers:
@@ -446,6 +521,13 @@ class OptimizedRAPTOR:
         graph.transfer_graph = db_graph['transfers']
         graph.stop_cache = db_graph['stops']
 
+        # Attach precomputed indexes (if present)
+        graph.route_patterns = db_graph.get('route_patterns', defaultdict(list))
+        graph.transfer_cache = db_graph.get('transfer_cache', {})
+
+        # Build stop_index for bitset operations
+        graph.build_stop_index()
+
         return graph
 
     def _build_graph_sync(self, date: datetime) -> Dict:
@@ -461,6 +543,10 @@ class OptimizedRAPTOR:
             arrivals = defaultdict(list)
             segments = defaultdict(list)
             stops = {}
+
+            # Precomputed indexes for algorithmic speedups
+            route_patterns = defaultdict(list)    # stop-sequence tuple -> list of trip_ids
+            transfer_cache = {}                   # (from_stop,to_stop) -> list[TransferConnection]
 
             # Query stop times for active services
             stop_times = session.query(StopTime).join(Trip).filter(
@@ -484,22 +570,85 @@ class OptimizedRAPTOR:
                 # Sort by sequence
                 trip_stop_times.sort(key=lambda x: x.stop_sequence)
 
-                # Create segments
+                # Create segments (use authoritative railway_manager distances/day-offsets when available)
                 trip_segments = []
                 for i in range(len(trip_stop_times) - 1):
                     current = trip_stop_times[i]
                     next_stop = trip_stop_times[i + 1]
 
-                    # Convert times to datetime (handle overnight / multi-day via rollover)
+                    # Convert departure time
                     dep_dt = self._time_to_datetime(date, current.departure_time)
+
+                    # Default arrival datetime (may be adjusted by authoritative day_offset)
                     arr_dt = self._time_to_datetime(date, next_stop.arrival_time)
 
-                    # If arrival datetime is earlier than departure, roll forward by whole days
-                    # This covers midnight crossings and multi-day trips when DB only stores time-of-day
-                    while arr_dt < dep_dt:
-                        arr_dt += timedelta(days=1)
+                    # Attempt to enrich with railway_manager (SQLite) authoritative segment data
+                    distance_km = None
+                    arrival_day_offset = None
+                    try:
+                        train_identifier = getattr(trip_stop_times[0].trip, 'trip_id', None)
+                        src_code = getattr(current.stop, 'code', None)
+                        dst_code = getattr(next_stop.stop, 'code', None)
+
+                        if train_identifier and src_code and dst_code:
+                            sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "railway_manager.db"))
+                            if os.path.exists(sqlite_path):
+                                conn = sqlite3.connect(sqlite_path)
+                                cur = conn.cursor()
+                                # First try exact train_no match with consecutive stations
+                                cur.execute(
+                                    "SELECT station_code, distance_from_source, day_offset, seq_no FROM train_routes WHERE train_no = ? ORDER BY seq_no",
+                                    (str(train_identifier),)
+                                )
+                                rows = cur.fetchall()
+                                if rows:
+                                    for r_idx in range(len(rows) - 1):
+                                        if rows[r_idx][0] == src_code and rows[r_idx + 1][0] == dst_code:
+                                            distance_km = float(rows[r_idx + 1][1] - rows[r_idx][1]) if rows[r_idx + 1][1] is not None and rows[r_idx][1] is not None else None
+                                            arrival_day_offset = int(rows[r_idx + 1][2] or 0)
+                                            break
+
+                                # Fallback: find any train that has the consecutive pair (fast path)
+                                if distance_km is None:
+                                    cur.execute(
+                                        """
+                                        SELECT t1.train_no, (t2.distance_from_source - t1.distance_from_source) AS distance_km, t2.day_offset
+                                        FROM train_routes t1
+                                        JOIN train_routes t2 ON t1.train_no = t2.train_no AND t2.seq_no = t1.seq_no + 1
+                                        WHERE t1.station_code = ? AND t2.station_code = ?
+                                        LIMIT 1
+                                        """,
+                                        (src_code, dst_code)
+                                    )
+                                    r = cur.fetchone()
+                                    if r:
+                                        distance_km = float(r[1]) if r[1] is not None else None
+                                        arrival_day_offset = int(r[2] or 0)
+
+                                conn.close()
+                    except Exception:
+                        # don't break graph build on lookup failures; fall back below
+                        distance_km = None
+                        arrival_day_offset = None
+
+                    # If authoritative arrival_day_offset present, use it to compute arrival datetime
+                    if arrival_day_offset is not None:
+                        arr_dt = self._time_to_datetime(date + timedelta(days=arrival_day_offset), next_stop.arrival_time)
+                    else:
+                        # Conservative fallback for overnight times if arrival < departure
+                        while arr_dt < dep_dt:
+                            arr_dt += timedelta(days=1)
 
                     duration_minutes = int((arr_dt - dep_dt).total_seconds() // 60)
+
+                    # Distance fallback: if not found in railway_manager, use Haversine between stop coords
+                    if distance_km is None:
+                        s1 = current.stop
+                        s2 = next_stop.stop
+                        try:
+                            distance_km = haversine_distance(s1.latitude, s1.longitude, s2.latitude, s2.longitude)
+                        except Exception:
+                            distance_km = 0.0
 
                     segment = RouteSegment(
                         trip_id=trip_id,
@@ -508,8 +657,8 @@ class OptimizedRAPTOR:
                         departure_time=dep_dt,
                         arrival_time=arr_dt,
                         duration_minutes=duration_minutes,
-                        distance_km=0.0,  # Would need distance calculation
-                        fare=100.0,  # Base fare, would be calculated
+                        distance_km=round(float(distance_km or 0.0), 3),
+                        fare=100.0,  # TODO: compute from fares table / ML pricing
                         train_name=getattr(trip_stop_times[0].trip.route, 'long_name', 'Unknown'),
                         train_number=str(trip_id)
                     )
@@ -524,37 +673,70 @@ class OptimizedRAPTOR:
 
                 segments[trip_id] = trip_segments
 
-            # Build transfer graph
+                # --- Trip pattern indexing (stop-sequence -> trips) ---
+                try:
+                    stop_seq = tuple([s.stop_id for s in trip_stop_times])
+                    # store canonical sequence (departure stops + final arrival)
+                    route_patterns.setdefault(stop_seq, []).append(trip_id)
+                except Exception:
+                    # keep graph build robust
+                    pass
+
+            # Build transfer graph from authoritative Transfer table (fall back to a reasonable default)
             transfers = defaultdict(list)
             all_stops = session.query(Stop).all()
 
             for stop in all_stops:
                 stops[stop.id] = stop
 
-                # Generate transfer connections (simplified)
-                # In production, this would use real transfer data
-                for hour in range(24):
-                    for minute in [0, 15, 30, 45]:
-                        arr_time = date.replace(hour=hour, minute=minute)
-                        dep_time = arr_time + timedelta(minutes=15)  # Min transfer time
+                # Pull explicit transfer rules from DB (if present)
+                db_transfers = session.query(Transfer).filter(
+                    or_(Transfer.from_stop_id == stop.id, Transfer.to_stop_id == stop.id)
+                ).all()
 
+                if db_transfers:
+                    for dbtr in db_transfers:
+                        # min_transfer_time is stored in seconds in Transfer model
+                        mins = max(1, (dbtr.min_transfer_time // 60) if getattr(dbtr, 'min_transfer_time', None) else 15)
+                        partner_stop = dbtr.to_stop_id if dbtr.from_stop_id == stop.id else dbtr.from_stop_id
                         transfer = TransferConnection(
-                            station_id=stop.id,
-                            arrival_time=arr_time,
-                            departure_time=dep_time,
-                            duration_minutes=15,
+                            station_id=partner_stop,
+                            arrival_time=date.replace(hour=0, minute=0),
+                            departure_time=date.replace(hour=23, minute=59),
+                            duration_minutes=mins,
                             station_name=stop.name,
-                            facilities_score=0.7,  # Would be calculated from facilities
-                            safety_score=0.8       # Would be calculated from safety data
+                            facilities_score=(stop.facilities_json.get('walking_time_factor') if getattr(stop, 'facilities_json', None) else 0.7),
+                            safety_score=min(1.0, max(0.0, (getattr(stop, 'safety_score', 50.0) / 100.0)))
                         )
                         transfers[stop.id].append(transfer)
+                else:
+                    # Conservative default transfer (covers cases where transfer table is empty)
+                    default_duration = 15
+                    transfer = TransferConnection(
+                        station_id=stop.id,
+                        arrival_time=date.replace(hour=0, minute=0),
+                        departure_time=date.replace(hour=23, minute=59),
+                        duration_minutes=default_duration,
+                        station_name=stop.name,
+                        facilities_score=(stop.facilities_json.get('walking_time_factor') if getattr(stop, 'facilities_json', None) else 0.7),
+                        safety_score=min(1.0, max(0.0, (getattr(stop, 'safety_score', 50.0) / 100.0)))
+                    )
+                    transfers[stop.id].append(transfer)
+
+            # Build transfer_cache from transfers for O(1) pair lookups
+            for from_stop, tlist in transfers.items():
+                for t in tlist:
+                    key = (from_stop, t.station_id)
+                    transfer_cache.setdefault(key, []).append(t)
 
             return {
                 'departures': departures,
                 'arrivals': arrivals,
                 'segments': segments,
                 'transfers': transfers,
-                'stops': stops
+                'stops': stops,
+                'route_patterns': route_patterns,
+                'transfer_cache': transfer_cache
             }
 
         finally:
@@ -690,34 +872,293 @@ class OptimizedRAPTOR:
         # This would query the database or use heuristics to determine if the stops are linked
         return True
 
-    async def _deduplicate_routes(self, routes: List[Route]) -> List[Route]:
-        """Deduplicate routes based on segments and transfers."""
-        unique_routes = {}
+    async def _deduplicate_routes(self, routes: List[Route], graph: Optional[TimeDependentGraph] = None) -> List[Route]:
+        """Deduplicate + dominance-prune routes.
+
+        Improvements:
+        - Use bitset-based quick duplicate detection when `graph` provided
+        - Multi-dimensional dominance pruning (time, transfers, cost, reliability)
+        - Keep only non-dominated / best-scoring routes
+        """
+        kept: List[Route] = []
+
+        def dominates(a: Route, b: Route) -> bool:
+            """Return True if route a dominates route b on all considered metrics."""
+            better_or_equal = (
+                a.total_duration <= b.total_duration and
+                a.total_cost <= b.total_cost and
+                len(a.transfers) <= len(b.transfers) and
+                a.reliability >= b.reliability
+            )
+            strictly_better = (
+                a.total_duration < b.total_duration or
+                a.total_cost < b.total_cost or
+                len(a.transfers) < len(b.transfers) or
+                a.reliability > b.reliability
+            )
+            return better_or_equal and strictly_better
+
+        # Precompute bitsets if graph available
+        use_bitset = graph is not None and getattr(graph, 'stop_index', None) is not None
+        seen_keys: Set[Tuple[int, Tuple[int, ...]]] = set()
+
         for route in routes:
-            route_key = (tuple(route.get_all_stations()), tuple(route.transfers))
-            if route_key not in unique_routes:
-                unique_routes[route_key] = route
+            # quick duplicate key: (stations-bitset or tuple(stations), tuple(transfer station ids))
+            if use_bitset:
+                try:
+                    route_bits = graph.route_to_bitset(route)
+                except Exception:
+                    route_bits = 0
+                transfer_ids = tuple(t.station_id for t in route.transfers)
+                key = (route_bits, transfer_ids)
             else:
-                # Keep the route with the better score
-                if route.score < unique_routes[route_key].score:
-                    unique_routes[route_key] = route
+                key = (tuple(route.get_all_stations()), tuple(t.station_id for t in route.transfers))
 
-        return list(unique_routes.values())
+            if key in seen_keys:
+                # keep the better-scoring duplicate only
+                # find existing and replace if current has better score
+                for i, r in enumerate(kept):
+                    cmp_key = (graph.route_to_bitset(r) if use_bitset else tuple(r.get_all_stations()), tuple(t.station_id for t in r.transfers))
+                    if cmp_key == key:
+                        if route.score < r.score:
+                            kept[i] = route
+                        break
+                continue
 
-    async def _apply_delay_update(self, update: Dict[str, Any]):
-        """Apply delay update to graph"""
-        trip_id = update['trip_id']
-        delay_minutes = update['delay_minutes']
+            # Dominance pruning against kept routes
+            dominated = False
+            remove_indices: List[int] = []
+            for i, existing in enumerate(kept):
+                if dominates(existing, route):
+                    dominated = True
+                    break
+                if dominates(route, existing):
+                    remove_indices.append(i)
 
-        # Update time-dependent graph
-        if trip_id in self.time_graph.trip_nodes:
-            for node in self.time_graph.trip_nodes[trip_id]:
-                node.timestamp += timedelta(minutes=delay_minutes)
+            if dominated:
+                continue
 
-        # Update cached routes
-        await self._invalidate_affected_routes(trip_id)
+            # Remove any existing routes dominated by the new one (iterate in reverse to pop safely)
+            for idx in reversed(remove_indices):
+                kept.pop(idx)
 
-        logger.info(f"Applied {delay_minutes}min delay to trip {trip_id}")
+            kept.append(route)
+            seen_keys.add(key)
+
+        return kept
+
+    async def _estimate_route_reliability(self, route: Route, constraints: RouteConstraints) -> float:
+        """
+        Estimate P(success) for a route using ML model with heuristic fallback.
+
+        ML Features:
+        - Historical delay for each train segment
+        - Transfer duration adequacy
+        - Station safety scores
+        - Time-of-day and day-of-week patterns
+
+        Falls back to heuristics if ML model unavailable.
+        Returns float in (0, 1]
+        """
+        # Try ML model first
+        ml_model = await get_reliability_model()
+        
+        if route.segments and ml_model.loaded:
+            try:
+                # Use first segment's trip as representative
+                first_seg = route.segments[0]
+                last_seg = route.segments[-1]
+                
+                # Compute total distance
+                total_distance = sum(seg.distance_km for seg in route.segments)
+                
+                # Estimate max transfer duration
+                max_transfer = max((t.duration_minutes for t in route.transfers), default=15)
+                
+                # Get ML prediction
+                ml_score = await ml_model.predict(
+                    trip_id=first_seg.trip_id,
+                    origin_stop_id=first_seg.departure_stop_id,
+                    destination_stop_id=last_seg.arrival_stop_id,
+                    departure_time=first_seg.departure_time,
+                    transfer_duration_minutes=max_transfer,
+                    distance_km=total_distance,
+                )
+                
+                # Blend with heuristic penalties for safety
+                heuristic_penalty = await self._compute_heuristic_reliability_penalty(route, constraints)
+                combined = ml_score * heuristic_penalty
+                
+                return float(max(0.01, min(0.999, combined)))
+            except Exception as e:
+                logger.debug(f"ML reliability prediction failed: {e}, using heuristics")
+        
+        # Fallback to pure heuristics if ML unavailable
+        return await self._compute_heuristic_reliability(route, constraints)
+
+    async def _compute_heuristic_reliability(self, route: Route, constraints: RouteConstraints) -> float:
+        """Pure heuristic-based reliability (fallback for when ML unavailable)"""
+        score = 1.0
+        session = SessionLocal()
+        try:
+            # segment-level signals (train delay history / live state)
+            for seg in route.segments:
+                try:
+                    ts = session.query(TrainState).filter(TrainState.trip_id == seg.trip_id).first()
+                except Exception:
+                    ts = None
+
+                if ts and getattr(ts, 'delay_minutes', 0):
+                    d = abs(int(ts.delay_minutes or 0))
+                    if d >= 60:
+                        score *= 0.75
+                    elif d >= 15:
+                        score *= 0.88
+                    else:
+                        score *= 0.95
+
+            # transfer-level penalties
+            for t in route.transfers:
+                if t.duration_minutes < constraints.min_transfer_time:
+                    score *= 0.6
+                elif t.duration_minutes <= (constraints.min_transfer_time + 5):
+                    score *= 0.85
+                else:
+                    score *= 0.98
+
+                # station safety
+                try:
+                    st = session.query(Stop).filter(Stop.id == t.station_id).first()
+                    if st and getattr(st, 'safety_score', 50.0) < 40:
+                        score *= 0.95
+                except Exception:
+                    pass
+
+        finally:
+            session.close()
+
+        score = max(0.01, min(0.999, float(score)))
+        return score
+
+    async def _compute_heuristic_reliability_penalty(self, route: Route, constraints: RouteConstraints) -> float:
+        """
+        Compute multiplicative penalty factor for heuristic safety checks.
+        Used to blend with ML predictions.
+        Returns [0.5, 1.0] where 1.0 = no penalty.
+        """
+        penalty = 1.0
+        session = SessionLocal()
+        try:
+            # Penalize very short transfers
+            for t in route.transfers:
+                if t.duration_minutes < constraints.min_transfer_time:
+                    penalty *= 0.85
+            
+            # Penalize unsafe stations
+            for seg in route.segments:
+                try:
+                    stop = session.query(Stop).filter(Stop.id == seg.arrival_stop_id).first()
+                    if stop and getattr(stop, 'safety_score', 50.0) < 40:
+                        penalty *= 0.95
+                except Exception:
+                    pass
+        finally:
+            session.close()
+        
+        return max(0.5, min(1.0, penalty))
+
+    async def _score_with_reliability(self, route: Route, constraints: RouteConstraints) -> float:
+        """Compute base score + bias by reliability estimate. Sets route.reliability."""
+        # Try to reuse any existing _calculate_score implementation on this object
+        base_score = None
+        calc = getattr(self, '_calculate_score', None)
+        if callable(calc):
+            try:
+                base_score = calc(route, constraints)
+            except Exception:
+                base_score = None
+
+        if base_score is None:
+            # Fallback scoring similar to public RouteEngine
+            w = constraints.weights
+            time_score = route.total_duration
+            cost_score = route.total_cost
+            comfort_score = 0
+            for tr in route.transfers:
+                comfort_score += tr.facilities_score * 10
+                if self._is_night_layover(tr.arrival_time, tr.departure_time):
+                    comfort_score -= 20
+            safety_score = 0
+            if constraints.women_safety_priority:
+                safety_score = sum(5 for _ in route.get_all_stations())
+
+            base_score = (w.time * time_score + w.cost * cost_score - w.comfort * comfort_score + w.safety * safety_score)
+
+        reliability = await self._estimate_route_reliability(route, constraints)
+        route.reliability = reliability
+
+        # Blend reliability into final score (less score is better). reliability_weight in [0,1]
+        penalty_factor = constraints.reliability_weight * (1.0 - reliability)
+        final_score = base_score * (1.0 + penalty_factor)
+        return final_score
+
+    async def _search_single_departure(self, graph: TimeDependentGraph, source_stop_id: int, dest_stop_id: int,
+                                      departure_dt: datetime, constraints: RouteConstraints) -> List[Route]:
+        """Single-departure RAPTOR search that reuses an already-built graph."""
+        routes_by_round: Dict[int, List[Route]] = defaultdict(list)
+        earliest_arrival: Dict[int, datetime] = {}
+        best_routes: Dict[str, Route] = {}
+
+        # Round 0: direct departures
+        source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt)
+        for dep_time, trip_id in source_departures[:50]:
+            segments = graph.get_trip_segments(trip_id)
+            for segment in segments:
+                if segment.departure_stop_id == source_stop_id and segment.departure_time >= dep_time:
+                    route = Route()
+                    route.add_segment(segment)
+                    if segment.arrival_stop_id == dest_stop_id:
+                        if self._validate_route_constraints(route, constraints):
+                            score = await self._score_with_reliability(route, constraints)
+                            route.score = score
+                            key = f"direct_{trip_id}"
+                            if key not in best_routes or score < best_routes[key].score:
+                                best_routes[key] = route
+                    else:
+                        routes_by_round[0].append(route)
+                    break
+
+        # transfer rounds
+        for round_num in range(1, self.max_transfers + 1):
+            if not routes_by_round[round_num - 1]:
+                break
+            current_routes = routes_by_round[round_num - 1]
+            batch_size = 10
+            for i in range(0, len(current_routes), batch_size):
+                batch = current_routes[i:i + batch_size]
+                transfer_routes = await asyncio.gather(*[
+                    self._process_route_transfers(route, graph, dest_stop_id, constraints)
+                    for route in batch
+                ])
+                for route_list in transfer_routes:
+                    routes_by_round[round_num].extend(route_list)
+
+        all_routes = []
+        for key, route in best_routes.items():
+            if self._validate_route_constraints(route, constraints):
+                all_routes.append(route)
+
+        # Score any routes in routes_by_round (transfers) that reached destination
+        for rlist in routes_by_round.values():
+            for r in rlist:
+                if r.segments and r.segments[-1].arrival_stop_id == dest_stop_id and self._validate_route_constraints(r, constraints):
+                    r.score = await self._score_with_reliability(r, constraints)
+                    all_routes.append(r)
+
+        # Deduplicate & dominance-prune
+        unique = await self._deduplicate_routes(all_routes, graph)
+        unique.sort(key=lambda r: (r.score, -r.reliability))
+        return unique
 
     async def _apply_cancellation_update(self, update: Dict[str, Any]):
         """Apply cancellation update to graph"""
@@ -862,6 +1303,74 @@ class OptimizedRAPTOR:
 
         return routes
 
+    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
+        """Validate multi-modal route using ValidationManager."""
+        if validation_config is None:
+            validation_config = {}
+        config = {'route': multimodal_route}
+        config.update(validation_config)
+        report = self.validation_manager.validate(
+            config, profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.MULTIMODAL}
+        )
+        return report.all_passed
+
+    def validate_fare_and_availability(self, route: Route, travel_class: str = "SL") -> bool:
+        """Validate fare and availability using ValidationManager."""
+        config = {'route': route, 'travel_class': travel_class}
+        report = self.validation_manager.validate(
+            config, profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.FARE_AVAILABILITY}
+        )
+        return report.all_passed
+
+    def validate_api_and_security(self, request_data: dict, auth_token: str) -> bool:
+        """Validate API security using ValidationManager."""
+        report = self.validation_manager.validate_api_request(
+            request_data, auth_token, profile=ValidationProfile.STANDARD
+        )
+        return report.all_passed
+
+    def validate_data_integrity(self, graph_data: dict) -> bool:
+        """Validate data integrity using ValidationManager."""
+        config = {'graph_data': graph_data}
+        report = self.validation_manager.validate(
+            config, profile=ValidationProfile.FULL,
+            specific_categories={ValidationCategory.DATA_INTEGRITY}
+        )
+        return report.all_passed
+
+    def validate_ai_ranking(self, ranked_routes: list, user_context: dict) -> bool:
+        """Validate AI ranking using ValidationManager."""
+        config = {'ranked_routes': ranked_routes, 'user_context': user_context}
+        report = self.validation_manager.validate(
+            config, profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.AI_RANKING}
+        )
+        return report.all_passed
+
+    def validate_resilience(self, validation_config: dict = None) -> bool:
+        """Run chaos / failure-recovery validations (RT-171 — RT-200)."""
+        if validation_config is None:
+            validation_config = {}
+        report = self.validation_manager.validate(
+            validation_config,
+            profile=ValidationProfile.FULL,
+            specific_categories={ValidationCategory.RESILIENCE}
+        )
+        return report.all_passed
+
+    def validate_production_excellence(self, validation_config: dict = None) -> bool:
+        """Run production-excellence validations (RT-201 — RT-220)."""
+        if validation_config is None:
+            validation_config = {}
+        report = self.validation_manager.validate(
+            validation_config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.PRODUCTION_EXCELLENCE}
+        )
+        return report.all_passed
+
 
 # ==============================================================================
 # PUBLIC API
@@ -872,6 +1381,7 @@ class RouteEngine:
 
     def __init__(self):
         self.raptor = OptimizedRAPTOR(max_transfers=3)
+        self.validation_manager = create_validation_manager_with_defaults()
 
     async def search_routes(self, source_code: str, destination_code: str,
                            departure_date: datetime,
@@ -925,6 +1435,14 @@ class RouteEngine:
         # Placeholder for ML integration
         # In production, this would call shadow_inference_service
         return routes
+
+    def validate_resilience(self, validation_config: dict = None) -> bool:
+        """Facade: run resilience (RT-171—RT-200) validations via OptimizedRAPTOR."""
+        return self.raptor.validate_resilience(validation_config)
+
+    def validate_production_excellence(self, validation_config: dict = None) -> bool:
+        """Facade: run production-excellence (RT-201—RT-220) validations via OptimizedRAPTOR."""
+        return self.raptor.validate_production_excellence(validation_config)
 
     # ==============================================================================
     # GRAPH MUTATION INTEGRATION
@@ -1100,6 +1618,78 @@ class RouteEngine:
 
         return routes
 
+    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
+        """
+        Validate a multi-modal route using all RT-051 to RT-070 checks.
+        
+        Args:
+            multimodal_route: Multi-modal route object to validate
+            validation_config: Configuration for validation parameters
+        
+        Returns:
+            Boolean indicating if route passes all validations
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        # Delegate to ValidationManager (short-circuit old checks)
+        config = {'route': multimodal_route}
+        config.update(validation_config)
+
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.MULTIMODAL}
+        )
+        return report.all_passed
+
+    def validate_fare_and_availability(self, route: Route, travel_class: str = "SL") -> bool:
+        """
+        Validate fare and availability using RT-071 to RT-090 checks.
+        """
+        config = {'route': route, 'travel_class': travel_class}
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.FARES_AND_AVAILABILITY}
+        )
+        return report.all_passed
+
+    def validate_api_and_security(self, request_data: dict, auth_token: str) -> bool:
+        """
+        Validate API security using RT-091 to RT-110 checks.
+        """
+        config = {'request_data': request_data, 'auth_token': auth_token}
+        report = self.validation_manager.validate_api_request(
+            request_data, 
+            auth_token,
+            profile=ValidationProfile.STANDARD
+        )
+        return report.all_passed
+
+    def validate_data_integrity(self, graph_data: dict) -> bool:
+        """
+        Validate data integrity for graph and route results using RT-111 to RT-130.
+        """
+        config = {'graph_data': graph_data}
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.FULL,
+            specific_categories={ValidationCategory.DATA_INTEGRITY}
+        )
+        return report.all_passed
+
+    def validate_ai_ranking(self, ranked_routes: list, user_context: dict) -> bool:
+        """
+        Validate AI ranking and personalization using RT-151 to RT-170.
+        """
+        config = {'ranked_routes': ranked_routes, 'user_context': user_context}
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.AI_RANKING}
+        )
+        return report.all_passed
 
 # ==============================================================================
 # UTILITY FUNCTIONS
@@ -1120,299 +1710,7 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
     base_fare = 100.0
     return base_fare
 
-    async def handle_realtime_updates(self, realtime_data: dict, route: Route):
-        """Handle real-time updates and validate using RouteValidator."""
-        if not self.validator.validate_realtime_delay_propagation(realtime_data, route):
-            return False
-        if not self.validator.validate_cancellation_removal(realtime_data, route):
-            return False
-        if not self.validator.validate_partial_delay(realtime_data, route):
-            return False
-        if not self.validator.validate_realtime_update_during_query(realtime_data, route):
-            return False
-        if not self.validator.validate_outdated_realtime_cache(realtime_data, route):
-            return False
-        # Additional real-time validations can be added here
-        return True
 
-    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
-        """
-        Validate a multi-modal route using all RT-051 to RT-070 checks.
-        
-        Args:
-            multimodal_route: Multi-modal route object to validate
-            validation_config: Configuration for validation parameters
-        
-        Returns:
-            Boolean indicating if route passes all validations
-        """
-        if validation_config is None:
-            validation_config = {}
-
-        # RT-051: Train-bus integration
-        if not self.multimodal_validator.validate_train_bus_integration(multimodal_route):
-            logger.warning("RT-051: Train-bus integration validation failed")
-            return False
-
-        # RT-052: Walk transfer segments
-        if not self.multimodal_validator.validate_walk_transfer_segments(multimodal_route):
-            logger.warning("RT-052: Walk transfer segments validation failed")
-            return False
-
-        # RT-053: Mode preference filtering
-        preferred_modes = validation_config.get('preferred_modes', [])
-        if not self.multimodal_validator.validate_mode_preference_filtering(multimodal_route, preferred_modes):
-            logger.warning("RT-053: Mode preference filtering validation failed")
-            return False
-
-        # RT-054: Disabled transport mode excluded
-        disabled_modes = validation_config.get('disabled_modes', [])
-        if not self.multimodal_validator.validate_disabled_transport_mode_excluded(multimodal_route, disabled_modes):
-            logger.warning("RT-054: Disabled transport mode validation failed")
-            return False
-
-        # RT-055: Multi-modal transfer penalties
-        transfer_penalties = validation_config.get('transfer_penalties', {})
-        if not self.multimodal_validator.validate_multimodal_transfer_penalties(multimodal_route, transfer_penalties):
-            logger.warning("RT-055: Multi-modal transfer penalties validation failed")
-            return False
-
-        # RT-056: First/last mile inclusion
-        if not self.multimodal_validator.validate_first_last_mile_inclusion(multimodal_route):
-            logger.warning("RT-056: First/last mile inclusion validation failed")
-            return False
-
-        # RT-057: Bike or taxi connectors
-        allow_bike = validation_config.get('allow_bike', True)
-        allow_taxi = validation_config.get('allow_taxi', True)
-        if not self.multimodal_validator.validate_bike_taxi_connectors(multimodal_route, allow_bike, allow_taxi):
-            logger.warning("RT-057: Bike/taxi connectors validation failed")
-            return False
-
-        # RT-058: Mode cost weighting
-        if not self.multimodal_validator.validate_mode_cost_weighting(multimodal_route):
-            logger.warning("RT-058: Mode cost weighting validation failed")
-            return False
-
-        # RT-059: Mixed schedule and frequency routes
-        if not self.multimodal_validator.validate_mixed_schedule_frequency_routes(multimodal_route):
-            logger.warning("RT-059: Mixed schedule/frequency validation failed")
-            return False
-
-        # RT-060: Walking time estimation
-        if not self.multimodal_validator.validate_walking_time_estimation(multimodal_route):
-            logger.warning("RT-060: Walking time estimation validation failed")
-            return False
-
-        # RT-061: Maximum walking distance
-        max_walking_distance = validation_config.get('max_walking_distance_m', 2000)
-        if not self.multimodal_validator.validate_maximum_walking_distance(multimodal_route, max_walking_distance):
-            logger.warning("RT-061: Maximum walking distance validation failed")
-            return False
-
-        # RT-062: Mode change count
-        max_mode_changes = validation_config.get('max_mode_changes', 4)
-        if not self.multimodal_validator.validate_mode_change_count(multimodal_route, max_mode_changes):
-            logger.warning("RT-062: Mode change count validation failed")
-            return False
-
-        # RT-063: Airport transfer integration
-        is_airport_route = validation_config.get('is_airport_route', False)
-        if not self.multimodal_validator.validate_airport_transfer_integration(multimodal_route, is_airport_route):
-            logger.warning("RT-063: Airport transfer integration validation failed")
-            return False
-
-        # RT-064: Metro-rail sync
-        if not self.multimodal_validator.validate_metro_rail_sync(multimodal_route):
-            logger.warning("RT-064: Metro-rail sync validation failed")
-            return False
-
-        # RT-065: Overnight bus-train
-        if not self.multimodal_validator.validate_overnight_bus_train(multimodal_route):
-            logger.warning("RT-065: Overnight bus-train validation failed")
-            return False
-
-        # RT-066: Mode priority override
-        mode_priority = validation_config.get('mode_priority', {})
-        if not self.multimodal_validator.validate_mode_priority_override(multimodal_route, mode_priority):
-            logger.warning("RT-066: Mode priority override validation failed")
-            return False
-
-        # RT-067: Transfer station mismatch
-        if not self.multimodal_validator.validate_transfer_station_mismatch(multimodal_route):
-            logger.warning("RT-067: Transfer station mismatch validation failed")
-            return False
-
-        # RT-068: Geographic distance sanity
-        if not self.multimodal_validator.validate_geographic_distance_sanity(multimodal_route):
-            logger.warning("RT-068: Geographic distance sanity validation failed")
-            return False
-
-        # RT-069: Rural sparse network
-        is_rural = validation_config.get('is_rural', False)
-        if not self.multimodal_validator.validate_rural_sparse_network(multimodal_route, is_rural):
-            logger.warning("RT-069: Rural sparse network validation failed")
-            return False
-
-        # RT-070: Mode unavailable fallback
-        unavailable_modes = validation_config.get('unavailable_modes', [])
-        if not self.multimodal_validator.validate_mode_unavailable_fallback(multimodal_route, unavailable_modes):
-            logger.warning("RT-070: Mode unavailable fallback validation failed")
-            return False
-
-        logger.info("All multimodal route validations (RT-051 to RT-070) passed")
-        return True
-
-    def validate_fare_and_availability(self, fare_and_avail, validation_config: dict = None) -> bool:
-        """
-        Validate a fare and availability route using all RT-071 to RT-090 checks.
-        
-        Args:
-            fare_and_avail: Fare and availability object to validate
-            validation_config: Configuration for validation parameters
-        
-        Returns:
-            Boolean indicating if route passes all validations
-        """
-        if validation_config is None:
-            validation_config = {}
-
-        # RT-071: Fare calculation per segment
-        for fare_seg in fare_and_avail.fare_segments:
-            if not self.fare_availability_validator.validate_fare_calculation_per_segment(fare_seg):
-                logger.warning("RT-071: Fare calculation per segment validation failed")
-                return False
-
-        # RT-072: Total fare aggregation
-        if not self.fare_availability_validator.validate_total_fare_aggregation(
-            fare_and_avail.fare_segments, fare_and_avail.total_fare
-        ):
-            logger.warning("RT-072: Total fare aggregation validation failed")
-            return False
-
-        # RT-073: Dynamic pricing override
-        is_peak_time = validation_config.get('is_peak_time', False)
-        if not self.fare_availability_validator.validate_dynamic_pricing_override(fare_and_avail, is_peak_time):
-            logger.warning("RT-073: Dynamic pricing override validation failed")
-            return False
-
-        # RT-074: Seat availability filtering
-        requested_class = validation_config.get('seat_class', None)
-        num_passengers = validation_config.get('num_passengers', 1)
-        if requested_class and fare_and_avail.seat_info:
-            for seat_id, seat_info in fare_and_avail.seat_info.items():
-                if not self.fare_availability_validator.validate_seat_availability_filtering(
-                    seat_info, requested_class, num_passengers
-                ):
-                    logger.warning("RT-074: Seat availability filtering validation failed")
-                    return False
-
-        # RT-075: Waitlist handling
-        allow_waitlist = validation_config.get('allow_waitlist', False)
-        if requested_class and fare_and_avail.seat_info:
-            for seat_id, seat_info in fare_and_avail.seat_info.items():
-                if not self.fare_availability_validator.validate_waitlist_handling(
-                    seat_info, requested_class, num_passengers, allow_waitlist
-                ):
-                    logger.warning("RT-075: Waitlist handling validation failed")
-                    return False
-
-        # RT-076: Class preference filtering
-        preferred_classes = validation_config.get('preferred_classes', [])
-        if not self.fare_availability_validator.validate_class_preference_filtering(fare_and_avail, preferred_classes):
-            logger.warning("RT-076: Class preference filtering validation failed")
-            return False
-
-        # RT-077: Fare currency consistency
-        if not self.fare_availability_validator.validate_fare_currency_consistency(fare_and_avail):
-            logger.warning("RT-077: Fare currency consistency validation failed")
-            return False
-
-        # RT-078: Discounts applied correctly
-        for fare_seg in fare_and_avail.fare_segments:
-            if not self.fare_availability_validator.validate_discounts_applied_correctly(fare_seg):
-                logger.warning("RT-078: Discounts applied correctly validation failed")
-                return False
-
-        # RT-079: Multi-modal fare merging
-        if not self.fare_availability_validator.validate_multimodal_fare_merging(fare_and_avail.fare_segments):
-            logger.warning("RT-079: Multi-modal fare merging validation failed")
-            return False
-
-        # RT-080: Fare rounding correctness
-        fares = [seg.total_fare for seg in fare_and_avail.fare_segments]
-        if not self.fare_availability_validator.validate_fare_rounding_correctness(fares, fare_and_avail.total_fare):
-            logger.warning("RT-080: Fare rounding correctness validation failed")
-            return False
-
-        # RT-081: Missing fare data fallback
-        if not self.fare_availability_validator.validate_missing_fare_data_fallback(fare_and_avail):
-            logger.warning("RT-081: Missing fare data fallback validation failed")
-            return False
-
-        # RT-082: Surge pricing updates
-        previous_fares = validation_config.get('previous_fares', {})
-        if previous_fares:
-            if not self.fare_availability_validator.validate_surge_pricing_updates(fare_and_avail, previous_fares):
-                logger.warning("RT-082: Surge pricing updates validation failed")
-                return False
-
-        # RT-083: Fare caps enforced
-        fare_cap = validation_config.get('fare_cap', None)
-        if not self.fare_availability_validator.validate_fare_caps_enforced(fare_and_avail, fare_cap):
-            logger.warning("RT-083: Fare caps enforced validation failed")
-            return False
-
-        # RT-084: Seat quota handling
-        class_quotas = validation_config.get('class_quotas', {})
-        if class_quotas and fare_and_avail.seat_info:
-            for seat_id, seat_info in fare_and_avail.seat_info.items():
-                if not self.fare_availability_validator.validate_seat_quota_handling(seat_info, class_quotas):
-                    logger.warning("RT-084: Seat quota handling validation failed")
-                    return False
-
-        # RT-085: Tatkal-like priority quota
-        for fare_seg in fare_and_avail.fare_segments:
-            if not self.fare_availability_validator.validate_tatkal_priority_quota(None, fare_seg):
-                logger.warning("RT-085: Tatkal priority quota validation failed")
-                return False
-
-        # RT-086: Fare caching consistency
-        cached_fares = validation_config.get('cached_fares', {})
-        if cached_fares:
-            for i, seg in enumerate(fare_and_avail.fare_segments):
-                cached_seg = cached_fares.get(i)
-                if cached_seg:
-                    if not self.fare_availability_validator.validate_fare_caching_consistency(cached_seg, seg):
-                        logger.warning("RT-086: Fare caching consistency validation failed")
-                        return False
-
-        # RT-087: Partial availability segment
-        if not self.fare_availability_validator.validate_partial_availability_segment(fare_and_avail, num_passengers):
-            logger.warning("RT-087: Partial availability segment validation failed")
-            return False
-
-        # RT-088: Price optimization mode
-        optimization_mode = validation_config.get('optimization_mode', 'standard')
-        if not self.fare_availability_validator.validate_price_optimization_mode(fare_and_avail, optimization_mode):
-            logger.warning("RT-088: Price optimization mode validation failed")
-            return False
-
-        # RT-089: Refund calculation scenario
-        if not self.fare_availability_validator.validate_refund_calculation_scenario(
-            fare_and_avail.total_fare,
-            validation_config.get('cancellation_fee_percent', 10.0)
-        ):
-            logger.warning("RT-089: Refund calculation scenario validation failed")
-            return False
-
-        # RT-090: Zero fare route edge case
-        if not self.fare_availability_validator.validate_zero_fare_route_edge_case(fare_and_avail):
-            logger.warning("RT-090: Zero fare route edge case validation failed")
-            return False
-
-        logger.info("All fare and availability validations (RT-071 to RT-090) passed")
-        return True
 
     def validate_api_and_security(self, request, security_context, validation_config: dict = None) -> bool:
         """
@@ -1429,120 +1727,15 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
         if validation_config is None:
             validation_config = {}
 
-        # RT-111: Invalid parameters rejected
-        if not self.api_security_validator.validate_invalid_parameters_rejected(request):
-            logger.warning("RT-111: Invalid parameters validation failed")
-            return False
+        # Delegate to ValidationManager (short-circuit old checks)
+        report = self.validation_manager.validate_api_request(request, security_context)
+        if not report.all_passed:
+            for res in report.results:
+                if not res.passed:
+                    logger.warning(f"{res.validation_id} failed: {res.error_message}")
+        return report.all_passed
 
-        # RT-112: Missing required fields
-        required_fields = validation_config.get('required_fields', [])
-        if not self.api_security_validator.validate_missing_required_fields(request, required_fields):
-            logger.warning("RT-112: Missing required fields validation failed")
-            return False
 
-        # RT-113: Injection attack resistance
-        if not self.api_security_validator.validate_injection_attack_resistance(request):
-            logger.warning("RT-113: Injection attack resistance validation failed")
-            return False
-
-        # RT-114: Auth token validation
-        if not self.api_security_validator.validate_auth_token_validation(security_context):
-            logger.warning("RT-114: Auth token validation failed")
-            return False
-
-        # RT-115: Unauthorized access blocked
-        required_permissions = validation_config.get('required_permissions', [])
-        if not self.api_security_validator.validate_unauthorized_access_blocked(security_context, required_permissions):
-            logger.warning("RT-115: Unauthorized access validation failed")
-            return False
-
-        # RT-116: Large payload rejection
-        if not self.api_security_validator.validate_large_payload_rejection(request):
-            logger.warning("RT-116: Large payload rejection validation failed")
-            return False
-
-        # RT-117: Rate limit enforcement
-        user_id = security_context.user_id or request.source_ip
-        rate_limit_info = validation_config.get('rate_limit_info')
-        if rate_limit_info:
-            if not self.api_security_validator.validate_rate_limit_enforcement(user_id, rate_limit_info):
-                logger.warning("RT-117: Rate limit enforcement validation failed")
-                return False
-
-        # RT-118: Error message sanitization
-        # This is typically applied to error responses, tested separately
-
-        # RT-119: API version compatibility
-        if not self.api_security_validator.validate_api_version_compatibility(request):
-            logger.warning("RT-119: API version compatibility validation failed")
-            return False
-
-        # RT-120: Schema backward compatibility
-        expected_schema = validation_config.get('expected_schema', {})
-        if expected_schema:
-            if not self.api_security_validator.validate_schema_backward_compatibility(request.parameters, expected_schema):
-                logger.warning("RT-120: Schema backward compatibility validation failed")
-                return False
-
-        # RT-121: Replay attack prevention
-        nonce = validation_config.get('nonce', '')
-        previous_requests = validation_config.get('previous_requests', [])
-        if not self.api_security_validator.validate_replay_attack_prevention(request, nonce, previous_requests):
-            logger.warning("RT-121: Replay attack prevention validation failed")
-            return False
-
-        # RT-122: Request signature validation
-        secret_key = validation_config.get('secret_key', '')
-        provided_signature = validation_config.get('provided_signature', '')
-        if secret_key and provided_signature:
-            if not self.api_security_validator.validate_request_signature_validation(request, secret_key, provided_signature):
-                logger.warning("RT-122: Request signature validation failed")
-                return False
-
-        # RT-123: CORS policy correctness
-        allowed_origins = validation_config.get('allowed_origins', [])
-        if allowed_origins:
-            if not self.api_security_validator.validate_cors_policy_correctness(request, allowed_origins):
-                logger.warning("RT-123: CORS policy correctness validation failed")
-                return False
-
-        # RT-124: HTTPS enforcement
-        if not self.api_security_validator.validate_https_enforcement(request):
-            logger.warning("RT-124: HTTPS enforcement validation failed")
-            return False
-
-        # RT-125: Input encoding safety
-        if not self.api_security_validator.validate_input_encoding_safety(request):
-            logger.warning("RT-125: Input encoding safety validation failed")
-            return False
-
-        # RT-126: DOS attack simulation
-        if not self.api_security_validator.validate_dos_attack_simulation(request):
-            logger.warning("RT-126: DOS attack simulation validation failed")
-            return False
-
-        # RT-127: Session expiration handling
-        if not self.api_security_validator.validate_session_expiration_handling(security_context):
-            logger.warning("RT-127: Session expiration handling validation failed")
-            return False
-
-        # RT-128: Audit logging correctness
-        audit_log = validation_config.get('audit_log', [])
-        if not self.api_security_validator.validate_audit_logging_correctness(request, security_context, audit_log):
-            logger.warning("RT-128: Audit logging correctness validation failed")
-            return False
-
-        # RT-129: Sensitive data masking
-        # This is typically applied to response data, tested separately
-
-        # RT-130: Token refresh logic
-        token_refresh_interval = validation_config.get('token_refresh_interval_minutes', 15)
-        if not self.api_security_validator.validate_token_refresh_logic(security_context, token_refresh_interval):
-            logger.warning("RT-130: Token refresh logic validation failed")
-            return False
-
-        logger.info("All API and security validations (RT-111 to RT-130) passed")
-        return True
 
     def validate_data_integrity(self, validation_config: dict = None) -> bool:
         """
@@ -1556,6 +1749,19 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
         """
         if validation_config is None:
             validation_config = {}
+
+        # Delegate to ValidationManager (short-circuit old checks)
+        report = self.validation_manager.validate(
+            validation_config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.DATA_INTEGRITY}
+        )
+
+        if not report.all_passed:
+            for res in report.results:
+                if not res.passed:
+                    logger.warning(f"{res.validation_id} failed: {res.error_message}")
+        return report.all_passed
 
         # RT-131: Station graph connectivity
         stations = validation_config.get('stations', [])
@@ -1704,4 +1910,30 @@ def calculate_segment_fare(from_stop: Stop, to_stop: Stop, route_type: str) -> f
                 return False
 
         logger.info("All data integrity and consistency validations (RT-131 to RT-150) passed")
+        return True
+
+    def validate_ai_ranking(self, validation_config: dict = None) -> bool:
+        """
+        Delegate AI/Smart ranking validations (RT-151 to RT-170) to ValidationManager.
+        Only checks with required parameters present in `validation_config` will run.
+        """
+        if validation_config is None:
+            validation_config = {}
+
+        config = {'ai_context': validation_config}
+        config.update(validation_config)
+
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.AI_RANKING}
+        )
+
+        if not report.all_passed:
+            for res in report.results:
+                if not res.passed:
+                    logger.warning(f"{res.validation_id} failed: {res.error_message}")
+            return False
+
+        logger.info("All AI/Smart ranking validations (RT-151 to RT-170) passed")
         return True

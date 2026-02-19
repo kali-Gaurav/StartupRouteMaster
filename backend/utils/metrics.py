@@ -234,3 +234,29 @@ ML_FEATURE_VALUE_HISTOGRAM = Histogram(
     ['feature_name'],
     buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, float('inf'))
 )
+
+# --- SLA / Performance check metrics (RT-110) ---
+SLA_CHECK_P50_MS = Gauge(
+    'sla_check_p50_ms',
+    'Last SLA performance-check p50 latency in milliseconds.'
+)
+
+SLA_CHECK_P95_MS = Gauge(
+    'sla_check_p95_ms',
+    'Last SLA performance-check p95 latency in milliseconds.'
+)
+
+SLA_CHECK_ERROR_RATE = Gauge(
+    'sla_check_error_rate',
+    'Last SLA performance-check error rate (0.0 - 1.0).'
+)
+
+SLA_LAST_CHECK_TIMESTAMP = Gauge(
+    'sla_last_check_timestamp',
+    'Unix timestamp of the last SLA performance check.'
+)
+
+SLA_CHECK_STATUS = Gauge(
+    'sla_check_status',
+    'Result of last SLA check (1 = pass, 0 = fail).'
+)

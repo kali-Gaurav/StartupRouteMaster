@@ -10,7 +10,7 @@ import json
 
 from backend.database import SessionLocal
 from backend.database.models import Stop, Trip, Route
-from backend.services.journey_reconstruction import JourneyReconstructionEngine, JourneyOption
+from backend.core.route_engine import RouteEngine, route_engine
 from backend.services.seat_allocation import SeatAllocationService, CoachType
 from backend.services.verification_engine import verification_service, VerificationDetails
 from backend.utils.station_utils import resolve_station_by_name, find_stations_by_partial_name

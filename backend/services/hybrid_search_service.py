@@ -4,17 +4,15 @@ from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 import time
 
-from backend.services.route_engine import RouteEngine
-from backend.services.multi_modal_route_engine import MultiModalRouteEngine
+from backend.core.route_engine import RouteEngine, route_engine
 from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
 class HybridSearchService:
-    def __init__(self, db: Session, route_engine: RouteEngine):
+    def __init__(self, db: Session, route_engine_instance: Optional[RouteEngine] = None):
         self.db = db
-        self.route_engine = route_engine
-        self.multi_modal_engine = MultiModalRouteEngine()
+        self.route_engine = route_engine_instance or route_engine
         self.external_api_timeout_ms = Config.EXTERNAL_API_TIMEOUT_MS # Default to 500ms
 
     async def search_routes(

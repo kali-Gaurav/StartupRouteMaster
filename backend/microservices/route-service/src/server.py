@@ -14,9 +14,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 import route_pb2
 import route_pb2_grpc
 from backend.database import SessionLocal
-from backend.services.multi_modal_route_engine import multi_modal_route_engine
-from backend.services.advanced_route_engine import AdvancedRouteEngine
+from backend.core.route_engine import route_engine, RouteEngine
 from backend.services.route_ranking_predictor import route_ranking_predictor
+from backend.services.advanced_route_engine import AdvancedRouteEngine
 from backend.models import Stop, Trip
 from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -28,7 +28,8 @@ class RouteServicer(route_pb2_grpc.RouteServiceServicer):
     """gRPC Route Service - High-performance route search microservice"""
     
     def __init__(self):
-        self.multi_modal_engine = multi_modal_route_engine
+        # use shared `route_engine` instance for backward-compatible multi-modal API
+        self.multi_modal_engine = route_engine
         self.advanced_engine = AdvancedRouteEngine()
         self.db = SessionLocal()
         logger.info("Route Service initialized with multi-modal and advanced engines")

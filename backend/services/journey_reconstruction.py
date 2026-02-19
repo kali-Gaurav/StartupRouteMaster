@@ -1,4 +1,9 @@
-# Compatibility wrapper - actual implementation moved to backend.core
-from backend.core.journey_reconstruction import *
+# Consolidated wrapper - actual implementation is in backend.core.route_engine
+# This file maintained for backwards compatibility
+from backend.core.route_engine import RouteEngine
 
-__all__ = ["JourneyReconstructionEngine"]
+# Export RouteEngine as JourneyReconstructionEngine (alias for compatibility)
+JourneyReconstructionEngine = RouteEngine
+
+__all__ = ["JourneyReconstructionEngine"]
+
