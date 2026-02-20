@@ -154,6 +154,15 @@ async def startup():
         except Exception as e:
             logger.warning(f"Phase 3 feature detection had non-fatal error: {e}")
 
+        # Advanced 4-Pipeline Architecture - Initialize pipeline system
+        try:
+            from backend.pipelines.system import initialize_pipelines
+            if initialize_pipelines(Config):
+                logger.info("✅ Advanced 4-Pipeline System initialized successfully")
+            else:
+                logger.warning("⚠️  Pipeline system initialization had issues, continuing with reduced capabilities")
+        except Exception as e:
+            logger.warning(f"Pipeline system initialization failed: {e}")
 
         # Start analytics consumer if events are enabled
         if Config.KAFKA_ENABLE_EVENTS:
