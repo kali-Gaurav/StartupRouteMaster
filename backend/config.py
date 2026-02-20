@@ -114,6 +114,21 @@ class Config:
     BOOKING_ENABLED = os.getenv("BOOKING_ENABLED", "true").lower() in ("1", "true", "yes")
     PAYMENT_GATEWAY = os.getenv("PAYMENT_GATEWAY", "razorpay")  # "razorpay", "stripe", etc.
 
+    # ============ Phase 1: Route Engine Consolidation (Strangler Pattern) ============
+    # Feature flags for safe migration of routing engines
+    # Using Strangler Pattern to migrate from multiple route engines to single consolidated engine
+
+    USE_NEW_ROUTING_ENGINE = os.getenv(
+        "USE_NEW_ROUTING_ENGINE", "true"
+    ).lower() in ("1", "true", "yes")
+    # true = use new RailwayRouteEngine from domains/routing/engine.py
+    # false = fallback to legacy HybridSearchAdapter (for zero-downtime rollback)
+
+    ROUTE_ENGINE_LOG_BOTH = os.getenv(
+        "ROUTE_ENGINE_LOG_BOTH", "false"
+    ).lower() in ("1", "true", "yes")
+    # true = log when switching between new and legacy engines (debug mode)
+
     @classmethod
     def get_mode(cls) -> str:
         """
