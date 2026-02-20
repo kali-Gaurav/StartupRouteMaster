@@ -16,8 +16,10 @@ from .graph import TimeDependentGraph, StaticGraphSnapshot, RealtimeOverlay
 from .builder import GraphBuilder
 from .hub import HubManager, HubConnectivityTable
 from .snapshot_manager import SnapshotManager
+from .data_provider import DataProvider
 from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
+from ..validators.live_validators import create_live_validators
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +33,13 @@ class RailwayRouteEngine:
     def __init__(self):
         self.hub_manager = HubManager(SessionLocal)
         self.hub_manager.initialize_hubs()
-        
+
         # We use HybridRAPTOR as the default high-performance engine
         self.raptor = HybridRAPTOR(self.hub_manager, max_transfers=3)
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.snapshot_manager = SnapshotManager()
         self.graph_builder = GraphBuilder(self.executor, snapshot_manager=self.snapshot_manager)
-        
+
         # Persistent state for performance optimization
         self.current_snapshot: Optional[StaticGraphSnapshot] = None
         self.last_snapshot_time: Optional[datetime] = None
@@ -50,6 +52,52 @@ class RailwayRouteEngine:
 
         # Phase 6: ML Ranking Model
         self.route_ranking_model = RouteRankingModel()
+
+        # Phase 3: Unified Data Provider with auto-detection
+        self.data_provider = DataProvider()
+        self._detect_available_features()
+        self._log_startup_status()
+
+        # Phase 3: Conditional live validators
+        self.live_validators = create_live_validators(self.data_provider)
+
+    def _detect_available_features(self):
+        """
+        Auto-detect which live features are available.
+        Called during initialization to determine mode (offline/hybrid/online).
+        """
+        try:
+            from ... import config as cfg
+            config = cfg.Config
+        except ImportError:
+            logger.warning("Config not available, assuming offline mode")
+            return
+
+        self.data_provider.detect_available_features(config)
+
+    def _log_startup_status(self):
+        """
+        Log startup status showing detected mode and available features.
+        """
+        logger.info("=" * 60)
+        logger.info("🚀 Railway Route Engine - Phase 3 Initialization")
+        logger.info("=" * 60)
+
+        mode = "OFFLINE"
+        if self.data_provider.has_live_fares or self.data_provider.has_live_delays or self.data_provider.has_live_seats:
+            mode = "ONLINE" if (self.data_provider.has_live_fares and self.data_provider.has_live_delays and self.data_provider.has_live_seats) else "HYBRID"
+
+        logger.info(f"🔄 Mode: {mode}")
+        logger.info(f"📊 Data Sources:")
+        logger.info(f"   • Fares: {'🌐 LIVE API' if self.data_provider.has_live_fares else '💾 DATABASE'}")
+        logger.info(f"   • Delays: {'🌐 LIVE API' if self.data_provider.has_live_delays else '⏱️  ASSUME 0'}")
+        logger.info(f"   • Seats: {'🌐 LIVE API' if self.data_provider.has_live_seats else '💾 DATABASE'}")
+        logger.info(f"✅ Core Features:")
+        logger.info(f"   • HybridRAPTOR: Enabled")
+        logger.info(f"   • Graph Snapshots: Enabled")
+        logger.info(f"   • Realtime Overlay: Enabled")
+        logger.info(f"   • Live Validators: {len(self.live_validators)} loaded")
+        logger.info("=" * 60)
 
     async def _get_current_graph(self, date: datetime) -> TimeDependentGraph:
         """

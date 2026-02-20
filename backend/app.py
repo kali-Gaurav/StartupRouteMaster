@@ -128,6 +128,33 @@ async def startup():
         start_reconciliation_worker()
         logger.info("Payment reconciliation worker initialized.")
 
+        # Phase 3: Unified Intelligent System - Auto-detect and log features
+        try:
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("🚀 Phase 3: Unified Intelligent System Initialization")
+            logger.info("=" * 70)
+
+            # Route engine auto-detects features on initialization
+            detected_mode = Config.get_mode()
+            logger.info(f"📡 Detected Mode: {detected_mode}")
+            logger.info(f"🔧 Feature Flags:")
+            logger.info(f"   • OFFLINE_MODE: {Config.OFFLINE_MODE}")
+            logger.info(f"   • REAL_TIME_ENABLED: {Config.REAL_TIME_ENABLED}")
+            logger.info(f"🌐 Live API Configuration:")
+            logger.info(f"   • LIVE_FARES_API: {'✅ Configured' if Config.LIVE_FARES_API else '❌ Not configured'}")
+            logger.info(f"   • LIVE_DELAY_API: {'✅ Configured' if Config.LIVE_DELAY_API else '❌ Not configured'}")
+            logger.info(f"   • LIVE_SEAT_API: {'✅ Configured' if Config.LIVE_SEAT_API else '❌ Not configured'}")
+            logger.info(f"   • LIVE_BOOKING_API: {'✅ Configured' if Config.LIVE_BOOKING_API else '❌ Not configured'}")
+            logger.info(f"📦 Data Provider Status: {'🟢 ONLINE' if detected_mode == 'ONLINE' else '🟡 HYBRID' if detected_mode == 'HYBRID' else '🔴 OFFLINE'}")
+
+            # Log from route engine
+            logger.info("")
+
+        except Exception as e:
+            logger.warning(f"Phase 3 feature detection had non-fatal error: {e}")
+
+
         # Start analytics consumer if events are enabled
         if Config.KAFKA_ENABLE_EVENTS:
             from backend.services.analytics_consumer import start_analytics_consumer
