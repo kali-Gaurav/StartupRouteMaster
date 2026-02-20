@@ -19,7 +19,7 @@ from .snapshot_manager import SnapshotManager
 from .data_provider import DataProvider
 from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
-from ..validators.live_validators import create_live_validators
+from ..validator.live_validators import create_live_validators
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,11 @@ class RailwayRouteEngine:
         # Phase 3: Unified Data Provider with auto-detection
         self.data_provider = DataProvider()
         self._detect_available_features()
-        self._log_startup_status()
 
-        # Phase 3: Conditional live validators
+        # Phase 3: Conditional live validators (must be ready before logging)
         self.live_validators = create_live_validators(self.data_provider)
+
+        self._log_startup_status()
 
     def _detect_available_features(self):
         """
@@ -169,8 +170,14 @@ class RailwayRouteEngine:
         # Get station IDs
         session = SessionLocal()
         try:
-            source_stop = session.query(Stop).filter(Stop.code == source_code).first()
-            dest_stop = session.query(Stop).filter(Stop.code == destination_code).first()
+            # Search both 'code' and 'stop_id' for source and destination
+            from sqlalchemy import or_
+            source_stop = session.query(Stop).filter(
+                or_(Stop.code == source_code.upper(), Stop.stop_id == source_code.upper())
+            ).first()
+            dest_stop = session.query(Stop).filter(
+                or_(Stop.code == destination_code.upper(), Stop.stop_id == destination_code.upper())
+            ).first()
 
             if not source_stop or not dest_stop:
                 logger.warning(f"Stop not found: {source_code} or {destination_code}")

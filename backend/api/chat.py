@@ -71,7 +71,7 @@ class GatewayValidator:
         self.user = user
         self.db = db
 
-    def validate_and_execute(self, tool_call: Dict[str, Any]) -> Optional['ChatResponse']:
+    async def validate_and_execute(self, tool_call: Dict[str, Any]) -> Optional['ChatResponse']:
         function_name = tool_call["function"]["name"]
         try:
             arguments = json.loads(tool_call["function"]["arguments"])
@@ -101,6 +101,45 @@ class GatewayValidator:
                 ChatAction(label="Modify Search", type="intent", value="modify_search")
             ]
             response_obj.state = "search"
+            
+            # perform actual search using route engine + helpers
+            try:
+                from backend.core.route_engine import route_engine
+                from backend.utils.station_utils import resolve_stations
+                from backend.utils.validation import validate_date_string
+                from datetime import datetime
+
+                travel_dt = None
+                if date:
+                    travel_dt = validate_date_string(date, allow_past=False)
+                if not travel_dt:
+                    travel_dt = datetime.utcnow()
+
+                src_stop, dst_stop = resolve_stations(self.db, source, destination)
+                if src_stop and dst_stop:
+                    routes = await route_engine.search_routes(src_stop.code, dst_stop.code, travel_dt)
+                    # convert routes to dict form
+                    routes_data = []
+                    for route in routes:
+                        routes_data.append({
+                            'segments': [
+                                {k: getattr(seg, k) for k in ['trip_id','departure_stop_id','arrival_stop_id','departure_time','arrival_time','duration_minutes','distance_km','fare','train_name','train_number']}
+                                for seg in route.segments
+                            ],
+                            'transfers': [
+                                {k: getattr(t, k) for k in ['station_id','arrival_time','departure_time','duration_minutes','station_name','facilities_score','safety_score']}
+                                for t in route.transfers
+                            ],
+                            'total_duration': route.total_duration,
+                            'total_distance': route.total_distance,
+                            'total_fare': route.total_fare,
+                            'score': getattr(route, 'score', None)
+                        })
+                    response_obj.search_results = routes_data
+                else:
+                    response_obj.reply += " However I could not resolve the station names for the search."
+            except Exception as e:
+                logger.error(f"RouteSearchTool execution failed: {e}")
             return response_obj
 
         elif function_name == "MultiModalPlanTool":
@@ -322,6 +361,8 @@ class ChatResponse(BaseModel):
     collected: Optional[Dict[str, str]] = None
     session_id: Optional[str] = None
     correlation_id: Optional[str] = None
+    # when a route search is executed by the chat gateway, results are placed here
+    search_results: Optional[List[Dict[str, Any]]] = None
 
 
 @openrouter_breaker # New: Apply circuit breaker
@@ -803,7 +844,8 @@ RESPONSE STYLE:
 
     if tool_calls:
         for tool_call in tool_calls:
-            validated_response = validator.validate_and_execute(tool_call)
+            # validator may now be async
+            validated_response = await validator.validate_and_execute(tool_call)
             if validated_response:
                 response_obj = validated_response
 

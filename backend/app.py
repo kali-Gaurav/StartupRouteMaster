@@ -3,13 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 import structlog
+from datetime import datetime
 
 from slowapi.errors import RateLimitExceeded
 
 from backend.database.config import Config
 from backend.database import init_db, close_db
-from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets
-from backend.booking_api import router as booking_router
+from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings
 from backend.utils.limiter import limiter
 
 # FastAPI-Cache
@@ -81,7 +81,7 @@ app.include_router(status.router)
 app.include_router(sos.router)
 app.include_router(flow.router)
 app.include_router(websockets.router)
-app.include_router(booking_router)
+app.include_router(bookings.router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
@@ -106,12 +106,15 @@ async def startup():
 
         # Load the route engine graph into memory (optionally in background to speed startup)
         from backend.database import SessionLocal as _SessionLocal
+        from backend.core.route_engine import route_engine
 
+        # Warm-up the route engine graph either synchronously or async based on config
         if Config.ROUTEENGINE_ASYNC_WARMUP:
             async def _warmup():
                 db_w = _SessionLocal()
                 try:
-                    multi_modal_route_engine.load_graph_from_db(db_w)
+                    # use the public API; underlying implementation will manage snapshots
+                    await route_engine.search_routes("NDLS", "MMCT", datetime.utcnow())
                 finally:
                     db_w.close()
             import asyncio
@@ -120,7 +123,9 @@ async def startup():
         else:
             db = _SessionLocal()
             try:
-                multi_modal_route_engine.load_graph_from_db(db)
+                # perform an initial dummy search to load graph into memory
+                import asyncio
+                asyncio.run(route_engine.search_routes("NDLS", "MMCT", datetime.utcnow()))
             finally:
                 db.close()
 

@@ -25,6 +25,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 // Lazy load Mini App pages
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
+const MiniAppBooking = lazy(() => import("./pages/mini-app/Booking"));
 const MiniAppSOS = lazy(() => import("./pages/mini-app/SOS"));
 const MiniAppTrack = lazy(() => import("./pages/mini-app/Track"));
 const MiniAppSaved = lazy(() => import("./pages/mini-app/Saved"));
@@ -87,6 +88,7 @@ const App = () => (
                 <Route index element={<Navigate to="home" replace />} />
                 <Route path="home" element={<MiniAppHome />} />
                 <Route path="search" element={<MiniAppSearch />} />
+                <Route path="booking" element={<MiniAppBooking />} />
                 <Route path="sos" element={<MiniAppSOS />} />
                 <Route path="track" element={<MiniAppTrack />} />
                 <Route path="saved" element={<MiniAppSaved />} />

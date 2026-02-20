@@ -87,6 +87,36 @@ class Config:
     PARTNER_CIRCUIT_BREAKER_RECOVERY_TIMEOUT = int(os.getenv("PARTNER_CIRCUIT_BREAKER_RECOVERY_TIMEOUT", "60")) # seconds
     PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS = tuple(os.getenv("PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS", "httpx.RequestError,httpx.HTTPStatusError,httpx.TimeoutException").split(','))
 
+    # ============ Unified System Configuration ============
+    OFFLINE_MODE = os.getenv("OFFLINE_MODE", "false").lower() in ("1", "true", "yes")
+    REAL_TIME_ENABLED = os.getenv("REAL_TIME_ENABLED", "true").lower() in ("1", "true", "yes")
+
+    # Live API Configuration (null/empty = use database fallback)
+    LIVE_FARES_API = os.getenv("LIVE_FARES_API", None)
+    LIVE_DELAY_API = os.getenv("LIVE_DELAY_API", None)
+    LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", None)
+    LIVE_BOOKING_API = os.getenv("LIVE_BOOKING_API", None)
+
+    @classmethod
+    def get_mode(cls) -> str:
+        """
+        Get current system mode.
+        Returns: "OFFLINE", "HYBRID", or "ONLINE"
+        """
+        if cls.OFFLINE_MODE:
+            return "OFFLINE"
+
+        has_fares = bool(cls.LIVE_FARES_API)
+        has_delays = bool(cls.LIVE_DELAY_API)
+        has_seats = bool(cls.LIVE_SEAT_API)
+
+        if has_fares and has_delays and has_seats:
+            return "ONLINE"
+        elif has_fares or has_delays or has_seats:
+            return "HYBRID"
+        else:
+            return "OFFLINE"
+
     @classmethod
     def validate(cls):
         if not cls.SUPABASE_URL or not cls.SUPABASE_KEY:

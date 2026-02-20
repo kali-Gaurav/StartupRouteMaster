@@ -11,6 +11,8 @@ interface RouteCardMiniProps {
   destinationCode: string;
   /** Indicates if the route details have been unlocked. */
   isUnlocked: boolean;
+  /** If true, unlock request is in progress for this route */
+  isProcessing?: boolean;
   /** Called when user clicks Unlock Details. */
   onUnlock: (route: any) => void;
   onSave: (route: any) => void;
@@ -68,9 +70,15 @@ export function RouteCardMini({ route, originCode, destinationCode, isUnlocked, 
                 <Button
                   size="sm"
                   onClick={() => onUnlock(route)}
+                  disabled={isProcessing}
                   className="h-8 px-2.5 text-xs font-semibold bg-primary hover:bg-primary/90 whitespace-nowrap"
                 >
-                  <Lock className="h-3 w-3 mr-1" /> Unlock
+                  {isProcessing ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <Lock className="h-3 w-3 mr-1" />
+                  )}
+                  Unlock
                 </Button>
               ) : (
                 <Button

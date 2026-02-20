@@ -42,11 +42,12 @@ def resolve_station_by_name(db: Session, station_name: str) -> Optional[Stop]:
         return stop
     
     # 2. Try code match (for station codes like NDLS, CSMT, etc.)
+    # Search both 'code' and 'stop_id'
     stop = db.query(Stop).filter(
-        Stop.code == name_clean.upper()
+        or_(Stop.code == name_clean.upper(), Stop.stop_id == name_clean.upper())
     ).first()
     if stop:
-        logger.debug(f"Found stop by code match: {stop.code}")
+        logger.debug(f"Found stop by code match: {stop.code or stop.stop_id}")
         return stop
     
     # 3. Try fuzzy match using trigram similarity (PostgreSQL specific)

@@ -1,19 +1,24 @@
 import asyncio
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from sqlalchemy.orm import Session
 import time
 from datetime import datetime
 
 from backend.core.route_engine import RouteEngine, route_engine
 from backend.config import Config
+from backend.services.seat_allocation import SeatAllocationService, CoachType
+from backend.services.verification_engine import verification_service
+from backend.services.journey_reconstruction import JourneyReconstructionEngine
+from backend.database.models import Stop, Trip, Route
 
 logger = logging.getLogger(__name__)
 
-class HybridSearchService:
+class SearchService:
     def __init__(self, db: Session, route_engine_instance: Optional[RouteEngine] = None):
         self.db = db
         self.route_engine = route_engine_instance or route_engine
+        self.reconstructor = JourneyReconstructionEngine(db)
 
     async def search_routes(
         self,
@@ -22,7 +27,7 @@ class HybridSearchService:
         travel_date: str,
         budget_category: Optional[str] = None,
         multi_modal: bool = False
-    ) -> List[dict]:
+    ) -> Dict[str, Any]:
         """
         Performs route search using the unified RailwayRouteEngine.
         Returns routes formatted for the frontend BackendRoutesResponse.
@@ -91,11 +96,164 @@ class HybridSearchService:
                 else:
                     formatted_response["routes"]["three_transfer"].append(formatted_rt)
             
+            # --- JOURNEY LIST FOR INTEGRATED FLOW ---
+            journeys = []
+            for rt in internal_routes:
+                num_transfers = len(rt.segments) - 1
+                total_duration_hours = rt.total_duration // 60
+                total_duration_mins = rt.total_duration % 60
+                
+                # Create JourneyInfoResponse compatible data
+                journey_id = f"rt_{rt.segments[0].trip_id}_{int(rt.segments[0].departure_time.timestamp())}"
+                
+                journeys.append({
+                    "journey_id": journey_id,
+                    "num_segments": len(rt.segments),
+                    "distance_km": rt.total_distance,
+                    "travel_time": f"{total_duration_hours:02d}:{total_duration_mins:02d}",
+                    "num_transfers": num_transfers,
+                    "is_direct": num_transfers == 0,
+                    "cheapest_fare": rt.total_cost,
+                    "premium_fare": rt.total_cost * 2.2, # Simplified premium fare logic
+                    "has_overnight": any((seg.arrival_time - seg.departure_time).days > 0 for seg in rt.segments),
+                    "availability_status": "AVAILABLE"
+                })
+            
+            formatted_response["journeys"] = journeys
             return formatted_response
 
         except Exception as e:
             logger.error(f"Error searching routes for {source} -> {destination}: {e}", exc_info=True)
-            return {"source": source, "destination": destination, "routes": {"direct":[], "one_transfer":[], "two_transfer":[], "three_transfer":[]}, "message": str(e)}
+            return {"source": source, "destination": destination, "routes": {"direct":[], "one_transfer":[], "two_transfer":[], "three_transfer":[]}, "message": str(e), "journeys": []}
+
+    async def unlock_journey_details(
+        self,
+        journey_id: str,
+        travel_date_str: str,
+        coach_preference: str = "AC_THREE_TIER",
+        passenger_age: int = 30,
+        concession_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Unlocks detailed journey info with seat allocation and verification.
+        """
+        from backend.utils.validation import validate_date_string
+        parsed_date = validate_date_string(travel_date_str, allow_past=False)
+        if not parsed_date:
+            return {"success": False, "message": "Invalid travel date"}
+
+        # Extract trip_id from journey_id if possible
+        trip_id = None
+        if journey_id.startswith("rt_"):
+            parts = journey_id.split("_")
+            if len(parts) >= 2:
+                trip_id = parts[1]
+
+        # Use Database to find trip and stops
+        from backend.database.models import StopTime
+        
+        trip = None
+        if trip_id:
+             trip = self.db.query(Trip).filter(Trip.trip_id == trip_id).first()
+             if not trip and trip_id.isdigit():
+                 trip = self.db.query(Trip).filter(Trip.id == int(trip_id)).first()
+        
+        if not trip:
+             return {"success": False, "message": "Trip not found"}
+
+        # Find Source and Destination for the trip
+        start_st = self.db.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.asc()).first()
+        end_st = self.db.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.desc()).first()
+        
+        if not start_st or not end_st:
+            return {"success": False, "message": "Trip schedule not found"}
+
+        segment = self.reconstructor.reconstruct_single_segment_journey(
+            trip_id=trip.id,
+            from_stop_id=start_st.stop_id,
+            to_stop_id=end_st.stop_id,
+            travel_date=parsed_date
+        )
+        
+        if not segment:
+            return {"success": False, "message": "Journey reconstruction failed"}
+            
+        journey = self.reconstructor.reconstruct_complete_journey([segment], parsed_date)
+        
+        # Seat Allocation
+        seat_service = SeatAllocationService(self.db)
+        dummy_passengers = [{
+            "full_name": "Passenger 1",
+            "age": passenger_age,
+            "gender": "M"
+        }]
+        
+        from backend.database.models import CoachType as ModelCoachType
+        # Mapping frontend preferences to model coach types if needed
+        # Assuming coach_preference matches CoachType enum strings
+        
+        seat_allocation = seat_service.allocate_seats_for_booking(
+            trip_id=str(trip.id),
+            passengers=dummy_passengers,
+            coach_preference=coach_preference
+        )
+        
+        # Verification
+        verification = await verification_service.verify_journey(
+            journey=journey,
+            travel_date=parsed_date,
+            coach_preference=coach_preference,
+            passenger_age=passenger_age,
+            concession_type=concession_type
+        )
+        
+        total_duration_hours = journey.total_travel_time_mins // 60
+        total_duration_mins = journey.total_travel_time_mins % 60
+        
+        return {
+            "journey": {
+                "journey_id": journey.journey_id,
+                "num_segments": journey.num_segments,
+                "distance_km": journey.total_distance_km,
+                "travel_time": f"{total_duration_hours:02d}:{total_duration_mins:02d}",
+                "num_transfers": journey.num_transfers,
+                "is_direct": journey.is_direct,
+                "cheapest_fare": journey.cheapest_fare,
+                "premium_fare": journey.premium_fare,
+                "has_overnight": journey.has_overnight,
+                "availability_status": journey.availability_status
+            },
+            "segments": [seg.to_dict() for seg in journey.segments],
+            "seat_allocation": {
+                "allocated": seat_allocation["allocated_seats"],
+                "waiting_list": seat_allocation["waiting_list"],
+                "seat_details": seat_allocation["seat_details"]
+            },
+            "verification": {
+                "overall_status": verification.overall_status.value,
+                "is_bookable": verification.is_bookable,
+                "seat_check": {
+                    "status": verification.seat_verification.status.value,
+                    "available": verification.seat_verification.available_seats,
+                    "message": verification.seat_verification.message
+                },
+                "schedule_check": {
+                    "status": verification.schedule_verification.status.value,
+                    "delay_minutes": verification.schedule_verification.delay_minutes,
+                    "message": verification.schedule_verification.message
+                },
+                "restrictions": verification.restrictions,
+                "warnings": verification.warnings
+            },
+            "fare_breakdown": {
+                "base_fare": verification.fare_verification.base_fare,
+                "gst": verification.fare_verification.GST,
+                "total_fare": verification.fare_verification.total_fare,
+                "cancellation_charges": verification.fare_verification.cancellation_charges,
+                "applicable_discounts": verification.fare_verification.applicable_discounts
+            },
+            "can_unlock_details": verification.is_bookable
+        }
 
     def _format_route_for_frontend(self, rt) -> dict:
         """Helper to format internal Route object to frontend BackendDirectRoute or similar"""

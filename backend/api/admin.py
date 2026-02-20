@@ -5,8 +5,8 @@ import logging
 
 from backend.database import get_db
 from backend.schemas import AdminBookingSchema
-from backend.services.booking_service import BookingService # Explicitly import BookingService
-from backend.models import Disruption, CommissionTracking
+from backend.services.booking_service import BookingService
+from backend.models import Disruption, CommissionTracking, Booking, User, Payment
 from backend.config import Config
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -30,19 +30,15 @@ async def get_all_bookings(
     """Get all booking requests (admin only)."""
     try:
         booking_service = BookingService(db)
-        # Note: get_all_bookings currently not implemented in BookingService,
-        # would need to add if this endpoint is truly used.
-        # For now, it will likely raise an AttributeError or fetch a default.
-        # Assuming for this task that the main focus is on get_booking_stats
-        # For a full implementation, `BookingService.get_all_bookings` would need to be added
-        # with appropriate eager loading if N+1 is a concern there as well.
-        bookings = db.query(BookingService.Booking).limit(limit).offset(offset).all()
+        # Query Booking model directly
+        from sqlalchemy.orm import joinedload
+        bookings = db.query(Booking).options(joinedload(Booking.user)).order_by(Booking.created_at.desc()).limit(limit).offset(offset).all()
 
         return {
             "success": True,
             "bookings": bookings,
             "count": len(bookings),
-            "total": db.query(BookingService.Booking).count(),
+            "total": db.query(Booking).count(),
         }
     except Exception as e:
         logger.error(f"Failed to get bookings: {e}")
@@ -87,24 +83,28 @@ async def filter_bookings(
 
         bookings = query.limit(limit).offset(offset).all()
 
+        # build list of booking dicts including payment info
+        booking_list = []
+        for b in bookings:
+            payment = db.query(Payment).filter(Payment.booking_id == b.id).first()
+            booking_list.append({
+                "id": str(b.id),
+                "user_email": b.user.email if b.user else "N/A",
+                "user_phone": b.user.phone_number if b.user else "N/A",
+                "route_id": str(b.route_id),
+                "travel_date": b.travel_date.isoformat() if b.travel_date else "N/A",
+                "status": b.booking_status,
+                "amount": b.amount_paid,
+                "pnr": b.pnr_number,
+                "created_at": b.created_at.isoformat() if b.created_at else "N/A",
+                "payment_id": payment.id if payment else None,
+                "payment_status": b.payment_status,
+                "amount_paid": b.amount_paid,
+            })
+
         return {
             "success": True,
-            "bookings": [
-                {
-                    "id": str(b.id),
-                    "user_name": b.user_name,
-                    "user_email": b.user_email,
-                    "user_phone": b.user_phone,
-                    "route_id": str(b.route_id),
-                    "travel_date": b.travel_date,
-                    # Resolve payment id from Payment table (if any)
-                    "payment_id": (db.query(Payment).filter(Payment.booking_id == b.id).first().id if db.query(Payment).filter(Payment.booking_id == b.id).first() else None),
-                    "payment_status": b.payment_status,
-                    "amount_paid": b.amount_paid,
-                    "created_at": b.created_at.isoformat(),
-                }
-                for b in bookings
-            ],
+            "bookings": booking_list,
             "count": len(bookings),
         }
     except Exception as e:

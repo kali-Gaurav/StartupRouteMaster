@@ -77,9 +77,22 @@ export interface BackendThreeTransferRoute {
   total_distance?: number;
 }
 
+export interface BackendJourney {
+  journey_id: string;
+  train_no?: string;
+  train_name?: string;
+  departure_time?: string;
+  arrival_time?: string;
+  travel_time?: string;
+  cheapest_fare?: number;
+  availability_status?: string;
+  num_transfers: number;
+}
+
 export interface BackendRoutesResponse {
   source: string;
   destination: string;
+  journeys?: BackendJourney[];
   routes: {
     direct: BackendDirectRoute[];
     one_transfer: BackendOneTransferRoute[];
@@ -173,6 +186,57 @@ export async function searchRoutesApi(
     const err = await res.json().catch(() => ({}));
     const msg = typeof err.message === 'string' ? err.message : (Array.isArray(err.detail) ? err.detail[0]?.msg : err.detail);
     throw new Error(msg || `Routes search failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Integrated Unified Search (POST /api/v2/search/unified)
+ */
+export async function unifiedSearchApi(
+  source: string,
+  destination: string,
+  date: string,
+  passengers: number = 1
+): Promise<any[]> {
+  const res = await fetch(getRailwayApiUrl('/api/v2/search/unified'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: source.toUpperCase(),
+      destination: destination.toUpperCase(),
+      travel_date: date,
+      num_passengers: passengers
+    })
+  });
+  
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail?.message || err.detail || 'Unified search failed');
+  }
+  return res.json();
+}
+
+/**
+ * Unlock Journey Details (GET /api/v2/journey/{id}/unlock-details)
+ */
+export async function unlockJourneyDetailsApi(
+  journeyId: string,
+  date: string,
+  coach: string = 'AC_THREE_TIER',
+  age: number = 30
+): Promise<any> {
+  const params = new URLSearchParams({
+    travel_date: date,
+    coach_preference: coach,
+    passenger_age: String(age)
+  });
+  
+  const res = await fetch(getRailwayApiUrl(`/api/v2/journey/${journeyId}/unlock-details?${params.toString()}`));
+  
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail?.message || err.detail || 'Unlock details failed');
   }
   return res.json();
 }

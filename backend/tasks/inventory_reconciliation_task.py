@@ -7,36 +7,51 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from backend.database import SessionLocal
-from backend.services.seat_allocation import TrainCompartment
+from backend.database.models import SeatInventory, Coach, Trip
 from backend.config import Config
 
 logger = logging.getLogger(__name__)
 
 async def reconcile_inventory(db: Session):
     """
-    Background task to sync train seats from railway_manager.db.
-    Updates compartment availability for routes in the next 7 days.
+    Background task to sync train seats from database configuration.
+    Ensures SeatInventory exists for upcoming journeys.
     """
-    logger.info("Starting train compartment inventory sync...")
+    logger.info("Starting production inventory reconciliation...")
     
-    # Define a date range for reconciliation (e.g., next 7 days)
     today = date.today()
     dates_to_reconcile = [today + timedelta(days=i) for i in range(7)]
 
     try:
-        # Fetch all train compartments
-        compartments: List[TrainCompartment] = db.query(TrainCompartment).all()
+        # Fetch all trips with their coach configurations
+        trips = db.query(Trip).all()
         synced_count = 0
 
-        for compartment in compartments:
+        for trip in trips:
+            coaches = db.query(Coach).filter(Coach.trip_id == trip.id).all()
             for travel_date in dates_to_reconcile:
-                # TrainCompartment data from railway_manager.db is authoritative
-                # Just log that we're tracking this compartment
-                synced_count += 1
-                if synced_count % 100 == 0:
-                    logger.info(f"Synced {synced_count} train compartments...")
-        
-        logger.info(f"Train inventory sync completed: {synced_count} compartment-date pairs tracked.")
+                for coach in coaches:
+                    # Check if SeatInventory entry exists for this trip, date, and coach type
+                    # Using simplified stop_time_id mapping for now
+                    existing = db.query(SeatInventory).filter(
+                        SeatInventory.stop_time_id == trip.id,
+                        SeatInventory.travel_date == travel_date,
+                        SeatInventory.coach_type == coach.class_type
+                    ).first()
+                    
+                    if not existing:
+                        new_inv = SeatInventory(
+                            stop_time_id=trip.id,
+                            travel_date=travel_date,
+                            coach_type=coach.class_type,
+                            seats_available=coach.total_seats,
+                            total_seats=coach.total_seats
+                        )
+                        db.add(new_inv)
+                        synced_count += 1
+                
+        db.commit()
+        logger.info(f"Production inventory reconciliation completed: {synced_count} new inventory records created.")
 
     except Exception as e:
         logger.error(f"Error during train inventory sync: {e}", exc_info=True)

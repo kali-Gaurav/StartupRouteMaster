@@ -25,10 +25,13 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
 from ..models import Trip, StopTime, Station
-from ..route_engine import RouteEngine, RouteConstraints
+# route_engine wrapper located in services for backward compatibility;
+# constraints type lives in the core module where the engine is implemented.
+from .route_engine import RouteEngine
+from ..core.route_engine import RouteConstraints
 from ..availability_service import availability_service, AvailabilityRequest
 from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, AvailabilityQuery
-from ..seat_inventory_models import QuotaType
+from ..database.models import QuotaType
 from ..config import Config
 
 logger = logging.getLogger(__name__)

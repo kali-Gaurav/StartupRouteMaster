@@ -1,10 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -24,14 +22,15 @@ import {
   CommandInput,
   CommandItem,
 } from "@/components/ui/command";
-import { ArrowLeftRight, Calendar, Clock, Search, MapPin, Loader2, ArrowLeft, Train, IndianRupee, Heart } from "lucide-react";
+import { ArrowLeftRight, Calendar, Clock, Search, MapPin, Loader2, ArrowLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
 import { getRailwayApiUrl } from "@/lib/utils";
-import { searchRoutesApi } from "@/services/railwayBackApi";
+import { searchRoutesApi, unlockJourneyDetailsApi } from "@/services/railwayBackApi";
 import { RouteCardMini } from "@/components/RouteCardMini";
 
 interface RouteResult {
+  journey_id?: string;
   train_no: string;
   train_name: string;
   departure: string;
@@ -41,6 +40,7 @@ interface RouteResult {
   availability?: string;
   transfers: number;
   legs?: any[];
+  is_unlocked?: boolean;
 }
 
 interface Station {
@@ -70,12 +70,14 @@ const MiniAppSearch = () => {
   const [isLoadingStations, setIsLoadingStations] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [openPopover, setOpenPopover] = useState<"origin" | "destination" | null>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  const searchTimeoutRef = useRef<number | undefined>();
   
   // NEW: Search results state for independent operation
   const [searchResults, setSearchResults] = useState<RouteResult[]>([]);
   const [showResults, setShowResults] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [unlockedJourneys, setUnlockedJourneys] = useState<Record<string, any>>({});
+  const [isUnlocking, setIsUnlocking] = useState<string | null>(null);
 
   // Load stations on mount
   useEffect(() => {
@@ -191,38 +193,57 @@ const MiniAppSearch = () => {
         { date: useDate, sortBy: "duration" }
       );
       
-      // Parse results from backend format
       const results: RouteResult[] = [];
-      
       const fmtTime = (m: number | undefined) => (m != null ? `${Math.floor(m / 60)}h ${m % 60}m` : "N/A");
 
-      // Direct routes
-      for (const route of (data.routes?.direct || [])) {
-        results.push({
-          train_no: String(route.train_no ?? ""),
-          train_name: route.train_name || `Train ${route.train_no}`,
-          departure: route.departure || "--:--",
-          arrival: route.arrival || "--:--",
-          duration: route.time_str ?? fmtTime(route.time_minutes),
-          fare: route.fare,
-          availability: route.availability,
-          transfers: 0
-        });
+      // NEW: Priority - Try using the unified 'journeys' if they exist (more integrated)
+      if (data.journeys && Array.isArray(data.journeys) && data.journeys.length > 0) {
+        for (const journey of data.journeys) {
+          results.push({
+            journey_id: journey.journey_id,
+            train_no: journey.train_no || "N/A",
+            train_name: journey.train_name || "Express Train",
+            departure: journey.departure_time || "--:--",
+            arrival: journey.arrival_time || "--:--",
+            duration: journey.travel_time || "N/A",
+            fare: journey.cheapest_fare,
+            availability: journey.availability_status,
+            transfers: journey.num_transfers,
+            is_unlocked: false
+          });
+        }
+      } else {
+        // Fallback to legacy routes parsing
+        // Direct routes
+        for (const route of (data.routes?.direct || [])) {
+          results.push({
+            train_no: String(route.train_no ?? ""),
+            train_name: route.train_name || `Train ${route.train_no}`,
+            departure: route.departure || "--:--",
+            arrival: route.arrival || "--:--",
+            duration: route.time_str ?? fmtTime(route.time_minutes),
+            fare: route.fare,
+            availability: route.availability,
+            transfers: 0
+          });
+        }
+
+        // One-transfer routes
+        for (const route of (data.routes?.one_transfer || [])) {
+          results.push({
+            train_no: `${route.leg1?.train_no} → ${route.leg2?.train_no}`,
+            train_name: `${route.leg1?.train_name || "Train"} + ${route.leg2?.train_name || "Train"}`,
+            departure: route.leg1?.departure || "--:--",
+            arrival: route.leg2?.arrival || "--:--",
+            duration: fmtTime(route.total_time_minutes),
+            fare: (route.leg1?.fare || 0) + (route.leg2?.fare || 0) || undefined,
+            transfers: 1,
+            legs: [route.leg1, route.leg2]
+          });
+        }
       }
 
-      // One-transfer routes
-      for (const route of (data.routes?.one_transfer || [])) {
-        results.push({
-          train_no: `${route.leg1?.train_no} → ${route.leg2?.train_no}`,
-          train_name: `${route.leg1?.train_name || "Train"} + ${route.leg2?.train_name || "Train"}`,
-          departure: route.leg1?.departure || "--:--",
-          arrival: route.leg2?.arrival || "--:--",
-          duration: fmtTime(route.total_time_minutes),
-          fare: (route.leg1?.fare || 0) + (route.leg2?.fare || 0) || undefined,
-          transfers: 1,
-          legs: [route.leg1, route.leg2]
-        });
-      }
+      setSearchResults(results);
 
       // Two-transfer routes
       for (const route of (data.routes?.two_transfer || [])) {
@@ -301,6 +322,60 @@ const MiniAppSearch = () => {
     }
   };
   
+  // NEW: Unlock journey details
+  const handleUnlock = async (route: RouteResult) => {
+    if (!route.journey_id) {
+      toast({
+        title: "Limited View",
+        description: "Standard route info only available for this train.",
+      });
+      return;
+    }
+
+    setIsUnlocking(route.journey_id);
+    try {
+      const data = await unlockJourneyDetailsApi(route.journey_id, formData.date);
+      setUnlockedJourneys(prev => ({
+        ...prev,
+        [route.journey_id!]: data
+      }));
+      
+      // Update the result in searchResults
+      setSearchResults(prev => prev.map(r => 
+        r.journey_id === route.journey_id ? { ...r, is_unlocked: true, fare: data.journey.cheapest_fare } : r
+      ));
+
+      toast({
+        title: "Journey Unlocked!",
+        description: "Live seat availability and verification complete.",
+      });
+    } catch (error) {
+      console.error("Unlock error:", error);
+      toast({
+        title: "Unlock Failed",
+        description: error instanceof Error ? error.message : "Failed to fetch details",
+        variant: "destructive"
+      });
+    } finally {
+      setIsUnlocking(null);
+    }
+  };
+
+  // NEW: Navigate to booking
+  const handleBook = (route: RouteResult) => {
+    const journeyDetails = route.journey_id ? unlockedJourneys[route.journey_id] : null;
+    
+    navigate("/mini-app/booking", { 
+      state: { 
+        route, 
+        journeyDetails,
+        origin: formData.origin,
+        destination: formData.destination,
+        date: formData.date
+      } 
+    });
+  };
+
   // NEW: Save route to favorites
   const handleSaveRoute = async (route: RouteResult) => {
     const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
@@ -564,10 +639,14 @@ const MiniAppSearch = () => {
             
             {searchResults.map((route, index) => (
               <RouteCardMini
-                key={index}
+                key={route.journey_id || index}
                 route={route}
                 originCode={formData.origin?.code || ""}
                 destinationCode={formData.destination?.code || ""}
+                isUnlocked={!!(route.journey_id && unlockedJourneys[route.journey_id])}
+                isProcessing={route.journey_id && isUnlocking === route.journey_id}
+                onUnlock={handleUnlock}
+                onBook={handleBook}
                 onSave={handleSaveRoute}
               />
             ))}

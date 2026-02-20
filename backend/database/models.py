@@ -19,9 +19,50 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
 from geoalchemy2 import Geometry, func
+import enum
 
 from .session import Base
 
+
+# ==============================================================================
+# ENUMS AND CONSTANTS
+# ==============================================================================
+
+class QuotaType(enum.Enum):
+    """Seat quota types (IRCTC standard)"""
+    GENERAL = "general"
+    TATKAL = "tatkal"
+    LADIES = "ladies"
+    SENIOR_CITIZEN = "senior_citizen"
+    DEFENCE = "defence"
+    FOREIGN_TOURIST = "foreign_tourist"
+
+class BookingStatus(enum.Enum):
+    """Booking status"""
+    CONFIRMED = "confirmed"
+    RAC = "rac"
+    WAITLIST = "waitlist"
+    CANCELLED = "cancelled"
+    PENDING = "pending"
+
+class SeatType(enum.Enum):
+    """Seat types"""
+    LOWER = "lower"
+    MIDDLE = "middle"
+    UPPER = "upper"
+    SIDE_LOWER = "side_lower"
+    SIDE_UPPER = "side_upper"
+    WINDOW = "window"
+    AISLE = "aisle"
+
+class CoachClass(enum.Enum):
+    """Coach classes"""
+    SL = "sl"
+    AC3 = "ac3"
+    AC2 = "ac2"
+    AC1 = "ac1"
+    CC = "cc"
+    EC = "ec"
 
 # ==============================================================================
 # CORE USER AND UTILITY MODELS (Largely Unchanged)
@@ -195,6 +236,37 @@ class StopTime(Base):
     stop = relationship("Stop", back_populates="stop_times")
     inventory = relationship("SeatInventory", back_populates="stop_time", uselist=False)
 
+class Coach(Base):
+    """Coach details for each train."""
+    __tablename__ = "coaches"
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=False)
+    coach_number = Column(String(10), nullable=False)
+    class_type = Column(String(50), nullable=False, default="AC_2")
+    total_seats = Column(Integer, default=48)
+    
+    train = relationship("Trip", back_populates="coaches")
+    seats = relationship("Seat", back_populates="coach", cascade="all, delete-orphan")
+
+class Seat(Base):
+    """Individual seat within a coach."""
+    __tablename__ = "seats"
+    id = Column(Integer, primary_key=True)
+    coach_id = Column(Integer, ForeignKey("coaches.id"), nullable=False)
+    seat_number = Column(String(10), nullable=False)
+    is_available = Column(Boolean, default=True)
+    
+    coach = relationship("Coach", back_populates="seats")
+
+class Fare(Base):
+    """Fare information for segments."""
+    __tablename__ = "fares"
+    id = Column(Integer, primary_key=True)
+    segment_id = Column(Integer, index=True) # Linked to segment logic
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True)
+    class_type = Column(String(50), nullable=False) # AC_1, AC_2, SL, etc.
+    amount = Column(Float, nullable=False)
+
 class Transfer(Base):
     """Defines transfer rules between stops."""
     __tablename__ = "transfers"
@@ -349,6 +421,7 @@ class SeatInventory(Base):
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     travel_date = Column(Date, nullable=False, index=True)
+    coach_type = Column(String(50), nullable=True, index=True) # NEW: Coach type (AC_1, AC_2, etc)
     seats_available = Column(Integer, nullable=False)
     last_reconciled_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, validator
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from uuid import UUID
 
@@ -98,6 +98,30 @@ class PassengerDetailsSchema(BaseModel):
     """Schema for passenger information in a booking."""
     full_name: str = Field(..., min_length=1, max_length=255)
     age: int = Field(..., ge=0, le=150)
+    gender: str = Field(..., pattern="^(M|F|O|U)$") # Male, Female, Other, Unknown
+    
+    class Config:
+        from_attributes = True
+
+class BookingCreateSchema(BaseModel):
+    route_id: str
+    travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    booking_details: Dict[str, Any]
+    amount_paid: float = Field(..., ge=0)
+    passenger_details: Optional[List[PassengerDetailsSchema]] = None
+
+class BookingResponseSchema(BaseModel):
+    id: str
+    pnr_number: str
+    user_id: str
+    travel_date: datetime
+    booking_status: str
+    amount_paid: float
+    booking_details: Dict[str, Any]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
     gender: str = Field(..., pattern="^[MFO]$")  # M, F, O (Other)
     phone_number: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -251,6 +275,49 @@ class AdminBookingSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Integrated Search Schemas ---
+
+class PassengerInfo(BaseModel):
+    """Passenger information for search and booking."""
+    full_name: str = Field(..., min_length=2, max_length=100)
+    age: int = Field(..., ge=0, le=150)
+    gender: str = Field(..., pattern="^[MFO]$")
+    concession_type: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class JourneyInfoResponse(BaseModel):
+    """Complete journey info for display"""
+    journey_id: str
+    num_segments: int
+    distance_km: float
+    travel_time: str
+    num_transfers: int
+    is_direct: bool
+    cheapest_fare: float
+    premium_fare: float
+    has_overnight: bool
+    availability_status: str
+
+
+class DetailedJourneyResponse(BaseModel):
+    """Complete detailed journey with all calculations"""
+    journey: JourneyInfoResponse
+    segments: List[Dict]
+    seat_allocation: Dict
+    verification: Dict
+    fare_breakdown: Dict
+    can_unlock_details: bool
+
+
+class BookingConfirmationRequest(BaseModel):
+    """Request to confirm a booking"""
+    journey_id: str
+    selected_coach: str
+    passengers: List[PassengerInfo]
+    payment_method: str = "online"
 
 
 class HealthCheckResponse(BaseModel):

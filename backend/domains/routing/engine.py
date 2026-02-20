@@ -38,7 +38,7 @@ try:
     from core.route_engine.data_provider import DataProvider
     from core.realtime_event_processor import RealtimeEventProcessor
     from core.ml_ranking_model import RouteRankingModel
-    from core.validators.live_validators import create_live_validators
+    from backend.core.validator.live_validators import create_live_validators
     # ✨ NEW: Import shared infrastructure
     from core.data_structures import TraceContext
     from core.metrics import PerformanceMetricsCollector
@@ -64,7 +64,7 @@ except ImportError:
     from backend.core.route_engine.data_provider import DataProvider
     from backend.core.realtime_event_processor import RealtimeEventProcessor
     from backend.core.ml_ranking_model import RouteRankingModel
-    from backend.core.validators.live_validators import create_live_validators
+    from backend.core.validator.live_validators import create_live_validators
     # ✨ NEW: Import shared infrastructure
     from backend.core.data_structures import TraceContext
     from backend.core.metrics import PerformanceMetricsCollector

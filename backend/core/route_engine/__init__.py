@@ -1,5 +1,4 @@
 from .engine import RailwayRouteEngine as RouteEngine, RailwayRouteEngine
-from .offline_engine import OfflineRouteEngine
 from .data_structures import Route, RouteSegment, TransferConnection, UserContext
 from .constraints import RouteConstraints
 from .raptor import OptimizedRAPTOR, HybridRAPTOR
@@ -9,15 +8,6 @@ from .hub import HubManager, HubToHubConnection
 from .regions import RegionManager
 from .snapshot_manager import SnapshotManager
 from .transfer_intelligence import TransferIntelligenceManager
-from .validators_offline import (
-    SegmentValidator,
-    TransferValidator,
-    RouteValidator,
-    AvailabilityValidator,
-    ValidationResult,
-    ValidationStatus,
-    ValidationError,
-)
 
 # Lazy global instance for backward compatibility — avoids heavy DB access at import time
 class _LazyRouteEngineProxy:
@@ -52,7 +42,6 @@ __all__ = [
     # Routing engines
     'RouteEngine',
     'RailwayRouteEngine',
-    'OfflineRouteEngine',  # NEW: Offline mode
     'route_engine',
     # Data structures
     'Route',
@@ -73,12 +62,4 @@ __all__ = [
     'SnapshotManager',
     'RealtimeOverlay',
     'TransferIntelligenceManager',
-    # Validators (NEW: Offline mode)
-    'SegmentValidator',
-    'TransferValidator',
-    'RouteValidator',
-    'AvailabilityValidator',
-    'ValidationResult',
-    'ValidationStatus',
-    'ValidationError',
 ]

@@ -1,15 +1,14 @@
 from sqlalchemy.orm import Session, joinedload
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, Dict, List, Any
 import logging
-from time import sleep
 import asyncio
 
-from backend.models import Booking, Route as RouteModel, Payment, User, PassengerDetails
+from backend.database.models import Booking, Route as RouteModel, Payment, User, PassengerDetails
 from backend.schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
 from backend.services.event_producer import publish_booking_created
-from backend.config import Config
+from backend.database.config import Config
 from backend.utils.generators import generate_pnr  # NEW: PNR generation
 from backend.utils.validation import validate_date_string  # NEW: Validation
 
