@@ -34,8 +34,15 @@ const buttonVariants = cva(
 );
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?:
+    | "default"
+    | "destructive"
+    | "outline"
+    | "secondary"
+    | "ghost"
+    | "link";
+  size?: "default" | "sm" | "lg" | "icon";
   asChild?: boolean;
 }
 
@@ -50,7 +57,13 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       />
     );
   }
-);
+) as React.ForwardRefExoticComponent<
+  React.ButtonHTMLAttributes<HTMLButtonElement> &
+    VariantProps<typeof buttonVariants> & { asChild?: boolean } &
+    React.RefAttributes<HTMLButtonElement>
+>;
+
 Button.displayName = "Button";
 
-export { Button, buttonVariants };
+export { Button };
+export { buttonVariants };
