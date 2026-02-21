@@ -889,3 +889,37 @@ class TrainState(Base):
 
     def __repr__(self):
         return f"<TrainState(trip_id={self.trip_id}, status={self.status}, delay={self.delay_minutes})>"
+
+class SeatAvailability(Base):
+    """Logs seat availability for ML training and capacity prediction (Phase 8)."""
+    __tablename__ = "seat_availability"
+    __table_args__ = (
+        Index("idx_seat_avail_train_date", "train_number", "travel_date"),
+        Index("idx_seat_avail_check_date", "check_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    train_number = Column(String(50), nullable=False, index=True)
+    class_code = Column(String(10), nullable=False)  # SL, 3A, 2A, CC, etc.
+    quota = Column(String(10), default="GN", nullable=False)
+    availability_status = Column(String(100), nullable=False)  # AVAILABLE-0020, RLWL/150, etc.
+    waiting_list_number = Column(Integer, nullable=True)
+    fare = Column(Float, nullable=True)
+    travel_date = Column(DateTime, nullable=False, index=True)
+    check_date = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<SeatAvailability(train={self.train_number}, date={self.travel_date}, status={self.availability_status})>"
+
+class TrainMaster(Base):
+    """Minimal train metadata used for capacity baseline predictions."""
+    __tablename__ = "trains_master"
+    train_number = Column(String(50), primary_key=True)
+    train_name = Column(String(255))
+    source = Column(String(100))
+    destination = Column(String(100))
+    days_of_run = Column(JSON)  # Stores ["Mon", "Tue"]
+    type = Column(String(100))
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+

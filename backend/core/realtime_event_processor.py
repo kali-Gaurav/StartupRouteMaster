@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from backend.database import SessionLocal
-from backend.database.models import (
-    RealtimeData, TrainState, TrainLiveUpdate, TrainMaster, TrainStation
+from backend.database.models import TrainState
+from routemaster_agent.database.models import (
+    RealtimeData, TrainLiveUpdate, TrainMaster, TrainStation
 )
 
 if TYPE_CHECKING:

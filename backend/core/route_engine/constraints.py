@@ -19,6 +19,8 @@ class RouteConstraints:
 
     # Reliability weighting (0..1) used to bias route score by reliability/confidence
     reliability_weight: float = 0.5
+    # Capacity/Availability weighting (0..1) used to penalize high-occupancy routes
+    capacity_weight: float = 0.4
 
     # Compatibility / advanced options
     preferred_class: Optional[str] = None

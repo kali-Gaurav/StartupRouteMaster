@@ -1,5 +1,5 @@
 """
-Copy tables and data from backend/railway_manager01.db into backend/business/railway_data.db.
+Copy tables and data from backend/railway_manager01.db into backend/database/railway_data.db.
 Behavior:
  - For each non-system table in source, if table doesn't exist in target, create it using the source CREATE TABLE SQL.
  - If table exists, insert rows from source into target.
@@ -12,7 +12,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SRC = os.path.normpath(os.path.join(ROOT, 'backend', 'railway_manager01.db'))
-DST = os.path.normpath(os.path.join(ROOT, 'backend', 'business', 'railway_data.db'))
+DST = os.path.normpath(os.path.join(ROOT, 'backend', 'database', 'railway_data.db'))
 
 if not os.path.exists(SRC):
     print(f"Source DB not found: {SRC}")

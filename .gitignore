@@ -21,7 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
-backend/business/railway_data.db
+backend/database/railway_data.db
 backend/database/transit_graph.db
 
 # Python / runtime artifacts

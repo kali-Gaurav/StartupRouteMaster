@@ -75,6 +75,7 @@ class Route:
     score: float = 0.0
     ml_score: float = 0.0
     reliability: float = 1.0
+    availability_probability: float = 1.0 # Phase 8: P(booking success)
     is_locked: bool = True  # Added for booking intelligence unlock flow
 
     @property

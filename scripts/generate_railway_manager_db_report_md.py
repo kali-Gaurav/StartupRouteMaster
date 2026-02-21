@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'backend'))
-DB_PATH = os.path.join(ROOT, 'business', 'railway_data.db')
+DB_PATH = os.path.join(ROOT, 'backend', 'database', 'railway_data.db')
 OUT_PATH = os.path.join(os.path.dirname(__file__), '..', 'docs', 'RAILWAY_MANAGER_DB_REPORT.md')
 
 if not os.path.exists(DB_PATH):

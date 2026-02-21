@@ -38,3 +38,4 @@ matplotlib==3.8.2
 numpy==1.26.2
 aiofiles==23.2.1
 pyroaring
+schedule

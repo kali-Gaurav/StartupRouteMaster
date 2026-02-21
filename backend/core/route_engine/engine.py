@@ -22,8 +22,8 @@ from ..ml_ranking_model import RouteRankingModel
 from ..validator.live_validators import create_live_validators
 
 # Point 5: Advanced Booking Layer
-from ..services.booking.manager import SeatAvailabilityManager
-from ..services.booking.rapid_api_client import RapidAPIClient
+from backend.services.booking.manager import SeatAvailabilityManager
+from backend.services.booking.rapid_api_client import RapidAPIClient
 
 logger = logging.getLogger(__name__)
 

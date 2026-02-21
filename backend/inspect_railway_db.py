@@ -1,6 +1,6 @@
 import sqlite3, os
 
-db = 'backend/business/railway_data.db'
+db = 'backend/database/railway_data.db'
 print('DB path:', db, 'exists:', os.path.exists(db))
 conn = sqlite3.connect(db)
 cur = conn.cursor()

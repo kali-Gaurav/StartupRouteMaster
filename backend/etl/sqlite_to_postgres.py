@@ -47,7 +47,7 @@ from backend.config import Config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "business", "railway_data.db")
+DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "database", "railway_data.db")
 REDIS_PUB_SUB_CHANNEL = "route_engine_update" # Define a channel name for updates
 
 class OperatingDaysBitmask:

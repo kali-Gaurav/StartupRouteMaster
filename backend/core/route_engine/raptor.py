@@ -23,6 +23,7 @@ from .builder import GraphBuilder
 from .hub import HubManager, HubConnectivityTable
 from .snapshot_manager import SnapshotManager
 from .transfer_intelligence import TransferIntelligenceManager # New import
+from ...services.ml.capacity_models import CapacityPredictionModel # Phase 8
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ class OptimizedRAPTOR:
         
         # Phase 4: Transfer Intelligence Manager
         self.transfer_intelligence_manager = TransferIntelligenceManager(SessionLocal)
+        
+        # Phase 8: Capacity Prediction
+        self.capacity_model = CapacityPredictionModel()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
@@ -502,6 +506,35 @@ class OptimizedRAPTOR:
         
         return max(0.5, min(1.0, penalty))
 
+    async def _estimate_route_capacity(self, route: Route, constraints: RouteConstraints) -> float:
+        """
+        Estimates the probability of being able to book this entire route.
+        P(Route) = Product of P(Segment)
+        """
+        session = SessionLocal()
+        try:
+            total_prob = 1.0
+            travel_date = route.segments[0].departure_time
+            
+            for segment in route.segments:
+                # Use secondary train_number if available, else fallback to trip_id
+                train_no = segment.train_number if segment.train_number else str(segment.trip_id)
+                
+                prob = self.capacity_model.predict_availability_probability(
+                    session, 
+                    train_no, 
+                    constraints.preferred_class or "SL", 
+                    travel_date
+                )
+                total_prob *= prob
+                
+            return total_prob
+        except Exception as e:
+            logger.error(f"Error estimating route capacity: {e}")
+            return 1.0 # Optimistic fallback
+        finally:
+            session.close()
+
     async def _score_with_reliability(self, route: Route, constraints: RouteConstraints) -> float:
         """Calculate weighted score including reliability bias (Phase-6)."""
         # Base scoring
@@ -523,6 +556,10 @@ class OptimizedRAPTOR:
         reliability = await self._estimate_route_reliability(route, constraints)
         route.reliability = reliability
 
+        # Phase 8: Estimate Availability (Capacity Prediction)
+        availability_prob = await self._estimate_route_capacity(route, constraints)
+        route.availability_probability = availability_prob
+
         # Phase 4: Calculate Transfer Risk and apply to score
         transfer_risk_penalty = 0.0
         if route.transfers and route.segments:
@@ -537,8 +574,12 @@ class OptimizedRAPTOR:
         # bias = (1.0 - weight) + (weight * (1.0 / reliability))
         weight = constraints.reliability_weight if hasattr(constraints, 'reliability_weight') else 0.5
         reliability_penalty = (1.0 / max(0.1, reliability)) * weight * 10.0
+
+        # Phase 8: Apply Capacity Penalty (Load Balancing)
+        cap_weight = getattr(constraints, 'capacity_weight', 0.4)
+        capacity_penalty = self.capacity_model.get_occupancy_penalty(availability_prob) * cap_weight
         
-        return base_score + reliability_penalty + transfer_risk_penalty
+        return base_score + reliability_penalty + transfer_risk_penalty + capacity_penalty
 
     # --- Validation Facades ---
     def validate_resilience(self, validation_config: dict = None) -> bool:
