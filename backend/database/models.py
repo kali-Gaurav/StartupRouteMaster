@@ -922,4 +922,59 @@ class TrainMaster(Base):
     type = Column(String(100))
     updated_at = Column(DateTime, default=datetime.utcnow)
 
+class TrainStation(Base):
+    """Sequence of stops for a specific train."""
+    __tablename__ = "train_stations"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    train_number = Column(String(50), ForeignKey("trains_master.train_number"))
+    station_code = Column(String(100))
+    station_name = Column(String(255))
+    sequence = Column(Integer)
+    arrival = Column(String(20))
+    departure = Column(String(20))
+    halt_minutes = Column(Integer)
+    distance_km = Column(Float)
+    day_count = Column(Integer)
+
+    __table_args__ = (UniqueConstraint('train_number', 'sequence', name='uix_train_seq'),)
+
+class TrainLiveUpdate(Base):
+    """
+    Real-time train status updates from API.
+    Stores historical snapshots of train delays, platforms, and positions.
+    """
+    __tablename__ = "train_live_updates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    train_number = Column(String(50), index=True)
+    station_code = Column(String(100), index=True)
+    station_name = Column(String(255))
+    sequence = Column(Integer)  # Station sequence on route
+    distance_km = Column(Float, nullable=True)
+
+    # Timing information
+    scheduled_arrival = Column(DateTime, nullable=True)
+    scheduled_departure = Column(DateTime, nullable=True)
+    actual_arrival = Column(DateTime, nullable=True)
+    actual_departure = Column(DateTime, nullable=True)
+    delay_minutes = Column(Integer, default=0)
+
+    # Platform and halt info
+    platform = Column(String(20), nullable=True)
+    halt_minutes = Column(Integer, nullable=True)
+
+    # Status tracking
+    status = Column(String(100))  # 'On Time', 'Delayed', 'Cancelled', 'Running'
+    is_current_station = Column(Boolean, default=False)
+
+    # Crawler metadata
+    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    source = Column(String(100), default="rappid_api")  # API provider
+
+    __table_args__ = (
+        UniqueConstraint(
+            'train_number', 'station_code', 'recorded_at',
+            name='uic_train_realtime_snapshot'
+        ),
+    )
+
 

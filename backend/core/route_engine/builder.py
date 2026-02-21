@@ -100,7 +100,7 @@ class GraphBuilder:
                 logger.debug(f"Could not apply validated data: {e}")
         
         # Save the snapshot
-        self.snapshot_manager.save_snapshot(graph.snapshot)
+        await self.snapshot_manager.save_snapshot(graph.snapshot)
 
         return graph
 

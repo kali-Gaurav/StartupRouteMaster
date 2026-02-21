@@ -109,7 +109,8 @@ class MultiLayerCache:
             'query_cache': CacheMetrics(),
             'partial_route_cache': CacheMetrics(),
             'availability_cache': CacheMetrics(),
-            'ml_cache': CacheMetrics()
+            'ml_cache': CacheMetrics(),
+            'infrastructure_cache': CacheMetrics()
         }
         self._initialized = False
 
@@ -380,6 +381,95 @@ class MultiLayerCache:
 
         except Exception as e:
             logger.error(f"Error invalidating ML features: {e}")
+
+    # ============================================================================
+    # LAYER 5: INFRASTRUCTURE CACHE - Graph Snapshots & Control Plane
+    # ============================================================================
+
+    async def get_graph_snapshot(self, date_str: str) -> Optional[Any]:
+        """Fetch compressed graph snapshot from Redis."""
+        if not self.redis:
+            return None
+
+        key = f"infra:graph:{date_str}"
+        try:
+            compressed_data = await self.redis.get(key)
+            if compressed_data:
+                self.metrics['infrastructure_cache'].hits += 1
+                return pickle.loads(zlib.decompress(compressed_data))
+            else:
+                self.metrics['infrastructure_cache'].misses += 1
+                return None
+        except Exception as e:
+            logger.error(f"Error fetching graph snapshot {key}: {e}")
+            return None
+
+    async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl_hours: int = 24):
+        """Store compressed graph snapshot in Redis."""
+        if not self.redis:
+            return
+
+        key = f"infra:graph:{date_str}"
+        try:
+            # Compress for transit efficiency
+            compressed_data = zlib.compress(pickle.dumps(snapshot), level=6)
+            await self.redis.setex(key, ttl_hours * 3600, compressed_data)
+            self.metrics['infrastructure_cache'].sets += 1
+            logger.info(f"Cached graph snapshot: {key} (compressed size: {len(compressed_data)} bytes)")
+        except Exception as e:
+            logger.error(f"Error storing graph snapshot {key}: {e}")
+
+    async def get_overlay_state(self, key_suffix: str = "current") -> Optional[Dict]:
+        """Fetch real-time overlay state."""
+        if not self.redis:
+            return None
+
+        key = f"infra:overlay:{key_suffix}"
+        try:
+            data = await self.redis.get(key)
+            if data:
+                return json.loads(data.decode('utf-8'))
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching overlay state: {e}")
+            return None
+
+    async def set_overlay_state(self, key_suffix: str, state: Dict, ttl_seconds: int = 3600):
+        """Store real-time overlay state."""
+        if not self.redis:
+            return
+
+        key = f"infra:overlay:{key_suffix}"
+        try:
+            await self.redis.setex(key, ttl_seconds, json.dumps(state))
+            logger.debug(f"Stored overlay state to {key}")
+        except Exception as e:
+            logger.error(f"Error storing overlay state: {e}")
+
+    async def get_dynamic_weights(self) -> Optional[Dict]:
+        """Fetch dynamic scoring weights (Control Plane)."""
+        if not self.redis:
+            return None
+
+        key = "control:weights:global"
+        try:
+            data = await self.redis.get(key)
+            return json.loads(data.decode('utf-8')) if data else None
+        except Exception as e:
+            logger.error(f"Error fetching dynamic weights: {e}")
+            return None
+
+    async def set_dynamic_weights(self, weights: Dict):
+        """Override scoring weights globally."""
+        if not self.redis:
+            return
+
+        key = "control:weights:global"
+        try:
+            await self.redis.set(key, json.dumps(weights))
+            logger.info("Global scoring weights updated in Redis")
+        except Exception as e:
+            logger.error(f"Error setting dynamic weights: {e}")
 
     # ============================================================================
     # CACHE MANAGEMENT & MONITORING

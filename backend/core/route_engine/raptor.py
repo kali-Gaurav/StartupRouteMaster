@@ -111,7 +111,7 @@ class OptimizedRAPTOR:
         if graph is None:
             graph_build_start = _time.time()
             # Attempt to load from snapshot first
-            snapshot = self.snapshot_manager.load_snapshot(departure_date)
+            snapshot = await self.snapshot_manager.load_snapshot(departure_date)
             if snapshot:
                 graph = TimeDependentGraph(snapshot=snapshot)
                 logger.info(f"Loaded graph from snapshot for {departure_date.date()}")
@@ -744,7 +744,7 @@ class HybridRAPTOR(OptimizedRAPTOR):
         This is for cases like HubManager precomputation which needs a graph.
         """
         # Attempt to load from snapshot first
-        snapshot = self.snapshot_manager.load_snapshot(date)
+        snapshot = await self.snapshot_manager.load_snapshot(date)
         if snapshot:
             graph = TimeDependentGraph(snapshot=snapshot)
             logger.debug(f"HybridRAPTOR internal: Loaded graph from snapshot for {date.date()}")

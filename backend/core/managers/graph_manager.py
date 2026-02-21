@@ -44,7 +44,7 @@ class GraphManager:
 
         if needs_rebuild:
             # Try load from disk
-            loaded = self.snapshot_manager.load_snapshot(date)
+            loaded = await self.snapshot_manager.load_snapshot(date)
             if loaded:
                 self.current_snapshot = loaded
                 logger.info(f"GraphManager: loaded snapshot for {date.date()}")

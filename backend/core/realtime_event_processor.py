@@ -61,7 +61,7 @@ class RealtimeEventProcessor:
             logger.info(f"📊 Processing {total_updates} updates (events: {len(event_updates)}, API: {len(api_updates)})")
             
             # Apply to overlay and train state
-            self._apply_updates_to_overlay(session, event_updates + api_updates)
+            await self._apply_updates_to_overlay(session, event_updates + api_updates)
             self._update_train_state_table(session, event_updates + api_updates)
             
             session.commit()
@@ -194,16 +194,14 @@ class RealtimeEventProcessor:
             logger.error(f"Error processing TrainLiveUpdates: {e}")
             return []
 
-    def _apply_updates_to_overlay(self, session: Session, updates: List[Dict[str, Any]]):
+    async def _apply_updates_to_overlay(self, session: Session, updates: List[Dict[str, Any]]):
         """
         Apply delay updates to the RealtimeOverlay (in-memory routing engine).
-        This modifies trip departure times for subsequent RAPTOR runs.
-        
-        Args:
-            session: SQLAlchemy session
-            updates: List of update dicts
+        Phase 10: Push to Redis for distributed workers.
         """
         try:
+            from ..services.multi_layer_cache import multi_layer_cache
+            
             # Group updates by trip_id
             by_trip = defaultdict(list)
             max_delay = {}
@@ -216,11 +214,20 @@ class RealtimeEventProcessor:
                     by_trip[trip_id].append(update)
                     max_delay[trip_id] = max(max_delay.get(trip_id, 0), delay)
             
-            # Apply to overlay
+            # Apply to local engine overlay
+            overlay = self.engine.current_overlay
             for trip_id, delay_minutes in max_delay.items():
-                self.engine.current_overlay.apply_delay(trip_id, delay_minutes)
+                overlay.apply_delay(trip_id, delay_minutes)
                 logger.debug(f"Applied delay: trip {trip_id} -> +{delay_minutes}min")
             
+            # Phase 10: Push the entire updated overlay state to Redis
+            try:
+                await multi_layer_cache.initialize()
+                await multi_layer_cache.set_overlay_state("global_v2", overlay.to_dict())
+                logger.debug("Phase 10: Pushed updated RealtimeOverlay to Redis.")
+            except Exception as e:
+                logger.warning(f"Could not push overlay to Redis: {e}")
+
             logger.info(f"✓ Applied {len(max_delay)} delays to RealtimeOverlay")
         
         except Exception as e:

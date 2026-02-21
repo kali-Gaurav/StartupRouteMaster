@@ -193,7 +193,7 @@ class RailwayRouteEngine:
 
         if needs_rebuild:
             # Try loading from disk first
-            self.current_snapshot = self.snapshot_manager.load_snapshot(date)
+            self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
 
             if not self.current_snapshot:
                 logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")

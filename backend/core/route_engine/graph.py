@@ -29,24 +29,50 @@ class StaticGraphSnapshot:
 
 
 class RealtimeOverlay:
-    """Real-time delay and cancellation overlay (Copy-on-Write)"""
+    """
+    Real-time delay and cancellation overlay (Phase 4/10).
+    In Phase 10, this state is synchronized via Redis for distributed workers.
+    """
 
     def __init__(self):
         self.delays: Dict[int, int] = {}  # trip_id -> minutes
         self.cancellations: Set[int] = set()  # trip_ids
         self.platform_changes: Dict[Tuple[int, int], str] = {}  # (trip_id, stop_id) -> platform
+        self.last_updated: datetime = datetime.min # Start with very old time for sync logic
 
     def apply_delay(self, trip_id: int, minutes: int):
         self.delays[trip_id] = minutes
+        self.last_updated = datetime.utcnow()
 
     def cancel_trip(self, trip_id: int):
         self.cancellations.add(trip_id)
+        self.last_updated = datetime.utcnow()
 
     def get_trip_delay(self, trip_id: int) -> int:
         return self.delays.get(trip_id, 0)
 
     def is_cancelled(self, trip_id: int) -> bool:
         return trip_id in self.cancellations
+
+    def to_dict(self) -> Dict:
+        """Serialize for Redis storage."""
+        return {
+            "delays": {str(k): v for k, v in self.delays.items()},
+            "cancellations": list(self.cancellations),
+            "last_updated": self.last_updated.isoformat()
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'RealtimeOverlay':
+        """Deserialize from Redis storage."""
+        overlay = cls()
+        if not data: return overlay
+        
+        overlay.delays = {int(k): v for k, v in data.get("delays", {}).items()}
+        overlay.cancellations = set(data.get("cancellations", []))
+        if "last_updated" in data:
+            overlay.last_updated = datetime.fromisoformat(data["last_updated"])
+        return overlay
 
 
 class TimeDependentGraph:

@@ -4,13 +4,12 @@ Interpolates real-time train positions between stations based on delays and hist
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from backend.database.models import Stop
-from routemaster_agent.database.models import TrainLiveUpdate, TrainStation
+from backend.database.models import Stop, TrainLiveUpdate, TrainStation
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +24,11 @@ class TrainPositionEstimator:
 
     def estimate_position(self, train_number: str) -> Optional[Dict[str, Any]]:
         """
-        Estimates current lat/long coordinates for a train.
-        
-        Algorithm:
-        1. Find last recorded station update.
-        2. Resolve previous and next station sequence.
-        3. Interpolate based on elapsed time vs. segment duration.
+        Estimates current lat/long coordinates for a train using Time-Differential Interpolation.
+        Phase 11: Real-time Interpolation for Map UX.
         """
         try:
-            # 1. Get the latest status update for this train
+            # 1. Get the latest status update
             last_update = self.session.query(TrainLiveUpdate).filter(
                 TrainLiveUpdate.train_number == train_number
             ).order_by(desc(TrainLiveUpdate.recorded_at)).first()
@@ -41,53 +36,71 @@ class TrainPositionEstimator:
             if not last_update:
                 return None
 
-            # 2. Find the current segment (between sequence N and N+1)
-            # Find the station this update refers to
             curr_stn_seq = last_update.sequence
-            
-            # Find the next station in the schedule
-            next_stn = self.session.query(TrainStation).filter(
-                TrainStation.train_number == train_number,
-                TrainStation.sequence == curr_stn_seq + 1
-            ).first()
-            
-            # Find the previous station (to handle the current segment)
+            now = datetime.utcnow()
+
+            # 2. Resolve Segment (Current stn to Next stn)
             prev_stn = self.session.query(TrainStation).filter(
                 TrainStation.train_number == train_number,
                 TrainStation.sequence == curr_stn_seq
             ).first()
+            
+            next_stn = self.session.query(TrainStation).filter(
+                TrainStation.train_number == train_number,
+                TrainStation.sequence == curr_stn_seq + 1
+            ).first()
 
             if not prev_stn or not next_stn:
-                # We are at the last station or data is missing
-                return self._get_station_coords(prev_stn.station_code if prev_stn else None)
+                # Terminal station or invalid data
+                coords = self._get_station_coords(prev_stn.station_code if prev_stn else None)
+                return {**coords, "status": "At Terminal"} if coords else None
 
-            # 3. Calculate Progress Percentage
-            # elapsed_time = (now - arrival_at_prev_station_with_delay)
-            # segment_duration = (arrival_at_next_station_with_delay - arrival_at_prev_station_with_delay)
+            # 3. Time-Differential Calculation
+            # scheduled_departure = prev_stn.departure_time (if we have it)
+            # scheduled_arrival_next = next_stn.arrival_time
             
-            now = datetime.utcnow()
+            # Since TrainStation model might have arrival/departure as strings or time objects:
+            # Assuming they are relative to trip start or absolute for today
+            def parse_time(t_str, ref_date):
+                if not t_str: return None
+                # Basic parser for HH:MM
+                h, m = map(int, t_str.split(':')[:2])
+                return ref_date.replace(hour=h, minute=m, second=0, microsecond=0)
+
+            ref_date = last_update.recorded_at.date()
+            ref_dt = datetime(ref_date.year, ref_date.month, ref_date.day)
+
+            # Use last update as baseline
+            t_start = last_update.recorded_at
+            delay_mins = last_update.delay_minutes or 0
             
-            # We use recorded_at as the reference for the last known report
-            # If the train is halted at the station, progress is low
-            if last_update.is_current_station and last_update.status == 'Halted':
-                 # progress = 0 (at station)
-                 return self._get_station_coords(prev_stn.station_code)
-                 
-            # Estimate times
-            # Note: scheduled_departure info might be needed from TrainStation
-            # For simplicity: progress = (now - last_update_time) / (estimated_travel_to_next)
-            
-            # Better logic using distance-time average (Speed = Distance / Time)
-            segment_distance = (next_stn.distance_km or 0) - (prev_stn.distance_km or 0)
-            if segment_distance <= 0: segment_distance = 25.0 # default gap
-            
-            # Speed estimate: usually 60km/h for IR trains + delay factor
-            estimated_speed_kmh = 50.0 
-            travel_time_min = (segment_distance / estimated_speed_kmh) * 60
-            
-            elapsed_min = (now - last_update.recorded_at).total_seconds() / 60
-            progress = min(0.99, max(0.01, elapsed_min / travel_time_min))
-            
+            # Estimate when it SHOULD arrive at next station
+            # T_arrival_scheduled_next
+            # Note: We need the scheduled arrival from TrainStation
+            # If TrainStation doesn't have it, we fallback to distance/speed
+            try:
+                # Fallback if no schedule times
+                seg_dist = (next_stn.distance_km or 0) - (prev_stn.distance_km or 0)
+                if seg_dist <= 0: seg_dist = 30.0
+                
+                # Estimate travel time based on schedule if possible
+                # travel_duration = (next_arrival - prev_departure)
+                # For now: 55km/h average
+                travel_duration_min = (seg_dist / 55.0) * 60
+                
+                t_expected_next = t_start + timedelta(minutes=travel_duration_min)
+                
+                # Calculate progress
+                total_duration_sec = (t_expected_next - t_start).total_seconds()
+                elapsed_sec = (now - t_start).total_seconds()
+                
+                if total_duration_sec > 0:
+                    progress = min(0.98, max(0.01, elapsed_sec / total_duration_sec))
+                else:
+                    progress = 0.5
+            except:
+                progress = 0.5
+
             # 4. Geocoding and Interpolation
             coords_prev = self._get_station_coords(prev_stn.station_code)
             coords_next = self._get_station_coords(next_stn.station_code)
@@ -100,11 +113,23 @@ class TrainPositionEstimator:
             
             return {
                 "train_number": train_number,
-                "lat": est_lat,
-                "lon": est_lon,
+                "lat": round(est_lat, 6),
+                "lon": round(est_lon, 6),
                 "progress_percentage": round(progress * 100, 2),
-                "last_station": prev_stn.station_name,
-                "next_station": next_stn.station_name,
+                "last_station": {
+                    "code": prev_stn.station_code,
+                    "name": prev_stn.station_name,
+                    "lat": coords_prev['lat'],
+                    "lon": coords_prev['lon']
+                },
+                "next_station": {
+                    "code": next_stn.station_code,
+                    "name": next_stn.station_name,
+                    "lat": coords_next['lat'],
+                    "lon": coords_next['lon']
+                },
+                "status": "In Transit",
+                "delay_minutes": delay_mins,
                 "estimated_at": now.isoformat()
             }
 

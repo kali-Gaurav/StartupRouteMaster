@@ -21,6 +21,8 @@ from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
 from ..validator.live_validators import create_live_validators
 
+from ...services.multi_layer_cache import multi_layer_cache
+
 # Point 5: Advanced Booking Layer
 from backend.services.booking.manager import SeatAvailabilityManager
 from backend.services.booking.rapid_api_client import RapidAPIClient
@@ -125,11 +127,35 @@ class RailwayRouteEngine:
         logger.info(f"   • Live Validators: {len(self.live_validators)} loaded")
         logger.info("=" * 60)
 
+    async def sync_realtime_overlay(self):
+        """Phase 10: Sync distributed real-time state from Redis."""
+        try:
+            await multi_layer_cache.initialize()
+            remote_state = await multi_layer_cache.get_overlay_state("global_v2")
+            if remote_state:
+                remote_overlay = RealtimeOverlay.from_dict(remote_state)
+                # Sync if remote is newer OR if we haven't synced anything yet
+                # Added robust logs for Phase 10 validation
+                if (not hasattr(self, "_last_synced_at") or 
+                    remote_overlay.last_updated > self._last_synced_at):
+                    self.current_overlay = remote_overlay
+                    self._last_synced_at = remote_overlay.last_updated
+                    logger.info(f"Phase 10: Synced {len(remote_overlay.delays)} delays from Redis.")
+                else:
+                    logger.debug("Phase 10: Local overlay is already up to date.")
+            else:
+                logger.debug("Phase 10: No remote overlay state found in Redis.")
+        except Exception as e:
+            logger.warning(f"Overlay sync failed: {e}")
+
     async def _get_current_graph(self, date: datetime) -> TimeDependentGraph:
         """
         Get or rebuild the graph, ensuring snapshot is fresh (valid for 24h).
-        Implements Phase 2: Snapshot System.
+        Implements Phase 2: Snapshot System & Phase 10: Redis Sync.
         """
+        # Step 0: Sync Real-time Overlay (Phase 10)
+        await self.sync_realtime_overlay()
+
         # Step 1: Manage Static Snapshot (Daily build)
         needs_rebuild = (
             not self.current_snapshot or 
@@ -140,7 +166,7 @@ class RailwayRouteEngine:
 
         if needs_rebuild:
             # Try loading from disk first
-            self.current_snapshot = self.snapshot_manager.load_snapshot(date)
+            self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
             
             if not self.current_snapshot:
                 logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")

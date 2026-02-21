@@ -51,6 +51,8 @@ class Config:
     # Redis graph storage + HMAC signing
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")
     ROUTE_GRAPH_REDIS_KEY = os.getenv("ROUTE_GRAPH_REDIS_KEY", "route_engine:graph")
+    REDIS_SNAPSHOT_ENABLED = os.getenv("REDIS_SNAPSHOT_ENABLED", "true").lower() in ("1", "true", "yes")
+    REDIS_INFRASTRUCTURE_TTL = int(os.getenv("REDIS_INFRASTRUCTURE_TTL", "172800")) # 48 hours
 
     # Background warm-up (async) to reduce cold-start latency
     ROUTEENGINE_ASYNC_WARMUP = os.getenv("ROUTEENGINE_ASYNC_WARMUP", "true").lower() in ("1", "true", "yes")
