@@ -6,6 +6,7 @@ import uuid
 
 from backend.services.cache_service import cache_service
 from backend.api.websockets import manager
+from backend.services.emergency.alert_manager import EmergencyAlertManager
 # Use the shared limiter from its source module
 from backend.utils.limiter import limiter
 
@@ -100,8 +101,12 @@ async def trigger_sos(request: Request, payload: SOSPayload):
         "google_maps_url": f"https://www.google.com/maps/search/?api=1&query={payload.lat},{payload.lng}",
     }
     _save_event(new_event)
-    await manager.broadcast(new_event)
-    return new_event
+    
+    # Enrich with Railway Intelligence and broadcast via Phase 12 WebSocket Manager
+    alert_mgr = EmergencyAlertManager()
+    enriched_event = await alert_mgr.process_sos_alert(new_event)
+    
+    return enriched_event
 
 
 @router.get('/active', response_model=List[SOSEventResponse])
@@ -147,7 +152,10 @@ async def resolve_sos(event_id: str):
     event['status'] = 'resolved'
     event['resolved_at'] = datetime.utcnow().isoformat()
     _save_event(event)
-    await manager.broadcast(event)
+    
+    # Broadcast to all SOS monitors
+    await manager.broadcast_sos(event)
+    return event
     return event
 
 

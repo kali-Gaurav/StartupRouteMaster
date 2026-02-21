@@ -32,10 +32,25 @@ This document outlines the transition of the RouteMaster Intelligent Routing sys
 - **Rich Station Metadata**: Position estimator now returns last/next station details with geocoded coordinates.
 - **Unified Model Layer**: Consolidated `TrainLiveUpdate`, `TrainMaster`, and `TrainStation` into a single `backend` schema.
 
-### Phase 12: Front-end Integration & Final Polish (Next)
-- **Websocket Event Stream**: Push real-time coordinate updates from `PositionEstimator` directly to the Map UI.
-- **React MapGL / Leaflet Integration**: Visualize the interpolated train movement on a public-facing dashboard.
-- **User Preference Weighing**: Start bias-tuning the routing search based on confirmed bookings.
+### Phase 12: Railway Emergency Intelligence (SOS) (PINNACLE)
+- **Position Stream Gateway**: Implemented WebSocket manager providing raw data streams (3s frequency) for emergency responders.
+- **Emergency Enrichment Pipeline**: `EmergencyAlertManager` automatically injects interpolated train positions into SOS packets.
+- **GPS Fail-safe**: System now provides exact track coordinates even if the passenger's mobile GPS is unavailable.
+- **Responder Dashboard Support**: Unified `sos/ws` channel for real-time fleet-wide alert monitoring.
+
+---
+
+## 🛠️ System Architecture (Safety-First Evolution)
+```mermaid
+graph TD
+    Passenger[Passenger SOS] --> API_SOS[SOS API]
+    API_SOS --> AlertMgr[Emergency Alert Manager]
+    AlertMgr --> PosEst[Position Estimator]
+    PosEst --> Interpolation[Track Interpolation]
+    AlertMgr --> WS_Gateway[WebSocket Gateway]
+    WS_Gateway --> Responders[Emergency Responders]
+    Interpolation --> Result[High-Fidelity Location Packet]
+```
 
 ---
 

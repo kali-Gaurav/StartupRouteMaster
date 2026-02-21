@@ -179,6 +179,15 @@ async def startup():
         else:
             logger.info("Analytics consumer disabled (KAFKA_ENABLE_EVENTS=false)")
 
+        # Start WebSocket Position Broadcaster (Phase 12)
+        try:
+            from backend.services.realtime_ingestion.position_broadcaster import broadcaster
+            import asyncio
+            asyncio.create_task(broadcaster.start())
+            logger.info("✅ WebSocket Position Broadcaster initialized")
+        except Exception as e:
+            logger.warning(f"Position Broadcaster failed to start: {e}")
+
         # Set up monthly ETL scheduler
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.cron import CronTrigger
