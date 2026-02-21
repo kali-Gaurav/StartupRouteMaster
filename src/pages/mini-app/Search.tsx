@@ -32,8 +32,16 @@ interface RouteResult {
   fare?: number;
   availability?: string;
   transfers: number;
-  legs?: unknown[];
+  legs?: Leg[];
   is_unlocked?: boolean;
+}
+
+interface Leg {
+  train_no?: string;
+  train_name?: string;
+  departure?: string;
+  arrival?: string;
+  fare?: number;
 }
 
 interface Station {
@@ -242,12 +250,12 @@ const MiniAppSearch = () => {
       for (const route of (data.routes?.two_transfer || [])) {
         const legs = [route.leg1, route.leg2, route.leg3].filter(Boolean);
         results.push({
-          train_no: legs.map((l: any) => l?.train_no).join(" → "),
-          train_name: legs.map((l: any) => l?.train_name || "Train").join(" + "),
+          train_no: legs.map((l: Leg) => l?.train_no).join(" → "),
+          train_name: legs.map((l: Leg) => l?.train_name || "Train").join(" + "),
           departure: route.leg1?.departure || "--:--",
           arrival: route.leg3?.arrival || "--:--",
           duration: fmtTime(route.total_time_minutes),
-          fare: legs.reduce((s: number, l: any) => s + (l?.fare || 0), 0) || undefined,
+          fare: legs.reduce((s: number, l: Leg) => s + (l?.fare || 0), 0) || undefined,
           transfers: 2,
           legs
         });
@@ -257,12 +265,12 @@ const MiniAppSearch = () => {
       for (const route of (data.routes?.three_transfer || [])) {
         const legs = [route.leg1, route.leg2, route.leg3, route.leg4].filter(Boolean);
         results.push({
-          train_no: legs.map((l: any) => l?.train_no).join(" → "),
-          train_name: legs.map((l: any) => l?.train_name || "Train").join(" + "),
+          train_no: legs.map((l: Leg) => l?.train_no).join(" → "),
+          train_name: legs.map((l: Leg) => l?.train_name || "Train").join(" + "),
           departure: route.leg1?.departure || "--:--",
           arrival: route.leg4?.arrival || "--:--",
           duration: fmtTime(route.total_time_minutes),
-          fare: legs.reduce((s: number, l: any) => s + (l?.fare || 0), 0) || undefined,
+          fare: legs.reduce((s: number, l: Leg) => s + (l?.fare || 0), 0) || undefined,
           transfers: 3,
           legs
         });

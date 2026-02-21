@@ -182,7 +182,7 @@ const Index = () => {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { suggestions?: any[] };
+      const detail = (e as CustomEvent).detail as { suggestions?: Array<{ label: string; type?: string; value?: string; fromName?: string; toName?: string }> };
       if (!detail?.suggestions || !Array.isArray(detail.suggestions)) return;
       setChatSuggestions(detail.suggestions.slice(0, 6));
     };
@@ -205,7 +205,7 @@ const Index = () => {
     if (fromCode && toCode && !origin && !destination) {
       runSearchFromCodes(fromCode, toCode, date || undefined);
     }
-  }, [searchParams.get("from"), searchParams.get("to")]);
+  }, [searchParams, origin, destination, runSearchFromCodes]);
 
   useEffect(() => {
     if (hasRestoredLastSearch.current) return;
@@ -217,7 +217,7 @@ const Index = () => {
     if (!last?.origin?.code || !last?.destination?.code) return;
     hasRestoredLastSearch.current = true;
     runSearchFromCodes(last.origin.code, last.destination.code, last.date);
-  }, [runSearchFromCodes, searchParams.get("from"), searchParams.get("to")]);
+  }, [runSearchFromCodes, searchParams]);
 
   const handleSwapStations = () => {
     const temp = origin;
@@ -227,8 +227,8 @@ const Index = () => {
 
   const handleSuggestionClick = (s: { label: string; fromName?: string; toName?: string }) => {
     // Prefer parsed names if available; otherwise use the label and let runSearchFromCodes resolve it
-    const from = s.fromName ?? s.label.split(/\s+(?:to|\-|→)\s+/i)[0];
-    const to = s.toName ?? s.label.split(/\s+(?:to|\-|→)\s+/i)[1];
+    const from = s.fromName ?? s.label.split(/\s+(?:to|-|→)\s+/i)[0];
+    const to = s.toName ?? s.label.split(/\s+(?:to|-|→)\s+/i)[1];
     if (!from || !to) return;
     setChatSuggestions([]);
     runSearchFromCodes(from, to, undefined, undefined);
@@ -425,7 +425,7 @@ const Index = () => {
     flowCorrelationIdRef.current = pendingChatbotSearch.correlationId ?? null;
     setPendingChatbotSearch(null);
     if (pendingChatbotSearch.date) setTravelDate(pendingChatbotSearch.date);
-    handleSearch();
+    handleSearchRef.current();
     setTimeout(() => document.getElementById("results")?.scrollIntoView({ behavior: "smooth" }), 400);
   }, [pendingChatbotSearch, origin, destination]);
 
@@ -450,7 +450,7 @@ const Index = () => {
       if (out.length >= 8) break;
     }
     return out;
-  }, [optimalRoutes.length, allRoutes.length]); // refresh when search results change (history may have been updated)
+  }, [optimalRoutes, allRoutes]); // refresh when search results change (history may have been updated)
 
   const categories = useMemo(() => {
     const uniqueCategories = new Set<string>();
@@ -615,7 +615,7 @@ const Index = () => {
                     {chatSuggestions.map((s, i) => (
                       <button
                         key={`${s.label}-${i}`}
-                        onClick={() => handleSuggestionClick(s as any)}
+                        onClick={() => handleSuggestionClick(s)}
                         className="px-3 py-1.5 rounded-full text-sm font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                       >
                         {s.label}

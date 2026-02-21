@@ -36,6 +36,9 @@ export interface BackendDirectRoute {
   fare?: number | null;
   /** Seat availability string for this segment; included in /routes response */
   availability?: string | null;
+  availability_summary?: {
+    probability?: number;
+  };
 }
 
 export interface BackendOneTransferRoute {
@@ -46,6 +49,9 @@ export interface BackendOneTransferRoute {
   waiting_time_minutes: number;
   total_distance: number;
   total_time_minutes: number;
+  availability_summary?: {
+    probability?: number;
+  };
 }
 
 export interface BackendTwoTransferRoute {
@@ -59,6 +65,9 @@ export interface BackendTwoTransferRoute {
   waiting2_minutes?: number;
   total_time_minutes?: number;
   total_distance?: number;
+  availability_summary?: {
+    probability?: number;
+  };
 }
 
 export interface BackendThreeTransferRoute {
@@ -75,6 +84,9 @@ export interface BackendThreeTransferRoute {
   waiting3_minutes?: number;
   total_time_minutes?: number;
   total_distance?: number;
+  availability_summary?: {
+    probability?: number;
+  };
 }
 
 export interface BackendJourney {
@@ -198,7 +210,7 @@ export async function unifiedSearchApi(
   destination: string,
   date: string,
   passengers: number = 1
-): Promise<any[]> {
+): Promise<BackendJourney[]> {
   const res = await fetch(getRailwayApiUrl('/api/v2/search/unified'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -225,7 +237,7 @@ export async function unlockJourneyDetailsApi(
   date: string,
   coach: string = 'AC_THREE_TIER',
   age: number = 30
-): Promise<any> {
+): Promise<unknown> {
   const params = new URLSearchParams({
     travel_date: date,
     coach_preference: coach,
@@ -297,7 +309,7 @@ export function mapBackendRoutesToRoutes(
     const category = 'DIRECT';
     const seg = makeSegment(train, source, destination, 0, rid, category);
     const totalFare = seg.liveFare ?? 0;
-    const directSeatProb = Number((train as any)?.availability_summary?.probability ?? (seg.seatAvailable ? 0.85 : 0.1));
+    const directSeatProb = Number(train.availability_summary?.probability ?? (seg.seatAvailable ? 0.85 : 0.1));
     routes.push({
       id: rid,
       category,
@@ -323,7 +335,7 @@ export function mapBackendRoutesToRoutes(
     seg1.segment = 1;
     seg2.segment = 2;
     const totalFare = (seg1.liveFare ?? 0) + (seg2.liveFare ?? 0);
-    const oneProb = Number((r as any)?.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1));
+    const oneProb = Number(r.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1));
     routes.push({
       id: rid,
       category,
@@ -353,7 +365,7 @@ export function mapBackendRoutesToRoutes(
     seg2.segment = 2;
     seg3.segment = 3;
     const totalFare = (seg1.liveFare ?? 0) + (seg2.liveFare ?? 0) + (seg3.liveFare ?? 0);
-    const twoProb = Number((r as any)?.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1, seg3.seatAvailable ? 0.85 : 0.1));
+    const twoProb = Number(r.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1, seg3.seatAvailable ? 0.85 : 0.1));
     routes.push({
       id: rid,
       category,
@@ -386,7 +398,7 @@ export function mapBackendRoutesToRoutes(
     seg3.segment = 3;
     seg4.segment = 4;
     const totalFare = (seg1.liveFare ?? 0) + (seg2.liveFare ?? 0) + (seg3.liveFare ?? 0) + (seg4.liveFare ?? 0);
-    const threeProb = Number((r as any)?.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1, seg3.seatAvailable ? 0.85 : 0.1, seg4.seatAvailable ? 0.85 : 0.1));
+    const threeProb = Number(r.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1, seg3.seatAvailable ? 0.85 : 0.1, seg4.seatAvailable ? 0.85 : 0.1));
     routes.push({
       id: rid,
       category,
@@ -615,7 +627,7 @@ export function searchCachedStations(query: string): Station[] {
 /**
  * Save user preferences
  */
-export function saveUserPreferences(prefs: Record<string, any>): void {
+export function saveUserPreferences(prefs: Record<string, unknown>): void {
   try {
     const existing = getUserPreferences();
     const updated = { ...existing, ...prefs };
@@ -628,7 +640,7 @@ export function saveUserPreferences(prefs: Record<string, any>): void {
 /**
  * Get user preferences
  */
-export function getUserPreferences(): Record<string, any> {
+export function getUserPreferences(): Record<string, unknown> {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.USER_PREFERENCES);
     return data ? JSON.parse(data) : {};
@@ -656,15 +668,22 @@ export async function isBackendAvailable(): Promise<boolean> {
   }
 }
 
+interface PopularRoute {
+  origin: string;
+  origin_name: string;
+  destination: string;
+  destination_name: string;
+}
+
 /**
  * Get popular routes (works offline with fallback)
  */
-export async function getPopularRoutes(limit: number = 5): Promise<any[]> {
+export async function getPopularRoutes(limit: number = 5): Promise<PopularRoute[]> {
   try {
     const res = await fetch(getRailwayApiUrl(`/api/popular-routes?limit=${limit}`));
     if (res.ok) {
       const data = await res.json();
-      return data.popular_routes || [];
+      return (data.popular_routes || []) as PopularRoute[];
     }
   } catch {
     // Fallback to hardcoded popular routes for offline

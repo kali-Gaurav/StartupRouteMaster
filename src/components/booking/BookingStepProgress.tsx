@@ -4,7 +4,6 @@ import {
   useBookingFlowContext,
   bookingStepsForProgress,
   bookingStepIndex,
-  type BookingStep,
 } from "@/context/BookingFlowContext";
 
 export function BookingStepProgress() {

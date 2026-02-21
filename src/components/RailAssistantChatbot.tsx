@@ -14,6 +14,16 @@ declare global {
     SpeechRecognition: typeof SpeechRecognition | undefined;
     webkitSpeechRecognition: typeof SpeechRecognition | undefined;
   }
+
+  interface SpeechRecognitionEvent extends Event {
+    results: {
+      [key: number]: {
+        [key: number]: {
+          transcript: string;
+        };
+      };
+    };
+  }
 }
 
 interface SpeechRecognition extends EventTarget {
@@ -28,7 +38,7 @@ interface SpeechRecognition extends EventTarget {
   abort(): void;
 }
 
-declare var SpeechRecognition: {
+declare const SpeechRecognition: {
   new(): SpeechRecognition;
 };
 
@@ -163,16 +173,16 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
         // Dispatch UI-friendly suggestion events when backend returns action buttons
         if (Array.isArray(actions) && actions.length > 0) {
           try {
-            const suggestions = actions.map((a: any) => {
+            const suggestions = actions.map((a: ChatAction) => {
               // Try to parse route-like labels (e.g. "Delhi to Mumbai" or "NDLS - BCT")
               const label: string = String(a.label ?? "");
-              const routeMatch = label.match(/\s*([^\-–—:→]+?)\s*(?:to|\-|→|\u2013|\u2014)\s*([^\-–—:→]+?)\s*$/i);
+              const routeMatch = label.match(/\s*([^\-–—:→]+?)\s*(?:to|-|→|\u2013|\u2014)\s*([^\-–—:→]+?)\s*$/i);
               const fromName = routeMatch ? routeMatch[1].trim() : undefined;
               const toName = routeMatch ? routeMatch[2].trim() : undefined;
               return { label, type: a.type, value: a.value, fromName, toName };
             });
             window.dispatchEvent(new CustomEvent("rail-assistant-suggestions", { detail: { suggestions } }));
-          } catch (e) {
+          } catch {
             /* non-fatal */
           }
         }

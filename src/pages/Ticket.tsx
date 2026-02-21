@@ -58,7 +58,7 @@ function statusClass(s: TicketStatus): string {
 
 export default function TicketPage() {
   const { bookingId } = useParams<{ bookingId: string }>();
-  const [ticket, setTicket] = useState<StoredTicket | null>(() =>
+  const [ticket] = useState<StoredTicket | null>(() =>
     bookingId ? getTicket(bookingId) : null
   );
   const [copied, setCopied] = useState(false);
@@ -85,7 +85,7 @@ export default function TicketPage() {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }
-    } catch (e) {
+    } catch {
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

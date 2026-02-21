@@ -215,8 +215,7 @@ export function formatRoute(route: TransferRoute): {
  * Get transfer route details
  */
 export async function getTransferRouteDetails(
-  routes: TransferRoute[],
-  _transferCount: number
+  routes: TransferRoute[]
 ): Promise<Map<string, unknown>> {
   const details = new Map<string, unknown>();
 

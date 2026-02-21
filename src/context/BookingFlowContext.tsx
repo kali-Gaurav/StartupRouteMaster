@@ -18,7 +18,6 @@ import {
   saveBookingSession,
   loadBookingSession,
   clearBookingSession,
-  type BookingSessionSnapshot,
 } from "@/lib/bookingSessionStore";
 import { logEvent } from "@/lib/observability";
 
@@ -199,7 +198,7 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
         setState((s) => (s.availabilityPhase === "checking" ? { ...s, availabilityPhase: "locking" } : s));
       }, AVAILABILITY_CHECK_MS);
 
-      const t2 = setTimeout(() => {
+      setTimeout(() => {
         setState((s) =>
           s.availabilityPhase === "locking" ? { ...s, availabilityPhase: "confirmed" } : s
         );
@@ -224,10 +223,10 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
   const setUnlockSuccess = useCallback((routeId: string) => {
     logEvent("route_unlocked", { routeId });
     clearBookingSession(); // Clear any partial booking session
-    setState((prev) => ({ // Update state to include lastUnlockedRouteId
+    setState({ // Update state to include lastUnlockedRouteId
       ...initialState, // Reset other modal state
       lastUnlockedRouteId: routeId,
-    }));
+    });
   }, []);
 
   const retryAvailability = useCallback(() => {

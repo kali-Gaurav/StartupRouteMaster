@@ -41,17 +41,19 @@ export default function SOSPage() {
     // Get current location
     LocationService.requestLocation()
       .then((loc) => {
-        setLocation({ lat: loc.latitude, lng: loc.longitude });
-        setLocationError(null);
-        
-        // Update server location
-        if (token) {
-          LocationService.updateServerLocation(loc);
+        if (loc) {
+          setLocation({ lat: loc.latitude, lng: loc.longitude });
+          setLocationError(null);
+          
+          // Update server location
+          if (token) {
+            LocationService.updateServerLocation(loc);
+          }
         }
         
         setLoading(false);
       })
-      .catch((err) => {
+      .catch((err: Error) => {
         setLocationError(err.message || "Could not get location.");
         setLoading(false);
       });
@@ -93,16 +95,17 @@ export default function SOSPage() {
             if (token) {
               await LocationService.updateServerLocation(loc);
             }
-          } catch (err) {
+          } catch (err: unknown) {
             console.error('Location update failed:', err);
           }
         },
-        (error) => {
+        (error: GeolocationPositionError) => {
           console.error('Location watch error:', error);
         }
       );
-    } catch (err: any) {
-      setLocationError(err.message || "Failed to send SOS. Check connection.");
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to send SOS. Check connection.";
+      setLocationError(errorMessage);
     } finally {
       setSending(false);
     }
@@ -121,8 +124,8 @@ export default function SOSPage() {
       
       await endTrip(eventId);
       setTripEnded(true);
-    } catch (err: any) {
-      setLocationError(err.message || "Failed to end trip.");
+    } catch (err: unknown) {
+      setLocationError(err instanceof Error ? err.message : "Failed to end trip.");
     }
   };
 

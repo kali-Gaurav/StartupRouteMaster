@@ -41,7 +41,7 @@ function isRotationDisabled(): boolean {
   }
 }
 
-function setRotationDisabled(disabled: boolean) {
+function saveRotationDisabled(disabled: boolean) {
   try {
     localStorage.setItem(ROTATION_DISABLED_KEY, disabled ? "true" : "false");
   } catch {
@@ -94,7 +94,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setRotationDisabled = useCallback((disabled: boolean) => {
     setRotationDisabledState(disabled);
-    setRotationDisabled(disabled);
+    saveRotationDisabled(disabled);
   }, []);
 
   useEffect(() => {

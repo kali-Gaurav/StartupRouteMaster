@@ -3,10 +3,33 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Train, MapPin, Heart, IndianRupee, Route as RouteIcon, Lock } from "lucide-react";
+import { Train, MapPin, Heart, IndianRupee, Route as RouteIcon, Lock, Loader2 } from "lucide-react";
+
+interface MiniLeg {
+  train_no: string;
+  train_name: string;
+  departure: string;
+  arrival: string;
+  distance?: number;
+  time_minutes?: number;
+  fare?: number;
+}
+
+interface MiniRoute {
+  journey_id?: string;
+  train_no: string;
+  train_name: string;
+  departure: string;
+  arrival: string;
+  duration: string;
+  transfers: number;
+  fare?: number;
+  availability?: string;
+  legs?: MiniLeg[];
+}
 
 interface RouteCardMiniProps {
-  route: any; // Keeping any for now due to complex internal structure not fully defined
+  route: MiniRoute;
   originCode: string;
   destinationCode: string;
   /** Indicates if the route details have been unlocked. */
@@ -14,17 +37,17 @@ interface RouteCardMiniProps {
   /** If true, unlock request is in progress for this route */
   isProcessing?: boolean;
   /** Called when user clicks Unlock Details. */
-  onUnlock: (route: any) => void;
-  onSave: (route: any) => void;
-  onBook: (route: any) => void; // Added onBook prop
+  onUnlock: (route: MiniRoute) => void;
+  onSave: (route: MiniRoute) => void;
+  onBook: (route: MiniRoute) => void; // Added onBook prop
 }
 
-export function RouteCardMini({ route, originCode, destinationCode, isUnlocked, onUnlock, onSave, onBook }: RouteCardMiniProps) {
+export function RouteCardMini({ route, originCode, destinationCode, isUnlocked, isProcessing, onUnlock, onSave, onBook }: RouteCardMiniProps) {
   const [showSegments, setShowSegments] = useState(false);
 
   const calculateTotalDistance = () => {
     if (route.legs) {
-      return route.legs.reduce((sum: number, leg: any) => sum + (leg.distance || 0), 0);
+      return route.legs.reduce((sum: number, leg: MiniLeg) => sum + (leg.distance || 0), 0);
     }
     return 0;
   };
@@ -174,15 +197,7 @@ export function RouteCardMini({ route, originCode, destinationCode, isUnlocked, 
 
                   {showSegments && (
                     <div className="mt-4 space-y-2 pt-4 border-t">
-                      {route.legs.map((leg: { // Explicitly define the structure of leg
-                        train_no: string;
-                        train_name: string;
-                        departure: string;
-                        time_minutes?: number;
-                        distance?: number;
-                        arrival: string;
-                        fare?: number;
-                      }, legIdx: number) => (
+                      {route.legs.map((leg: MiniLeg, legIdx: number) => (
                         <div key={legIdx} className="bg-gray-50 rounded-lg p-3">
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-baseline gap-1.5">

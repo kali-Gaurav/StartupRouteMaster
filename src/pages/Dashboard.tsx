@@ -107,7 +107,7 @@ export default function Dashboard() {
     try {
       const { events: list } = await getAllSOS();
       setEvents(list);
-    } catch (err) {
+    } catch {
       setError("Failed to load. Is the backend running?");
       setEvents([]);
     } finally {

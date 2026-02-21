@@ -3,7 +3,7 @@
  * Handles ₹49 service fee payment via Razorpay
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
@@ -34,27 +34,26 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const [checking, setChecking] = useState(true);
   const [alreadyPaid, setAlreadyPaid] = useState(false);
   const [error, setError] = useState('');
-  const [paymentOrder, setPaymentOrder] = useState<any>(null);
+
+  const checkExistingPayment = useCallback(async () => {
+    setChecking(true);
+    try {
+      const response = await checkPaymentStatus(routeOrigin, routeDestination);
+      if (response.paid) {
+        setAlreadyPaid(true);
+      }
+    } catch (err: unknown) {
+      console.error('Failed to check payment status:', err);
+    } finally {
+      setChecking(false);
+    }
+  }, [routeOrigin, routeDestination]);
 
   useEffect(() => {
     if (open && token) {
       checkExistingPayment();
     }
-  }, [open, token, routeOrigin, routeDestination]);
-
-  const checkExistingPayment = async () => {
-    setChecking(true);
-    try {
-      const response = await checkPaymentStatus(routeOrigin, routeDestination);
-      if (response.success && response.already_paid) {
-        setAlreadyPaid(true);
-      }
-    } catch (err: any) {
-      console.error('Failed to check payment status:', err);
-    } finally {
-      setChecking(false);
-    }
-  };
+  }, [open, token, checkExistingPayment]);
 
   const handlePayment = async () => {
     if (!token || !user) {
@@ -85,41 +84,40 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       }
 
       const order = orderResponse.order;
-      setPaymentOrder(order);
 
       // Step 2: Open Razorpay checkout
       openRazorpayCheckout(
         order,
         user,
-        async (paymentResponse: any) => {
+        async (paymentResponse: unknown) => {
           try {
-            const verifyResponse = await verifyPayment(paymentResponse);
+            const verifyResponse = await verifyPayment(paymentResponse as any); // Cast here as openRazorpayCheckout callback is tricky
             if (!verifyResponse.success) {
               setError('Payment verification failed. Please contact support.');
               return;
             }
             if (verifyResponse.redirect_token) {
               const consumeResponse = await consumeRedirectToken(verifyResponse.redirect_token);
-              if (!consumeResponse?.success || !consumeResponse?.order) {
+              if (!consumeResponse?.success) {
                 setError('Payment confirmation invalid. Please contact support.');
                 return;
               }
             }
             onSuccess(order.order_id);
             onClose();
-          } catch (err: any) {
-            setError('Payment verification failed: ' + (err as Error).message);
+          } catch (err: unknown) {
+            setError('Payment verification failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
           } finally {
             setLoading(false);
           }
         },
-        (err: any) => {
+        (err: Error) => {
           setError(err.message || 'Payment failed');
           setLoading(false);
         }
       );
-    } catch (err: any) {
-      setError(err.message || 'Failed to initiate payment');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to initiate payment');
       setLoading(false);
     }
   };

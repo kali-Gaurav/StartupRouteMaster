@@ -5,6 +5,12 @@
 
 import { fetchWithAuth } from './apiClient';
 
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
+
 export interface PaymentOrder {
   order_id: string;
   razorpay_order_id: string;
@@ -39,7 +45,7 @@ export interface BookingRedirectRequest {
 }
 
 /** Uses token from apiClient config. */
-export const createPaymentOrder = async (data: CreateOrderRequest): Promise<any> => {
+export const createPaymentOrder = async (data: CreateOrderRequest): Promise<PaymentOrder> => {
   const response = await fetchWithAuth('/payments/create_order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -49,7 +55,7 @@ export const createPaymentOrder = async (data: CreateOrderRequest): Promise<any>
 };
 
 /** Uses token from apiClient config. Returns redirect_token on success; frontend must consume it before showing success. */
-export const verifyPayment = async (data: VerifyPaymentRequest): Promise<any> => {
+export const verifyPayment = async (data: VerifyPaymentRequest): Promise<{ success: boolean; redirect_token?: string }> => {
   const response = await fetchWithAuth('/payments/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -59,7 +65,7 @@ export const verifyPayment = async (data: VerifyPaymentRequest): Promise<any> =>
 };
 
 /** Consume signed redirect token (one-time). Call after verify success; only then trust payment success. */
-export const consumeRedirectToken = async (token: string): Promise<any> => {
+export const consumeRedirectToken = async (token: string): Promise<{ success: boolean; data?: unknown }> => {
   const response = await fetchWithAuth('/payments/consume-redirect-token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -69,13 +75,13 @@ export const consumeRedirectToken = async (token: string): Promise<any> => {
 };
 
 /** Uses token from apiClient config. */
-export const checkPaymentStatus = async (routeId: string, travelDate: string): Promise<any> => {
+export const checkPaymentStatus = async (routeId: string, travelDate: string): Promise<{ paid: boolean }> => {
   const response = await fetchWithAuth(`/payments/check_payment_status?route_id=${routeId}&travel_date=${travelDate}`);
   return await response.json();
 };
 
 /** Uses token from apiClient config. */
-export const createBookingRedirect = async (data: BookingRedirectRequest): Promise<any> => {
+export const createBookingRedirect = async (data: BookingRedirectRequest): Promise<{ redirect_url: string }> => {
   const response = await fetchWithAuth('/payments/booking/redirect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -85,7 +91,7 @@ export const createBookingRedirect = async (data: BookingRedirectRequest): Promi
 };
 
 /** Uses token from apiClient config. Pass signal for request cancellation (e.g. from TanStack Query). */
-export const getBookingHistory = async (signal?: AbortSignal): Promise<any> => {
+export const getBookingHistory = async (signal?: AbortSignal): Promise<unknown[]> => {
   const response = await fetchWithAuth('/payments/booking/history', { signal });
   return await response.json();
 };
@@ -101,10 +107,11 @@ export const getUnlockedRoutes = async (): Promise<{ routes: string[] }> => {
 
 export const openRazorpayCheckout = (
   order: PaymentOrder,
-  user: any,
-  onSuccess: (response: any) => void,
-  onFailure: (error: any) => void
+  user: unknown,
+  onSuccess: (response: unknown) => void,
+  onFailure: (error: Error) => void
 ) => {
+  const u = user as Record<string, string | undefined>;
   const options = {
     key: order.key_id,
     amount: order.amount,
@@ -113,9 +120,9 @@ export const openRazorpayCheckout = (
     description: 'Service Fee - ₹49',
     order_id: order.razorpay_order_id,
     prefill: {
-      name: `${user?.first_name || ''} ${user?.last_name || ''}`.trim() || 'User',
-      email: user?.email || '',
-      contact: user?.phone || '',
+      name: `${u?.first_name || ''} ${u?.last_name || ''}`.trim() || 'User',
+      email: u?.email || '',
+      contact: u?.phone || '',
     },
     theme: {
       color: '#3b82f6',
@@ -135,7 +142,7 @@ export const openRazorpayCheckout = (
     },
   };
 
-  // @ts-ignore - Razorpay SDK is loaded via script tag
+  // @ts-expect-error - Razorpay SDK is loaded via script tag
   const rzp = new window.Razorpay(options);
   rzp.open();
 };

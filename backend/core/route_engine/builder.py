@@ -25,6 +25,13 @@ from .snapshot_manager import SnapshotManager
 
 logger = logging.getLogger(__name__)
 
+# Import validation pipeline
+try:
+    from ..graph_validation_pipeline import GraphBuildingValidationPipeline
+except ImportError:
+    logger.debug("Graph validation pipeline not available (OK for backward compatibility)")
+    GraphBuildingValidationPipeline = None
+
 class ParallelGraphBuilder:
     """Builds regional graphs in parallel"""
 
@@ -53,6 +60,20 @@ class GraphBuilder:
 
     async def build_graph(self, date: datetime) -> TimeDependentGraph:
         """Build optimized time-dependent graph for the given date"""
+        
+        # Run validation pipeline before building (if available)
+        if GraphBuildingValidationPipeline:
+            logger.info(f"Running pre-build validation for {date.date()}...")
+            pipeline = GraphBuildingValidationPipeline()
+            validation_results = await pipeline.validate_and_prepare_for_graph_build(date)
+            
+            if not validation_results["overall_passed"]:
+                logger.warning(f"Pre-build validation had issues: {validation_results.get('errors', [])}")
+                # Continue anyway but log the issues
+                if validation_results.get("errors"):
+                    for error in validation_results["errors"]:
+                        logger.error(f"  - {error}")
+        
         # Use thread pool for database operations
         loop = asyncio.get_event_loop()
         db_graph_data = await loop.run_in_executor(
@@ -69,6 +90,14 @@ class GraphBuilder:
             logger.info("Loaded StationTimeIndex into graph.")
         except Exception as e:
             logger.debug("StationTimeIndex not available: %s", e)
+        
+        # Apply validated transfer graph if available
+        if GraphBuildingValidationPipeline:
+            try:
+                pipeline = GraphBuildingValidationPipeline()
+                graph.snapshot = await pipeline.apply_validated_data_to_graph(graph.snapshot)
+            except Exception as e:
+                logger.debug(f"Could not apply validated data: {e}")
         
         # Save the snapshot
         self.snapshot_manager.save_snapshot(graph.snapshot)

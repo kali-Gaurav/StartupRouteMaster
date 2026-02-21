@@ -45,9 +45,9 @@ const MiniAppBooking = () => {
     setPassengers(passengers.filter((_, i) => i !== index));
   };
 
-  const updatePassenger = (index: number, field: keyof Passenger, value: any) => {
+  const updatePassenger = (index: number, field: keyof Passenger, value: string | number) => {
     const newPassengers = [...passengers];
-    newPassengers[index] = { ...newPassengers[index], [field]: value };
+    newPassengers[index] = { ...newPassengers[index], [field]: value } as Passenger;
     setPassengers(newPassengers);
   };
 
