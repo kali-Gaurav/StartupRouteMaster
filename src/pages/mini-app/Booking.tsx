@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, ArrowLeft, Loader2, Train, IndianRupee, Info } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { getRailwayApiUrl } from "@/lib/utils";
-import { useAuth } from "@/context/AuthContext";
 
 interface Passenger {
   fullName: string;
@@ -20,7 +19,6 @@ interface Passenger {
 const MiniAppBooking = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, isAuthenticated } = useAuth();
   const { route, origin, destination, date } = location.state || {};
 
   const [passengers, setPassengers] = useState<Passenger[]>([

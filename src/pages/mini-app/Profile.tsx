@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+
 import { Progress } from "@/components/ui/progress";
 import {
   ArrowLeft,
@@ -45,14 +45,14 @@ interface Badge {
   description: string;
 }
 
-const BADGES = {
-  "beginner": { icon: "🎫", name: "Beginner", requirement: "1+ journeys" },
-  "explorer": { icon: "🥉", name: "Explorer", requirement: "5+ journeys" },
-  "regular": { icon: "🥈", name: "Regular Traveler", requirement: "10+ journeys" },
-  "expert": { icon: "🥇", name: "Expert Traveler", requirement: "25+ journeys" },
-  "master": { icon: "🏆", name: "Train Master", requirement: "50+ journeys" },
-  "legend": { icon: "🌟", name: "Legend", requirement: "100+ journeys" }
-};
+// const BADGES = {
+//   "beginner": { icon: "🎫", name: "Beginner", requirement: "1+ journeys" },
+//   "explorer": { icon: "🥉", name: "Explorer", requirement: "5+ journeys" },
+//   "regular": { icon: "🥈", name: "Regular Traveler", requirement: "10+ journeys" },
+//   "expert": { icon: "🥇", name: "Expert Traveler", requirement: "25+ journeys" },
+//   "master": { icon: "🏆", name: "Train Master", requirement: "50+ journeys" },
+//   "legend": { icon: "🌟", name: "Legend", requirement: "100+ journeys" }
+// };
 
 const MiniAppProfile = () => {
   const navigate = useNavigate();

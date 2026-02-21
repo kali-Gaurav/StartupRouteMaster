@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
+import { cva } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
 
@@ -58,9 +58,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     );
   }
 ) as React.ForwardRefExoticComponent<
-  React.ButtonHTMLAttributes<HTMLButtonElement> &
-    VariantProps<typeof buttonVariants> & { asChild?: boolean } &
-    React.RefAttributes<HTMLButtonElement>
+  ButtonProps & React.RefAttributes<HTMLButtonElement>
 >;
 
 Button.displayName = "Button";

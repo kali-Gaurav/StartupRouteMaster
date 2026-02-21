@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertTriangle, MapPin, Phone, ArrowLeft, Loader2, CheckCircle2, Share2 } from "lucide-react";
+import { AlertTriangle, Phone, ArrowLeft, Loader2, CheckCircle2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
 
@@ -157,7 +157,7 @@ const MiniAppSOS = () => {
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-gray-700">If you can, also call:</p>
                 <div className="grid grid-cols-2 gap-2">
-                  {Object.entries(EMERGENCY_NUMBERS).map(([number, name]) => (
+                  {Object.entries(EMERGENCY_NUMBERS).map(([number]) => (
                     <Button
                       key={number}
                       variant="outline"
