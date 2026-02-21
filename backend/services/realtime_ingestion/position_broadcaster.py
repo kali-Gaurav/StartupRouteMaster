@@ -6,11 +6,13 @@ Bridges the PositionEstimator and WebSocketManager.
 import asyncio
 import logging
 import json
+import time
 from datetime import datetime
 from typing import Dict, Any
 
 from backend.database import SessionLocal
 from .position_estimator import TrainPositionEstimator
+from backend.core.monitoring import BROADCASTER_TICK_DURATION
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class PositionBroadcaster:
         logger.info(f"PositionBroadcaster started with {self.interval}s interval")
         
         while self.is_running:
+            tick_start = time.perf_counter()
             try:
                 # 1. Get active subscriptions
                 active_trains = list(manager.train_subscriptions.keys())
@@ -59,11 +62,11 @@ class PositionBroadcaster:
                     
                     db.close()
                 
-                # Sleep until next pulse
-                await asyncio.sleep(self.interval)
-                
             except Exception as e:
                 logger.error(f"Broadcaster Error: {e}")
+            finally:
+                BROADCASTER_TICK_DURATION.observe(time.perf_counter() - tick_start)
+                # Sleep until next pulse
                 await asyncio.sleep(self.interval)
 
     def stop(self):

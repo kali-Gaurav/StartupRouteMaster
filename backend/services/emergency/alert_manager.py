@@ -6,10 +6,12 @@ Pivots RouteMaster from a travel app to a safety-first intelligence platform.
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
+import time
 from sqlalchemy.orm import Session
 
 from backend.database import SessionLocal
 from backend.services.realtime_ingestion.position_estimator import TrainPositionEstimator
+from backend.core.monitoring import SOS_ALERTS_TOTAL, SOS_ENRICHMENT_LATENCY, SOS_BROADCAST_LATENCY
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,9 @@ class EmergencyAlertManager:
         """
         # Lazy import to avoid circular dependency
         from backend.api.websockets import manager
+        
+        start_time = time.perf_counter()
+        SOS_ALERTS_TOTAL.labels(severity=raw_event.get("severity", "medium"), status="received").inc()
         
         enriched_event = raw_event.copy()
         
@@ -57,8 +62,13 @@ class EmergencyAlertManager:
                      enriched_event["lat"] = position["lat"]
                      enriched_event["lng"] = position["lon"]
             
+        enrichment_latency = time.perf_counter() - start_time
+        SOS_ENRICHMENT_LATENCY.observe(enrichment_latency)
+
         # 2. Dispatch to WebSocket Responders (Phase 12 Pipeline)
+        broadcast_start = time.perf_counter()
         await manager.broadcast_sos(enriched_event)
+        SOS_BROADCAST_LATENCY.observe(time.perf_counter() - broadcast_start)
         
         return enriched_event
 

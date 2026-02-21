@@ -19,6 +19,7 @@ import redis.asyncio as aioredis
 
 # Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
+from backend.core.monitoring import WS_CONNECTIONS  # Trigger metric registration
 
 from backend.core.route_engine import route_engine
 from backend.database import SessionLocal
