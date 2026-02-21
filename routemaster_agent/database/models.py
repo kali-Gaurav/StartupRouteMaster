@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Float, Boolean, ForeignKey, UniqueConstraint
+﻿from sqlalchemy import Column, String, Integer, DateTime, JSON, Float, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -43,12 +43,14 @@ class LiveStatus(Base):
 class SeatAvailability(Base):
     __tablename__ = "seat_availability"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    train_number = Column(String)
+    train_number = Column(String, index=True)
     class_code = Column(String)  # SL, 3A, 2A
     quota = Column(String)
     availability_status = Column(String)  # AVAILABLE-20, WL10
+    waiting_list_number = Column(Integer, nullable=True) # Point 8: ML Support
     fare = Column(Float)
-    check_date = Column(DateTime, default=datetime.utcnow)
+    travel_date = Column(DateTime, index=True) # The date of travel
+    check_date = Column(DateTime, default=datetime.utcnow) # When checked
 
 class ScheduleChangeLog(Base):
     """Records differences detected between a newly extracted schedule and the DB snapshot."""
@@ -69,8 +71,6 @@ class Alert(Base):
     train_number = Column(String, nullable=True, index=True)
     level = Column(String, default="critical")
     message = Column(String)
-    # avoid using attribute name 'metadata' (reserved by SQLAlchemy Declarative API)
-    # store alert metadata in column 'meta' to keep attribute name safe
     meta = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     resolved = Column(Boolean, default=False)
@@ -108,26 +108,26 @@ class TrainLiveUpdate(Base):
     station_name = Column(String)
     sequence = Column(Integer)  # Station sequence on route
     distance_km = Column(Float, nullable=True)
-    
+
     # Timing information
     scheduled_arrival = Column(DateTime, nullable=True)
     scheduled_departure = Column(DateTime, nullable=True)
     actual_arrival = Column(DateTime, nullable=True)
     actual_departure = Column(DateTime, nullable=True)
     delay_minutes = Column(Integer, default=0)
-    
+
     # Platform and halt info
     platform = Column(String, nullable=True)
     halt_minutes = Column(Integer, nullable=True)
-    
+
     # Status tracking
     status = Column(String)  # 'On Time', 'Delayed', 'Cancelled', 'Running'
     is_current_station = Column(Boolean, default=False)
-    
+
     # Crawler metadata
     recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
     source = Column(String, default="rappid_api")  # API provider
-    
+
     __table_args__ = (
         UniqueConstraint(
             'train_number', 'station_code', 'recorded_at',
@@ -145,11 +145,11 @@ class RealtimeData(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_type = Column(String, index=True)  # 'delay', 'cancellation', 'platform_change'
     entity_id = Column(String, index=True)  # trip_id or train_number
-    
+
     # Event payload
     data = Column(JSON)  # {delay_minutes, platform_number, status, etc}
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    
+
     # Processing status
     processed_at = Column(DateTime, nullable=True)
     status = Column(String, default='new')  # 'new', 'processed'
@@ -164,13 +164,36 @@ class TrainState(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     trip_id = Column(Integer, unique=True, index=True)
     train_number = Column(String, index=True)
-    
+
     # Current state
     current_delay_minutes = Column(Integer, default=0)
     status = Column(String)  # 'on_time', 'delayed', 'cancelled'
     platform_number = Column(String, nullable=True)
     current_station_code = Column(String, nullable=True)
-    
+
     # Metadata
     last_updated = Column(DateTime, default=datetime.utcnow)
     last_update_source = Column(String, nullable=True)  # 'api', 'user', 'system'
+
+class APIBudget(Base):
+    """
+    Tracks API usage for budget management (Point 8).
+    """
+    __tablename__ = "api_budget"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    api_name = Column(String, index=True)  # 'rapid_api_irctc1', 'rappid_in'
+    usage_date = Column(DateTime, default=datetime.utcnow, index=True)
+    request_count = Column(Integer, default=0)
+    daily_limit = Column(Integer, default=200)
+
+class Stop(Base):
+    __tablename__ = "stops"
+    id = Column(Integer, primary_key=True)
+    stop_id = Column(String, index=True)
+    code = Column(String, index=True)
+    name = Column(String)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    
+    def __repr__(self):
+        return f"<Stop(name='{self.name}', code='{self.code}')>"

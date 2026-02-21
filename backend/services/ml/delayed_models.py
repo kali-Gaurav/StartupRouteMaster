@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 import joblib
 import pickle
 
-from ...database.models import TrainLiveUpdate, TrainMaster, TrainStation
+from routemaster_agent.database.models import TrainLiveUpdate, TrainMaster, TrainStation
 
 logger = logging.getLogger(__name__)
 

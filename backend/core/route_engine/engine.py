@@ -21,6 +21,10 @@ from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
 from ..validator.live_validators import create_live_validators
 
+# Point 5: Advanced Booking Layer
+from ..services.booking.manager import SeatAvailabilityManager
+from ..services.booking.rapid_api_client import RapidAPIClient
+
 logger = logging.getLogger(__name__)
 
 class RailwayRouteEngine:
@@ -57,10 +61,31 @@ class RailwayRouteEngine:
         self.data_provider = DataProvider()
         self._detect_available_features()
 
+        # Advanced Booking Layer (Phase 7)
+        self._init_booking_manager()
+
         # Phase 3: Conditional live validators (must be ready before logging)
         self.live_validators = create_live_validators(self.data_provider)
 
         self._log_startup_status()
+
+    def _init_booking_manager(self):
+        """Initialize seat availability manager with API keys from config."""
+        try:
+            from ... import config as cfg
+            config = cfg.Config
+            # Point 1: Securely fetch from environment via Config
+            api_key = getattr(config, 'RAPIDAPI_KEY', "") 
+            if api_key:
+                client = RapidAPIClient(api_key)
+                self.seat_manager = SeatAvailabilityManager(client)
+                logger.info("✅ Seat Availability Manager initialized with RapidAPI (V1)")
+            else:
+                logger.warning("⚠️ RAPIDAPI_KEY not found in config. Booking layer disabled.")
+                self.seat_manager = None
+        except Exception as e:
+            logger.error(f"❌ Booking manager failed to initialize: {e}")
+            self.seat_manager = None
 
     def _detect_available_features(self):
         """
@@ -198,10 +223,48 @@ class RailwayRouteEngine:
             if user_context:
                 routes = await self._apply_ml_ranking(routes, user_context)
 
+            # Step 4: Apply Booking Intelligence Unlock Logic (Phase 7)
+            if self.seat_manager:
+                # Mark first 3 unlocked
+                for i, route in enumerate(routes):
+                    route.is_locked = i >= 3
+                
+                # Silent Prefetching for top 2 routes (Point 12)
+                # Note: This is an async fire-and-forget task
+                asyncio.create_task(self._prefetch_availability(routes[:2], departure_date))
+
             return routes
 
         finally:
             session.close()
+
+    async def _prefetch_availability(self, top_routes: List[Route], date: datetime):
+        """Background task to prefetch seat availability for top routes."""
+        if not self.seat_manager:
+            return
+            
+        date_str = date.strftime("%Y-%m-%d") # API Expected format for IRCTC1 V1
+        
+        # Bridge domain objects to manager expected format
+        prefetch_items = []
+        for route in top_routes:
+            if not route.segments:
+                continue
+            
+            # Prefetch for the first train segment
+            seg = route.segments[0]
+            if seg.train_number:
+                # We need station codes. For now we assume they are passed or resolvable.
+                # In production, Segment object carries station codes.
+                prefetch_items.append({
+                    "train_number": seg.train_number,
+                    "from_station": getattr(seg, 'from_code', 'ST'), # Placeholder resolution
+                    "to_station": getattr(seg, 'to_code', 'BVI'),
+                    "date": date_str
+                })
+        
+        if prefetch_items:
+            await self.seat_manager.prefetch_top_routes(prefetch_items)
 
     async def _apply_ml_ranking(self, routes: List[Route], user_context: UserContext) -> List[Route]:
         """Apply ML-based ranking and personalization (Phase 6)"""

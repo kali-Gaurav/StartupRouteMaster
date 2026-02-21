@@ -1,5 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 import logging
 import time
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from backend.models import Booking, Payment, SeatInventory, Segment
 from backend.tasks.inventory_reconciliation_task import run_inventory_reconciliation_task # Import the async task
 from backend.tasks.partner_health_check_task import run_partner_health_check_task # New: Import partner health check task
 from backend.config import Config # New: Import Config for interval
+from backend.services.ml.retraining_pipeline import MLRetrainingManager
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,19 @@ def partner_health_check_wrapper():
     logger.info("Finished asynchronous partner health check wrapper.")
 
 
+def ml_retraining_job():
+    """
+    Weekly ML retraining job.
+    """
+    logger.info("Starting weekly ML retraining job.")
+    try:
+        manager = MLRetrainingManager()
+        manager.run_full_training_cycle()
+    except Exception as e:
+        logger.error(f"Error during ML retraining: {e}", exc_info=True)
+    logger.info("Finished weekly ML retraining job.")
+
+
 scheduler = None
 
 def start_reconciliation_worker():
@@ -107,6 +122,14 @@ def start_reconciliation_worker():
         IntervalTrigger(minutes=Config.PARTNER_HEALTH_CHECK_INTERVAL_MINUTES), # Run every X minutes from Config
         id='partner_health_check_job',
         name='Partner Redirect Health Check',
+        replace_existing=True
+    )
+    # ML Retraining - Sunday 2 AM (Priority 3)
+    scheduler.add_job(
+        ml_retraining_job,
+        CronTrigger(day_of_week='sun', hour=2, minute=0),
+        id='ml_retraining_job',
+        name='Weekly Model Retraining',
         replace_existing=True
     )
     scheduler.start()

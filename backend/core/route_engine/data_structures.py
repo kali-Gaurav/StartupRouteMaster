@@ -75,6 +75,7 @@ class Route:
     score: float = 0.0
     ml_score: float = 0.0
     reliability: float = 1.0
+    is_locked: bool = True  # Added for booking intelligence unlock flow
 
     @property
     def total_fare(self) -> float:

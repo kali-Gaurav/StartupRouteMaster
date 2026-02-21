@@ -19,7 +19,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 from sqlalchemy.orm import Session
 
-from ...database.models import TrainLiveUpdate, TrainState, TrainStation, TrainMaster
+from backend.database.models import TrainState
+from routemaster_agent.database.models import TrainLiveUpdate, TrainStation, TrainMaster
 from .parser import classify_delay_severity
 
 logger = logging.getLogger(__name__)

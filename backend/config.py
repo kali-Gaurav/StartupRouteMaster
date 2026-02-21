@@ -48,6 +48,10 @@ class Config:
     KAFKA_ENABLE_EVENTS = os.getenv("KAFKA_ENABLE_EVENTS", "false").lower() in ("1", "true", "yes")
     KAFKA_REQUEST_TIMEOUT_MS = int(os.getenv("KAFKA_REQUEST_TIMEOUT_MS", "5000"))
 
+    # Phase 7: Booking & Seat API
+    RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+    LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", "https://irctc1.p.rapidapi.com/api/v1")
+
     # Redis graph storage + HMAC signing
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")
     ROUTE_GRAPH_REDIS_KEY = os.getenv("ROUTE_GRAPH_REDIS_KEY", "route_engine:graph")
