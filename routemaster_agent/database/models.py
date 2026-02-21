@@ -89,3 +89,88 @@ class TrainReliabilityIndex(Base):
     delay_probability = Column(Float)
     computed_at = Column(DateTime, default=datetime.utcnow)
     window_minutes = Column(Integer, default=60)
+
+
+class TrainLiveUpdate(Base):
+    """
+    Real-time train status updates from API.
+    Stores historical snapshots of train delays, platforms, and positions.
+    Used for:
+    - Historical dataset for ML training
+    - Delay propagation analysis
+    - Reliability scoring
+    - Anomaly detection
+    """
+    __tablename__ = "train_live_updates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    train_number = Column(String, index=True)
+    station_code = Column(String, index=True)
+    station_name = Column(String)
+    sequence = Column(Integer)  # Station sequence on route
+    distance_km = Column(Float, nullable=True)
+    
+    # Timing information
+    scheduled_arrival = Column(DateTime, nullable=True)
+    scheduled_departure = Column(DateTime, nullable=True)
+    actual_arrival = Column(DateTime, nullable=True)
+    actual_departure = Column(DateTime, nullable=True)
+    delay_minutes = Column(Integer, default=0)
+    
+    # Platform and halt info
+    platform = Column(String, nullable=True)
+    halt_minutes = Column(Integer, nullable=True)
+    
+    # Status tracking
+    status = Column(String)  # 'On Time', 'Delayed', 'Cancelled', 'Running'
+    is_current_station = Column(Boolean, default=False)
+    
+    # Crawler metadata
+    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    source = Column(String, default="rappid_api")  # API provider
+    
+    __table_args__ = (
+        UniqueConstraint(
+            'train_number', 'station_code', 'recorded_at',
+            name='uic_train_realtime_snapshot'
+        ),
+    )
+
+
+class RealtimeData(Base):
+    """
+    Event stream for real-time updates (delays, cancellations, platform changes).
+    Processes events and applies them to the routing overlay.
+    """
+    __tablename__ = "realtime_data"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_type = Column(String, index=True)  # 'delay', 'cancellation', 'platform_change'
+    entity_id = Column(String, index=True)  # trip_id or train_number
+    
+    # Event payload
+    data = Column(JSON)  # {delay_minutes, platform_number, status, etc}
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Processing status
+    processed_at = Column(DateTime, nullable=True)
+    status = Column(String, default='new')  # 'new', 'processed'
+
+
+class TrainState(Base):
+    """
+    Persistent state for trains used by realtime processor.
+    Tracks delay propagation and state changes across the route.
+    """
+    __tablename__ = "train_state"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trip_id = Column(Integer, unique=True, index=True)
+    train_number = Column(String, index=True)
+    
+    # Current state
+    current_delay_minutes = Column(Integer, default=0)
+    status = Column(String)  # 'on_time', 'delayed', 'cancelled'
+    platform_number = Column(String, nullable=True)
+    current_station_code = Column(String, nullable=True)
+    
+    # Metadata
+    last_updated = Column(DateTime, default=datetime.utcnow)
+    last_update_source = Column(String, nullable=True)  # 'api', 'user', 'system'

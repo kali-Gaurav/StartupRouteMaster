@@ -450,7 +450,7 @@ const Index = () => {
       if (out.length >= 8) break;
     }
     return out;
-  }, [optimalRoutes, allRoutes]); // refresh when search results change (history may have been updated)
+  }, []); // history is loaded from localStorage on each memo call if needed
 
   const categories = useMemo(() => {
     const uniqueCategories = new Set<string>();

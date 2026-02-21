@@ -50,7 +50,8 @@ export async function handleApiError(response: Response | null, cause?: unknown)
   }
 
   if (err instanceof NetworkError) {
-    return getRecoveryStrategy(err);
+    const strategy = getRecoveryStrategy(err);
+    return { message: strategy.userMessage, strategy };
   }
 
   if (err.status && err.status >= 500) {

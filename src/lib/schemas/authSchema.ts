@@ -5,7 +5,6 @@
 import { z } from "zod";
 
 const phoneRegex = /^[6-9]\d{9}$/;
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const sendOTPSchema = z.object({
   phone: z.string().regex(phoneRegex, "Valid 10-digit Indian mobile required").optional(),

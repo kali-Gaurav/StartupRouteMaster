@@ -117,8 +117,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     if (!token) return;
     try {
       const { getCurrentUser } = await import('@/lib/authApi');
-      const data = await getCurrentUser();
-      if (data?.success && data?.user) updateUser(data.user);
+      const user = await getCurrentUser();
+      if (user) updateUser(user);
     } catch (error) {
       console.error('Failed to refresh user:', error);
     }

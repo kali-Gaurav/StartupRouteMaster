@@ -1,6 +1,7 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { RailAssistantChatbot } from '@/components/RailAssistantChatbot';
+import { test, expect, vi } from 'vitest';
 
 const noop = () => {};
 test('renders Rail Assistant Chatbot', () => {
@@ -19,8 +20,8 @@ test('dispatches suggestion event when backend returns actions', async () => {
   const mockResponse = {
     ok: true,
     json: async () => ({ reply: 'Here are suggestions', actions: [{ label: 'Delhi to Mumbai', type: 'intent', value: 'search' }] }),
-  } as any;
-  // @ts-ignore
+  } as unknown as Response;
+  
   const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(mockResponse);
   const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
 
@@ -33,10 +34,10 @@ test('dispatches suggestion event when backend returns actions', async () => {
   // Click send (use any available send button)
   fireEvent.click(sendBtn as Element);
 
-  // Wait for async processing
-  await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-  expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'rail-assistant-suggestions' }));
-
-  fetchSpy.mockRestore();
-  dispatchSpy.mockRestore();
-});
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'rail-assistant-suggestions' }));
+  
+    fetchSpy.mockRestore();
+    dispatchSpy.mockRestore();
+  });
+  

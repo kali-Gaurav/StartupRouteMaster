@@ -18,7 +18,7 @@ export function invalidateBookingsCache(): Promise<void> {
 
 /** Prefetch bookings so the My Bookings page feels instant (e.g. on nav link hover). Call only when authenticated. Guards against prefetch storms: skips if cache already has fresh data. */
 export function prefetchBookings(): void {
-  const state = queryClient.getQueryState({ queryKey: BOOKINGS_QUERY_KEY });
+  const state = queryClient.getQueryState(BOOKINGS_QUERY_KEY);
   if (state?.dataUpdatedAt && state.dataUpdatedAt > 0) {
     const staleTime = 1000 * 60 * 2;
     if (Date.now() - state.dataUpdatedAt < staleTime) return;

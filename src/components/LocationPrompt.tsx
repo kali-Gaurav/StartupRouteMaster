@@ -16,6 +16,10 @@ interface LocationPromptProps {
   reason?: 'login' | 'journey' | 'sos';
 }
 
+interface GeolocationError extends Error {
+  code?: number;
+}
+
 export const LocationPrompt: React.FC<LocationPromptProps> = ({ open, onClose, reason = 'login' }) => {
   const { token, updateUser, user } = useAuth();
   const [loading, setLoading] = useState(false);
@@ -63,20 +67,21 @@ export const LocationPrompt: React.FC<LocationPromptProps> = ({ open, onClose, r
           throw new Error('Failed to save location');
         }
       }
-    } catch (err: any) {
-      if (err.code === 1) {
+    } catch (err: unknown) {
+      const geoErr = err as GeolocationError;
+      if (geoErr.code === 1) {
         // User denied permission
         setError('Location permission denied. You can enable it later in settings.');
         LocationService.saveLocationPreference(false);
         LocationService.markLocationPrompted();
         
         setTimeout(() => onClose(), 2000);
-      } else if (err.code === 2) {
+      } else if (geoErr.code === 2) {
         setError('Location unavailable. Please check your device settings.');
-      } else if (err.code === 3) {
+      } else if (geoErr.code === 3) {
         setError('Location request timed out. Please try again.');
       } else {
-        setError(err.message || 'Failed to get location');
+        setError(geoErr.message || 'Failed to get location');
       }
     } finally {
       setLoading(false);

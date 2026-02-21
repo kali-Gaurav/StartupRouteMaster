@@ -110,13 +110,14 @@ export function BookingPaymentStep() {
       openRazorpayCheckout(
         order,
         user,
-        async (paymentResponse: any) => {
+        async (paymentResponse: unknown) => {
           try {
+            const r = paymentResponse as Record<string, string>;
             const verifyResponse = await verifyPayment({
               payment_id: internalPaymentId, // Our internal payment ID
-              razorpay_order_id: paymentResponse.razorpay_order_id,
-              razorpay_payment_id: paymentResponse.razorpay_payment_id,
-              razorpay_signature: paymentResponse.razorpay_signature,
+              razorpay_order_id: r.razorpay_order_id,
+              razorpay_payment_id: r.razorpay_payment_id,
+              razorpay_signature: r.razorpay_signature,
             });
 
             if (!verifyResponse.success) {
@@ -129,7 +130,7 @@ export function BookingPaymentStep() {
               const redirectToken = verifyResponse.redirect_token; // Assume redirect_token is returned for booking flow
               if (redirectToken) {
                 const consumeResponse = await consumeRedirectToken(redirectToken);
-                if (!consumeResponse?.success || !consumeResponse?.order) {
+                if (!consumeResponse?.success) {
                   throw new Error("Payment confirmation invalid. Please contact support.");
                 }
               }
@@ -145,8 +146,8 @@ export function BookingPaymentStep() {
               const url = redirectResponse?.irctc_url ?? null;
               setPaymentSuccess(internalPaymentId, url); // Use internalPaymentId as orderId
             }
-          } catch (err: any) {
-            const msg = err.message || "Payment verification failed";
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : "Payment verification failed";
             setLocalError(msg);
             setError(msg);
             logEvent("payment_failed", { phase: "verify", isUnlockFlow }, "error");
@@ -154,7 +155,7 @@ export function BookingPaymentStep() {
             setLoading(false);
           }
         },
-        (err: any) => {
+        (err: Error) => {
           const msg = err.message || "Payment failed";
           setLocalError(msg);
           setError(msg);
@@ -162,8 +163,8 @@ export function BookingPaymentStep() {
           logEvent("payment_failed", { phase: "gateway", isUnlockFlow }, "error");
         }
       );
-    } catch (err: any) {
-      const msg = err.message || "Failed to start payment";
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to start payment";
       setLocalError(msg);
       setError(msg);
       setLoading(false);

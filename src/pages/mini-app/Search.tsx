@@ -29,19 +29,21 @@ interface RouteResult {
   departure: string;
   arrival: string;
   duration: string;
-  fare?: number;
-  availability?: string;
+  fare?: number | null;
+  availability?: string | null;
   transfers: number;
   legs?: Leg[];
   is_unlocked?: boolean;
 }
 
 interface Leg {
-  train_no?: string;
+  train_no?: string | number;
   train_name?: string;
   departure?: string;
   arrival?: string;
-  fare?: number;
+  fare?: number | null;
+  distance?: number;
+  time_minutes?: number;
 }
 
 interface Station {
@@ -335,7 +337,7 @@ const MiniAppSearch = () => {
 
     setIsUnlocking(route.journey_id);
     try {
-      const data = await unlockJourneyDetailsApi(route.journey_id, formData.date);
+      const data = await unlockJourneyDetailsApi(route.journey_id, formData.date) as { journey: { cheapest_fare: number } };
       setUnlockedJourneys(prev => ({
         ...prev,
         [route.journey_id!]: data
@@ -645,7 +647,7 @@ const MiniAppSearch = () => {
                 originCode={formData.origin?.code || ""}
                 destinationCode={formData.destination?.code || ""}
                 isUnlocked={!!(route.journey_id && unlockedJourneys[route.journey_id])}
-                isProcessing={route.journey_id && isUnlocking === route.journey_id}
+                isProcessing={!!(route.journey_id && isUnlocking === route.journey_id)}
                 onUnlock={handleUnlock}
                 onBook={handleBook}
                 onSave={handleSaveRoute}

@@ -8,7 +8,6 @@ import {
   getCachedRoutes,
   getCacheMeta,
   CACHED_PAIRS,
-  type RouteCacheMeta,
 } from "@/data/cachedRoutes";
 
 describe("cachedRoutes - normalizeDate", () => {

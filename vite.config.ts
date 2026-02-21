@@ -15,4 +15,3 @@ export default defineConfig({
     exclude: ['lucide-react'],
   },
 });
-2

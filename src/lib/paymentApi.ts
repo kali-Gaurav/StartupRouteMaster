@@ -7,7 +7,7 @@ import { fetchWithAuth } from './apiClient';
 
 declare global {
   interface Window {
-    Razorpay: any;
+    Razorpay: unknown;
   }
 }
 
@@ -45,7 +45,7 @@ export interface BookingRedirectRequest {
 }
 
 /** Uses token from apiClient config. */
-export const createPaymentOrder = async (data: CreateOrderRequest): Promise<PaymentOrder> => {
+export const createPaymentOrder = async (data: CreateOrderRequest): Promise<{ success: boolean; message?: string; already_paid?: boolean; order: PaymentOrder; payment_id: string }> => {
   const response = await fetchWithAuth('/payments/create_order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -75,13 +75,13 @@ export const consumeRedirectToken = async (token: string): Promise<{ success: bo
 };
 
 /** Uses token from apiClient config. */
-export const checkPaymentStatus = async (routeId: string, travelDate: string): Promise<{ paid: boolean }> => {
+export const checkPaymentStatus = async (routeId: string, travelDate: string): Promise<{ paid: boolean; already_paid_booking?: boolean }> => {
   const response = await fetchWithAuth(`/payments/check_payment_status?route_id=${routeId}&travel_date=${travelDate}`);
   return await response.json();
 };
 
 /** Uses token from apiClient config. */
-export const createBookingRedirect = async (data: BookingRedirectRequest): Promise<{ redirect_url: string }> => {
+export const createBookingRedirect = async (data: BookingRedirectRequest): Promise<{ redirect_url: string; irctc_url?: string }> => {
   const response = await fetchWithAuth('/payments/booking/redirect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -91,7 +91,7 @@ export const createBookingRedirect = async (data: BookingRedirectRequest): Promi
 };
 
 /** Uses token from apiClient config. Pass signal for request cancellation (e.g. from TanStack Query). */
-export const getBookingHistory = async (signal?: AbortSignal): Promise<unknown[]> => {
+export const getBookingHistory = async (signal?: AbortSignal): Promise<{ success: boolean; message?: string; data?: unknown[]; bookings?: unknown[] }> => {
   const response = await fetchWithAuth('/payments/booking/history', { signal });
   return await response.json();
 };
@@ -127,12 +127,13 @@ export const openRazorpayCheckout = (
     theme: {
       color: '#3b82f6',
     },
-    handler: function (response: any) {
+    handler: function (response: unknown) {
+      const r = response as Record<string, string>;
       onSuccess({
         order_id: order.order_id,
-        razorpay_order_id: response.razorpay_order_id,
-        razorpay_payment_id: response.razorpay_payment_id,
-        razorpay_signature: response.razorpay_signature,
+        razorpay_order_id: r.razorpay_order_id,
+        razorpay_payment_id: r.razorpay_payment_id,
+        razorpay_signature: r.razorpay_signature,
       });
     },
     modal: {

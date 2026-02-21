@@ -8,7 +8,10 @@ describe("paymentApi - getUnlockedRoutes", () => {
   });
 
   it("calls fetchWithAuth with the unlocked-routes path and returns parsed body", async () => {
-    const fakeResp = { json: async () => ({ routes: ["route_1", "route_2"] }) } as any;
+    const fakeResp = {
+      ok: true,
+      json: async () => ({ routes: ["route_1", "route_2"] })
+    } as Response;
     const spy = vi.spyOn(apiClient, "fetchWithAuth").mockResolvedValue(fakeResp);
 
     const res = await getUnlockedRoutes();

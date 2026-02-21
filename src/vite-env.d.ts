@@ -84,6 +84,19 @@ interface TelegramWebApp {
   offThemeChanged?: (callback: () => void) => void;
   onClipboardTextReceived?: (callback: (text: string | null) => void) => void;
   offClipboardTextReceived?: (callback: (text: string | null) => void) => void;
+  MainButton: {
+    show: () => void;
+    hide: () => void;
+    setText: (text: string) => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+    showProgress: (leaveActive?: boolean) => void;
+    hideProgress: () => void;
+    enable: () => void;
+    disable: () => void;
+    isVisible: boolean;
+  };
+  BackButton: { show: () => void; hide: () => void; onClick: (cb: () => void) => void };
 }
 
 interface Window {

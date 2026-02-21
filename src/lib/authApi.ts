@@ -5,12 +5,22 @@
 
 import { fetchWithAuth } from './apiClient';
 
+export interface User {
+  user_id: number;
+  id?: string; // Keep id as optional string just in case
+  phone?: string;
+  email?: string;
+  first_name?: string;
+  last_name?: string;
+  telegram_id?: number;
+}
+
 export interface AuthResponse {
   success: boolean;
   message: string;
   token?: string;
   refresh_token?: string;
-  user?: any;
+  user?: User;
   is_new_user?: boolean;
 }
 
@@ -52,7 +62,7 @@ export const googleAuth = async (idToken: string): Promise<AuthResponse> => {
   return await response.json();
 };
 
-export const telegramAuth = async (initData: string, user: any): Promise<AuthResponse> => {
+export const telegramAuth = async (initData: string, user: unknown): Promise<AuthResponse> => {
   const response = await fetchWithAuth('/auth/telegram', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -62,14 +72,14 @@ export const telegramAuth = async (initData: string, user: any): Promise<AuthRes
 };
 
 /** Uses token from apiClient config (set by AuthProvider). */
-export const getCurrentUser = async (): Promise<any> => {
+export const getCurrentUser = async (): Promise<User> => {
   const response = await fetchWithAuth('/auth/me');
   if (!response.ok) throw new Error('Failed to get current user');
   return await response.json();
 };
 
 /** Uses token from apiClient config. */
-export const updateProfile = async (data: any): Promise<any> => {
+export const updateProfile = async (data: Partial<User>): Promise<{ success: boolean }> => {
   const response = await fetchWithAuth('/user/profile', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -79,7 +89,7 @@ export const updateProfile = async (data: any): Promise<any> => {
 };
 
 /** Uses token from apiClient config. */
-export const updateLocation = async (latitude: number, longitude: number): Promise<any> => {
+export const updateLocation = async (latitude: number, longitude: number): Promise<{ success: boolean }> => {
   const response = await fetchWithAuth('/user/location', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

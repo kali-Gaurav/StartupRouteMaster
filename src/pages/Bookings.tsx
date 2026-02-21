@@ -13,8 +13,18 @@ import { getAllTickets } from "@/lib/ticketStore";
 import { HistorySkeleton } from "@/components/skeletons";
 import { Ticket, AlertCircle } from "lucide-react";
 
+interface Booking {
+  booking_id?: string;
+  id?: string;
+  origin: string;
+  destination: string;
+  travel_date?: string;
+  created_at?: string;
+  train_no?: string;
+}
+
 function BookingsContent() {
-  const { data: bookings = [], isLoading: loading, error: queryError, refetch } = useBookings();
+  const { data: bookings = [], isLoading: loading, error: queryError, refetch } = useBookings() as { data: Booking[], isLoading: boolean, error: unknown, refetch: () => void };
   const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load bookings") : null;
   const localTickets = getAllTickets();
 
@@ -79,7 +89,7 @@ function BookingsContent() {
           </div>
         ) : (
           <ul className="space-y-4">
-            {bookings.map((b: any) => (
+            {bookings.map((b: Booking) => (
               <li
                 key={b.booking_id || b.id || Math.random()}
                 className="rounded-xl border border-border p-4 bg-card"

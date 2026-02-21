@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,14 +36,7 @@ const MiniAppTrack = () => {
   const [isStopping, setIsStopping] = useState(false);
   const [pastJourneys, setPastJourneys] = useState<ActiveJourney[]>([]);
 
-  useEffect(() => {
-    if (!userId) return;
-    loadJourneyData();
-    const interval = setInterval(loadJourneyData, 30000);
-    return () => clearInterval(interval);
-  }, [userId]);
-
-  const loadJourneyData = async () => {
+  const loadJourneyData = useCallback(async () => {
     try {
       if (!userId) return;
       const response = await fetch(getRailwayApiUrl(`/api/journey/${userId}/active`));
@@ -57,7 +50,14 @@ const MiniAppTrack = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    loadJourneyData();
+    const interval = setInterval(loadJourneyData, 30000);
+    return () => clearInterval(interval);
+  }, [userId, loadJourneyData]);
 
   const handleStopJourney = async () => {
     if (!activeJourney) return;

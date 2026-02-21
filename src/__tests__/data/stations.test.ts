@@ -7,7 +7,6 @@ import {
   searchStations,
   addStationsToCache,
   getStationByCode,
-  type Station,
 } from "@/data/stations";
 
 describe("stations - searchStations", () => {

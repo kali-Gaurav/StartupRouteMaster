@@ -23,8 +23,8 @@ interface MiniRoute {
   arrival: string;
   duration: string;
   transfers: number;
-  fare?: number;
-  availability?: string;
+  fare?: number | null;
+  availability?: string | null;
   legs?: MiniLeg[];
 }
 

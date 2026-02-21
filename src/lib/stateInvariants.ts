@@ -15,8 +15,8 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 
 const VALID_TICKET_STATUS = new Set(["confirmed", "pending_irctc", "completed", "cancelled"]);
 
-function isTicketShape(t: unknown): t is Record<string, unknown> {
-  return t != null && typeof t === "object" && "id" in t && typeof (t as any).id === "string";
+function isTicketShape(t: unknown): t is { id: string } & Record<string, unknown> {
+  return t != null && typeof t === "object" && "id" in t && typeof (t as Record<string, unknown>).id === "string";
 }
 
 /** Keep only entries that have the minimal shape the app expects (Ticket page, list). */
@@ -32,7 +32,7 @@ function sanitizeTicket(t: unknown): Record<string, unknown> | null {
     typeof o.totalCost !== "number"
   )
     return null;
-  if (!VALID_TICKET_STATUS.has(o.status as string)) (o as any).status = "pending_irctc";
+  if (!VALID_TICKET_STATUS.has(o.status as string)) o.status = "pending_irctc";
   return o;
 }
 

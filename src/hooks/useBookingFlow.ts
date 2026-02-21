@@ -78,10 +78,10 @@ export const useBookingFlow = () => {
         setShowPaymentModal(false);
         return true;
       } else {
-        throw new Error(response.message || 'Failed to create booking');
+        throw new Error('Failed to create booking');
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to redirect to IRCTC');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to redirect to IRCTC');
       return false;
     } finally {
       setLoading(false);

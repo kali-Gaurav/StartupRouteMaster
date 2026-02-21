@@ -38,7 +38,7 @@ export function normalizeDate(dateStr: string | undefined): string {
   // Already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
   // DD/MM/YYYY or DD-MM-YYYY
-  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
   if (m) {
     const [, day, month, year] = m;
     return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;

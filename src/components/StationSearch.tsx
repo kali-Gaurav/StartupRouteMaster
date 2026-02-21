@@ -25,7 +25,7 @@ export function StationSearch({
 }: StationSearchProps) {
   const [query, setQuery] = useState(value ? `${value?.name ?? ""} (${value?.code ?? ""})` : "");
   const [isOpen, setIsOpen] = useState(false);
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<StationType[]>([]);
   const [groupedCity, setGroupedCity] = useState<string | null>(null);
   const [highlightedIdx, setHighlightedIdx] = useState<number>(-1);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,8 +33,8 @@ export function StationSearch({
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const debounceTimerRef = useRef<NodeJS.Timeout>();
-  const resultsCache = useRef<Map<string, any[]>>(new Map());
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const resultsCache = useRef<Map<string, StationType[]>>(new Map());
 
   // Scroll highlighted item into view
   useEffect(() => {
@@ -198,7 +198,7 @@ export function StationSearch({
     if (!query || !text) return text;
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (tokens.length === 0) return text;
-    let lower = text.toLowerCase();
+    const lower = text.toLowerCase();
     const parts: { start: number; end: number; match: boolean }[] = [];
     let lastEnd = 0;
     for (const token of tokens) {

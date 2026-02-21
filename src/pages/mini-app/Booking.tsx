@@ -19,7 +19,12 @@ interface Passenger {
 const MiniAppBooking = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { route, origin, destination, date } = location.state || {};
+  const { route, origin, destination, date } = (location.state || {}) as {
+    route: any;
+    origin: any;
+    destination: any;
+    date: string;
+  };
 
   const [passengers, setPassengers] = useState<Passenger[]>([
     { fullName: "", age: 30, gender: "M" }

@@ -171,7 +171,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
           </DialogTitle>
         </DialogHeader>
 
-        <Tabs value={authMethod} onValueChange={(v) => setAuthMethod(v as 'phone' | 'email')} className="w-full">
+        <Tabs value={authMethod} onValueChange={(v: string) => setAuthMethod(v as 'phone' | 'email')} className="w-full">
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="phone" className="flex items-center gap-2">
               <Phone className="h-4 w-4" />

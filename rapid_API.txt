@@ -1,0 +1,14 @@
+import requests
+
+url = "https://irctc1.p.rapidapi.com/api/v3/getLiveStation"
+
+querystring = {"hours":"1"}
+
+headers = {
+	"x-rapidapi-key": "e0adaea886msh3fb9b9456cad9ccp17a317jsna7fe7b2fe0b6",
+	"x-rapidapi-host": "irctc1.p.rapidapi.com"
+}
+
+response = requests.get(url, headers=headers, params=querystring)
+
+print(response.json())
