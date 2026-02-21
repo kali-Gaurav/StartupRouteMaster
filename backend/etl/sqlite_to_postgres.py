@@ -47,7 +47,7 @@ from backend.config import Config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "railway_manager.db")
+DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "business", "railway_data.db")
 REDIS_PUB_SUB_CHANNEL = "route_engine_update" # Define a channel name for updates
 
 class OperatingDaysBitmask:
@@ -97,7 +97,7 @@ def calculate_duration(departure_time: str, arrival_time: str) -> int:
 
 
 class SQLiteReader:
-    """Reads data from the SQLite railway_manager.db."""
+    """Reads data from the SQLite railway_data.db (human-readable source database)."""
     def __init__(self, db_path: str):
         self.db_path = db_path
         if not os.path.exists(db_path):

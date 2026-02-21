@@ -409,8 +409,8 @@ class GraphBuilder:
             dst_code = getattr(dst_stop, 'code', None)
 
             if train_identifier and src_code and dst_code:
-                # Assuming the file is 2 levels up from backend/core/route_engine
-                sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "railway_manager.db"))
+                # Fetch from transit_graph.db (algorithm-optimized database) in backend/database
+                sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "database", "transit_graph.db"))
                 if os.path.exists(sqlite_path):
                     conn = sqlite3.connect(sqlite_path)
                     cur = conn.cursor()

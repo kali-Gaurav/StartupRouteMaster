@@ -301,6 +301,7 @@ export const sampleRoutes: Route[] = [
     totalTime: 2436,
     totalCost: 2125,
     totalTransfers: 2,
+    totalDistance: 2125,
     liveFareTotal: 2125,
     seatProbability: 66.67,
     safetyScore: 95,
@@ -364,6 +365,7 @@ export const sampleRoutes: Route[] = [
     totalTime: 3301,
     totalCost: 2489,
     totalTransfers: 7,
+    totalDistance: 2213,
     liveFareTotal: 2489,
     seatProbability: 75,
     safetyScore: 70,
@@ -472,8 +474,40 @@ export const summarizeAvailability = (segments: RouteSegment[]): AvailabilitySum
   }, { label: "Check at booking", state: "unknown" });
 };
 
-export const mapApiRouteToRoute = (apiRoute: any): Route => {
-  const mappedSegments = apiRoute.segments.map((seg: any, idx: number) => {
+interface ApiSegment {
+  live_seat_availability?: string;
+  liveSeatAvailability?: string;
+  seat_availability?: string;
+  live_fare?: number | string;
+  liveFare?: number | string;
+  fare?: number | string;
+  train_no: string;
+  train_name: string;
+  from: string;
+  to: string;
+  departure: string;
+  arrival: string;
+  distance: number;
+  duration_min: number;
+  wait_min: number;
+}
+
+interface ApiRoute {
+  route_id: string;
+  category: string;
+  segments: ApiSegment[];
+  objectives: {
+    time: number;
+    cost: number;
+    transfers: number;
+    distance: number;
+    seat_prob: number;
+    safety_score: number;
+  };
+}
+
+export const mapApiRouteToRoute = (apiRoute: ApiRoute): Route => {
+  const mappedSegments = apiRoute.segments.map((seg: ApiSegment, idx: number) => {
     const availability = seg.live_seat_availability || seg.liveSeatAvailability || seg.seat_availability || "UNKNOWN";
     const fareValue = seg.live_fare ?? seg.liveFare ?? seg.fare ?? 0;
     const liveFare = typeof fareValue === "number"
@@ -498,7 +532,7 @@ export const mapApiRouteToRoute = (apiRoute: any): Route => {
     };
   });
 
-  const liveFareTotal = mappedSegments.reduce<number>((sum: number, segment: { liveFare: number }) => sum + (segment.liveFare || 0), 0);
+  const liveFareTotal = mappedSegments.reduce<number>((sum: number, segment) => sum + (segment.liveFare || 0), 0);
 
   return {
     id: apiRoute.route_id,

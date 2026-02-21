@@ -4,10 +4,10 @@ import json
 from datetime import datetime
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'backend'))
-DB_PATH = os.path.join(ROOT, 'railway_manager.db')
+DB_PATH = os.path.join(ROOT, 'business', 'railway_data.db')
 
 if not os.path.exists(DB_PATH):
-    print(json.dumps({"error": "railway_manager.db not found", "path": DB_PATH}))
+    print(json.dumps({"error": "railway_data.db not found", "path": DB_PATH}))
     raise SystemExit(1)
 
 stat = os.stat(DB_PATH)

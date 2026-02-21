@@ -1,5 +1,6 @@
 import sqlite3, os
-p=os.path.join('backend','railway_manager.db')
+# Inspect the human-readable railway data source
+p=os.path.join('backend','business','railway_data.db')
 print('exists', os.path.exists(p), p)
 conn=sqlite3.connect(p)
 cur=conn.cursor()

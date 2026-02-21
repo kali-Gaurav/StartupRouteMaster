@@ -900,7 +900,7 @@ class OptimizedRAPTOR:
                         dst_code = getattr(next_stop.stop, 'code', None)
 
                         if train_identifier and src_code and dst_code:
-                            sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "railway_manager.db"))
+                            sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "database", "transit_graph.db"))
                             if os.path.exists(sqlite_path):
                                 conn = sqlite3.connect(sqlite_path)
                                 cur = conn.cursor()

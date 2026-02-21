@@ -2,7 +2,6 @@ import { Loader2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
 import { useBookingFlowContext } from "@/context/BookingFlowContext";
 import { Button } from "@/components/ui/button";
 import { BookingStepSkeleton } from "@/components/skeletons";
-import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 
 export function AvailabilityCheckStep() {
@@ -12,7 +11,6 @@ export function AvailabilityCheckStep() {
     goToStep,
     close,
     error,
-    setError,
     runAvailabilityCheck,
     retryAvailability,
   } = useBookingFlowContext();

@@ -21,7 +21,8 @@ dist-ssr
 *.sln
 *.sw?
 .env
-backend/railway_manager.db
+backend/business/railway_data.db
+backend/database/transit_graph.db
 
 # Python / runtime artifacts
 __pycache__/

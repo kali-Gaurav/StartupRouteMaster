@@ -118,7 +118,7 @@ async def trigger_etl_sync(
     db: Session = Depends(get_db),
 ):
     """
-    Trigger ETL sync from railway_manager.db to database.
+    Trigger ETL sync from railway_data.db to database.
     Only callable by admin.
     """
     try:

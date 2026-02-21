@@ -4,13 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -39,7 +32,7 @@ interface RouteResult {
   fare?: number;
   availability?: string;
   transfers: number;
-  legs?: any[];
+  legs?: unknown[];
   is_unlocked?: boolean;
 }
 
@@ -70,13 +63,13 @@ const MiniAppSearch = () => {
   const [isLoadingStations, setIsLoadingStations] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [openPopover, setOpenPopover] = useState<"origin" | "destination" | null>(null);
-  const searchTimeoutRef = useRef<number | undefined>();
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>();
   
   // NEW: Search results state for independent operation
   const [searchResults, setSearchResults] = useState<RouteResult[]>([]);
   const [showResults, setShowResults] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [unlockedJourneys, setUnlockedJourneys] = useState<Record<string, any>>({});
+  const [unlockedJourneys, setUnlockedJourneys] = useState<Record<string, unknown>>({});
   const [isUnlocking, setIsUnlocking] = useState<string | null>(null);
 
   // Load stations on mount
@@ -444,7 +437,7 @@ const MiniAppSearch = () => {
             {/* Origin */}
             <div className="space-y-2">
               <Label className="text-sm font-semibold text-gray-700">From</Label>
-              <Popover open={openPopover === "origin"} onOpenChange={(open) => setOpenPopover(open ? "origin" : null)}>
+              <Popover open={openPopover === "origin"} onOpenChange={(open: boolean) => setOpenPopover(open ? "origin" : null)}>
                 <PopoverTrigger asChild>
                   <Button
                     variant="outline"
@@ -508,7 +501,7 @@ const MiniAppSearch = () => {
             {/* Destination */}
             <div className="space-y-2">
               <Label className="text-sm font-semibold text-gray-700">To</Label>
-              <Popover open={openPopover === "destination"} onOpenChange={(open) => setOpenPopover(open ? "destination" : null)}>
+              <Popover open={openPopover === "destination"} onOpenChange={(open: boolean) => setOpenPopover(open ? "destination" : null)}>
                 <PopoverTrigger asChild>
                   <Button
                     variant="outline"

@@ -1,5 +1,6 @@
 import sqlite3
-conn = sqlite3.connect('backend/railway_manager.db')
+# Connect to the human-readable database source
+conn = sqlite3.connect('backend/business/railway_data.db')
 cursor = conn.cursor()
 cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
 tables = cursor.fetchall()

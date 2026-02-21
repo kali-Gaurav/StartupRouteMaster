@@ -29,7 +29,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
 
   const resetForm = () => {
     setStep('input');
@@ -37,7 +36,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setOtp('');
     setError('');
     setMessage('');
-    setOtpSent(false);
   };
 
   const handleSendOTP = async (e: React.FormEvent) => {
@@ -57,13 +55,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
 
       if (response.success) {
         setMessage(response.message);
-        setOtpSent(true);
         setStep('verify');
       } else {
         setError(response.message || 'Failed to send OTP');
       }
-    } catch (err: any) {
-      setError(err.message || 'Network error. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -95,8 +93,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       } else {
         setError(response.message || 'Invalid OTP');
       }
-    } catch (err: any) {
-      setError(err.message || 'Network error. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -125,8 +124,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       } else {
         setError(response.message || 'Google authentication failed');
       }
-    } catch (err: any) {
-      setError(err.message || 'Google authentication error. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Google authentication error. Please try again.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -147,8 +147,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       } else {
         setError(response.message || 'Failed to resend OTP');
       }
-    } catch (err: any) {
-      setError(err.message || 'Network error. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

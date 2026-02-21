@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
-import { ArrowLeft, MapPin, Clock, Train, Share2, StopCircle, Loader2, Shield } from "lucide-react";
+import { ArrowLeft, Train, Share2, StopCircle, Loader2, Shield } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
 import { getRailwayApiUrl } from "@/lib/utils";
@@ -28,11 +28,13 @@ interface ActiveJourney {
 
 const MiniAppTrack = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const userId = user?.telegram_id ?? window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
+  
   const [activeJourney, setActiveJourney] = useState<ActiveJourney | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isStopping, setIsStopping] = useState(false);
   const [pastJourneys, setPastJourneys] = useState<ActiveJourney[]>([]);
-  const [showDetails, setShowDetails] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -40,9 +42,6 @@ const MiniAppTrack = () => {
     const interval = setInterval(loadJourneyData, 30000);
     return () => clearInterval(interval);
   }, [userId]);
-
-  const { user } = useAuth();
-  const userId = user?.telegram_id ?? window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
 
   const loadJourneyData = async () => {
     try {

@@ -3,11 +3,11 @@ import os
 from datetime import datetime
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'backend'))
-DB_PATH = os.path.join(ROOT, 'railway_manager.db')
+DB_PATH = os.path.join(ROOT, 'business', 'railway_data.db')
 OUT_PATH = os.path.join(os.path.dirname(__file__), '..', 'docs', 'RAILWAY_MANAGER_DB_REPORT.md')
 
 if not os.path.exists(DB_PATH):
-    raise SystemExit(f"railway_manager.db not found at {DB_PATH}")
+    raise SystemExit(f"railway_data.db not found at {DB_PATH}")
 
 stat = os.stat(DB_PATH)
 size_kb = stat.st_size / 1024.0
@@ -46,8 +46,8 @@ for t in key_tables:
 conn.close()
 
 md = []
-md.append('# railway_manager.db — architecture & data inventory ✅\n')
-md.append(f'**Location:** `backend/railway_manager.db`\n**File size:** {stat.st_size} bytes ({size_kb:.2f} KB)\n**Last modified:** {modified}\n')
+md.append('# railway_data.db — architecture & data inventory ✅\n')
+md.append(f'**Location:** `backend/business/railway_data.db`\n**File size:** {stat.st_size} bytes ({size_kb:.2f} KB)\n**Last modified:** {modified}\n')
 md.append('---\n')
 md.append('## Summary\n')
 md.append(f'- **Total tables/views inspected:** {len(rows)}\n')
@@ -72,12 +72,12 @@ for t in key_tables:
         md.append('`' + '`, `'.join(cols[t]) + '`\n')
 md.append('\n')
 md.append('## Observations & recommendations\n')
-md.append('- `railway_manager.db` is the authoritative local SQLite dataset used across the codebase for routing and ETL.\n')
+md.append('- `railway_data.db` is the authoritative human-readable source SQLite dataset used for ETL syncing to PostgreSQL.\n')
 md.append('- Large tables such as `stop_times` / `train_schedule` are the main contributors to storage and should be the focus of any incremental-sync or indexing efforts.\n')
-md.append('- Recommendation: run the ETL (`backend/etl/sqlite_to_postgres.py`) on a schedule and keep `railway_manager.db` out of git for large/production copies.\n')
+md.append('- Recommendation: run the ETL (`backend/etl/sqlite_to_postgres.py`) on a schedule. Use `transit_graph.db` for routing-specific algorithm data.\n')
 md.append('\n')
 md.append('---\n')
-md.append('_Report generated programmatically from the local `railway_manager.db` file._\n')
+md.append('_Report generated programmatically from the `railway_data.db` source file._\n')
 
 with open(OUT_PATH, 'w', encoding='utf-8') as fh:
     fh.write('\n'.join(md))

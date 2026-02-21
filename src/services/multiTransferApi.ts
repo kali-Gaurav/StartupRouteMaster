@@ -3,7 +3,7 @@
  * Integrates with the Flask multi-transfer route generation engine
  */
 
-import { getApiUrl } from '@/lib/utils';
+import { getRailwayApiUrl } from '@/lib/utils';
 
 export interface TransferRoute {
   from: string;
@@ -32,7 +32,7 @@ export interface RouteSearchResult {
 export interface TrainSchedule {
   train_no: string;
   train_name: string;
-  schedule: any[];
+  schedule: unknown[];
 }
 
 export interface PriceInfo {
@@ -78,7 +78,7 @@ export async function searchRoutes(
     max_transfers: maxTransfers,
   };
 
-  const url = getApiUrl('/api/v2/search-routes');
+  const url = getRailwayApiUrl('/api/v2/search-routes');
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -99,7 +99,7 @@ export async function searchRoutes(
  * Get list of stations for autocomplete
  */
 export async function getStations(search?: string): Promise<StationInfo[]> {
-  let url = getApiUrl('/api/v2/stations');
+  let url = getRailwayApiUrl('/api/v2/stations');
   if (search) {
     url += `?search=${encodeURIComponent(search)}`;
   }
@@ -118,7 +118,7 @@ export async function getStations(search?: string): Promise<StationInfo[]> {
  * Get train schedule (all stations and timings)
  */
 export async function getTrainSchedule(trainNo: string): Promise<TrainSchedule> {
-  const url = getApiUrl(`/api/v2/train/${trainNo}/schedule`);
+  const url = getRailwayApiUrl(`/api/v2/train/${trainNo}/schedule`);
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -135,7 +135,7 @@ export async function getPrices(
   origin: string,
   destination: string
 ): Promise<PriceInfo> {
-  const url = getApiUrl(
+  const url = getRailwayApiUrl(
     `/api/v2/prices/${origin.toUpperCase()}/${destination.toUpperCase()}`
   );
   const response = await fetch(url);
@@ -151,7 +151,7 @@ export async function getPrices(
  * Get seat availability for a train
  */
 export async function getSeatAvailability(trainNo: string): Promise<SeatAvailability> {
-  const url = getApiUrl(`/api/v2/train/${trainNo}/seats`);
+  const url = getRailwayApiUrl(`/api/v2/train/${trainNo}/seats`);
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -166,7 +166,7 @@ export async function getSeatAvailability(trainNo: string): Promise<SeatAvailabi
  */
 export async function healthCheck(): Promise<boolean> {
   try {
-    const url = getApiUrl('/api/v2/health');
+    const url = getRailwayApiUrl('/api/v2/health');
     const response = await fetch(url);
     return response.ok;
   } catch {
@@ -178,7 +178,7 @@ export async function healthCheck(): Promise<boolean> {
  * Get system statistics
  */
 export async function getStats() {
-  const url = getApiUrl('/api/v2/stats');
+  const url = getRailwayApiUrl('/api/v2/stats');
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -216,9 +216,9 @@ export function formatRoute(route: TransferRoute): {
  */
 export async function getTransferRouteDetails(
   routes: TransferRoute[],
-  transferCount: number
-): Promise<Map<string, any>> {
-  const details = new Map();
+  _transferCount: number
+): Promise<Map<string, unknown>> {
+  const details = new Map<string, unknown>();
 
   for (const route of routes.slice(0, 3)) {
     // Limit to first 3 for performance

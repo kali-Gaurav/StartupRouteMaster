@@ -3,7 +3,6 @@ import { useBookingFlowContext } from "@/context/BookingFlowContext";
 import { getStationByCode } from "@/data/stations";
 import { formatDuration, formatCost } from "@/data/routes";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export function BookingReviewStep() {
   const { route, travelDate, originName, destName, nextStep, close, error, setError } =
