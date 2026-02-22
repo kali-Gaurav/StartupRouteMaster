@@ -97,3 +97,21 @@ export const updateLocation = async (latitude: number, longitude: number): Promi
   });
   return await response.json();
 };
+
+// Refreshes tokens using the stored refresh token. Returns new auth response or throws on failure.
+export const refreshToken = async (): Promise<AuthResponse> => {
+  // Direct fetch; this should not call fetchWithAuth to avoid recursion
+  const base = API_BASE.replace(/\/$/, '');
+  const url = base + '/api/auth/refresh';
+  const refresh_token = localStorage.getItem('refresh_token');
+  if (!refresh_token) throw new Error('No refresh token available');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token }),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to refresh token');
+  }
+  return await res.json();
+};

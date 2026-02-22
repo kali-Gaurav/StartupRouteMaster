@@ -11,6 +11,9 @@ from backend.database.models import User
 from backend.api.dependencies import get_current_user
 from backend.services.cache_service import cache_service
 
+import uuid
+from backend.config import Config
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
@@ -50,6 +53,12 @@ class UserLocationUpdate(BaseModel):
     latitude: float
     longitude: float
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
 @router.post("/send-otp", response_model=AuthResponse)
 async def send_otp(request: SendOTPRequest, db: Session = Depends(get_db)):
     # Placeholder for OTP sending logic
@@ -79,7 +88,25 @@ async def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
             is_new_user = True
         
         access_token = create_access_token(data={"sub": user.email if user.email else user.phone}) # Assuming email or phone is unique
-        return AuthResponse(success=True, message="OTP verified successfully.", token=access_token, user=user.to_dict(), is_new_user=is_new_user)
+        
+        # Generate Refresh Token
+        refresh_token = str(uuid.uuid4())
+        # Store in Redis with TTL from Config
+        if cache_service.is_available():
+            cache_service.set(
+                f"refresh_token:{refresh_token}", 
+                user.id, 
+                ttl_seconds=Config.JWT_REFRESH_EXPIRATION_DAYS * 86400
+            )
+
+        return AuthResponse(
+            success=True, 
+            message="OTP verified successfully.", 
+            token=access_token, 
+            refresh_token=refresh_token,
+            user=user.to_dict(), 
+            is_new_user=is_new_user
+        )
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP.")
 
@@ -100,7 +127,24 @@ async def google_auth(request: GoogleAuthRequest, db: Session = Depends(get_db))
         is_new_user = True
     
     access_token = create_access_token(data={"sub": user.email})
-    return AuthResponse(success=True, message="Google auth successful.", token=access_token, user=user.to_dict(), is_new_user=is_new_user)
+    
+    # Generate Refresh Token
+    refresh_token = str(uuid.uuid4())
+    if cache_service.is_available():
+        cache_service.set(
+            f"refresh_token:{refresh_token}", 
+            user.id, 
+            ttl_seconds=Config.JWT_REFRESH_EXPIRATION_DAYS * 86400
+        )
+
+    return AuthResponse(
+        success=True, 
+        message="Google auth successful.", 
+        token=access_token, 
+        refresh_token=refresh_token,
+        user=user.to_dict(), 
+        is_new_user=is_new_user
+    )
 
 @router.post("/telegram", response_model=AuthResponse)
 async def telegram_auth(request: TelegramAuthRequest, db: Session = Depends(get_db)):
@@ -121,7 +165,70 @@ async def telegram_auth(request: TelegramAuthRequest, db: Session = Depends(get_
         is_new_user = True
 
     access_token = create_access_token(data={"sub": user.email if user.email else user.telegram_id})
-    return AuthResponse(success=True, message="Telegram auth successful.", token=access_token, user=user.to_dict(), is_new_user=is_new_user)
+    
+    # Generate Refresh Token
+    refresh_token = str(uuid.uuid4())
+    if cache_service.is_available():
+        cache_service.set(
+            f"refresh_token:{refresh_token}", 
+            user.id, 
+            ttl_seconds=Config.JWT_REFRESH_EXPIRATION_DAYS * 86400
+        )
+
+    return AuthResponse(
+        success=True, 
+        message="Telegram auth successful.", 
+        token=access_token, 
+        refresh_token=refresh_token,
+        user=user.to_dict(), 
+        is_new_user=is_new_user
+    )
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    Refresh access token using a valid refresh token.
+    """
+    if not cache_service.is_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cache service unavailable for token refresh."
+        )
+
+    user_id = cache_service.get(f"refresh_token:{request.refresh_token}")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token."
+        )
+
+    user_service = UserService(db)
+    user = user_service.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found."
+        )
+
+    # Generate new access token
+    new_access_token = create_access_token(data={"sub": user.email if user.email else user.phone})
+    
+    # Optional: Rotate refresh token (highly recommended for security)
+    new_refresh_token = str(uuid.uuid4())
+    cache_service.delete(f"refresh_token:{request.refresh_token}")
+    cache_service.set(
+        f"refresh_token:{new_refresh_token}", 
+        user.id, 
+        ttl_seconds=Config.JWT_REFRESH_EXPIRATION_DAYS * 86400
+    )
+
+    return AuthResponse(
+        success=True,
+        message="Token refreshed successfully.",
+        token=new_access_token,
+        refresh_token=new_refresh_token,
+        user=user.to_dict()
+    )
 
 @router.get("/me", response_model=AuthResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
@@ -140,14 +247,17 @@ async def update_user_location(location_update: UserLocationUpdate, current_user
     return AuthResponse(success=True, message="Location updated successfully.", user=updated_user.to_dict())
 
 @router.post("/logout", response_model=AuthResponse)
-async def logout(token: str = Depends(oauth2_scheme)):
+async def logout(request: LogoutRequest, token: str = Depends(oauth2_scheme)):
     """
     Adds the current user's token to a blacklist to invalidate it.
+    Optionally revokes a refresh token sent in the body.
     """
     if cache_service.is_available():
-        # The key for the blacklist will be the token itself.
-        # We set a TTL on the key equal to the token's remaining validity.
+        # blacklist the access token with remaining TTL
         cache_service.set(f"jwt_blacklist:{token}", 1, ttl_seconds=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+        # revoke refresh token if provided
+        if request.refresh_token:
+            cache_service.delete(f"refresh_token:{request.refresh_token}")
         return AuthResponse(success=True, message="Logged out successfully.")
     else:
         # If Redis is not available, we can't blacklist.

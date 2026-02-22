@@ -29,7 +29,7 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (token: string, user: User) => void;
+  login: (token: string, user: User, refreshToken?: string) => void;
   logout: () => void;
   updateUser: (user: User) => void;
   refreshUser: () => Promise<void>;
@@ -52,6 +52,7 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const logoutRef = useRef<() => void>(() => {});
 
@@ -61,15 +62,20 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       try {
         const storedToken = localStorage.getItem('auth_token');
         const storedUser = localStorage.getItem('auth_user');
+        const storedRefresh = localStorage.getItem('refresh_token');
 
         if (storedToken && storedUser) {
           setToken(storedToken);
           setUser(JSON.parse(storedUser));
         }
+        if (storedRefresh) {
+          setRefreshToken(storedRefresh);
+        }
       } catch (error) {
         console.error('Failed to load auth state:', error);
         localStorage.removeItem('auth_token');
         localStorage.removeItem('auth_user');
+        localStorage.removeItem('refresh_token');
       } finally {
         setIsLoading(false);
       }
@@ -78,22 +84,28 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     loadAuthState();
   }, []);
 
-  const login = (newToken: string, newUser: User) => {
+  const login = (newToken: string, newUser: User, newRefreshToken?: string) => {
     setToken(newToken);
     setUser(newUser);
     localStorage.setItem('auth_token', newToken);
     localStorage.setItem('auth_user', JSON.stringify(newUser));
+    if (newRefreshToken) {
+      setRefreshToken(newRefreshToken);
+      localStorage.setItem('refresh_token', newRefreshToken);
+    }
   };
 
   const logout = async () => {
     try {
-      // Call logout API
+      // Call logout API (include refresh token so backend can revoke it)
       if (token) {
         await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/auth/logout`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
           },
+          body: JSON.stringify({ refresh_token: refreshToken }),
         });
       }
     } catch (error) {
@@ -101,6 +113,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } finally {
       // Clear local state
       setToken(null);
+      setRefreshToken(null);
       setUser(null);
       localStorage.removeItem('auth_token');
       localStorage.removeItem('auth_user');
@@ -129,6 +142,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     configureApiClient({
       getToken: () => token,
       on401: () => logoutRef.current(),
+      onTokenRefresh: (newTok, newRefresh) => {
+        setToken(newTok);
+        localStorage.setItem('auth_token', newTok);
+        if (newRefresh) {
+          setRefreshToken(newRefresh);
+          localStorage.setItem('refresh_token', newRefresh);
+        }
+      },
     });
   }, [token]);
 

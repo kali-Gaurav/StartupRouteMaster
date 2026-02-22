@@ -20,6 +20,7 @@ const SOS = lazy(() => import("./pages/SOS"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Bookings = lazy(() => import("./pages/Bookings"));
 const Ticket = lazy(() => import("./pages/Ticket"));
+const Responder = lazy(() => import("./pages/Responder"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 // Lazy load Mini App pages
@@ -82,6 +83,7 @@ const App = () => (
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/bookings" element={<Bookings />} />
               <Route path="/ticket/:bookingId" element={<Ticket />} />
+              <Route path="/responder" element={<Responder />} />
 
               {/* Mini App Routes: gate runs Telegram initData → JWT auth then renders child */}
               <Route path="/mini-app" element={<MiniAppGate><Outlet /></MiniAppGate>}>

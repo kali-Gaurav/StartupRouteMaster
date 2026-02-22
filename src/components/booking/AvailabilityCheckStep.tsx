@@ -82,6 +82,17 @@ export function AvailabilityCheckStep() {
             <CheckCircle2 className="h-12 w-12" />
             <p className="font-semibold text-foreground">Seats confirmed</p>
             <p className="text-sm text-muted-foreground">Proceeding to payment…</p>
+            {availabilityInfo && (
+              <div className="text-xs mt-2 text-muted-foreground">
+                {availabilityInfo.availability_status && (
+                  <div>Status: {availabilityInfo.availability_status}</div>
+                )}
+                {availabilityInfo.probability != null && (
+                  <div>Prob: {availabilityInfo.probability}</div>
+                )}
+                {availabilityInfo.fare != null && <div>Fare: ₹{availabilityInfo.fare}</div>}
+              </div>
+            )}
           </div>
         )}
         {availabilityPhase === "failed" && (

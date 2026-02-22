@@ -12,9 +12,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
 # In a real production environment, this should be a unique, strong secret
-# and not shared with other services like Supabase.
-SECRET_KEY = Config.SUPABASE_KEY or "a_very_secret_key_that_is_long_and_secure"
+# and not shared with other services like Supabase.  We now read from Config.JWT_SECRET_KEY
+SECRET_KEY = Config.JWT_SECRET_KEY or Config.SUPABASE_KEY or "a_very_secret_key_that_is_long_and_secure"
 ALGORITHM = "HS256"
+# expiration can still be configured via Config or env if needed later
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 credentials_exception = HTTPException(

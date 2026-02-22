@@ -21,6 +21,12 @@ export interface AvailabilityCheckResponse {
   waitlist_position?: number;
   confirmation_probability?: number;
   message: string;
+  // additional compatibility fields
+  availability_status?: string;
+  fare?: number;
+  quota?: string;
+  class?: string;
+  probability?: number;
 }
 
 export async function checkAvailability(data: AvailabilityCheckRequest): Promise<AvailabilityCheckResponse> {

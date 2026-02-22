@@ -18,19 +18,23 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 type GetToken = () => string | null;
 type On401 = () => void;
 type On429 = () => void;
+type OnTokenRefresh = (token: string, refreshToken?: string) => void;
 
 let getToken: GetToken = () => null;
 let on401: On401 = () => {};
 let on429: On429 = () => {};
+let onTokenRefresh: OnTokenRefresh = () => {};
 
 export function configureApiClient(config: {
   getToken: GetToken;
   on401: On401;
   on429?: On429;
+  onTokenRefresh?: OnTokenRefresh;
 }) {
   getToken = config.getToken;
   on401 = config.on401;
   if (config.on429) on429 = config.on429;
+  if (config.onTokenRefresh) onTokenRefresh = config.onTokenRefresh;
 }
 
 function ensureSlash(path: string): string {
@@ -54,7 +58,7 @@ export async function fetchWithAuth(
   init?: FetchWithAuthInit
 ): Promise<Response> {
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : ensureSlash(pathOrUrl);
-  const token = getToken();
+  let token = getToken();
   const headers = new Headers(init?.headers);
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -67,9 +71,49 @@ export async function fetchWithAuth(
     throw await normalizeApiError(null, cause);
   }
 
+  // helper to attempt refresh and retry once
+  const tryRefreshAndRetry = async (): Promise<Response> => {
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (!refreshToken) {
+      return res; // nothing to do
+    }
+    try {
+      const base = API_BASE.replace(/\/$/, '');
+      const refreshRes = await fetch(base + '/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!refreshRes.ok) {
+        return res; // unable to refresh
+      }
+      const data = await refreshRes.json();
+      if (data.token) {
+        // update storage and notify
+        localStorage.setItem('auth_token', data.token);
+        if (data.refresh_token) {
+          localStorage.setItem('refresh_token', data.refresh_token);
+        }
+        onTokenRefresh(data.token, data.refresh_token);
+        // retry original request with new token
+        headers.set('Authorization', `Bearer ${data.token}`);
+        return await fetch(url, { ...init, headers });
+      }
+    } catch (e) {
+      // ignore and fall through
+    }
+    return res;
+  };
+
   if (res.status === 401 && token) {
-    on401();
-    throw new AuthError("Session expired. Please log in again.", 401);
+    // try refreshing once
+    const newRes = await tryRefreshAndRetry();
+    if (newRes !== res && newRes.status !== 401) {
+      res = newRes;
+    } else {
+      on401();
+      throw new AuthError("Session expired. Please log in again.", 401);
+    }
   }
   if (res.status === 429) {
     on429();

@@ -14,6 +14,10 @@ import { getRecoveryStrategy, PaymentError, NetworkError } from "@/lib/errors";
 import type { Route } from "@/data/routes";
 
 vi.mock("@/lib/observability", () => ({ logEvent: vi.fn() }));
+// mock the booking API so availability checks can be faked in scenarios
+vi.mock("@/api/booking", () => ({
+  checkAvailability: vi.fn(),
+}));
 
 function minimalRoute(): Route {
   return {
@@ -89,8 +93,15 @@ describe("scenario: payment retry", () => {
 });
 
 describe("scenario: slow availability", () => {
-  it("availability phase progresses checking → locking → confirmed after delays", async () => {
-    vi.useFakeTimers();
+  it("invokes the availability API and moves to confirmed when seats are available", async () => {
+    const { checkAvailability } = await import("@/api/booking");
+    (checkAvailability as unknown as vi.Mock).mockResolvedValue({
+      available: true,
+      available_seats: 5,
+      total_seats: 100,
+      message: "ok",
+    });
+
     const { result } = renderHook(() => useBookingFlowContext(), { wrapper });
     const route = minimalRoute();
 
@@ -104,27 +115,15 @@ describe("scenario: slow availability", () => {
     });
     act(() => result.current.nextStep());
     expect(result.current.step).toBe("availability");
-    expect(result.current.availabilityPhase).toBe("idle");
 
-    let resolveCheck: (value: boolean) => void;
-    const checkPromise = new Promise<boolean>((r) => {
-      resolveCheck = r;
-    });
-    act(() => {
-      result.current.runAvailabilityCheck().then(resolveCheck!);
-    });
-    expect(result.current.availabilityPhase).toBe("checking");
-
-    act(() => vi.advanceTimersByTime(1800));
-    expect(result.current.availabilityPhase).toBe("locking");
-
-    act(() => vi.advanceTimersByTime(1200));
     await act(async () => {
-      await checkPromise;
+      const ok = await result.current.runAvailabilityCheck();
+      expect(ok).toBe(true);
     });
-    expect(result.current.availabilityPhase).toBe("confirmed");
 
-    vi.useRealTimers();
+    expect((checkAvailability as unknown as vi.Mock).mock.calls.length).toBe(1);
+    expect(result.current.availabilityPhase).toBe("confirmed");
+    expect(result.current.availabilityInfo).not.toBeNull();
   });
 });
 

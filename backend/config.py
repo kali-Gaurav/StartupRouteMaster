@@ -20,6 +20,10 @@ class Config:
 
     CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
     MAX_TRANSFERS = int(os.getenv("MAX_TRANSFERS", "3"))
+
+    # JWT settings
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "changeme")
+    JWT_REFRESH_EXPIRATION_DAYS = int(os.getenv("JWT_REFRESH_EXPIRATION_DAYS", "30"))
     TRANSFER_WINDOW_MIN = int(os.getenv("TRANSFER_WINDOW_MIN", "15"))
     TRANSFER_WINDOW_MAX = int(os.getenv("TRANSFER_WINDOW_MAX", "720")) # 12 hours
     MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "10"))

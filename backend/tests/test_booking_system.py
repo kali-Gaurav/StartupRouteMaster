@@ -176,6 +176,28 @@ class TestAvailabilityService:
         assert response.total_seats == 360
         assert response.confirmation_probability == 1.0
 
+    def test_availability_endpoint_http(self, sample_trip_data):
+        """Ensure the FastAPI availability route is reachable and returns expected fields."""
+        from fastapi.testclient import TestClient
+        from backend.app import app
+
+        client = TestClient(app)
+        payload = {
+            "trip_id": sample_trip_data['trip'].id,
+            "from_stop_id": 1,
+            "to_stop_id": 4,
+            "travel_date": sample_trip_data['trip'].trip_date.isoformat(),
+            "quota_type": "GENERAL",
+            "passengers": 2,
+        }
+        res = client.post("/api/v1/booking/availability", json=payload)
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert isinstance(data.get("available"), bool)
+        assert "available_seats" in data
+        assert "availability_status" in data
+        assert "probability" in data
+
     @pytest.mark.asyncio
     async def test_check_availability_no_inventory(self, test_session):
         """Test availability check with no inventory"""
@@ -301,6 +323,12 @@ class TestBookingOrchestrator:
         assert len(result.pnr_number) == 10
         assert result.booking_id is not None
         assert result.total_amount is not None
+
+        # validate passenger persistence in database
+        from backend.database.models import Booking as BookingModel
+        booking = test_session.query(BookingModel).filter(BookingModel.pnr_number == result.pnr_number).first()
+        assert booking is not None
+        assert len(booking.passenger_details) == 2
 
     @pytest.mark.asyncio
     async def test_booking_insufficient_seats(self, test_session, sample_trip_data):

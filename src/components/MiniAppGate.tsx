@@ -53,7 +53,7 @@ export function MiniAppGate({ children }: { children: React.ReactNode }) {
         .then((res) => {
           if (cancelled) return;
           if (res.success && res.token && res.user) {
-            login(res.token, res.user);
+            login(res.token, res.user, res.refresh_token);
             setGateState("ready");
           } else {
             setErrorMessage(res.message || "Sign-in failed. Please try again from Telegram.");

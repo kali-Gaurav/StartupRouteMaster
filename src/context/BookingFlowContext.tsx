@@ -32,6 +32,7 @@ export interface BookingFlowState {
   originName: string;
   destName: string;
   availabilityPhase: AvailabilityPhase;
+  availabilityInfo?: any | null; // store response from availability API
   bookingId: string | null;
   irctcUrl: string | null;
   error: string | null;
@@ -191,22 +192,42 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const runAvailabilityCheck = useCallback((): Promise<boolean> => {
-    return new Promise((resolve) => {
+    if (!route || !travelDate) {
+      setState((s) => ({ ...s, error: "Missing route or travel date" }));
+      return Promise.resolve(false);
+    }
+
+    return new Promise(async (resolve) => {
       setState((s) => ({ ...s, availabilityPhase: "checking", error: null }));
 
-      const t1 = setTimeout(() => {
-        setState((s) => (s.availabilityPhase === "checking" ? { ...s, availabilityPhase: "locking" } : s));
-      }, AVAILABILITY_CHECK_MS);
+      try {
+        const resp = await checkAvailability({
+          trip_id: route.id as unknown as any, // backend will resolve string or number
+          from_stop_id: route.segments?.[0]?.from_stop_id || 0,
+          to_stop_id: route.segments?.[route.segments.length - 1]?.to_stop_id || 0,
+          travel_date: travelDate,
+          quota_type: (route as any).quota_type || "GENERAL",
+          passengers: (state as any).passengers || 1,
+        });
 
-      setTimeout(() => {
-        setState((s) =>
-          s.availabilityPhase === "locking" ? { ...s, availabilityPhase: "confirmed" } : s
-        );
-        clearTimeout(t1);
-        resolve(true);
-      }, AVAILABILITY_CHECK_MS + LOCK_MS);
+        // store the raw response for UI
+        setState((s) => ({ ...s, availabilityInfo: resp }));
+
+        // determine next state based on response
+        if (resp.available) {
+          setState((s) => ({ ...s, availabilityPhase: "confirmed" }));
+          resolve(true);
+        } else {
+          setState((s) => ({ ...s, availabilityPhase: "failed", error: resp.message || "Unavailable" }));
+          resolve(false);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Availability check failed";
+        setState((s) => ({ ...s, availabilityPhase: "failed", error: msg }));
+        resolve(false);
+      }
     });
-  }, []);
+  }, [route, travelDate]);
 
   const setPaymentSuccess = useCallback((orderId: string, irctcUrl: string | null) => {
     logEvent("booking_confirmed", { hasIrctcUrl: !!irctcUrl });

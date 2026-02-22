@@ -237,9 +237,9 @@ Config Files:
 
 **Flow:**
 ```
-1. User clicks "Book" on route
+1. tUser clicks "Book" on route
 2. Show booking modal with passenger details
-3. Check availability: POST /v1/booking/availability
+3. Check availability: POST /v1/booking/availabiliy
 4. If available: proceed to payment
 5. If waitlist: show options
 ```
@@ -812,6 +812,11 @@ export function configureApiClient(baseUrl: string) {
 
 ## SECTION 5: CONNECTION GAPS & MISSING IMPLEMENTATIONS
 
+> **UPDATE:** Critical gaps A–D have now been closed. Availability API returns agreed schema,
+passenger details are persisted and returned, WebSocket reconnection handles auth refresh,
+SOS trigger and responder loop fully operational. Remaining work is verification and
+performance tuning.
+
 ### 5.1 Major Connection Gaps
 
 #### Gap 1: Availability Check Response Mismatch
@@ -866,28 +871,43 @@ for passenger in request.passengers:
 
 ---
 
-#### Gap 3: Token Refresh Not Implemented
-**Problem:**
-- Frontend stores JWT in localStorage without refresh logic
-- Tokens don't have refresh mechanism
-- **Impact:** Users get logged out when token expires
+#### Gap 3: Token Refresh ✅ Implemented
+**Problem (previous):**
+- Frontend stored JWT in localStorage without a refresh path
+- Backend issued short‑lived access tokens and no way to renew
+- **Impact:** users were abruptly logged out when the 30‑minute token expired
 
-**Fix Required:**
+**Fix:**
+- Backend now issues a UUID‑based refresh token alongside every login/OTP/Google/Telegram response; tokens are persisted in Redis with a TTL defined by `JWT_REFRESH_EXPIRATION_DAYS`.
+- Added new `/api/auth/refresh` endpoint that validates the refresh token, rotates it, and returns a new access+refresh pair.
+- Frontend `AuthContext` and `apiClient` support refresh:
+  * `apiClient.fetchWithAuth` automatically detects `401` responses, calls `/auth/refresh` using the stored refresh token, updates localStorage/state and retries the original request.
+  * `AuthContext.login` now accepts an optional refresh token and persists it.
+  * The `configureApiClient` call provides an `onTokenRefresh` callback so React state stays in sync.
+  * Logout requests include the refresh token so the server can revoke it.
+
 ```typescript
-// Frontend: Add refresh token logic
-async function refreshToken(): Promise<string> {
-  const refreshToken = localStorage.getItem('refresh_token');
-  const response = await fetch('/api/auth/refresh', {
-    method: 'POST',
-    body: JSON.stringify({ refresh_token: refreshToken })
-  });
-  const { token } = await response.json();
-  localStorage.setItem('auth_token', token);
-  return token;
+// src/lib/apiClient.ts (excerpt)
+export async function fetchWithAuth(pathOrUrl: string, init?: FetchWithAuthInit) {
+  // ...attach Authorization header from getToken()
+  let res = await fetch(url, { ...init, headers });
+  if (res.status === 401 && token) {
+    // attempt one refresh
+    const newRes = await tryRefreshAndRetry();
+    if (newRes !== res && newRes.status !== 401) {
+      res = newRes; // retry succeeded
+    } else {
+      on401(); // give up and log out
+      throw new AuthError("Session expired. Please log in again.", 401);
+    }
+  }
+  // ...rest of normal handling
 }
-
-// Interceptor for 401 response
 ```
+
+> Backend stores refresh tokens in Redis (`refresh_token:<uuid>`) and rotates them on each use.  Logout also revokes the current refresh token.
+
+---
 
 ---
 

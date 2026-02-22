@@ -82,7 +82,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       const response = await verifyOTP(parsed.data);
 
       if (response.success && response.token && response.user) {
-        login(response.token, response.user);
+        login(response.token, response.user, response.refresh_token);
         setMessage('Login successful!');
         
         setTimeout(() => {
@@ -113,7 +113,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       const response = await googleAuth(mockIdToken);
 
       if (response.success && response.token && response.user) {
-        login(response.token, response.user);
+        login(response.token, response.user, response.refresh_token);
         setMessage('Google login successful!');
         
         setTimeout(() => {

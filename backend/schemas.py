@@ -110,6 +110,33 @@ class BookingCreateSchema(BaseModel):
     amount_paid: float = Field(..., ge=0)
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
 
+
+# --- Availability Schemas ---------------------------------------------------
+class AvailabilityCheckRequestSchema(BaseModel):
+    trip_id: int
+    from_stop_id: int
+    to_stop_id: int
+    travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    quota_type: str
+    passengers: int = Field(1, ge=1, le=6)
+
+class AvailabilityCheckResponseSchema(BaseModel):
+    available: bool
+    available_seats: int
+    total_seats: int
+    waitlist_position: Optional[int] = None
+    confirmation_probability: Optional[float] = None
+    message: str
+    # compatibility / extra fields used by frontend
+    availability_status: Optional[str] = None
+    fare: Optional[float] = None
+    quota: Optional[str] = None
+    class_type: Optional[str] = Field(None, alias="class")
+    probability: Optional[float] = None
+
+    class Config:
+        allow_population_by_field_name = True
+
 class BookingResponseSchema(BaseModel):
     id: str
     pnr_number: str
@@ -118,10 +145,12 @@ class BookingResponseSchema(BaseModel):
     booking_status: str
     amount_paid: float
     booking_details: Dict[str, Any]
+    passenger_details: Optional[List[PassengerDetailsSchema]] = None
     created_at: datetime
     
     class Config:
         from_attributes = True
+    # legacy passenger fields (kept for backward compatibility, usually the first passenger)
     gender: str = Field(..., pattern="^[MFO]$")  # M, F, O (Other)
     phone_number: Optional[str] = None
     email: Optional[EmailStr] = None
