@@ -193,7 +193,10 @@ async def verify_payment(
 # --- new endpoints added below ---
 
 @router.get("/status/{razorpay_order_id}")
-async def payment_status(razorpay_order_id: str):
+async def payment_status(
+    razorpay_order_id: str,
+    db: Session = Depends(get_db)
+):
     """Return simple status of a payment by razorpay order id."""
     payment = db.query(PaymentModel).filter(PaymentModel.razorpay_order_id == razorpay_order_id).first()
     if not payment:

@@ -3,6 +3,10 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
+import logging
+
+# create logger for this module
+logger = logging.getLogger(__name__)
 
 from backend.services.cache_service import cache_service
 from backend.api.websockets import manager

@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+import logging
 
 from backend.database import get_db
 from backend.services.booking_service import BookingService
 from backend.api.dependencies import get_current_user
 from backend.models import User
+from backend.database.models import Payment
 from backend.schemas import (
     BookingResponseSchema,
     PassengerDetailsSchema,
@@ -21,12 +23,16 @@ from backend.schemas import (
     RefundResponseSchema,
 )
 
+# Import UNLOCK_PRICE constant
+UNLOCK_PRICE = 39.0  # ₹39 unlock fee
+
 # The router is versioned to match frontend expectations (/api/v1/booking/*).
 # previously it used "/api/bookings" but the frontend called "/v1/booking/..." so
 # bumping the prefix keeps both sides aligned.  If other code still relies on the
 # old path we could mount the router twice, but most references were internal
 # so this change is safe for the integration phase.
 router = APIRouter(prefix="/api/v1/booking", tags=["bookings"])
+logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=BookingResponseSchema)
 async def create_booking(
@@ -419,6 +425,267 @@ async def get_my_booking_requests(
             "created_at": req.created_at,
             "updated_at": req.updated_at,
             "queue_status": queue_entry.status if queue_entry else None
+        })
+    
+    return results
+
+
+# ==============================================================================
+# REFUND API ENDPOINTS (Step 2.3 - Advanced Refund System)
+# ==============================================================================
+
+@router.post("/request/{request_id}/refund", response_model=RefundResponseSchema)
+async def create_refund(
+    request_id: str,
+    reason: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a refund for a booking request.
+    
+    This endpoint:
+    1. Validates the booking request belongs to the user
+    2. Checks refund eligibility (status, time-based rules)
+    3. Processes refund via Razorpay
+    4. Creates refund record in database
+    5. Updates booking request status
+    """
+    from backend.database.models import BookingRequest, Refund
+    from backend.services.payment_service import PaymentService
+    from datetime import datetime
+    
+    # Payment is already imported at top of file
+    
+    # Get booking request
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    # Check if already refunded
+    existing_refund = db.query(Refund).filter(
+        Refund.booking_request_id == request_id,
+        Refund.status.in_(["COMPLETED", "PROCESSING"])
+    ).first()
+    
+    if existing_refund:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refund already processed. Refund ID: {existing_refund.id}"
+        )
+    
+    # Check refund eligibility based on booking request status
+    if booking_request.status in ["SUCCESS", "PROCESSING"]:
+        # Can refund if booking failed or user cancelled
+        if booking_request.status == "SUCCESS":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot refund a successful booking. Please cancel the booking first."
+            )
+    
+    # Get payment record
+    if not booking_request.payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No payment found for this booking request"
+        )
+    
+    payment = db.query(Payment).filter(Payment.id == booking_request.payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+    
+    if payment.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot refund payment with status: {payment.status}"
+        )
+    
+    if not payment.razorpay_payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Razorpay payment ID not found"
+        )
+    
+    # Calculate refund amount (full refund for unlock payments, may have cancellation charges for bookings)
+    refund_amount = payment.amount
+    
+    # Apply cancellation charges if applicable (for future booking refunds)
+    # For now, full refund for unlock payments (₹39)
+    cancellation_charge = 0.0
+    if payment.amount > UNLOCK_PRICE:  # This is a booking payment, not unlock
+        # Calculate cancellation charges based on time to journey
+        journey_date = booking_request.journey_date
+        days_until_journey = (journey_date - datetime.utcnow().date()).days
+        
+        if days_until_journey < 0:
+            cancellation_charge = 0.0  # Past journey, full refund
+        elif days_until_journey < 1:
+            cancellation_charge = refund_amount * 0.5  # 50% charge for same-day cancellation
+        elif days_until_journey < 7:
+            cancellation_charge = refund_amount * 0.25  # 25% charge for <7 days
+        else:
+            cancellation_charge = refund_amount * 0.1  # 10% charge for >7 days
+        
+        refund_amount = refund_amount - cancellation_charge
+    
+    # Create refund record
+    refund = Refund(
+        booking_request_id=request_id,
+        amount=refund_amount,
+        currency="INR",
+        reason=reason or "User requested refund",
+        status="PENDING"
+    )
+    db.add(refund)
+    db.flush()
+    
+    # Process refund via Razorpay
+    payment_service = PaymentService()
+    if not payment_service.is_configured():
+        refund.status = "FAILED"
+        refund.reason = (refund.reason or "") + " | Error: Razorpay not configured"
+        db.commit()
+        raise HTTPException(status_code=503, detail="Payment service not configured")
+    
+    try:
+        # Process refund
+        refund.status = "PROCESSING"
+        db.commit()
+        
+        success, error, refund_data = await payment_service.refund_payment(
+            payment_id=payment.razorpay_payment_id,
+            amount_rupees=refund_amount
+        )
+        
+        if success and refund_data:
+            # Extract refund ID from Razorpay response
+            refund.razorpay_refund_id = refund_data.get("id")
+            refund.refund_transaction_id = refund_data.get("acquirer_data", {}).get("rrn") if refund_data.get("acquirer_data") else None
+            
+            refund.status = "COMPLETED"
+            refund.processed_at = datetime.utcnow()
+            refund.processed_by = str(current_user.id)
+            
+            # Update booking request status
+            booking_request.status = "REFUNDED"
+            
+            db.commit()
+            db.refresh(refund)
+            
+            logger.info(f"Refund completed: {refund.id} (Razorpay: {refund.razorpay_refund_id}) for booking request {request_id}")
+            
+            return {
+                "id": refund.id,
+                "booking_request_id": refund.booking_request_id,
+                "amount": refund.amount,
+                "currency": refund.currency,
+                "reason": refund.reason,
+                "status": refund.status,
+                "razorpay_refund_id": refund.razorpay_refund_id,
+                "created_at": refund.created_at
+            }
+        else:
+            refund.status = "FAILED"
+            refund.reason = (refund.reason or "") + f" | Error: {error}"
+            db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Refund processing failed: {error}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        refund.status = "FAILED"
+        refund.reason = (refund.reason or "") + f" | Error: {str(e)}"
+        db.commit()
+        logger.error(f"Refund error for request {request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Refund processing failed: {str(e)}"
+        )
+
+
+@router.get("/request/{request_id}/refund", response_model=RefundResponseSchema)
+async def get_refund_status(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get refund status for a booking request."""
+    from backend.database.models import BookingRequest, Refund
+    
+    # Verify booking request belongs to user
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    # Get latest refund
+    refund = db.query(Refund).filter(
+        Refund.booking_request_id == request_id
+    ).order_by(Refund.created_at.desc()).first()
+    
+    if not refund:
+        raise HTTPException(status_code=404, detail="No refund found for this booking request")
+    
+    return {
+        "id": refund.id,
+        "booking_request_id": refund.booking_request_id,
+        "amount": refund.amount,
+        "currency": refund.currency,
+        "reason": refund.reason,
+        "status": refund.status,
+        "razorpay_refund_id": refund.razorpay_refund_id,
+        "created_at": refund.created_at
+    }
+
+
+@router.get("/refunds/my", response_model=List[RefundResponseSchema])
+async def get_my_refunds(
+    skip: int = 0,
+    limit: int = 20,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all refunds for current user."""
+    from backend.database.models import BookingRequest, Refund
+    
+    # Get user's booking requests
+    user_requests = db.query(BookingRequest).filter(
+        BookingRequest.user_id == str(current_user.id)
+    ).subquery()
+    
+    # Query refunds for user's requests
+    query = db.query(Refund).join(
+        user_requests, Refund.booking_request_id == user_requests.c.id
+    )
+    
+    if status:
+        query = query.filter(Refund.status == status.upper())
+    
+    total = query.count()
+    refunds = query.order_by(Refund.created_at.desc()).offset(skip).limit(limit).all()
+    
+    results = []
+    for refund in refunds:
+        results.append({
+            "id": refund.id,
+            "booking_request_id": refund.booking_request_id,
+            "amount": refund.amount,
+            "currency": refund.currency,
+            "reason": refund.reason,
+            "status": refund.status,
+            "razorpay_refund_id": refund.razorpay_refund_id,
+            "created_at": refund.created_at
         })
     
     return results

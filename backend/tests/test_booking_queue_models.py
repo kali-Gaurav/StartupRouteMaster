@@ -5,8 +5,9 @@ Run this before applying migration to validate models are correct.
 import sys
 import os
 
-# Add backend to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add project root to path (not just backend) to avoid shadowing stdlib modules
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, root_dir)
 
 def test_model_imports():
     """Test that all new models can be imported."""

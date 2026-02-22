@@ -87,9 +87,9 @@ class User(Base):
     commission_tracks = relationship("CommissionTracking", back_populates="user")
     disruptions_created = relationship("Disruption", back_populates="creator")
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
-    booking_requests = relationship("BookingRequest", foreign_keys="BookingRequest.user_id")
-    executed_bookings = relationship("BookingQueue", foreign_keys="BookingQueue.executed_by")
-    processed_refunds = relationship("Refund", foreign_keys="Refund.processed_by")
+    booking_requests = relationship("BookingRequest", foreign_keys="BookingRequest.user_id", overlaps="user")
+    executed_bookings = relationship("BookingQueue", foreign_keys="BookingQueue.executed_by", overlaps="executor")
+    processed_refunds = relationship("Refund", foreign_keys="Refund.processed_by", overlaps="processor")
 
 # ==============================================================================
 # NEW GTFS-INSPIRED TRANSIT MODELS
@@ -720,7 +720,7 @@ class BookingRequest(Base):
     verified_at = Column(DateTime, nullable=True)
     
     # Relationships
-    user = relationship("User")
+    user = relationship("User", overlaps="booking_requests")
     payment = relationship("Payment")
     queue_entry = relationship("BookingQueue", back_populates="booking_request", uselist=False)
     result = relationship("BookingResult", back_populates="booking_request", uselist=False)
@@ -795,7 +795,7 @@ class BookingQueue(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     booking_request = relationship("BookingRequest", back_populates="queue_entry")
-    executor = relationship("User", foreign_keys=[executed_by])
+    executor = relationship("User", foreign_keys=[executed_by], overlaps="executed_bookings")
 
 
 class BookingResult(Base):
@@ -867,7 +867,7 @@ class Refund(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     booking_request = relationship("BookingRequest", back_populates="refunds")
-    processor = relationship("User", foreign_keys=[processed_by])
+    processor = relationship("User", foreign_keys=[processed_by], overlaps="processed_refunds")
 
 
 class ExecutionLog(Base):

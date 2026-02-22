@@ -7,8 +7,9 @@ import os
 import json
 from datetime import datetime, date
 
-# Add backend to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add project root to path (not just backend) to avoid shadowing stdlib modules
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, root_dir)
 
 def test_schemas():
     """Test that schemas can be imported and validated."""

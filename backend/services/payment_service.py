@@ -142,9 +142,14 @@ class PaymentService:
 
     async def refund_payment(
         self, payment_id: str, amount_rupees: Optional[float] = None
-    ) -> Tuple[bool, Optional[str]]:
-        """Create refund for a payment asynchronously."""
-        if not self.is_configured(): return False, "Razorpay not configured"
+    ) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        """Create refund for a payment asynchronously.
+        
+        Returns:
+            Tuple[success: bool, error_message: Optional[str], refund_data: Optional[Dict]]
+            refund_data contains Razorpay refund response including 'id' field
+        """
+        if not self.is_configured(): return False, "Razorpay not configured", None
         try:
             payload = {"amount": int(amount_rupees * 100)} if amount_rupees else {}
             async with httpx.AsyncClient() as client:
@@ -155,14 +160,17 @@ class PaymentService:
                     timeout=10,
                 )
             if response.status_code in [200, 201]:
-                logger.info(f"Refund created: {response.json().get('id')}")
-                return True, None
+                refund_data = response.json()
+                refund_id = refund_data.get('id')
+                logger.info(f"Refund created: {refund_id}")
+                return True, None, refund_data
             else:
-                logger.error(f"Refund failed: {response.text}")
-                return False, "Refund failed"
+                error_text = response.text
+                logger.error(f"Refund failed: {error_text}")
+                return False, f"Refund failed: {error_text}", None
         except httpx.RequestError as e:
             logger.error(f"Refund error: {e}")
-            return False, str(e)
+            return False, str(e), None
 
     async def fetch_payments_for_order(self, order_id: str) -> Optional[Dict]:
         """Fetch all payments for a given Razorpay order asynchronously."""
