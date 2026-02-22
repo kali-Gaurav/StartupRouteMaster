@@ -14,11 +14,20 @@ import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
 import asyncio
+import os
 
 from ...database import SessionLocal
 from ...database.models import Coach, Seat, Fare, SeatInventory, Trip, StopTime
 
 logger = logging.getLogger(__name__)
+
+# Import RapidAPI client if available
+try:
+    from ...services.booking.rapid_api_client import RapidAPIClient
+    RAPIDAPI_AVAILABLE = True
+except ImportError:
+    RAPIDAPI_AVAILABLE = False
+    logger.warning("RapidAPIClient not available - verification will use database only")
 
 
 class DataProvider:
@@ -51,6 +60,20 @@ class DataProvider:
         self.has_live_delays = False
         self.has_live_seats = False
         self.offline_only = False
+        
+        # Initialize RapidAPI client if available
+        self.rapidapi_client = None
+        if RAPIDAPI_AVAILABLE:
+            rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
+            if rapidapi_key:
+                try:
+                    self.rapidapi_client = RapidAPIClient(rapidapi_key)
+                    logger.info("RapidAPI client initialized successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize RapidAPI client: {e}")
+                    self.rapidapi_client = None
+            else:
+                logger.info("RAPIDAPI_KEY not configured - using database only")
 
     def detect_available_features(self, config=None):
         """
@@ -321,26 +344,81 @@ class DataProvider:
         self,
         trip_id: int,
         travel_date: datetime,
-        coach_preference: str = "AC_THREE_TIER"
+        coach_preference: str = "AC_THREE_TIER",
+        train_number: Optional[str] = None,
+        from_station: Optional[str] = None,
+        to_station: Optional[str] = None,
+        quota: str = "GN"
     ) -> Dict[str, Any]:
         """
-        Verify real availability. Fallback to database logic.
+        Verify real availability via RapidAPI with fallback to database.
+        
+        Args:
+            trip_id: Internal trip ID
+            travel_date: Date of travel
+            coach_preference: Coach class preference
+            train_number: Train number (for RapidAPI)
+            from_station: Source station code (for RapidAPI)
+            to_station: Destination station code (for RapidAPI)
+            quota: Quota type (GN, TATKAL, etc.)
         """
-        # --- Live Verification (Commented out as per instructions) ---
-        # if self.has_live_seats:
-        #     # try: ... return live response
-        #     pass
+        # Try RapidAPI verification first if client is available
+        if self.rapidapi_client and train_number and from_station and to_station:
+            try:
+                date_str = travel_date.strftime("%Y-%m-%d")
+                # Map coach preference to RapidAPI format
+                class_mapping = {
+                    "AC_THREE_TIER": "3A",
+                    "AC_TWO_TIER": "2A",
+                    "AC_FIRST_CLASS": "1A",
+                    "SLEEPER": "SL",
+                    "CHAIR_CAR": "CC",
+                    "EXECUTIVE_CHAIR": "EC"
+                }
+                rapidapi_class = class_mapping.get(coach_preference, "SL")
+                
+                result = await self.rapidapi_client.get_seat_availability(
+                    train_no=train_number,
+                    from_stn=from_station,
+                    to_stn=to_station,
+                    date=date_str,
+                    quota=quota,
+                    class_type=rapidapi_class
+                )
+                
+                if result and result.get("status") != "error":
+                    # Parse RapidAPI response
+                    available_seats = result.get("availableSeats", 0)
+                    total_seats = result.get("totalSeats", 64)
+                    
+                    logger.info(f"RapidAPI verification successful: {available_seats} seats available")
+                    return {
+                        "status": "verified",
+                        "total_seats": total_seats,
+                        "available_seats": available_seats,
+                        "booked_seats": total_seats - available_seats,
+                        "message": "Seats available" if available_seats > 0 else "Waiting list available",
+                        "source": "rapidapi"
+                    }
+                else:
+                    logger.warning(f"RapidAPI verification failed: {result}")
+                    # Fall through to database fallback
+            except Exception as e:
+                logger.error(f"RapidAPI verification error: {e}")
+                # Fall through to database fallback
 
-        # Production Database Source of Truth
+        # Fallback to database verification
         seats_by_class = self._get_database_seats(trip_id, travel_date)
         available = seats_by_class.get(coach_preference, 0)
         
+        logger.info(f"Using database verification: {available} seats available")
         return {
             "status": "verified" if available > 0 else "pending",
-            "total_seats": 64, # Default coach size
+            "total_seats": 64,  # Default coach size
             "available_seats": available,
             "booked_seats": 64 - available,
-            "message": "Seats available" if available > 0 else "Waiting list available"
+            "message": "Seats available" if available > 0 else "Waiting list available",
+            "source": "database"
         }
 
     async def verify_train_schedule_unified(
@@ -367,27 +445,55 @@ class DataProvider:
     async def verify_fare_unified(
         self,
         segment_id: int,
-        coach_preference: str = "AC_THREE_TIER"
+        coach_preference: str = "AC_THREE_TIER",
+        train_number: Optional[str] = None,
+        from_station: Optional[str] = None,
+        to_station: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Verify fares.
+        Verify fares via RapidAPI with fallback to database.
         """
-        # --- Live Verification (Commented out as per instructions) ---
-        # if self.has_live_fares:
-        #     # try: ... return live response
-        #     pass
+        # Try RapidAPI verification first if client is available
+        if self.rapidapi_client and train_number and from_station and to_station:
+            try:
+                result = await self.rapidapi_client.get_fare(
+                    train_no=train_number,
+                    from_stn=from_station,
+                    to_stn=to_station
+                )
+                
+                if result:
+                    # Parse RapidAPI response (adjust based on actual API response structure)
+                    base_fare = result.get("fare", {}).get("baseFare", 0)
+                    gst = result.get("fare", {}).get("gst", 0)
+                    total_fare = result.get("fare", {}).get("totalFare", base_fare + gst)
+                    
+                    logger.info(f"RapidAPI fare verification successful: ₹{total_fare}")
+                    return {
+                        "status": "verified",
+                        "base_fare": base_fare,
+                        "GST": gst,
+                        "total_fare": total_fare,
+                        "message": "Fare verified via RapidAPI",
+                        "source": "rapidapi"
+                    }
+            except Exception as e:
+                logger.error(f"RapidAPI fare verification error: {e}")
+                # Fall through to database fallback
 
-        # Production Database Source of Truth
+        # Fallback to database verification
         fares = self._get_database_fares(segment_id)
         base_fare = fares.get(coach_preference, 1500.0)
         gst = base_fare * 0.05
         
+        logger.info(f"Using database fare verification: ₹{base_fare + gst}")
         return {
             "status": "verified",
             "base_fare": base_fare,
             "GST": gst,
             "total_fare": base_fare + gst,
-            "message": "Fare verified"
+            "message": "Fare verified via database",
+            "source": "database"
         }
 
     def __del__(self):

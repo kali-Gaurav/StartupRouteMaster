@@ -87,6 +87,9 @@ class User(Base):
     commission_tracks = relationship("CommissionTracking", back_populates="user")
     disruptions_created = relationship("Disruption", back_populates="creator")
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
+    booking_requests = relationship("BookingRequest", foreign_keys="BookingRequest.user_id")
+    executed_bookings = relationship("BookingQueue", foreign_keys="BookingQueue.executed_by")
+    processed_refunds = relationship("Refund", foreign_keys="Refund.processed_by")
 
 # ==============================================================================
 # NEW GTFS-INSPIRED TRANSIT MODELS
@@ -660,6 +663,241 @@ class WaitingListRequest(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     booking = relationship("Booking")
+
+
+# ==============================================================================
+# BOOKING QUEUE SYSTEM MODELS (For IRCTC Automation Pipeline)
+# ==============================================================================
+
+class BookingRequest(Base):
+    """
+    Stores user booking intent before execution.
+    This is the core of the queue-based booking system.
+    Flow: User confirms → BookingRequest created → Payment verified → Added to queue → Executed
+    """
+    __tablename__ = "booking_requests"
+    __table_args__ = (
+        Index("idx_booking_requests_user", "user_id"),
+        Index("idx_booking_requests_status", "status"),
+        Index("idx_booking_requests_verification", "verification_status"),
+        Index("idx_booking_requests_created", "created_at"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    
+    # Route information
+    source_station = Column(String(20), nullable=False)
+    destination_station = Column(String(20), nullable=False)
+    journey_date = Column(Date, nullable=False, index=True)
+    
+    # Train information
+    train_number = Column(String(20), nullable=False)
+    train_name = Column(String(100), nullable=True)
+    
+    # Booking preferences
+    class_type = Column(String(10), nullable=False, default="AC_THREE_TIER")  # SL, AC3, AC2, AC1
+    quota = Column(String(10), nullable=False, default="GENERAL")  # GENERAL, TATKAL, LADIES, etc.
+    
+    # Status tracking
+    status = Column(String(20), default="PENDING", nullable=False, index=True)
+    # Valid states: PENDING, VERIFIED, QUEUED, PROCESSING, SUCCESS, FAILED, CANCELLED, REFUNDED
+    
+    verification_status = Column(String(20), default="NOT_VERIFIED", nullable=False)
+    # Valid states: NOT_VERIFIED, VERIFIED, VERIFICATION_FAILED
+    
+    # Payment reference (₹39 unlock payment)
+    payment_id = Column(String(36), ForeignKey("payments.id"), nullable=True, index=True)
+    
+    # Journey/Route details stored as JSON
+    route_details = Column(JSON, nullable=True)  # Store full route segments, times, etc.
+    
+    # Verification results from RapidAPI
+    verification_data = Column(JSON, nullable=True)  # Store seat availability, fare verification results
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    verified_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    user = relationship("User")
+    payment = relationship("Payment")
+    queue_entry = relationship("BookingQueue", back_populates="booking_request", uselist=False)
+    result = relationship("BookingResult", back_populates="booking_request", uselist=False)
+    refunds = relationship("Refund", back_populates="booking_request")
+    execution_logs = relationship("ExecutionLog", back_populates="booking_request", order_by="ExecutionLog.created_at")
+    request_passengers = relationship("BookingRequestPassenger", back_populates="booking_request", cascade="all, delete-orphan")
+
+
+class BookingRequestPassenger(Base):
+    """
+    Passenger details for a booking request.
+    Separate from PassengerDetails (which is for completed bookings).
+    """
+    __tablename__ = "booking_request_passengers"
+    __table_args__ = (
+        Index("idx_request_passengers_request", "booking_request_id"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id = Column(String(36), ForeignKey("booking_requests.id"), nullable=False, index=True)
+    
+    # Passenger information
+    name = Column(String(100), nullable=False)
+    age = Column(Integer, nullable=False)
+    gender = Column(String(10), nullable=False)  # M, F, O
+    
+    # Preferences
+    berth_preference = Column(String(20), nullable=True)  # LOWER, MIDDLE, UPPER, etc.
+    
+    # ID Proof (for IRCTC booking)
+    id_proof_type = Column(String(20), nullable=True)  # AADHAR, PAN, PASSPORT
+    id_proof_number = Column(String(50), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    booking_request = relationship("BookingRequest", back_populates="request_passengers")
+
+
+class BookingQueue(Base):
+    """
+    Queue for booking execution.
+    Admin/Developer can see pending requests here and execute them.
+    """
+    __tablename__ = "booking_queue"
+    __table_args__ = (
+        Index("idx_booking_queue_status", "status"),
+        Index("idx_booking_queue_priority", "priority"),
+        Index("idx_booking_queue_scheduled", "scheduled_time"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id = Column(String(36), ForeignKey("booking_requests.id"), nullable=False, unique=True, index=True)
+    
+    # Queue management
+    priority = Column(Integer, default=5, nullable=False)  # 1-10, lower = higher priority
+    execution_mode = Column(String(20), default="MANUAL", nullable=False)  # AUTO, MANUAL
+    
+    # Status
+    status = Column(String(20), default="WAITING", nullable=False, index=True)
+    # Valid states: WAITING, RUNNING, DONE, FAILED, CANCELLED
+    
+    # Scheduling
+    scheduled_time = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Execution details
+    executed_by = Column(String(36), ForeignKey("users.id"), nullable=True)  # Admin/Developer who executed
+    execution_notes = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    booking_request = relationship("BookingRequest", back_populates="queue_entry")
+    executor = relationship("User", foreign_keys=[executed_by])
+
+
+class BookingResult(Base):
+    """
+    Stores the result after booking execution (success or failure).
+    Contains PNR, ticket details, coach/seat information.
+    """
+    __tablename__ = "booking_results"
+    __table_args__ = (
+        Index("idx_booking_results_request", "booking_request_id"),
+        Index("idx_booking_results_pnr", "pnr_number"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id = Column(String(36), ForeignKey("booking_requests.id"), nullable=False, unique=True, index=True)
+    
+    # Ticket information
+    pnr_number = Column(String(20), nullable=True, index=True)
+    ticket_status = Column(String(50), nullable=True)  # CONFIRMED, RAC, WAITLIST, etc.
+    
+    # Seat/Coach details (stored as JSON for flexibility)
+    coach_details = Column(JSON, nullable=True)  # {coach_number: "A1", coach_type: "AC3", ...}
+    seat_details = Column(JSON, nullable=True)  # [{passenger_name: "...", seat_number: "12", berth: "LOWER"}, ...]
+    
+    # IRCTC transaction reference
+    irctc_transaction_id = Column(String(100), nullable=True)
+    
+    # Execution metadata
+    execution_method = Column(String(20), nullable=True)  # MANUAL, AUTOMATED
+    execution_duration_seconds = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    booking_request = relationship("BookingRequest", back_populates="result")
+
+
+class Refund(Base):
+    """
+    Tracks refunds for failed/cancelled booking requests.
+    """
+    __tablename__ = "refunds"
+    __table_args__ = (
+        Index("idx_refunds_request", "booking_request_id"),
+        Index("idx_refunds_status", "status"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id = Column(String(36), ForeignKey("booking_requests.id"), nullable=False, index=True)
+    
+    # Refund details
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="INR", nullable=False)
+    reason = Column(Text, nullable=True)
+    
+    # Status
+    status = Column(String(20), default="PENDING", nullable=False, index=True)
+    # Valid states: PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED
+    
+    # Payment gateway reference
+    razorpay_refund_id = Column(String(100), nullable=True)
+    refund_transaction_id = Column(String(100), nullable=True)
+    
+    # Processing details
+    processed_at = Column(DateTime, nullable=True)
+    processed_by = Column(String(36), ForeignKey("users.id"), nullable=True)  # Admin who processed
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    booking_request = relationship("BookingRequest", back_populates="refunds")
+    processor = relationship("User", foreign_keys=[processed_by])
+
+
+class ExecutionLog(Base):
+    """
+    Audit trail for booking execution steps.
+    Critical for debugging and understanding what happened during execution.
+    """
+    __tablename__ = "execution_logs"
+    __table_args__ = (
+        Index("idx_execution_logs_request", "booking_request_id"),
+        Index("idx_execution_logs_status", "status"),
+        Index("idx_execution_logs_created", "created_at"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id = Column(String(36), ForeignKey("booking_requests.id"), nullable=False, index=True)
+    
+    # Log entry details
+    step = Column(String(100), nullable=False)  # e.g., "IRCTC_LOGIN", "PASSENGER_SUBMIT", "PAYMENT_PROCESS"
+    message = Column(Text, nullable=False)
+    
+    # Status
+    status = Column(String(20), nullable=False, index=True)  # SUCCESS, FAILED, WARNING, INFO
+    
+    # Additional context (stored as JSON)
+    context = Column(JSON, nullable=True)  # Store screenshots, error details, etc. (renamed from metadata to avoid SQLAlchemy reserved name)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    booking_request = relationship("BookingRequest", back_populates="execution_logs")
 
 
 # ==============================================================================

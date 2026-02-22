@@ -13,6 +13,12 @@ from backend.schemas import (
     # availability schemas added below
     AvailabilityCheckRequestSchema,
     AvailabilityCheckResponseSchema,
+    # Booking queue system schemas
+    BookingRequestCreateSchema,
+    BookingRequestResponseSchema,
+    BookingQueueResponseSchema,
+    RefundRequestSchema,
+    RefundResponseSchema,
 )
 
 # The router is versioned to match frontend expectations (/api/v1/booking/*).
@@ -213,3 +219,206 @@ async def get_booking_by_pnr(
     if not booking or str(booking.user_id) != str(current_user.id):
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
+
+
+# ==============================================================================
+# BOOKING QUEUE SYSTEM ENDPOINTS
+# ==============================================================================
+
+@router.post("/request", response_model=BookingRequestResponseSchema)
+async def create_booking_request(
+    request: BookingRequestCreateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a booking request for the queue system.
+    
+    This endpoint is called after:
+    1. User has unlocked route (paid ₹39)
+    2. Route has been verified via RapidAPI
+    3. User confirms they want to proceed with booking
+    
+    The request will be added to the booking queue for admin/automated execution.
+    """
+    from backend.database.models import BookingRequest, BookingRequestPassenger, BookingQueue, Payment, UnlockedRoute
+    from datetime import datetime
+    
+    # Verify user has unlocked this route (has paid ₹39)
+    # Find the most recent unlock payment for this user
+    unlocked_route = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.is_active == True
+    ).order_by(UnlockedRoute.unlocked_at.desc()).first()
+    
+    if not unlocked_route or not unlocked_route.payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Route must be unlocked before creating booking request. Please complete unlock payment first."
+        )
+    
+    # Verify payment is completed
+    payment = db.query(Payment).filter(Payment.id == unlocked_route.payment_id).first()
+    if not payment or payment.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Unlock payment must be completed before creating booking request."
+        )
+    
+    # Parse journey date
+    try:
+        journey_date = datetime.strptime(request.journey_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    # Create booking request
+    booking_request = BookingRequest(
+        user_id=str(current_user.id),
+        source_station=request.source_station,
+        destination_station=request.destination_station,
+        journey_date=journey_date,
+        train_number=request.train_number,
+        train_name=request.train_name,
+        class_type=request.class_type,
+        quota=request.quota,
+        status="PENDING",
+        verification_status="VERIFIED",  # Assumed verified if user reached this point
+        payment_id=unlocked_route.payment_id,
+        route_details=request.route_details,
+        verified_at=datetime.utcnow()
+    )
+    db.add(booking_request)
+    db.flush()  # Get the ID
+    
+    # Add passengers
+    for passenger_data in request.passengers:
+        passenger = BookingRequestPassenger(
+            booking_request_id=booking_request.id,
+            name=passenger_data.name,
+            age=passenger_data.age,
+            gender=passenger_data.gender,
+            berth_preference=passenger_data.berth_preference,
+            id_proof_type=passenger_data.id_proof_type,
+            id_proof_number=passenger_data.id_proof_number
+        )
+        db.add(passenger)
+    
+    # Create queue entry
+    queue_entry = BookingQueue(
+        booking_request_id=booking_request.id,
+        priority=5,  # Default priority
+        execution_mode="MANUAL",  # Start with manual execution
+        status="WAITING"
+    )
+    db.add(queue_entry)
+    
+    # Update booking request status
+    booking_request.status = "QUEUED"
+    
+    db.commit()
+    db.refresh(booking_request)
+    db.refresh(queue_entry)
+    
+    # Build response
+    response_data = {
+        "id": booking_request.id,
+        "user_id": booking_request.user_id,
+        "source_station": booking_request.source_station,
+        "destination_station": booking_request.destination_station,
+        "journey_date": booking_request.journey_date.isoformat(),
+        "train_number": booking_request.train_number,
+        "train_name": booking_request.train_name,
+        "class_type": booking_request.class_type,
+        "quota": booking_request.quota,
+        "status": booking_request.status,
+        "verification_status": booking_request.verification_status,
+        "payment_id": booking_request.payment_id,
+        "created_at": booking_request.created_at,
+        "updated_at": booking_request.updated_at,
+        "queue_status": queue_entry.status
+    }
+    
+    return response_data
+
+
+@router.get("/request/{request_id}", response_model=BookingRequestResponseSchema)
+async def get_booking_request(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get booking request details by ID."""
+    from backend.database.models import BookingRequest, BookingQueue
+    
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    queue_entry = db.query(BookingQueue).filter(
+        BookingQueue.booking_request_id == request_id
+    ).first()
+    
+    response_data = {
+        "id": booking_request.id,
+        "user_id": booking_request.user_id,
+        "source_station": booking_request.source_station,
+        "destination_station": booking_request.destination_station,
+        "journey_date": booking_request.journey_date.isoformat(),
+        "train_number": booking_request.train_number,
+        "train_name": booking_request.train_name,
+        "class_type": booking_request.class_type,
+        "quota": booking_request.quota,
+        "status": booking_request.status,
+        "verification_status": booking_request.verification_status,
+        "payment_id": booking_request.payment_id,
+        "created_at": booking_request.created_at,
+        "updated_at": booking_request.updated_at,
+        "queue_status": queue_entry.status if queue_entry else None
+    }
+    
+    return response_data
+
+
+@router.get("/requests/my", response_model=List[BookingRequestResponseSchema])
+async def get_my_booking_requests(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all booking requests for current user."""
+    from backend.database.models import BookingRequest, BookingQueue
+    
+    requests = db.query(BookingRequest).filter(
+        BookingRequest.user_id == str(current_user.id)
+    ).order_by(BookingRequest.created_at.desc()).offset(skip).limit(limit).all()
+    
+    results = []
+    for req in requests:
+        queue_entry = db.query(BookingQueue).filter(
+            BookingQueue.booking_request_id == req.id
+        ).first()
+        
+        results.append({
+            "id": req.id,
+            "user_id": req.user_id,
+            "source_station": req.source_station,
+            "destination_station": req.destination_station,
+            "journey_date": req.journey_date.isoformat(),
+            "train_number": req.train_number,
+            "train_name": req.train_name,
+            "class_type": req.class_type,
+            "quota": req.quota,
+            "status": req.status,
+            "verification_status": req.verification_status,
+            "payment_id": req.payment_id,
+            "created_at": req.created_at,
+            "updated_at": req.updated_at,
+            "queue_status": queue_entry.status if queue_entry else None
+        })
+    
+    return results

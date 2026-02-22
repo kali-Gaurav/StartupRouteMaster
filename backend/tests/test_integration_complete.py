@@ -549,7 +549,7 @@ class TestSearchToBookingFlow:
         assert response.status_code == 422  # Validation error
 
     def test_booking_confirm_alias_endpoint(self, db_session):
-        """The legacy POST /api/v1/booking/confirm should create + confirm a booking"
+        """The legacy POST /api/v1/booking/confirm should create + confirm a booking"""
         user = User(id="test_user_alias", email="alias@example.com", password_hash="x", role="user")
         db_session.add(user)
         db_session.commit()

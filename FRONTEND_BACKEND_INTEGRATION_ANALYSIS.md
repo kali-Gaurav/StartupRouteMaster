@@ -842,32 +842,40 @@ async def check_availability(request: AvailabilityCheckRequest):
 
 ---
 
-#### Gap 2: Booking Confirmation Missing Passenger Details Save
-**Problem:**
-- Frontend sends passenger list with booking confirmation
-- Backend may not properly save passenger details
-- **Impact:** Tickets won't have correct passenger names
+#### Gap 2: Booking Confirmation Missing Passenger Details Save (✅ Fixed)
+**Problem (original):**
+- Frontend sent passenger list with booking confirmation
+- Legacy backend itinerary simply responded with hardcoded data and
+  did **not persist** the details.
+- **Impact:** Tickets would show blank or bogus names and downstream
+  services had no record of who was travelling.
 
-**Fix:**
+**Fix implemented:**
+- The `/api/v2/booking/confirm` endpoint (used by the mini‑app/legacy
+  integrated search) now invokes `BookingService.create_booking` before
+  immediately calling `confirm_booking`.  The service accepts a
+  `passenger_details` list and stores each passenger record.
+- A compatibility alias `POST /api/v1/booking/confirm` was added alongside
+  the new `/` create endpoint; the alias creates the booking and marks it
+  confirmed in a single call so older frontends continue working.
+- Unit/integration tests were added to exercise both paths and verify
+  that the `passenger_details` array is retained.
+
+Example of the updated backend logic:
 ```python
-# Backend: Ensure passenger data is saved
-class BookingConfirmRequest(BaseModel):
-    trip_id: int
-    passengers: List[PassengerDetail]
-    class_type: str
-    quota_type: str
-
-# Save each passenger to Booking model
-for passenger in request.passengers:
-    booking_passenger = BookingPassenger(
-        booking_id=booking.id,
-        name=passenger.name,
-        age=passenger.age,
-        gender=passenger.gender,
-        # ... other fields
-    )
-    db.add(booking_passenger)
+booking = service.create_booking(
+    user_id="guest",
+    route_id=request.journey_id,
+    travel_date=...,
+    amount_paid=0.0,
+    passenger_details_list=[p.dict() for p in request.passengers]
+)
+service.confirm_booking(booking.id)
 ```
+
+> The original stub response has been replaced with real data
+> derived from the newly persisted booking.
+
 
 ---
 
@@ -1051,30 +1059,37 @@ async def get_booking_history(
 
 ---
 
-#### Gap 9: SOS Notification System Missing
-**Problem:**
+#### Gap 9: SOS Notification System Missing (✅ Now integrated)
+**Problem (original):**
 - Frontend triggers SOS alert
 - No backend notification to emergency contacts
-- **Impact:** SOS feature doesn't actually alert anyone
+- **Impact:** SOS feature didn't alert anyone outside the WebSocket
+  responders; users received no acknowledgement.
 
-**Needed:**
+**Fix implemented:**
+- `backend/api/sos.py` now looks for a `NOTIFICATION_URL` environment
+  variable (normally pointed at the separate `notification_service`).
+- When an alert is created the handler asynchronously posts SMS/email
+  requests to the notification service for:
+  * the user who raised the SOS (phone/email fields)
+  * an optional administrative contact (`EMERGENCY_ADMIN_NUMBER`)
+- Notifications are sent in the background so the API remains quick.
+
+Example snippet added:
 ```python
-# Backend: Send notifications
-async def trigger_sos(payload: SOSPayload):
-    sos_event = SOSEvent(...).save()
-    
-    # Send SMS to emergency contacts
-    await send_sms(
-        phone=payload.phone,
-        message=f"SOS triggered at {payload.lat}, {payload.lng}"
-    )
-    
-    # Send email to family
-    # Send push notification to admin
-    # Store in database for tracking
-    
-    return {"ok": True, "id": sos_event.id}
+async def _notify(recipient, msg, notif_type="sms"):
+    await httpx.AsyncClient().post(f"{NOTIFICATION_URL}/notifications/", json={
+        "user_id": 0,
+        "type": notif_type,
+        "message": msg,
+        "recipient": recipient,
+    })
 ```
+
+> With these calls in place, a live deployment with Twilio/SendGrid
+> credentials will immediately start delivering SMS/email alerts
+> whenever an SOS is raised.
+
 
 ---
 

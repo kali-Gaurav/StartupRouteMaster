@@ -389,3 +389,135 @@ class SearchRoutesResponseSchema(BaseModel):
                 "message": "Search completed successfully"
             }
         }
+
+
+# ==============================================================================
+# BOOKING QUEUE SYSTEM SCHEMAS
+# ==============================================================================
+
+class BookingRequestPassengerSchema(BaseModel):
+    """Passenger details for booking request."""
+    name: str = Field(..., min_length=1, max_length=100)
+    age: int = Field(..., ge=0, le=150)
+    gender: str = Field(..., pattern="^(M|F|O)$")
+    berth_preference: Optional[str] = Field(None, pattern="^(LOWER|MIDDLE|UPPER|SIDE_LOWER|SIDE_UPPER)$")
+    id_proof_type: Optional[str] = Field(None, pattern="^(AADHAR|PAN|PASSPORT)$")
+    id_proof_number: Optional[str] = Field(None, max_length=50)
+
+    class Config:
+        from_attributes = True
+
+
+class BookingRequestCreateSchema(BaseModel):
+    """Schema for creating a booking request."""
+    source_station: str = Field(..., min_length=2, max_length=20)
+    destination_station: str = Field(..., min_length=2, max_length=20)
+    journey_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    train_number: str = Field(..., min_length=1, max_length=20)
+    train_name: Optional[str] = Field(None, max_length=100)
+    class_type: str = Field("AC_THREE_TIER", pattern="^(SL|AC3|AC2|AC1|CC|EC)$")
+    quota: str = Field("GENERAL", pattern="^(GENERAL|TATKAL|LADIES|SENIOR_CITIZEN|DEFENCE|FOREIGN_TOURIST)$")
+    route_details: Optional[Dict[str, Any]] = None  # Full route segments JSON
+    passengers: List[BookingRequestPassengerSchema] = Field(..., min_items=1, max_items=6)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "source_station": "NDLS",
+                "destination_station": "MMCT",
+                "journey_date": "2026-03-15",
+                "train_number": "12951",
+                "train_name": "Rajdhani Express",
+                "class_type": "AC3",
+                "quota": "GENERAL",
+                "passengers": [
+                    {
+                        "name": "John Doe",
+                        "age": 35,
+                        "gender": "M",
+                        "berth_preference": "LOWER"
+                    }
+                ]
+            }
+        }
+
+
+class BookingRequestResponseSchema(BaseModel):
+    """Response schema for booking request."""
+    id: str
+    user_id: str
+    source_station: str
+    destination_station: str
+    journey_date: str
+    train_number: str
+    train_name: Optional[str]
+    class_type: str
+    quota: str
+    status: str
+    verification_status: str
+    payment_id: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    queue_status: Optional[str] = None  # From BookingQueue if exists
+
+    class Config:
+        from_attributes = True
+
+
+class BookingQueueResponseSchema(BaseModel):
+    """Response schema for booking queue entry."""
+    id: str
+    booking_request_id: str
+    priority: int
+    execution_mode: str
+    status: str
+    scheduled_time: Optional[datetime]
+    created_at: datetime
+    booking_request: Optional[BookingRequestResponseSchema] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BookingResultResponseSchema(BaseModel):
+    """Response schema for booking result."""
+    id: str
+    booking_request_id: str
+    pnr_number: Optional[str]
+    ticket_status: Optional[str]
+    coach_details: Optional[Dict[str, Any]]
+    seat_details: Optional[Dict[str, Any]]
+    execution_method: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class RefundRequestSchema(BaseModel):
+    """Schema for requesting a refund."""
+    booking_request_id: str
+    reason: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "booking_request_id": "req_123",
+                "reason": "Booking failed - seats unavailable"
+            }
+        }
+
+
+class RefundResponseSchema(BaseModel):
+    """Response schema for refund."""
+    id: str
+    booking_request_id: str
+    amount: float
+    currency: str
+    reason: Optional[str]
+    status: str
+    razorpay_refund_id: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
