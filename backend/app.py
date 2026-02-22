@@ -49,7 +49,28 @@ ALLOWED_ORIGINS = os.getenv(
 
 # Rate limit exceeded handler
 async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
-    return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
+    return JSONResponse(status_code=429, content={"code": "RATE_LIMIT_EXCEEDED", "message": "Rate limit exceeded", "timestamp": datetime.utcnow().isoformat()})
+
+
+# Standard HTTPException handler that wraps detail in a consistent schema
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request: Request, exc: HTTPException):
+    content = {
+        "code": exc.detail if isinstance(exc.detail, str) else "ERROR",
+        "message": exc.detail if isinstance(exc.detail, str) else str(exc.detail),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    return JSONResponse(status_code=exc.status_code, content=content)
+
+
+# Generic exception handler
+@app.exception_handler(Exception)
+async def _generic_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception", exc_info=exc)
+    return JSONResponse(
+        status_code=500,
+        content={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred.", "timestamp": datetime.utcnow().isoformat()},
+    )
 
 app = FastAPI(
     title="RouteMaster API",

@@ -14,9 +14,10 @@ export function useBookings() {
   return useQuery({
     queryKey: BOOKINGS_QUERY_KEY,
     queryFn: async ({ signal }) => {
-      const res = await getBookingHistory(signal);
+      const res = await getBookingHistory({ skip: 0, limit: 50 }, signal);
       if (!res?.success) throw new Error(res?.message || "Failed to load bookings");
-      return res.data ?? res.bookings ?? [];
+      // return list (payments) for compatibility
+      return res.payments ?? [];
     },
     enabled: isAuthenticated,
     staleTime: 1000 * 60 * 2, // 2 min – bookings list changes less often

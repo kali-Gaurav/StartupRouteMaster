@@ -131,6 +131,24 @@ class BookingResponseSchema(BaseModel):
     concession_discount: float = Field(0.0, ge=0.0, le=100.0)
     meal_preference: Optional[str] = None  # Veg, NonVeg, Jain
 
+
+# New schema for paginated booking responses
+class BookingListSchema(BaseModel):
+    bookings: List[BookingResponseSchema]
+    total: int
+    skip: int
+    limit: int
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "bookings": [],
+                "total": 0,
+                "skip": 0,
+                "limit": 20
+            }
+        }
+
     class Config:
         json_schema_extra = {
             "example": {

@@ -288,16 +288,19 @@ class BookingService:
             logger.error(f"Failed to fetch booking by PNR: {e}")
             return None
 
-    def get_user_bookings(self, user_id: str) -> List[Booking]:
-        """Get all bookings for a user."""
+    def get_user_bookings(self, user_id: str, skip: int = 0, limit: int = 20) -> (List[Booking], int):
+        """Get bookings for a user with pagination.
+
+        Returns a tuple of (bookings_list, total_count).
+        """
         try:
-            bookings = self.db.query(Booking).filter(
-                Booking.user_id == user_id
-            ).order_by(Booking.created_at.desc()).all()
-            return bookings
+            query = self.db.query(Booking).filter(Booking.user_id == user_id)
+            total = query.count()
+            bookings = query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
+            return bookings, total
         except Exception as e:
             logger.error(f"Failed to fetch user bookings: {e}")
-            return []
+            return [], 0
 
             return payment
         except Exception as e:

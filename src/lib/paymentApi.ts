@@ -91,8 +91,18 @@ export const createBookingRedirect = async (data: BookingRedirectRequest): Promi
 };
 
 /** Uses token from apiClient config. Pass signal for request cancellation (e.g. from TanStack Query). */
-export const getBookingHistory = async (signal?: AbortSignal): Promise<{ success: boolean; message?: string; data?: unknown[]; bookings?: unknown[] }> => {
-  const response = await fetchWithAuth('/payments/booking/history', { signal });
+export const getBookingHistory = async (
+  params?: { skip?: number; limit?: number },
+  signal?: AbortSignal
+): Promise<{ success: boolean; message?: string; payments?: unknown[]; total?: number; skip?: number; limit?: number }> => {
+  let url = '/payments/booking/history';
+  if (params) {
+    const qs = [];
+    if (params.skip != null) qs.push(`skip=${params.skip}`);
+    if (params.limit != null) qs.push(`limit=${params.limit}`);
+    if (qs.length) url += `?${qs.join('&')}`;
+  }
+  const response = await fetchWithAuth(url, { signal });
   return await response.json();
 };
 

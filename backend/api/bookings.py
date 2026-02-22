@@ -33,13 +33,19 @@ async def create_booking(
         raise HTTPException(status_code=400, detail="Booking creation failed")
     return booking
 
-@router.get("/", response_model=List[BookingResponseSchema])
+from backend.schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
+
+@router.get("/", response_model=BookingListSchema)
 async def list_bookings(
+    skip: int = 0,
+    limit: int = 20,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """List bookings for current user with optional pagination."""
     service = BookingService(db)
-    return service.get_user_bookings(str(current_user.id))
+    bookings, total = service.get_user_bookings(str(current_user.id), skip=skip, limit=limit)
+    return BookingListSchema(bookings=bookings, total=total, skip=skip, limit=limit)
 
 @router.get("/{pnr}", response_model=BookingResponseSchema)
 async def get_booking_by_pnr(

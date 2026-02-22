@@ -183,3 +183,63 @@ async def verify_payment(
             return {"success": True, "message": "Payment verified and route unlocked."}
 
         raise HTTPException(status_code=400, detail="Payment not linked to any booking or unlock.")
+
+
+# --- new endpoints added below ---
+
+@router.get("/status/{razorpay_order_id}")
+async def payment_status(razorpay_order_id: str):
+    """Return simple status of a payment by razorpay order id."""
+    payment = db.query(PaymentModel).filter(PaymentModel.razorpay_order_id == razorpay_order_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    return {"order_id": razorpay_order_id, "status": payment.status}
+
+
+@router.get("/booking/history")
+async def payment_history(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return paginated list of payments associated with the user (joins booking)."""
+    query = db.query(PaymentModel).join(Booking, PaymentModel.booking_id == Booking.id)
+    query = query.filter(Booking.user_id == current_user.id)
+    total = query.count()
+    payments = query.order_by(PaymentModel.created_at.desc()).offset(skip).limit(limit).all()
+    # convert to serializable dicts
+    result = []
+    for p in payments:
+        result.append({
+            "id": p.id,
+            "booking_id": p.booking_id,
+            "razorpay_order_id": p.razorpay_order_id,
+            "status": p.status,
+            "amount": p.amount,
+            "created_at": p.created_at.isoformat(),
+        })
+    return {"success": True, "total": total, "skip": skip, "limit": limit, "payments": result}
+
+@router.get("/check_payment_status")
+async def check_payment_status(
+    route_id: str,
+    travel_date: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Check whether the user has already paid for a route/date combination."""
+    payment = (
+        db.query(PaymentModel)
+        .join(Booking, PaymentModel.booking_id == Booking.id)
+        .filter(
+            Booking.user_id == current_user.id,
+            Booking.route_id == route_id,
+            Booking.travel_date == travel_date,
+        )
+        .order_by(PaymentModel.created_at.desc())
+        .first()
+    )
+    if not payment:
+        return {"paid": False}
+    return {"paid": payment.status == "completed", "already_paid_booking": bool(payment.booking_id)}

@@ -55,8 +55,18 @@ export async function consumeRedirectToken(token: string): Promise<unknown> {
   return res.json();
 }
 
-export async function getBookingHistory(signal?: AbortSignal): Promise<{ success: boolean; data?: unknown[]; message?: string }> {
-  const res = await fetchWithAuth("/payment/booking/history", { signal });
+export async function getBookingHistory(
+  params?: { skip?: number; limit?: number },
+  signal?: AbortSignal
+): Promise<{ success: boolean; payments?: unknown[]; total?: number; skip?: number; limit?: number; message?: string }> {
+  let url = "/payment/booking/history";
+  if (params) {
+    const qs: string[] = [];
+    if (params.skip != null) qs.push(`skip=${params.skip}`);
+    if (params.limit != null) qs.push(`limit=${params.limit}`);
+    if (qs.length) url += `?${qs.join("&")}`;
+  }
+  const res = await fetchWithAuth(url, { signal });
   return res.json();
 }
 
