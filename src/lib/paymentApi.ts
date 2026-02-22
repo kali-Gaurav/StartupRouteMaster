@@ -80,6 +80,66 @@ export const checkPaymentStatus = async (routeId: string, travelDate: string): P
   return await response.json();
 };
 
+/**
+ * Poll payment status after Razorpay redirect
+ * Returns when payment is completed, failed, or timeout
+ */
+export async function pollPaymentStatus(
+  orderId: string,
+  options?: {
+    maxAttempts?: number;
+    intervalMs?: number;
+    onStatusChange?: (status: string) => void;
+  }
+): Promise<{ status: "completed" | "failed" | "timeout"; orderId: string }> {
+  const maxAttempts = options?.maxAttempts ?? 30; // 30 attempts
+  const intervalMs = options?.intervalMs ?? 1000; // 1 second
+  let attempts = 0;
+
+  return new Promise((resolve) => {
+    const poll = async () => {
+      attempts++;
+      try {
+        const response = await fetchWithAuth(`/api/payments/order_status/${encodeURIComponent(orderId)}`);
+        if (!response.ok) {
+          if (attempts >= maxAttempts) {
+            resolve({ status: "timeout", orderId });
+            return;
+          }
+          setTimeout(poll, intervalMs);
+          return;
+        }
+
+        const data = (await response.json()) as { status?: string; payment_status?: string };
+        const status = data.status || data.payment_status || "pending";
+        
+        if (options?.onStatusChange) {
+          options.onStatusChange(status);
+        }
+
+        if (status === "completed" || status === "success") {
+          resolve({ status: "completed", orderId });
+        } else if (status === "failed" || status === "failure") {
+          resolve({ status: "failed", orderId });
+        } else if (attempts >= maxAttempts) {
+          resolve({ status: "timeout", orderId });
+        } else {
+          setTimeout(poll, intervalMs);
+        }
+      } catch (error) {
+        console.error("Payment status poll error:", error);
+        if (attempts >= maxAttempts) {
+          resolve({ status: "timeout", orderId });
+        } else {
+          setTimeout(poll, intervalMs);
+        }
+      }
+    };
+
+    poll();
+  });
+}
+
 /** Uses token from apiClient config. */
 export const createBookingRedirect = async (data: BookingRedirectRequest): Promise<{ redirect_url: string; irctc_url?: string }> => {
   const response = await fetchWithAuth('/payments/booking/redirect', {

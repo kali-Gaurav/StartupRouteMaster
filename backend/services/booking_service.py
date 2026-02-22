@@ -56,7 +56,12 @@ class BookingService:
             try:
                 with self.db.begin_nested() as transaction:
                     # Set the transaction isolation level to SERIALIZABLE for race condition prevention
-                    self.db.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+                    # SQLite does not support changing isolation level via SQL and
+                    # sqlalchemy will complain about textual SQL.  Only attempt
+                    # to set it on databases that support it.
+                    from sqlalchemy import text
+                    if self.db.bind.dialect.name not in ("sqlite", "sqlite3"):
+                        self.db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
                     
                     # Generate unique PNR NEW
                     pnr_number = None

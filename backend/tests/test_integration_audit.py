@@ -95,40 +95,28 @@ def test_full_user_flow_and_ws(tmp_path, monkeypatch, test_db_setup):
     assert booking.get("passenger_details")
 
     # verify DB persistence
-    # use a separate session to simulate reading after commit
-    engine = create_engine(app.dependency_overrides[get_db]().__self__.bind.url)
-    SessionLocal = sessionmaker(bind=engine)
+    # open a fresh session from the same engine used by the application
+    from backend.database import engine_write
+    SessionLocal = sessionmaker(bind=engine_write)
     sess = SessionLocal()
     db_booking = sess.query(BookingModel).filter(BookingModel.pnr_number == booking["pnr_number"]).first()
     assert db_booking is not None
     assert len(db_booking.passenger_details) == 1
     sess.close()
 
-    # trigger SOS and listen on responder websocket
+    # trigger SOS and verify responder websocket via TestClient
     token2, _ = login_passenger("+919876543210")
-    # start WS for responder
-    import threading
-    import websocket as wslib
+    with client.websocket_connect(f"/api/ws/sos?token={token2}") as ws:
+        # send SOS from passenger
+        sos_resp = client.post(
+            "/api/sos/", json={"lat": 12.34, "lng": 56.78, "name": "Tester"}, headers=auth_headers(token)
+        )
+        assert sos_resp.status_code == 200
 
-    alerts = []
-    def run_responder():
-        url = f"ws://localhost:8000/api/ws/sos?token={token2}"
-        ws = wslib.create_connection(url)
-        # receive one message and close
-        msg = ws.recv()
-        alerts.append(msg)
-        ws.close()
-
-    thread = threading.Thread(target=run_responder)
-    thread.start()
-    # send SOS from passenger
-    sos_resp = client.post(
-        "/api/sos/", json={"lat": 12.34, "lng": 56.78, "name": "Tester"}, headers=auth_headers(token)
-    )
-    assert sos_resp.status_code == 200
-    time.sleep(1)
-    thread.join(timeout=5)
-    assert alerts, "Responder did not receive SOS"
+        # receive one alert message
+        msg = ws.receive_json()
+        assert msg.get("type") == "sos_alert"
+        assert msg.get("data", {}).get("name") == "Tester"
 
     # force token expiry by calling refresh endpoint after deleting access token
     newtok_resp = client.post(

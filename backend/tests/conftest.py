@@ -11,7 +11,11 @@ from backend.models import User, Stop, Trip, Calendar, Route, StopTime, Agency
 
 @pytest.fixture(scope="session")
 def test_db_setup():
-    """Set up test database once per test session"""
+    """Set up test database once per test session.
+
+    Also override FastAPI's get_db dependency so that any endpoint or test
+    that inspects ``app.dependency_overrides[get_db]`` will find a callable.
+    """
     # Ensure a clean slate by dropping any existing tables before recreating.
     # This avoids issues where the on-disk SQLite database has an outdated schema
     # (e.g. missing columns like `city` on stops) which `create_all` alone won't fix.
@@ -21,20 +25,37 @@ def test_db_setup():
         # ignore errors if tables don't yet exist
         pass
     Base.metadata.create_all(bind=engine_write)
+
+    # override get_db for the entire test session
+    from backend import app as _app_module
+    from backend.database import get_db, SessionLocal
+    _app_module.app.dependency_overrides[get_db] = lambda: SessionLocal()
+
     yield
+
     # Clean up after all tests
     Base.metadata.drop_all(bind=engine_write)
+    # remove override
+    _app_module.app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture
 def db_session(test_db_setup):
-    """Create a new database session for each test"""
+    """Create a new database session for each test and override FastAPI's
+    `get_db` dependency so that endpoints use the same session instance.
+    """
     session = SessionLocal()
+    # configure dependency override
+    from backend import app as _app_module
+    from backend.database import get_db
+    _app_module.app.dependency_overrides[get_db] = lambda: session
     try:
         yield session
     finally:
         session.rollback()
         session.close()
+        # clean up override to avoid bleed between tests
+        _app_module.app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

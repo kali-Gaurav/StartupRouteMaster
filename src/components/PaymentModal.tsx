@@ -7,7 +7,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/AuthContext';
-import { createPaymentOrder, verifyPayment, consumeRedirectToken, openRazorpayCheckout, checkPaymentStatus } from '@/lib/paymentApi';
+import { createPaymentOrder, verifyPayment, consumeRedirectToken, openRazorpayCheckout, checkPaymentStatus, pollPaymentStatus } from '@/lib/paymentApi';
 import { Loader2, CheckCircle2, IndianRupee, ShieldCheck, Clock, Zap } from 'lucide-react';
 
 interface PaymentModalProps {
@@ -111,8 +111,37 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 return;
               }
             }
-            onSuccess(order.order_id);
-            onClose();
+            
+            // Poll payment status to ensure it's confirmed
+            setLoading(true);
+            setError('');
+            try {
+              const pollResult = await pollPaymentStatus(order.order_id, {
+                maxAttempts: 30,
+                intervalMs: 1000,
+                onStatusChange: (status) => {
+                  console.log('Payment status:', status);
+                }
+              });
+              
+              if (pollResult.status === 'completed') {
+                onSuccess(order.order_id);
+                onClose();
+              } else if (pollResult.status === 'failed') {
+                setError('Payment verification failed. Please contact support.');
+                setLoading(false);
+              } else {
+                // Timeout - but verification succeeded, so proceed
+                console.warn('Payment status poll timeout, but verification succeeded');
+                onSuccess(order.order_id);
+                onClose();
+              }
+            } catch (pollError) {
+              console.error('Payment status poll error:', pollError);
+              // Verification succeeded, so proceed even if polling fails
+              onSuccess(order.order_id);
+              onClose();
+            }
           } catch (err: unknown) {
             setError('Payment verification failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
           } finally {

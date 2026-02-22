@@ -4,6 +4,7 @@
  * Also shows recent tickets from local store (viewable at /ticket/:id).
  */
 
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
@@ -11,7 +12,8 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useBookings } from "@/api/hooks/useBookings";
 import { getAllTickets } from "@/lib/ticketStore";
 import { HistorySkeleton } from "@/components/skeletons";
-import { Ticket, AlertCircle } from "lucide-react";
+import { Ticket, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface Booking {
   booking_id?: string;
@@ -24,7 +26,9 @@ interface Booking {
 }
 
 function BookingsContent() {
-  const { data: bookings = [], isLoading: loading, error: queryError, refetch } = useBookings() as { data: Booking[], isLoading: boolean, error: unknown, refetch: () => void };
+  const [page, setPage] = useState(0);
+  const limit = 20;
+  const { data: bookings = [], isLoading: loading, error: queryError, refetch } = useBookings({ skip: page * limit, limit }) as { data: Booking[], isLoading: boolean, error: unknown, refetch: () => void };
   const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load bookings") : null;
   const localTickets = getAllTickets();
 
@@ -88,20 +92,80 @@ function BookingsContent() {
             <a href="/" className="inline-block mt-3 text-primary hover:underline">Search routes →</a>
           </div>
         ) : (
-          <ul className="space-y-4">
-            {bookings.map((b: Booking) => (
-              <li
-                key={b.booking_id || b.id || Math.random()}
-                className="rounded-xl border border-border p-4 bg-card"
-              >
-                <div className="flex flex-wrap justify-between gap-2">
-                  <span className="font-medium">{b.origin} → {b.destination}</span>
-                  <span className="text-sm text-muted-foreground">{b.travel_date || b.created_at}</span>
-                </div>
-                {b.train_no && <p className="text-sm text-muted-foreground mt-1">Train: {b.train_no}</p>}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="space-y-4">
+              {bookings.map((b: Booking) => (
+                <li
+                  key={b.id || b.pnr_number || Math.random()}
+                  className="rounded-xl border border-border p-4 bg-card hover:border-primary/40 transition-colors"
+                >
+                  <div className="flex flex-wrap justify-between gap-2">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium">
+                          {b.booking_details?.origin || b.booking_details?.source || "Unknown"} → {b.booking_details?.destination || b.booking_details?.dest || "Unknown"}
+                        </span>
+                        {b.booking_status && (
+                          <span className={`text-xs px-2 py-0.5 rounded ${
+                            b.booking_status === "confirmed" ? "bg-green-100 text-green-800" :
+                            b.booking_status === "pending" ? "bg-yellow-100 text-yellow-800" :
+                            b.booking_status === "cancelled" ? "bg-red-100 text-red-800" :
+                            "bg-gray-100 text-gray-800"
+                          }`}>
+                            {b.booking_status}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
+                        <span>Travel Date: {b.travel_date ? new Date(b.travel_date + "T12:00:00").toLocaleDateString("en-IN") : "—"}</span>
+                        {b.pnr_number && <span className="font-mono">PNR: {b.pnr_number}</span>}
+                        {b.amount_paid > 0 && <span>Amount: ₹{b.amount_paid.toFixed(2)}</span>}
+                      </div>
+                      {b.created_at && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Booked: {new Date(b.created_at).toLocaleDateString("en-IN", { dateStyle: "medium" })}
+                        </p>
+                      )}
+                    </div>
+                    {b.pnr_number && (
+                      <Link
+                        to={`/ticket/${encodeURIComponent(b.pnr_number)}`}
+                        className="text-sm text-primary hover:underline"
+                      >
+                        View Ticket →
+                      </Link>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {/* Pagination */}
+            {bookings.length >= limit && (
+              <div className="flex items-center justify-between mt-6 pt-4 border-t">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                >
+                  <ChevronLeft className="h-4 w-4 mr-1" />
+                  Previous
+                </Button>
+                <span className="text-sm text-muted-foreground">
+                  Page {page + 1}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={bookings.length < limit}
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </main>
       <Footer />

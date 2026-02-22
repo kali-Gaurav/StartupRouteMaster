@@ -144,15 +144,20 @@ class BookingResponseSchema(BaseModel):
     id: str
     pnr_number: str
     user_id: str
-    travel_date: datetime
+    # travel_date stored as a date in the DB; allow either date or datetime
+    travel_date: Optional[datetime]  # will accept date as well because of from_attributes
     booking_status: str
     amount_paid: float
     booking_details: Dict[str, Any]
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
     created_at: datetime
-    
+
+    # deprecated fields that might appear
+    payment_status: Optional[str] = None
+
     class Config:
         from_attributes = True
+        extra = "ignore"  # ignore any other attributes coming from ORM
     # legacy passenger fields (kept for backward compatibility, usually the first passenger)
     gender: str = Field(..., pattern="^[MFO]$")  # M, F, O (Other)
     phone_number: Optional[str] = None
@@ -296,18 +301,6 @@ class PaymentWebhookSchema(BaseModel):
     razorpay_order_id: str
     razorpay_signature: str
 
-
-class BookingResponseSchema(BaseModel):
-    id: str
-    user: UserRead
-    route_id: str
-    travel_date: str
-    payment_status: str
-    amount_paid: float
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class AdminBookingSchema(BaseModel):

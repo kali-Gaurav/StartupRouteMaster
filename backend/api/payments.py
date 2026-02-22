@@ -171,8 +171,13 @@ async def verify_payment(
     db.commit()
     db.refresh(payment_record)
 
+    # if this payment corresponds to a booking, mark that booking confirmed
     if payment_record.booking_id:
-        # Success Logic for Booking
+        booking_service = BookingService(db)
+        confirmed = booking_service.confirm_booking(payment_record.booking_id)
+        if not confirmed:
+            # log but still return success so frontend can handle upstream
+            logger.warning(f"Payment succeeded but booking {payment_record.booking_id} could not be confirmed")
         return {"success": True, "message": "Payment verified and booking confirmed."}
     
     else:

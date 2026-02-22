@@ -149,17 +149,33 @@ async def search_history() -> Dict:
 
 
 @router.post("/booking/confirm")
-async def confirm_booking(request: BookingConfirmationRequest) -> Dict:
+async def confirm_booking(request: BookingConfirmationRequest, db: Session = Depends(get_db)) -> Dict:
     """
-    Confirm booking after payment
+    Confirm booking after payment.  Legacy stub expanded to use BookingService
+    so that passenger details are persisted (fixes gap #2).
     """
-    # This would integrate with seat allocation and PNR generation
+    service = BookingService(db)
+    # create booking record using the journey_id as route_id placeholder
+    passenger_list = [p.dict() for p in request.passengers] if request.passengers else None
+    booking = service.create_booking(
+        user_id="guest",  # integrated search runs without real user
+        route_id=request.journey_id,
+        travel_date=datetime.utcnow().date().isoformat(),
+        booking_details={},
+        amount_paid=0.0,  # no amount tracked in this test API
+        passenger_details_list=passenger_list,
+    )
+    if not booking:
+        raise HTTPException(status_code=500, detail="Failed to persist booking")
+    # immediately confirm
+    service.confirm_booking(booking.id)
+
     return {
         "status": "success",
-        "pnr_number": "ABC123456",
-        "confirmation_number": "1234567890",
-        "total_fare": 1500.00,
-        "booking_date": datetime.now().isoformat()
+        "pnr_number": booking.pnr_number,
+        "confirmation_number": str(booking.id),
+        "total_fare": booking.amount_paid,
+        "booking_date": booking.created_at.isoformat()
     }
 
 

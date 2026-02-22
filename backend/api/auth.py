@@ -97,7 +97,15 @@ async def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
             # If user doesn't exist, create a new one
             # Note: User model expects `phone_number` field, so translate key accordingly
             # Add a dummy password_hash since column is non-nullable
-            user_data = {"email": request.email or "", "password_hash": ""} if request.email else {"phone_number": request.phone, "email": "", "password_hash": ""}
+            if request.email:
+                user_data = {"email": request.email, "password_hash": ""}
+            else:
+                # when signing in by phone only, ensure we still set a unique email
+                # to satisfy the unique constraint on the column.  Use phone-based
+                # placeholder (may contain + so replace or encode) or a uuid.
+                clean_phone = request.phone.replace("+", "") if request.phone else "anon"
+                placeholder = f"phone_{clean_phone}@example.com"
+                user_data = {"phone_number": request.phone, "email": placeholder, "password_hash": ""}
             user = user_service.create_user_with_data(user_data)
             is_new_user = True
         

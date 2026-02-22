@@ -10,6 +10,13 @@ from backend.services.emergency.alert_manager import EmergencyAlertManager
 # Use the shared limiter from its source module
 from backend.utils.limiter import limiter
 
+# HTTP client for calling other internal services
+import os
+import httpx
+
+NOTIFICATION_URL = os.getenv("NOTIFICATION_URL")
+EMERGENCY_ADMIN_NUMBER = os.getenv("EMERGENCY_ADMIN_NUMBER")  # optional phone/email for admins
+
 router = APIRouter(prefix="/api/sos", tags=["sos"])
 
 _redis = cache_service.redis if cache_service and cache_service.is_available() else None
@@ -105,7 +112,40 @@ async def trigger_sos(request: Request, payload: SOSPayload):
     # Enrich with Railway Intelligence and broadcast via Phase 12 WebSocket Manager
     alert_mgr = EmergencyAlertManager()
     enriched_event = await alert_mgr.process_sos_alert(new_event)
-    
+
+    # dispatch SMS/email notifications if notification service configured
+    async def _notify(recipient: str, msg: str, notif_type: str = "sms"):
+        if not NOTIFICATION_URL or not recipient:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{NOTIFICATION_URL}/notifications/",
+                    json={
+                        "user_id": 0,
+                        "type": notif_type,
+                        "message": msg,
+                        "recipient": recipient,
+                    }
+                )
+        except Exception as e:
+            logger.error(f"SOS notification call failed: {e}")
+
+    msg_self = f"SOS received at {new_event['lat']},{new_event['lng']}. Help is on the way."
+    if new_event.get("phone"):
+        # notify the caller by SMS
+        await _notify(new_event["phone"], msg_self, "sms")
+    if new_event.get("email"):
+        await _notify(new_event["email"], msg_self, "email")
+
+    if EMERGENCY_ADMIN_NUMBER:
+        admin_msg = f"New SOS alert: {new_event.get('name','')} at {new_event['lat']},{new_event['lng']}"
+        # assume admin contact is phone; if contains @ then treat as email
+        if "@" in EMERGENCY_ADMIN_NUMBER:
+            await _notify(EMERGENCY_ADMIN_NUMBER, admin_msg, "email")
+        else:
+            await _notify(EMERGENCY_ADMIN_NUMBER, admin_msg, "sms")
+
     return enriched_event
 
 

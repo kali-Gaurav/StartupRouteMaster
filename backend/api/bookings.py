@@ -43,7 +43,45 @@ async def create_booking(
     )
     if not booking:
         raise HTTPException(status_code=400, detail="Booking creation failed")
-    return booking
+
+    # build a plain dict for the response to avoid ORM attributes entirely
+    resp = {
+        "id": booking.id,
+        "pnr_number": booking.pnr_number,
+        "user_id": booking.user_id,
+        # Pydantic expects a full datetime value; ensure 'T' separator present
+        "travel_date": (booking.travel_date.isoformat() + "T00:00:00") if hasattr(booking, "travel_date") and not isinstance(booking.travel_date, str) else (booking.travel_date or None),
+        "booking_status": booking.booking_status,
+        "amount_paid": booking.amount_paid,
+        "booking_details": booking.booking_details,
+        "passenger_details": [
+            {
+                "full_name": pax.full_name,
+                "age": pax.age,
+                "gender": pax.gender,
+                "phone_number": pax.phone_number,
+                "email": pax.email,
+                "document_type": pax.document_type,
+                "document_number": pax.document_number,
+                "concession_type": pax.concession_type,
+                "concession_discount": pax.concession_discount,
+                "meal_preference": pax.meal_preference,
+            }
+            for pax in getattr(booking, "passenger_details", [])
+        ] if getattr(booking, "passenger_details", None) else None,
+        "created_at": booking.created_at,
+        # legacy passenger fields - populate from first passenger if present
+        "gender": booking.passenger_details[0].gender if booking.passenger_details else "M",
+        "phone_number": booking.passenger_details[0].phone_number if booking.passenger_details else None,
+        "email": booking.passenger_details[0].email if booking.passenger_details else None,
+        "document_type": booking.passenger_details[0].document_type if booking.passenger_details else None,
+        "document_number": booking.passenger_details[0].document_number if booking.passenger_details else None,
+        "concession_type": booking.passenger_details[0].concession_type if booking.passenger_details else None,
+        "concession_discount": booking.passenger_details[0].concession_discount if booking.passenger_details else 0.0,
+        "meal_preference": booking.passenger_details[0].meal_preference if booking.passenger_details else None,
+        "payment_status": booking.payment_status or "",
+    }
+    return resp
 
 from backend.schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
 
@@ -135,6 +173,34 @@ async def check_availability(
 
     return result
 
+
+# --------------------------------------------------------------------------
+# Compatibility endpoint: alias POST /confirm for clients still calling older
+# path.  It simply creates a booking (identical to `/`) and then marks it as
+# confirmed.  Keeping this here avoids breaking legacy integrations while
+# slowly migrating frontends to the new endpoint name.
+
+@router.post("/confirm", response_model=BookingResponseSchema)
+async def confirm_booking_endpoint(
+    request: BookingCreateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    service = BookingService(db)
+    booking = service.create_booking(
+        user_id=str(current_user.id),
+        route_id=request.route_id,
+        travel_date=request.travel_date,
+        booking_details=request.booking_details,
+        amount_paid=request.amount_paid,
+        passenger_details_list=[f.dict() for f in request.passenger_details] if request.passenger_details else None
+    )
+    if not booking:
+        raise HTTPException(status_code=400, detail="Booking creation failed")
+    # immediately mark confirmed (payment should have succeeded already)
+    service.confirm_booking(booking.id)
+    # reuse logic from create_booking to build response
+    return await create_booking(request, current_user, db)
 
 @router.get("/{pnr}", response_model=BookingResponseSchema)
 async def get_booking_by_pnr(
