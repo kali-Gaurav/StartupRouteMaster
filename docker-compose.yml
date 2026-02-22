@@ -307,6 +307,23 @@ services:
     networks:
       - default
 
+  # Frontend React Application
+  frontend:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.frontend
+    container_name: startupv2_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://api_gateway:8000
+      - NODE_ENV=production
+    depends_on:
+      - api_gateway
+    networks:
+      - default
+    restart: unless-stopped
+
   alembic_runner:
     image: python:3.11-slim
     container_name: startupv2_alembic_runner

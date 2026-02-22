@@ -1,0 +1,46 @@
+# Frontend Dockerfile: Build React app with Vite, serve with Node
+# Two-stage build: build stage generates production bundle, serve stage runs lightweight server
+
+# Stage 1: Build
+FROM node:20-alpine as builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy source code
+COPY src ./src
+COPY public ./public
+COPY vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
+COPY tailwind.config.js postcss.config.js eslint.config.js ./
+COPY index.html ./
+
+# Build the app (uses VITE_API_URL from build args or defaults)
+ARG VITE_API_URL=http://api_gateway:8000
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
+# Stage 2: Serve
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install simple HTTP server
+RUN npm install -g serve
+
+# Copy built app from builder stage
+COPY --from=builder /app/dist ./dist
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD wget -q -O- http://localhost:5173 || exit 1
+
+# Expose port (must match docker-compose config)
+EXPOSE 5173
+
+# Serve the app
+CMD ["serve", "-s", "dist", "-l", "5173"]

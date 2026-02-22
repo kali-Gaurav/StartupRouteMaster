@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 import logging
 import structlog
 from datetime import datetime
+import os
 
 from slowapi.errors import RateLimitExceeded
 
@@ -40,6 +41,12 @@ structlog.configure(
 )
 logger = structlog.get_logger()
 
+# Get CORS configuration from environment
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://frontend:5173"
+).split(",")
+
 # Rate limit exceeded handler
 async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
@@ -61,14 +68,17 @@ except Exception as ex:
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-
+# Configure CORS with environment-based origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Allow frontend development server
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    max_age=3600,
 )
+
+logger.info(f"CORS configured for origins: {ALLOWED_ORIGINS}")
 
 app.include_router(search.router)
 app.include_router(routes.router)

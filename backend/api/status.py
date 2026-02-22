@@ -3,10 +3,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
 from datetime import datetime
+import redis.asyncio as aioredis
 
 from backend.database import get_db
 from backend.services.station_service import StationService
 from backend.services.route_engine import route_engine # Assuming route_engine can provide stats
+from backend.database.config import Config
 
 router = APIRouter(prefix="/api", tags=["status"])
 logger = logging.getLogger(__name__)
@@ -17,8 +19,22 @@ async def general_health_check(db: Session = Depends(get_db)):
     try:
         # Check database connectivity
         db.execute(text("SELECT 1"))
-        # Add other critical service checks here (e.g., payment service, cache service)
-        return {"status": "healthy", "database": "up"}
+        
+        # Check Redis connectivity
+        try:
+            redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            redis_health = "up"
+        except Exception as redis_err:
+            logger.warning(f"Redis health check failed: {redis_err}")
+            redis_health = "down"
+        
+        return {
+            "status": "healthy",
+            "database": "up",
+            "redis": redis_health,
+            "timestamp": datetime.utcnow().isoformat()
+        }
     except Exception as e:
         # Log full exception with stack trace for easier debugging in CI/local runs
         logger.exception(f"General health check failed: {e}")
@@ -27,7 +43,10 @@ async def general_health_check(db: Session = Depends(get_db)):
 @router.get("/health/live")
 async def liveness_probe():
     """Liveness probe: indicates if the application is running."""
-    return {"status": "live"}
+    return {
+        "status": "live",
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 @router.get("/health/ready")
 async def readiness_probe(db: Session = Depends(get_db)):
@@ -37,6 +56,15 @@ async def readiness_probe(db: Session = Depends(get_db)):
         # Check if database is ready
         db.execute(text("SELECT 1"))
         logger.debug("Readiness probe: database connectivity OK")
+
+        # Check Redis
+        try:
+            redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            logger.debug("Readiness probe: Redis connectivity OK")
+        except Exception as redis_err:
+            logger.warning(f"Redis not available during readiness check: {redis_err}")
+            # Don't fail readiness if Redis is down (can survive without it)
 
         # Check if route engine is loaded (if applicable)
         loaded = route_engine.is_loaded()
@@ -62,7 +90,12 @@ async def readiness_probe(db: Session = Depends(get_db)):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Route engine not loaded")
 
         # Add other readiness checks here
-        return {"status": "ready", "database": "ready", "route_engine": "loaded"}
+        return {
+            "status": "ready",
+            "database": "ready",
+            "route_engine": "loaded",
+            "timestamp": datetime.utcnow().isoformat()
+        }
     except Exception as e:
         # Include full exception trace to help diagnose readiness failures
         logger.exception(f"Readiness probe failed: {e}")
@@ -81,5 +114,5 @@ async def get_application_stats(db: Session = Depends(get_db)):
         "total_stations": total_stations,
         "total_routes": total_routes,
         "total_trains": total_trains,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.utcnow().isoformat()
     }

@@ -51,6 +51,12 @@ REDIS_HEALTH_CHECKS = Counter(
     ["status"]
 )
 
+SYSTEM_DEGRADED_MODE = Gauge(
+    "system_degraded_mode",
+    "Whether the system is in degraded mode (1=True, 0=False)",
+    ["reason"] # redis_failure, database_latency
+)
+
 # --- Helper for timing ---
 def track_latency(histogram):
     def decorator(func):

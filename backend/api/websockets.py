@@ -35,10 +35,20 @@ class ConnectionManager:
     async def initialize(self):
         """Initialize Redis Pub/Sub listener."""
         if self.redis:
-            return
+            try:
+                await self.redis.ping()
+                return
+            except Exception:
+                logger.warning("Redis ping failed, re-initializing...")
+                self.redis = None
             
         try:
-            self.redis = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
+            self.redis = aioredis.from_url(
+                Config.REDIS_URL, 
+                decode_responses=True,
+                socket_timeout=5,
+                retry_on_timeout=True
+            )
             self.pubsub = self.redis.pubsub()
             
             # Subscribe to global channels
@@ -46,9 +56,16 @@ class ConnectionManager:
             # We will dynamically subscribe to train channels as needed or listen to a pattern
             await self.pubsub.psubscribe("train_position:*")
             
-            self._pubsub_task = asyncio.create_task(self._redis_listener())
+            if not self._pubsub_task or self._pubsub_task.done():
+                self._pubsub_task = asyncio.create_task(self._redis_listener())
+            
+            from backend.core.monitoring import SYSTEM_DEGRADED_MODE
+            SYSTEM_DEGRADED_MODE.labels(reason="redis_failure").set(0)
             logger.info("✅ Distributed WebSocket Manager (Redis Pub/Sub) Initialized")
         except Exception as e:
+            from backend.core.monitoring import REDIS_HEALTH_CHECKS, SYSTEM_DEGRADED_MODE
+            REDIS_HEALTH_CHECKS.labels(status="fail").inc()
+            SYSTEM_DEGRADED_MODE.labels(reason="redis_failure").set(1)
             logger.error(f"❌ Redis PubSub Initialization Failed: {e}")
 
     async def _redis_listener(self):
@@ -56,9 +73,15 @@ class ConnectionManager:
         while True:
             try:
                 if not self.pubsub:
-                    break
+                    # Attempt to re-initialize if pubsub is missing
+                    await asyncio.sleep(5)
+                    await self.initialize()
+                    continue
                     
                 message = await self.pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message and message['type'] in ['message', 'pmessage']:
+                    # ... (rest of logic)
+                    pass # Placeholder for brevity, I will match exact text in tool call
                 if message and message['type'] in ['message', 'pmessage']:
                     channel = message.get('channel')
                     data = message.get('data')
@@ -75,9 +98,16 @@ class ConnectionManager:
                         await self._local_broadcast_to_train(train_no, payload)
                 
                 await asyncio.sleep(0.1)
+                from backend.core.monitoring import REDIS_HEALTH_CHECKS
+                REDIS_HEALTH_CHECKS.labels(status="ok").inc()
             except Exception as e:
                 logger.error(f"Redis Listener Error: {e}")
-                await asyncio.sleep(1)
+                from backend.core.monitoring import REDIS_HEALTH_CHECKS
+                REDIS_HEALTH_CHECKS.labels(status="fail").inc()
+                # If connection is lost, clear redis/pubsub so it re-initializes
+                self.redis = None
+                self.pubsub = None
+                await asyncio.sleep(5)
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()

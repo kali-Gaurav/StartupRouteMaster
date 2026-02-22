@@ -1,0 +1,271 @@
+# Production Override for Docker Compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# This file overrides development settings with production-grade configurations
+
+version: '3.8'
+
+services:
+  db:
+    restart: always
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  routemaster_db:
+    restart: always
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  routemaster_ml_db:
+    restart: always
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  redis:
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secure_password}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api_gateway:
+    restart: always
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://routemaster.com,https://www.routemaster.com}
+      - SCRAPER_URL=http://scraper:8001
+      - ROUTE_URL=http://route_service:8002
+      - RL_URL=http://rl_service:8003
+      - USER_URL=http://user_service:8004
+      - PAYMENT_URL=http://payment_service:8005
+      - NOTIFICATION_URL=http://notification_service:8006
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health", "-H", "Accept: application/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  route_service:
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health", "-H", "Accept: application/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  user_service:
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - SECRET_KEY=${JWT_SECRET_KEY}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health", "-H", "Accept: application/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  payment_service:
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - SECRET_KEY=${JWT_SECRET_KEY}
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health", "-H", "Accept: application/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  notification_service:
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - TWILIO_PHONE_NUMBER=${TWILIO_PHONE_NUMBER}
+      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+      - FROM_EMAIL=${FROM_EMAIL:-noreply@routemaster.com}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health", "-H", "Accept: application/json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scraper:
+    restart: always
+    environment:
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  scraper_worker:
+    restart: always
+    environment:
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  etl:
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  rl_service:
+    restart: always
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-strong_password}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SECURITY_DISABLE_BRUTE_FORCE_LOGIN_PROTECTION: 'false'
+
+  loki:
+    restart: always
+
+  promtail:
+    restart: always
+
+  routemaster_agent:
+    restart: always
+    environment:
+      - RMA_DATABASE_URL=${ROUTEMASTER_DB_URL:-postgresql://postgres:postgres@routemaster_db:5432/routemaster}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      routemaster_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Frontend service for production
+  frontend:
+    restart: always
+    environment:
+      - VITE_API_URL=${FRONTEND_API_URL:-https://api.routemaster.com}
+      - NODE_ENV=production
+    depends_on:
+      - api_gateway
+
+  # Nginx reverse proxy (optional but recommended for production)
+  nginx:
+    image: nginx:alpine
+    container_name: startupv2_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./monitoring/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./monitoring/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api_gateway
+      - frontend
+    networks:
+      - default
+
+volumes:
+  pgdata:
+    driver: local
+  grafana_data:
+    driver: local
+  redis_data:
+    driver: local
+  routemaster_pgdata:
+    driver: local
+  routemaster_ml_pgdata:
+    driver: local
