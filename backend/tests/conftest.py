@@ -12,7 +12,14 @@ from backend.models import User, Stop, Trip, Calendar, Route, StopTime, Agency
 @pytest.fixture(scope="session")
 def test_db_setup():
     """Set up test database once per test session"""
-    # Create all tables
+    # Ensure a clean slate by dropping any existing tables before recreating.
+    # This avoids issues where the on-disk SQLite database has an outdated schema
+    # (e.g. missing columns like `city` on stops) which `create_all` alone won't fix.
+    try:
+        Base.metadata.drop_all(bind=engine_write)
+    except Exception:
+        # ignore errors if tables don't yet exist
+        pass
     Base.metadata.create_all(bind=engine_write)
     yield
     # Clean up after all tests

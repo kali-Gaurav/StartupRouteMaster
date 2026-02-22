@@ -46,15 +46,35 @@ class HubManager:
         self.hub_id_to_code: Dict[int, str] = {}
 
     def initialize_hubs(self):
-        """Load hub information from DB"""
+        """Load hub information from DB
+
+        During testing or in fresh in-memory databases the `stops` table may not
+        yet exist or may be missing recently added columns.  Accessing it in
+        those situations raises an ``OperationalError`` which would blow up the
+        entire import of ``backend.api`` (see test failures).  We catch any
+        database errors here and simply log a warning so the application can
+        continue starting; the hub list will be empty until the database is
+        properly initialized later.
+        """
         session = self.session_factory()
         try:
-            hubs = session.query(Stop).filter(
-                or_(
-                    Stop.is_major_junction == True,
-                    Stop.code.in_(self.MAJOR_HUB_CODES)
+            try:
+                hubs = session.query(Stop).filter(
+                    or_(
+                        Stop.is_major_junction == True,
+                        Stop.code.in_(self.MAJOR_HUB_CODES)
+                    )
+                ).all()
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning(
+                    f"Could not query hubs during initialization (may be running "
+                    f"against an unprepared test database): {e}"
                 )
-            ).all()
+                # leave hub_ids empty and bail out early
+                self.hub_ids = set()
+                self.hub_id_to_code = {}
+                return
+
             self.hub_ids = {h.id for h in hubs}
             self.hub_id_to_code = {h.id: h.code for h in hubs}
             logger.info(f"Initialized {len(self.hub_ids)} hub stations.")

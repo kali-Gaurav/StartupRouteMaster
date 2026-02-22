@@ -5,6 +5,7 @@ import { BookingStepSkeleton } from "@/components/skeletons";
 import { useEffect, useRef, useState } from "react";
 
 export function AvailabilityCheckStep() {
+  const bookingCtx = useBookingFlowContext();
   const {
     availabilityPhase,
     nextStep,
@@ -13,7 +14,8 @@ export function AvailabilityCheckStep() {
     error,
     runAvailabilityCheck,
     retryAvailability,
-  } = useBookingFlowContext();
+  } = bookingCtx;
+  const { availabilityInfo } = bookingCtx;
 
   const hasStartedCheck = useRef(false);
   useEffect(() => {

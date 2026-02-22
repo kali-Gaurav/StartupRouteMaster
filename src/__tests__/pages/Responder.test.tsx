@@ -10,13 +10,15 @@ vi.mock("@/context/AuthContext", () => ({
 
 describe("ResponderPage", () => {
   it("shows login prompt when not authenticated", () => {
-    (useAuth as vi.Mock).mockReturnValue({ user: null, isAuthenticated: false });
+    const mockAuth = useAuth as unknown as any;
+    mockAuth.mockReturnValue({ user: null, isAuthenticated: false });
     render(<ResponderPage />);
     expect(screen.getByText(/login to use emergency/i)).toBeInTheDocument();
   });
 
   it("blocks non-responder roles", () => {
-    (useAuth as vi.Mock).mockReturnValue({ user: { role: "user" }, isAuthenticated: true });
+    const mockAuth = useAuth as unknown as any;
+    mockAuth.mockReturnValue({ user: { role: "user" }, isAuthenticated: true });
     render(<ResponderPage />);
     expect(screen.getByText(/not authorized/i)).toBeInTheDocument();
   });

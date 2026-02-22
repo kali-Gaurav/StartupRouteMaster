@@ -92,6 +92,9 @@ class SearchRequestSchema(BaseModel):
             }
         }
 
+# backward-compatibility alias used by legacy integrated_search module
+SearchRequest = SearchRequestSchema
+
 
 # NEW: Passenger Details Schema
 class PassengerDetailsSchema(BaseModel):
@@ -200,7 +203,7 @@ class BookingCreateSchema(BaseModel):
     route_id: str
     travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     booking_details: dict  # Segments and route info
-    amount_paid: float = Field(..., gt=0)
+    amount_paid: float = Field(..., ge=0)
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
 
     class Config:

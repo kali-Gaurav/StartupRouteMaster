@@ -27,7 +27,14 @@ def get_current_user(
 
     token_data = decode_access_token(token)
     user_service = UserService(db)
-    user = user_service.get_user_by_email(email=token_data.email)
+    # token_data.email may contain either an email or a phone number (we store it in `sub`)
+    user = None
+    if token_data.email:
+        if "@" in token_data.email:
+            user = user_service.get_user_by_email(email=token_data.email)
+        else:
+            # might be a phone number
+            user = user_service.get_user_by_phone(token_data.email)
     if user is None:
         raise credentials_exception
     return user
@@ -47,7 +54,12 @@ def get_optional_user(
     except Exception:
         return None
     user_service = UserService(db)
-    return user_service.get_user_by_email(email=token_data.email) or None
+    if token_data.email:
+        if "@" in token_data.email:
+            return user_service.get_user_by_email(email=token_data.email) or None
+        else:
+            return user_service.get_user_by_phone(token_data.email) or None
+    return None
 
 async def verify_webhook_signature(request: Request):
     """Dependency to verify the signature of incoming Razorpay webhooks."""

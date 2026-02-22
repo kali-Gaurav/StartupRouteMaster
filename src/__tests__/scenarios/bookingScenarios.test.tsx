@@ -95,7 +95,8 @@ describe("scenario: payment retry", () => {
 describe("scenario: slow availability", () => {
   it("invokes the availability API and moves to confirmed when seats are available", async () => {
     const { checkAvailability } = await import("@/api/booking");
-    (checkAvailability as unknown as vi.Mock).mockResolvedValue({
+    const mockCheck = checkAvailability as unknown as any;
+    mockCheck.mockResolvedValue({
       available: true,
       available_seats: 5,
       total_seats: 100,
@@ -121,7 +122,7 @@ describe("scenario: slow availability", () => {
       expect(ok).toBe(true);
     });
 
-    expect((checkAvailability as unknown as vi.Mock).mock.calls.length).toBe(1);
+    expect((mockCheck as any).mock.calls.length).toBe(1);
     expect(result.current.availabilityPhase).toBe("confirmed");
     expect(result.current.availabilityInfo).not.toBeNull();
   });

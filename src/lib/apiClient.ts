@@ -58,7 +58,7 @@ export async function fetchWithAuth(
   init?: FetchWithAuthInit
 ): Promise<Response> {
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : ensureSlash(pathOrUrl);
-  let token = getToken();
+  const token = getToken();
   const headers = new Headers(init?.headers);
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -99,7 +99,8 @@ export async function fetchWithAuth(
         headers.set('Authorization', `Bearer ${data.token}`);
         return await fetch(url, { ...init, headers });
       }
-    } catch (e) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (_error: unknown) {
       // ignore and fall through
     }
     return res;

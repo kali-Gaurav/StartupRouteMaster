@@ -1,7 +1,7 @@
 import { renderHook, act } from "@testing-library/react";
 import { useSosSocket } from "@/hooks/useSosWebSocket";
 import { useAuth } from "@/context/AuthContext";
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 
 // mock auth context to provide token
 vi.mock("@/context/AuthContext", () => ({
@@ -42,7 +42,7 @@ describe("useSosSocket", () => {
   });
 
   it("opens websocket with token and calls alert callback", () => {
-    const mockAuth = useAuth as vi.Mock;
+    const mockAuth = useAuth as Mock;
     mockAuth.mockReturnValue({ token: "abc123" });
     const onAlert = vi.fn();
     const { result } = renderHook(() => useSosSocket(onAlert));

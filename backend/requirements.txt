@@ -1,41 +1,58 @@
-fastapi==0.104.1
-starlette==0.27.0
+# Core FastAPI libraries
+fastapi==0.129.0
 uvicorn==0.24.0
+pydantic==2.12.5
+
+# Database libraries
 sqlalchemy==2.0.23
 alembic==1.12.1
-python-dotenv==1.0.0
-pydantic==2.5.0
-requests==2.31.0
-httpx==0.25.1
 psycopg2-binary==2.9.9
+GeoAlchemy2==0.13.3
 supabase==2.4.3
-pytest==7.4.3
+
+# Caching
+redis==5.0.0
+fastapi-cache2==0.2.2
+
+# Task queues and messaging
+celery==5.3.4
+confluent-kafka[librdkafka]==2.3.0
+kafka-python==2.0.2
+aiokafka==0.8.1
+
+# Scheduling
+APScheduler==3.11.2
+schedule==1.2.2
+
+# Web scraping
+scrapy==2.11.1
+itemadapter==0.8.0
+
+# Machine Learning
+scikit-learn==1.3.2
+lightgbm==4.3.0
+joblib==1.3.2
+numpy==1.26.2
+matplotlib==3.8.2
+pyroaring==1.0.3
+
+# Authentication and security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+
+# Other utilities
+python-dotenv==1.0.0
+requests==2.32.2
+httpx==0.25.1
+python-multipart==0.0.6
+prometheus-fastapi-instrumentator==7.1.0
+twilio==8.2.2
+sendgrid==6.10.0
+psutil==5.9.6
+aiofiles==23.2.1
+
+# Development and testing
+pytest==9.0.2
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 pre-commit==3.4.0
-redis==5.0.0
-passlib[bcrypt]==1.7.4
-python-jose[cryptography]==3.3.0
-python-multipart==0.0.6
-prometheus-fastapi-instrumentator
-GeoAlchemy2==0.13.3
-APScheduler
-fastapi-cache2
-confluent-kafka[librdkafka]==2.3.0
-celery==5.3.4
-scrapy==2.11.1
-itemadapter==0.8.0
-kafka-python==2.0.2
-aiokafka==0.8.1
-twilio==8.2.2
-sendgrid==6.10.0
-scikit-learn==1.3.2
-lightgbm==3.4.2
-joblib==1.3.2
-psutil==5.9.6
-aiokafka==0.8.1
-matplotlib==3.8.2
-numpy==1.26.2
-aiofiles==23.2.1
-pyroaring
-schedule

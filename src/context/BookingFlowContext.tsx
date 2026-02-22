@@ -92,8 +92,8 @@ const initialState: BookingFlowState = {
 
 const BookingFlowContext = createContext<BookingFlowContextValue | null>(null);
 
-const AVAILABILITY_CHECK_MS = 1800;
-const LOCK_MS = 1200;
+// const AVAILABILITY_CHECK_MS = 1800;
+// const LOCK_MS = 1200;
 
 export function BookingFlowProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<BookingFlowState>(initialState);
@@ -192,6 +192,7 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const runAvailabilityCheck = useCallback((): Promise<boolean> => {
+    const { route, travelDate } = state;
     if (!route || !travelDate) {
       setState((s) => ({ ...s, error: "Missing route or travel date" }));
       return Promise.resolve(false);

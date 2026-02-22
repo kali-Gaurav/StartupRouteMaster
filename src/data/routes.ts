@@ -7,8 +7,8 @@ export interface RouteSegment {
   segment: number;
   trainNumber: string;
   trainName: string;
-  from: string;
-  to: string;
+  from: string;             // station code
+  to: string;               // station code
   departure: string;
   arrival: string;
   distance: number;
@@ -17,6 +17,11 @@ export interface RouteSegment {
   liveSeatAvailability: string;
   liveFare: number;
   seatAvailable: boolean;
+  // for booking/availability requests the frontend may occasionally
+  // carry numeric stop ids obtained from backend. they are optional
+  // because most of the route search responses only contain codes.
+  from_stop_id?: number;
+  to_stop_id?: number;
 }
 
 export interface Route {

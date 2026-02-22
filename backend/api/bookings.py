@@ -98,13 +98,25 @@ async def check_availability(
 
     # delegate to the availability service
     from backend.availability_service import availability_service, AvailabilityRequest
+    from backend.database.models import QuotaType
+
+    # Convert quota_type string to QuotaType enum
+    # Handle both uppercase and lowercase inputs
+    quota_type_str = request.quota_type.lower()
+    try:
+        quota_enum = QuotaType(quota_type_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid quota type: {request.quota_type}. Valid options: {', '.join([qt.value for qt in QuotaType])}"
+        )
 
     avail_req = AvailabilityRequest(
         trip_id=numeric_trip_id,
         from_stop_id=request.from_stop_id,
         to_stop_id=request.to_stop_id,
         travel_date=travel_date_obj,
-        quota_type=request.quota_type,
+        quota_type=quota_enum,
         passengers=request.passengers,
     )
     resp = await availability_service.check_availability(avail_req)

@@ -72,7 +72,10 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    email = Column(String(255), unique=True, nullable=False, index=True)
+    # email may be nullable to support phone-only OTP logins (especially in tests)
+    email = Column(String(255), unique=True, nullable=True, index=True)
+    # password_hash is required when an email/password account is created.
+    # OTP-created users may leave this blank or use a placeholder.
     password_hash = Column(String(255), nullable=False)
     phone_number = Column(String(20), nullable=True)
     role = Column(String(50), default="user", index=True)

@@ -52,6 +52,12 @@ async def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded)
     return JSONResponse(status_code=429, content={"code": "RATE_LIMIT_EXCEEDED", "message": "Rate limit exceeded", "timestamp": datetime.utcnow().isoformat()})
 
 
+app = FastAPI(
+    title="RouteMaster API",
+    description="High-performance route optimization and booking platform",
+    version="1.0.0",
+)
+
 # Standard HTTPException handler that wraps detail in a consistent schema
 @app.exception_handler(HTTPException)
 async def _http_exception_handler(request: Request, exc: HTTPException):
@@ -71,12 +77,6 @@ async def _generic_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"code": "INTERNAL_ERROR", "message": "An unexpected error occurred.", "timestamp": datetime.utcnow().isoformat()},
     )
-
-app = FastAPI(
-    title="RouteMaster API",
-    description="High-performance route optimization and booking platform",
-    version="1.0.0",
-)
 
 # Mount Prometheus Instrumentator early so middleware is registered before startup
 try:

@@ -23,7 +23,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    reportError(error, { componentStack: errorInfo.componentStack });
+    reportError(String(error), { componentStack: errorInfo.componentStack });
   }
 
   render() {

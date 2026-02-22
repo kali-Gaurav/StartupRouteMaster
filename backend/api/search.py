@@ -33,7 +33,8 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
     Ensures consistency between legacy and integrated search responses.
     """
     start_time = time.time()
-    SEARCH_REQUESTS_TOTAL.inc()
+    # initial increment handled later with labels; avoid unlabelled increment which
+    # would raise errors when metrics expect label values
     request_id = f"{datetime.utcnow().timestamp()}"
     status_label = "failure"
 

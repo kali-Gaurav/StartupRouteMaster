@@ -308,6 +308,10 @@ export function mapBackendRoutesToRoutes(
     const rid = `route_${routeId}`;
     const category = 'DIRECT';
     const seg = makeSegment(train, source, destination, 0, rid, category);
+    // backend currently does not populate numeric ids but keep hooks here
+    // if in future the API returns them we can pass them through.
+    // (seg as any).from_stop_id = train.from_stop_id;
+    // (seg as any).to_stop_id = train.to_stop_id;
     const totalFare = seg.liveFare ?? 0;
     const directSeatProb = Number(train.availability_summary?.probability ?? (seg.seatAvailable ? 0.85 : 0.1));
     routes.push({

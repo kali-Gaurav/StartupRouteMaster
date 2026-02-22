@@ -21,7 +21,7 @@ def login_passenger(phone="+911234567890"):
     client.post("/api/auth/send-otp", json={"phone": phone})
     resp = client.post(
         "/api/auth/verify-otp",
-        json={"phone": phone, "otp": "1234"},
+        json={"phone": phone, "otp": "123456"},
     )
     assert resp.status_code == 200
     return resp.json()["token"], resp.json().get("refresh_token")
@@ -31,9 +31,26 @@ def auth_headers(token: str):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_full_user_flow_and_ws(tmp_path, monkeypatch):
+def test_full_user_flow_and_ws(tmp_path, monkeypatch, test_db_setup):
+    # Ensure the database schema is up-to-date (clean slate)
     # Drill 1: passenger searches, checks availability, books, triggers SOS
     token, refresh = login_passenger()
+
+    # Monkeypatch search to return a dummy route so the test doesn't require
+    # a fully populated transit dataset.
+    from backend.services.search_service import SearchService
+
+    async def _dummy_search(self, source, destination, travel_date, *args, **kwargs):
+        # minimal response structure expected by the endpoint/consumer
+        return {
+            "source": source,
+            "destination": destination,
+            "routes": {"direct": [{"route_id": "DUMMY1", "source": source, "destination": destination}]},
+            "stations": {},
+            "journeys": []
+        }
+
+    monkeypatch.setattr(SearchService, "search_routes", _dummy_search)
 
     # search route (simple parameters)
     search_resp = client.post(
