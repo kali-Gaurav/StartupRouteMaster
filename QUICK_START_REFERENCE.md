@@ -79,6 +79,8 @@ curl http://localhost:8000/api/health
 ✓ Production credentials (Razorpay, Twilio, etc.)
 ```
 
+> **Optional:** Kubernetes manifests are available under `k8s/production-deployments.yaml`.  Use `kubectl apply -f k8s/production-deployments.yaml` on a cluster instead of Docker Compose if you prefer to run in Kubernetes.
+
 ### Deploy Command
 ```bash
 # 1. SSH into production server
@@ -137,32 +139,28 @@ curl http://localhost:8000/api/health
 
 ---
 
-## ARCHITECTURE AT A GLANCE
+## ARCHITECTURE AT A GLANCE (LEAN STACK)
 
 ```
 React App (Browser)
          ↓ HTTPS
     Nginx (SSL/Reverse Proxy)
          ↓ HTTP (Docker network)
-  API Gateway (Port 8000)
-         ↓
-Routes to Microservices:
-├─ Route Service (8002)
-├─ User Service (8004)
-├─ Payment Service (8005)
-├─ Notification (8006)
-└─ Others...
+  Backend API (Port 8000)  # monolith: search, booking, auth, sos, chat, etc.
          ↓
   PostgreSQL (Port 55432)
-  Redis (Port 6379)
-  Kafka (Port 9092)
+  Redis (Port 6379 - cache & streams)
+  Worker (background tasks)
+  Frontend (static)
 ```
 
+> **Note:** Kafka/Zookeeper and multiple microservices have been removed. Redis Streams now handle event flows; the backend container aggregates all functionality.
+
 **Key Networking:**
-- Frontend can reach API: ✅ FIXED (VITE_API_URL=http://api_gateway:8000)
-- API Gateway routes correctly: ✅ FIXED (env vars for service URLs)
-- CORS allows requests: ✅ FIXED (ALLOWED_ORIGINS env var)
-- Services find DB/Redis: ✅ FIXED (Docker DNS resolution)
+- Frontend reaches API via environment variable (VITE_API_URL)
+- Backend connects to Postgres and Redis using Docker DNS (db, redis)
+- CORS is configured via ALLOWED_ORIGINS environment variable
+- Health checks on every service ensure proper ordering and restarts
 
 ---
 
@@ -193,10 +191,14 @@ API Health Check        http://localhost:8000/api/health
 docker-compose logs -f
 
 # View logs from specific service
-docker-compose logs -f api_gateway
+docker-compose logs -f backend
+
+docker-compose logs -f worker
 
 # Restart a service
-docker-compose restart route_service
+docker-compose restart backend
+
+docker-compose restart worker
 
 # SSH into a container
 docker-compose exec api_gateway bash

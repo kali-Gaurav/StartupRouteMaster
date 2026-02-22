@@ -21,13 +21,24 @@
 ## QUICK START
 
 ### Development (Local)
-```bash
+
+> **Cleanup old Zoo/Kafka/microservice containers**
+> run once if you've previously deployed the full microservice stack:
+> ```bash
+> docker ps -a               # list containers
+> docker stop <container>    # stop kafka, zookeeper, route_service, etc.
+> docker rm <container>      # remove them
+> docker images             # ensure old images removed
+> docker system prune -af    # optional, cleans up unused data
+> docker volume prune -f     # remove orphaned volumes
+> ```
+
 # 1. Set up environment
 cp .env.example .env
 # Edit .env with local values
 
-# 2. Start Docker services (all microservices + databases)
-docker-compose up -d
+# 2. Start Docker services (lean stack)
+docker-compose -f docker-compose.clean.yml up -d
 
 # 3. Initialize database
 docker-compose exec db psql -U postgres -c "CREATE DATABASE routemaster"
@@ -51,11 +62,19 @@ npm run dev
 cp .env.prod.example .env.prod
 # Edit .env.prod with production values
 
-# 2. Deploy complete stack
-docker-compose -f docker-compose.yml \
+# 2. Deploy complete stack using lean compose
+docker-compose -f docker-compose.clean.yml \
                -f docker-compose.prod.yml \
                --env-file .env.prod \
                up -d
+```
+
+### Optional: Kubernetes Manifests
+If you prefer to run on Kubernetes instead of plain Docker, manifests have been generated in `k8s/production-deployments.yaml`.  Apply like so:
+```bash
+kubectl apply -f k8s/production-deployments.yaml
+```
+The file includes namespace, ConfigMap template and basic deployments/services for backend, worker, frontend, postgres, redis (monitoring components omitted).  Adjust secrets and storage classes before applying.
 
 # 3. Verify all services are healthy
 docker-compose ps
@@ -73,7 +92,7 @@ curl http://localhost:3000  # Frontend
 
 ## ARCHITECTURE
 
-### Service Dependency Map
+### Service Dependency Map (LEAN STACK)
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -90,45 +109,22 @@ curl http://localhost:3000  # Frontend
 └────────────────────┬───────────────────────────────────────┘
                      │ HTTP (internal)
 ┌────────────────────▼───────────────────────────────────────┐
-│              API GATEWAY (FastAPI)                          │
-│  Port 8000 - Routes to microservices                       │
-│  - Authentication check                                    │
-│  - Rate limiting                                            │
-│  - Request logging                                          │
-│  - Response transformation                                 │
+│              BACKEND API (FastAPI Monolith)                │
+│  Port 8000 - All endpoints + WebSockets                   │
+│  - Authentication                                           │
+│  - Booking, Search, Payments stubbed                       │
+│  - SOS, Chat, Flow, Users, etc.                             │
+│  - Redis Streams for real-time and pub/sub                 │
 └────────┬──────────┬──────────┬──────────┬──────────────────┘
          │          │          │          │
-    ┌────▼──┐  ┌───▼───┐  ┌──▼───┐  ┌──▼────┐
-    │ Route │  │ User  │  │Payment│  │Notif  │
-    │Service│  │Service│  │Service│  │Service│
-    └────┬──┘  └───┬───┘  └──┬───┘  └──┬────┘
-         │         │         │        │
-         └─────────┴─────────┴────────┘
-               │         │
-         ┌─────▼─────────▼────┐
-         │  PostgreSQL (DB)   │
-         │  PostGIS for geo   │
-         │  Pool: 20 connections
-         └────────────────────┘
-         
-         ┌────────────────────┐
-         │  Redis (Cache)     │
-         │  Pub/Sub for msgs  │
-         │  Session storage   │
-         └────────────────────┘
-         
-         ┌────────────────────┐
-         │  Kafka (Broker)    │
-         │  ETL pipelines     │
-         │  Event streaming   │
-         └────────────────────┘
-
-┌────────────────────────────────────────────────────────────┐
-│         BACKGROUND JOBS & WORKERS                          │
-│  - Celery (scraper)         ┌─ Redis Broker               │
-│  - ETL consumer  ────────→  ├─ Kafka Topics               │
-│  - Scheduled tasks          └─ PostgreSQL DB              │
-└────────────────────────────────────────────────────────────┘
+         │          │          │          │
+         │          │          │          │
+         │          │          │          │
+    ┌────▼───┐  ┌───▼───┐  ┌──▼───┐  ┌──▼────┐
+    │postgres│  │redis  │  │worker│  │frontend│
+    │(15+GIS)│  │cache/ │  │(tasks)│ │(static)
+    │        │  │pubsub │  │      │ │        │
+    └────────┘  └───────┘  └──────┘ └────────┘
 
 ┌────────────────────────────────────────────────────────────┐
 │         MONITORING & OBSERVABILITY                         │
@@ -136,7 +132,6 @@ curl http://localhost:3000  # Frontend
 │  - Grafana (visualization)                                 │
 │  - Loki (log aggregation)                                  │
 │  - Promtail (log shipper)                                  │
-│  - Sentry (error tracking)                                 │
 └────────────────────────────────────────────────────────────┘
 ```
 

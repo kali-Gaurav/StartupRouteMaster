@@ -1,0 +1,252 @@
+# Kubernetes manifests for RouteMaster V2 lean architecture
+# Includes Deployments and Services for all core components
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: routemaster
+---
+# ConfigMap to hold environment variables (fill in production values separately)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: routemaster-config
+  namespace: routemaster
+data:
+  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
+  REDIS_URL: "redis://:password@redis:6379"
+  JWT_SECRET_KEY: "changeme"
+  FRONTEND_API_URL: "https://api.routemaster.com"
+  ALLOWED_ORIGINS: "https://routemaster.com,https://www.routemaster.com"
+  GRAFANA_ADMIN_PASSWORD: "admin"
+---
+# Deployment: PostgreSQL (StatefulSet recommended)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: routemaster
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  serviceName: postgres
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgis/postgis:15-3.3
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+# Service for Postgres
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: routemaster
+spec:
+  ports:
+    - port: 5432
+  selector:
+    app: postgres
+
+---
+# Deployment: Redis (also stateful)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: routemaster
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis/redis-stack:7.2.0-v9
+          ports:
+            - containerPort: 6379
+          args:
+            - "redis-server"
+            - "--requirepass"
+            - "password"
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+# Service for Redis
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: routemaster
+spec:
+  ports:
+    - port: 6379
+  selector:
+    app: redis
+
+---
+# Deployment: Backend API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: routemaster
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: routemaster/backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: routemaster-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+---
+# Service exposing backend inside cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: routemaster
+spec:
+  ports:
+    - port: 8000
+  selector:
+    app: backend
+
+---
+# Deployment: Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: routemaster
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: routemaster/backend:latest
+          command: ["python", "-m", "backend.worker"]
+          envFrom:
+            - configMapRef:
+                name: routemaster-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+---
+# Deployment: Frontend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: routemaster
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: routemaster/frontend:latest
+          ports:
+            - containerPort: 5173
+          envFrom:
+            - configMapRef:
+                name: routemaster-config
+---
+# Service for Frontend
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: routemaster
+spec:
+  ports:
+    - port: 5173
+  selector:
+    app: frontend
+
+# Monitoring components omitted for brevity (prometheus/grafana/loki)
