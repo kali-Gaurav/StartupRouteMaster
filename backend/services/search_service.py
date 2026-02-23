@@ -41,7 +41,7 @@ class SearchService:
             
             # Use constraints from budget if provided
             from backend.core.route_engine.constraints import RouteConstraints
-            constraints = RouteConstraints(max_transfers=3)
+            constraints = RouteConstraints(max_transfers=3, range_minutes=1440)
             if budget_category == "budget":
                 constraints.max_transfers = 3 # Allow more transfers for budget
                 

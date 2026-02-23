@@ -126,7 +126,7 @@ class GraphBuilder:
             stop_times = session.query(StopTime).join(Trip).filter(
                 Trip.service_id.in_(service_ids)
             ).options(
-                joinedload(StopTime.trip),
+                joinedload(StopTime.trip).joinedload(Trip.service),
                 joinedload(StopTime.stop)
             ).order_by(StopTime.trip_id, StopTime.stop_sequence).all()
             
@@ -439,7 +439,7 @@ class GraphBuilder:
             session.close()
 
     def _fetch_authoritative_data(self, trip, src_stop, dst_stop) -> Tuple[Optional[float], Optional[int]]:
-        """Fetch distance and day_offset from railway_manager.db"""
+        """Fetch distance and day_offset from transit_graph.db"""
         distance_km = None
         arrival_day_offset = None
         
@@ -450,7 +450,8 @@ class GraphBuilder:
 
             if train_identifier and src_code and dst_code:
                 # Fetch from transit_graph.db (algorithm-optimized database) in backend/database
-                sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "database", "transit_graph.db"))
+                # Path corrected: backend/core/route_engine/ -> backend/database/transit_graph.db
+                sqlite_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "database", "transit_graph.db"))
                 if os.path.exists(sqlite_path):
                     conn = sqlite3.connect(sqlite_path)
                     cur = conn.cursor()

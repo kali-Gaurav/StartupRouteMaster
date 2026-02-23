@@ -134,7 +134,7 @@ class HubManager:
                 if i == j: continue
                 
                 # Run a limited RAPTOR between hubs
-                routes = await raptor._compute_routes(src_hub, dst_hub, date, constraints)
+                routes = await raptor._compute_routes(src_hub, dst_hub, date, constraints, graph=graph)
                 if routes:
                     best_route = routes[0]
                     conn = HubToHubConnection(

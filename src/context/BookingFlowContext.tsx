@@ -20,6 +20,7 @@ import {
   clearBookingSession,
 } from "@/lib/bookingSessionStore";
 import { logEvent } from "@/lib/observability";
+import { checkAvailability } from "@/api/booking"; // backend availability API
 
 export type BookingStep = "review" | "availability" | "payment" | "confirmation";
 export type AvailabilityPhase = "idle" | "checking" | "locking" | "confirmed" | "failed";
@@ -92,8 +93,8 @@ const initialState: BookingFlowState = {
 
 const BookingFlowContext = createContext<BookingFlowContextValue | null>(null);
 
-// const AVAILABILITY_CHECK_MS = 1800;
-// const LOCK_MS = 1200;
+// availability / locking constants were part of an earlier polling implementation
+// now handled directly by runAvailabilityCheck and backend responses.
 
 export function BookingFlowProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<BookingFlowState>(initialState);
@@ -202,10 +203,11 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
       setState((s) => ({ ...s, availabilityPhase: "checking", error: null }));
 
       try {
+        const segs = (route.segments as any[]) || [];
         const resp = await checkAvailability({
           trip_id: route.id as unknown as any, // backend will resolve string or number
-          from_stop_id: route.segments?.[0]?.from_stop_id || 0,
-          to_stop_id: route.segments?.[route.segments.length - 1]?.to_stop_id || 0,
+          from_stop_id: segs[0]?.from_stop_id || 0,
+          to_stop_id: segs[segs.length - 1]?.to_stop_id || 0,
           travel_date: travelDate,
           quota_type: (route as any).quota_type || "GENERAL",
           passengers: (state as any).passengers || 1,
@@ -228,7 +230,7 @@ export function BookingFlowProvider({ children }: { children: ReactNode }) {
         resolve(false);
       }
     });
-  }, [route, travelDate]);
+  }, [state]);
 
   const setPaymentSuccess = useCallback((orderId: string, irctcUrl: string | null) => {
     logEvent("booking_confirmed", { hasIrctcUrl: !!irctcUrl });

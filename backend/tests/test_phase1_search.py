@@ -3,6 +3,10 @@ from datetime import datetime
 from backend.core.route_engine.engine import RailwayRouteEngine
 
 async def test_search_ndls_mmct():
+    # seed database with minimal route data
+    from backend.scripts.phase1_seed import seed_phase1
+    seed_phase1()
+
     engine = RailwayRouteEngine()
     # Search for NDLS to MMCT on 2026-03-15
     search_date = datetime(2026, 3, 15, 16, 55)
