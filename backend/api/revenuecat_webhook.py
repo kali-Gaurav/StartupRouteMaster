@@ -8,6 +8,7 @@ from datetime import datetime
 from backend.config import Config
 from backend.database import get_db
 from backend.services.subscription_service import SubscriptionService
+from backend.services.revenue_cat_verifier import RevenueCatVerifier
 
 router = APIRouter(prefix="/api/revenuecat", tags=["revenuecat"])
 logger = logging.getLogger(__name__)

@@ -1,15 +1,18 @@
 from sqlalchemy.orm import Session
-from backend.models import UnlockedRoute, User, Route, Payment
+from backend.database.models import UnlockedRoute
 from datetime import datetime
 import logging
 from backend.config import Config
 from backend.services.revenue_cat_verifier import revenue_cat_verifier
+from backend.services.subscription_service import SubscriptionService
+from backend.services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 
 class UnlockService:
     def __init__(self, db: Session):
         self.db = db
+        self.subsvc = SubscriptionService(db)
 
     def record_unlocked_route(
         self, user_id: str, route_id: str, payment_id: str
@@ -43,20 +46,39 @@ class UnlockService:
 
     async def is_route_unlocked(self, user_id: str, route_id: str) -> bool:
         """
-        Checks if a user has already unlocked a specific route.
-        Also checks RevenueCat for 'Routemaster Pro' status which unlocks all routes.
+        Production-ready unlock check:
+          1. Check cache for "pro" status built from subscription or route.
+          2. If not cached, check subscription table.
+          3. If still not active, query RevenueCat (with fallback).
+          4. If user is pro, return True; otherwise fall back to individual payment record.
         """
-        # 1. Check if user is "Pro" via RevenueCat
-        is_pro = await revenue_cat_verifier.is_user_pro(user_id)
-        if is_pro is True: # Explicitly check for True to be safe
+        cache_key = f"unlocked:route:{user_id}:{route_id}"
+        cached = cache_service.get(cache_key)
+        if cached is not None:
+            return cached is True
+
+        # 1. subscription service active
+        if self.subsvc.is_active(user_id):
+            cache_service.set(cache_key, True, ttl_seconds=300)
             return True
 
-        # 2. Check individual route unlock in database
+        # 2. revenuecat fallback
+        try:
+            rc_pro = await revenue_cat_verifier.is_user_pro(user_id, db=self.db)
+            if rc_pro:
+                cache_service.set(cache_key, True, ttl_seconds=300)
+                return True
+        except Exception as e:
+            logger.warning(f"RevenueCat check failed for {user_id}: {e}")
+            # proceed to check DB
+
+        # 3. individual route unlock
         exists = self.db.query(UnlockedRoute).filter(
             UnlockedRoute.user_id == user_id,
             UnlockedRoute.route_id == route_id
         ).first() is not None
 
+        cache_service.set(cache_key, exists, ttl_seconds=300)
         return exists
 
     def get_unlocked_routes_by_user(self, user_id: str) -> list[UnlockedRoute]:

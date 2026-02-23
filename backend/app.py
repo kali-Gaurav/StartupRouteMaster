@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.database.config import Config
 from backend.database import init_db, close_db
-from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime
+from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime, revenuecat_webhook
 from backend.utils.limiter import limiter
 
 # FastAPI-Cache
@@ -115,6 +115,7 @@ app.include_router(flow.router)
 app.include_router(websockets.router)
 app.include_router(bookings.router)
 app.include_router(realtime.router)
+app.include_router(revenuecat_webhook.router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
