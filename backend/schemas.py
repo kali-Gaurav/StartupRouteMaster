@@ -278,13 +278,22 @@ class PaymentOrderSchema(BaseModel):
     route_id: str
     travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     is_unlock_payment: Optional[bool] = False
+    # Optional route details for verification (if provided, speeds up verification)
+    train_number: Optional[str] = None
+    from_station_code: Optional[str] = None
+    to_station_code: Optional[str] = None
+    source_station_name: Optional[str] = None
+    destination_station_name: Optional[str] = None
 
     class Config:
         json_schema_extra = {
             "example": {
                 "route_id": "550e8400-e29b-41d4-a716-446655440000",
                 "travel_date": "2025-12-25",
-                "is_unlock_payment": False
+                "is_unlock_payment": False,
+                "train_number": "12951",
+                "from_station_code": "NDLS",
+                "to_station_code": "MMCT"
             }
         }
 

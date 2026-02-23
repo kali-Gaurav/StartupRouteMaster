@@ -14,6 +14,7 @@ from backend.services.booking_service import BookingService
 from backend.services.unlock_service import UnlockService
 from backend.services.price_calculation_service import PriceCalculationService
 from backend.services.cache_service import cache_service
+from backend.services.route_verification_service import RouteVerificationService
 from backend.database.models import Route as RouteModel, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
 from backend.api.dependencies import get_current_user, verify_webhook_signature
 from backend.services.redirect_service import redirect_service
@@ -104,11 +105,50 @@ async def create_payment_order(
             if unlock_service.is_route_unlocked(current_user.id, request.route_id):
                  return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
+            # NEW: Verify route before creating payment order
+            verification_service = RouteVerificationService(db)
+            verification_result = await verification_service.verify_route_for_unlock(
+                route_id=request.route_id,
+                travel_date=request.travel_date,
+                train_number=request.train_number,
+                from_station_code=request.from_station_code,
+                to_station_code=request.to_station_code,
+                source_station_name=request.source_station_name,
+                destination_station_name=request.destination_station_name
+            )
+            
+            # Log verification results
+            logger.info(
+                f"Route verification for unlock - Route: {request.route_id}, "
+                f"API Calls: {verification_result.get('api_calls_made', 0)}, "
+                f"Success: {verification_result.get('success', False)}"
+            )
+            
+            # Log warnings if any
+            if verification_result.get("warnings"):
+                for warning in verification_result["warnings"]:
+                    logger.warning(f"Route verification warning: {warning}")
+            
+            # If verification failed critically, still allow unlock but log error
+            # (We don't block unlock if API fails - graceful degradation)
+            if not verification_result.get("success") and verification_result.get("errors"):
+                logger.error(
+                    f"Route verification failed for {request.route_id}: "
+                    f"{verification_result.get('errors')}"
+                )
+                # Continue anyway - database fallback will be used
+            
+            # Create payment order
+            # Route model (gtfs_routes) doesn't have source/destination fields directly
+            # Use verification result or route long_name
+            route_source = verification_result.get("route_info", {}).get("from_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[0] if hasattr(route, 'long_name') else "Unknown"
+            route_dest = verification_result.get("route_info", {}).get("to_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[-1] if hasattr(route, 'long_name') else "Unknown"
+            
             order_response = await payment_service.create_order(
                 amount_rupees=UNLOCK_PRICE,
                 receipt_id=f"unlock_{request.route_id}_{current_user.id}",
                 customer_email=current_user.email,
-                description=f"Unlock Route {route.source} to {route.destination}",
+                description=f"Unlock Route {route_source} to {route_dest}",
                 idempotency_key=f"unlock_{request.route_id}_{current_user.id}",
             )
 
@@ -135,9 +175,19 @@ async def create_payment_order(
             db.add(unlocked_route)
             db.commit()
 
-            return {"success": True, "order": order_response, "payment_id": new_payment.id}
+            return {
+                "success": True,
+                "order": order_response,
+                "payment_id": new_payment.id,
+                "verification": verification_result.get("verification", {}),
+                "route_info": verification_result.get("route_info", {}),
+                "warnings": verification_result.get("warnings", []),
+                "api_calls_made": verification_result.get("api_calls_made", 0)
+            }
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Error in create_payment_order for unlock: {e}")
+            logger.error(f"Error in create_payment_order for unlock: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="An internal error occurred.")
 
 

@@ -19,8 +19,10 @@ class SnapshotManager:
 
     def __init__(self, snapshot_dir: str = "snapshots"):
         self.snapshot_dir = snapshot_dir
-        os.makedirs(self.snapshot_dir, exist_ok=True)
-        self.use_redis = getattr(Config, "REDIS_SNAPSHOT_ENABLED", True)
+        if not os.path.exists(self.snapshot_dir):
+            os.makedirs(self.snapshot_dir, exist_ok=True)
+        # Force Redis disabled for local development/testing unless explicitly requested
+        self.use_redis = False
 
     def _get_snapshot_path(self, date: datetime) -> str:
         """Generates a file path for a given date's snapshot."""
@@ -35,60 +37,42 @@ class SnapshotManager:
             logger.warning("Attempted to save an empty snapshot.")
             return None
         
-        date_str = snapshot.date.strftime('%Y%m%d')
-        
-        # 1. Save to Redis (Phase 10)
+        # 1. Save to Redis (Phase 10) - DISABLED
         if self.use_redis:
-            try:
-                await multi_layer_cache.initialize()
-                await multi_layer_cache.set_graph_snapshot(date_str, snapshot)
-                logger.info(f"Snapshot for {date_str} stored in Redis.")
-            except Exception as e:
-                logger.warning(f"Failed to save snapshot to Redis: {e}")
+            pass
 
         # 2. Persist to local file for recovery
         filepath = self._get_snapshot_path(snapshot.date)
         try:
             with open(filepath, 'wb') as f:
                 pickle.dump(snapshot, f)
-            logger.info(f"Persistant copy of snapshot {date_str} saved to {filepath}")
+            logger.info(f"Snapshot saved to {filepath}")
             return filepath
         except Exception as e:
-            logger.error(f"Failed to save file snapshot to {filepath}: {e}")
+            logger.error(f"Failed to save snapshot to file: {e}")
             return None
 
     async def load_snapshot(self, date: datetime) -> Optional[StaticGraphSnapshot]:
         """
-        Loads a StaticGraphSnapshot object from Redis, falling back to local file.
+        Loads a StaticGraphSnapshot object from local file (Redis disabled).
         """
-        date_str = date.strftime('%Y%m%d')
-
-        # 1. Try Redis First (Phase 10)
+        # 1. Try Redis First (Phase 10) - DISABLED
         if self.use_redis:
-            try:
-                await multi_layer_cache.initialize()
-                snapshot = await multi_layer_cache.get_graph_snapshot(date_str)
-                if snapshot:
-                    logger.info(f"Snapshot for {date_str} loaded from Redis (Cache Hit)")
-                    return snapshot
-            except Exception as e:
-                logger.debug(f"Redis snapshot load failed (will fallback): {e}")
+            pass
 
         # 2. Fallback to local file
         filepath = self._get_snapshot_path(date)
+        abs_path = os.path.abspath(filepath)
+        print(f"DEBUG_SM: Checking for snapshot at {abs_path}")
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'rb') as f:
                     snapshot = pickle.load(f)
-                logger.info(f"Snapshot for {date_str} loaded from file fallback")
-                
-                # Side-effect: Re-populate Redis if it was a miss
-                if self.use_redis:
-                    asyncio.create_task(multi_layer_cache.set_graph_snapshot(date_str, snapshot))
-                
+                print(f"DEBUG_SM: Loaded snapshot from {abs_path}")
                 return snapshot
             except Exception as e:
                 logger.error(f"Failed to load snapshot from file {filepath}: {e}")
+        else:
+            print(f"DEBUG_SM: Snapshot NOT found at {abs_path}")
         
-        logger.info(f"No snapshot found for {date_str} in any store.")
         return None

@@ -88,14 +88,34 @@ class VerificationService:
             raise ValueError("No segments to verify")
 
         # Convert segment info to IDs for DataProvider
-        # (Assuming segment_id is numeric string or we resolve it)
-        trip_id = int(primary_segment.train_number) # Simplified
-        seg_id = int(primary_segment.segment_id) if primary_segment.segment_id.isdigit() else 1
+        # If train_number looks like an ID, use it, else try segment_id
+        train_num = primary_segment.train_number
+        try:
+            trip_id = int(train_num)
+        except ValueError:
+            # Fallback to segment_id if it's an integer
+            try:
+                trip_id = int(primary_segment.segment_id)
+            except ValueError:
+                trip_id = 1 # Default fallback
+
+        seg_id = 1
+        try:
+             seg_id = int(primary_segment.segment_id)
+        except ValueError:
+             pass
 
         dt_travel = datetime.combine(travel_date, datetime.min.time())
 
         # NEW: Calls to Unified DataProvider
-        seats_raw = await self.data_provider.verify_seat_availability_unified(trip_id, dt_travel, coach_preference)
+        seats_raw = await self.data_provider.verify_seat_availability_unified(
+            trip_id=trip_id, 
+            travel_date=dt_travel, 
+            coach_preference=coach_preference,
+            train_number=train_num,
+            from_station=primary_segment.depart_code,
+            to_station=primary_segment.arrival_code
+        )
         sched_raw = await self.data_provider.verify_train_schedule_unified(trip_id, dt_travel)
         fare_raw = await self.data_provider.verify_fare_unified(seg_id, coach_preference)
 

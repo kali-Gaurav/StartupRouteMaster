@@ -129,6 +129,10 @@ class GraphBuilder:
                 joinedload(StopTime.trip),
                 joinedload(StopTime.stop)
             ).order_by(StopTime.trip_id, StopTime.stop_sequence).all()
+            
+            print(f"DEBUG: Found {len(stop_times)} stop_times for service_ids {service_ids}")
+            if stop_times:
+                print(f"DEBUG: Sample stop_time: {stop_times[0].trip_id} at {stop_times[0].stop_id}")
 
             # Group by trip
             trip_groups = defaultdict(list)
@@ -249,6 +253,11 @@ class GraphBuilder:
                     fare_estimate = round(float(distance_km or 0.0) * 1.2, 2)
                     if fare_estimate < 10.0: fare_estimate = 60.0 # Min fare
 
+                    # Correctly use trip_id (string code) instead of internal integer ID
+                    trip_obj = trip_stop_times[0].trip
+                    display_train_number = getattr(trip_obj, 'trip_id', str(trip_id))
+                    print(f"DEBUG_BUILDER: Trip {trip_id}, display_train_number={display_train_number}, trip_obj_type={type(trip_obj)}")
+
                     segment = RouteSegment(
                         trip_id=trip_id,
                         departure_stop_id=current.stop_id,
@@ -257,9 +266,11 @@ class GraphBuilder:
                         arrival_time=arr_dt,
                         duration_minutes=duration_minutes,
                         distance_km=round(float(distance_km or 0.0), 3),
+                        departure_code=getattr(current.stop, 'code', ''),
+                        arrival_code=getattr(next_stop.stop, 'code', ''),
                         fare=fare_estimate,
-                        train_name=getattr(trip_stop_times[0].trip.route, 'long_name', 'Unknown'),
-                        train_number=str(trip_id)
+                        train_name=getattr(trip_obj.route, 'long_name', 'Unknown') if trip_obj and hasattr(trip_obj, 'route') else 'Unknown',
+                        train_number=display_train_number
                     )
 
                     trip_segments.append(segment)
@@ -482,41 +493,41 @@ class GraphBuilder:
 
     def _get_active_service_ids(self, session, date: datetime) -> List[int]:
         """Get active service IDs for the given date"""
-        # Check calendar dates first (exceptions)
-        exception_services = session.query(CalendarDate.service_id).filter(
-            and_(
-                CalendarDate.date == date.date(),
-                CalendarDate.exception_type == 1  # Added service
-            )
-        ).subquery()
-
-        removed_services = session.query(CalendarDate.service_id).filter(
-            and_(
-                CalendarDate.date == date.date(),
-                CalendarDate.exception_type == 2  # Removed service
-            )
-        ).subquery()
-
-        # Get regular services
+        target_date = date.date()
         weekday = date.strftime('%A').lower()
-        regular_services = session.query(Calendar.id).filter(
+
+        # 1. Get regular services from calendar
+        regular_services = session.query(Calendar.service_id).filter(
             and_(
                 getattr(Calendar, weekday) == True,
-                Calendar.start_date <= date.date(),
-                Calendar.end_date >= date.date()
-            )
-        ).subquery()
-
-        # Combine: regular services + added - removed
-        active_services = session.query(
-            func.coalesce(exception_services.c.service_id, regular_services.c.id)
-        ).filter(
-            ~func.coalesce(exception_services.c.service_id, regular_services.c.id).in_(
-                session.query(removed_services.c.service_id)
+                Calendar.start_date <= target_date,
+                Calendar.end_date >= target_date
             )
         ).all()
+        active_ids = {s[0] for s in regular_services}
 
-        return [s[0] for s in active_services]
+        # 2. Add services from calendar_dates (exception_type 1)
+        added_services = session.query(CalendarDate.service_id).filter(
+            and_(
+                CalendarDate.date == target_date,
+                CalendarDate.exception_type == 1
+            )
+        ).all()
+        for s in added_services:
+            active_ids.add(s[0])
+
+        # 3. Remove services from calendar_dates (exception_type 2)
+        removed_services = session.query(CalendarDate.service_id).filter(
+            and_(
+                CalendarDate.date == target_date,
+                CalendarDate.exception_type == 2
+            )
+        ).all()
+        for s in removed_services:
+            if s[0] in active_ids:
+                active_ids.remove(s[0])
+
+        return list(active_ids)
 
     def _time_to_datetime(self, date: datetime, t: time) -> datetime:
         """Convert time to datetime on given date"""

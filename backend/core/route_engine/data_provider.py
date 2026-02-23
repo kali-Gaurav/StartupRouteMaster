@@ -18,6 +18,7 @@ import os
 
 from ...database import SessionLocal
 from ...database.models import Coach, Seat, Fare, SeatInventory, Trip, StopTime
+from ...services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ class DataProvider:
 
     # ==================== FARE METHODS ====================
 
-    async def get_fares(self, segment_id: int) -> Dict[str, float]:
+    async def get_fares(self, segment_id: Any) -> Dict[str, float]:
         """
         Get fare information for a segment.
 
@@ -125,21 +126,13 @@ class DataProvider:
         1. Live Fares API (if configured and available)
         2. Database fallback
         """
-        # --- Live Verification (Commented out as per instructions) ---
-        # if self.has_live_fares:
-        #     try:
-        #         # Perform actual live verification via external API
-        #         # response = await self._call_real_live_api(f"/fares/{segment_id}")
-        #         # if response: return response
-        #     except Exception as e:
-        #         logger.warning(f"Live verification failed: {e}")
-
         # Database fallback (Production source of truth)
         return self._get_database_fares(segment_id)
 
-    def _get_database_fares(self, segment_id: int) -> Dict[str, float]:
+    def _get_database_fares(self, segment_id: Any) -> Dict[str, float]:
         """Get fares from database for a segment."""
         try:
+            # Handle both integer and string IDs (for UUID segments)
             fares = self.session.query(Fare).filter(
                 Fare.segment_id == segment_id
             ).all()
@@ -185,8 +178,9 @@ class DataProvider:
             if not coaches:
                 logger.warning(f"No coaches found for trip {trip_id}")
                 # Fallback to SeatInventory (unified simplified model)
-                inventory = self.session.query(SeatInventory).filter(
-                    SeatInventory.stop_time_id == trip_id,
+                # Corrected: join with StopTime to filter by trip_id
+                inventory = self.session.query(SeatInventory).join(StopTime).filter(
+                    StopTime.trip_id == trip_id,
                     SeatInventory.travel_date == date
                 ).first()
                 if inventory:
@@ -352,6 +346,7 @@ class DataProvider:
     ) -> Dict[str, Any]:
         """
         Verify real availability via RapidAPI with fallback to database.
+        Uses Redis cache (15-minute TTL) to minimize API calls.
         
         Args:
             trip_id: Internal trip ID
@@ -377,6 +372,15 @@ class DataProvider:
                 }
                 rapidapi_class = class_mapping.get(coach_preference, "SL")
                 
+                # Check cache first (15-minute TTL as per testing plan)
+                cache_key = f"verify_seat:{train_number}:{from_station}:{to_station}:{date_str}:{quota}:{rapidapi_class}"
+                cached_result = cache_service.get(cache_key)
+                if cached_result:
+                    logger.info(f"Cache hit for seat availability: {cache_key}")
+                    cached_result["source"] = "rapidapi_cache"
+                    return cached_result
+                
+                logger.info(f"Cache miss for seat availability: {cache_key}, calling RapidAPI")
                 result = await self.rapidapi_client.get_seat_availability(
                     train_no=train_number,
                     from_stn=from_station,
@@ -391,8 +395,7 @@ class DataProvider:
                     available_seats = result.get("availableSeats", 0)
                     total_seats = result.get("totalSeats", 64)
                     
-                    logger.info(f"RapidAPI verification successful: {available_seats} seats available")
-                    return {
+                    verification_result = {
                         "status": "verified",
                         "total_seats": total_seats,
                         "available_seats": available_seats,
@@ -400,6 +403,12 @@ class DataProvider:
                         "message": "Seats available" if available_seats > 0 else "Waiting list available",
                         "source": "rapidapi"
                     }
+                    
+                    # Cache the result for 15 minutes (900 seconds)
+                    cache_service.set(cache_key, verification_result, ttl_seconds=900)
+                    logger.info(f"RapidAPI verification successful: {available_seats} seats available (cached)")
+                    
+                    return verification_result
                 else:
                     logger.warning(f"RapidAPI verification failed: {result}")
                     # Fall through to database fallback
@@ -444,7 +453,7 @@ class DataProvider:
 
     async def verify_fare_unified(
         self,
-        segment_id: int,
+        segment_id: Any,
         coach_preference: str = "AC_THREE_TIER",
         train_number: Optional[str] = None,
         from_station: Optional[str] = None,
@@ -452,10 +461,31 @@ class DataProvider:
     ) -> Dict[str, Any]:
         """
         Verify fares via RapidAPI with fallback to database.
+        Uses Redis cache (15-minute TTL) to minimize API calls.
         """
         # Try RapidAPI verification first if client is available
         if self.rapidapi_client and train_number and from_station and to_station:
             try:
+                # Map coach preference to RapidAPI format for cache key
+                class_mapping = {
+                    "AC_THREE_TIER": "3A",
+                    "AC_TWO_TIER": "2A",
+                    "AC_FIRST_CLASS": "1A",
+                    "SLEEPER": "SL",
+                    "CHAIR_CAR": "CC",
+                    "EXECUTIVE_CHAIR": "EC"
+                }
+                rapidapi_class = class_mapping.get(coach_preference, "SL")
+                
+                # Check cache first (15-minute TTL as per testing plan)
+                cache_key = f"verify_fare:{train_number}:{from_station}:{to_station}:{rapidapi_class}"
+                cached_result = cache_service.get(cache_key)
+                if cached_result:
+                    logger.info(f"Cache hit for fare verification: {cache_key}")
+                    cached_result["source"] = "rapidapi_cache"
+                    return cached_result
+                
+                logger.info(f"Cache miss for fare verification: {cache_key}, calling RapidAPI")
                 result = await self.rapidapi_client.get_fare(
                     train_no=train_number,
                     from_stn=from_station,
@@ -468,8 +498,7 @@ class DataProvider:
                     gst = result.get("fare", {}).get("gst", 0)
                     total_fare = result.get("fare", {}).get("totalFare", base_fare + gst)
                     
-                    logger.info(f"RapidAPI fare verification successful: ₹{total_fare}")
-                    return {
+                    verification_result = {
                         "status": "verified",
                         "base_fare": base_fare,
                         "GST": gst,
@@ -477,6 +506,12 @@ class DataProvider:
                         "message": "Fare verified via RapidAPI",
                         "source": "rapidapi"
                     }
+                    
+                    # Cache the result for 15 minutes (900 seconds)
+                    cache_service.set(cache_key, verification_result, ttl_seconds=900)
+                    logger.info(f"RapidAPI fare verification successful: ₹{total_fare} (cached)")
+                    
+                    return verification_result
             except Exception as e:
                 logger.error(f"RapidAPI fare verification error: {e}")
                 # Fall through to database fallback

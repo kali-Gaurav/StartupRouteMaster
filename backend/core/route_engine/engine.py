@@ -163,12 +163,16 @@ class RailwayRouteEngine:
             (self.last_snapshot_time is None) or # Rebuild if never built
             (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400 # 24 hours
         )
+        
+        print(f"DEBUG: needs_rebuild={needs_rebuild}, current_snapshot={self.current_snapshot is not None}")
 
         if needs_rebuild:
             # Try loading from disk first
             self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
+            print(f"DEBUG: loaded_from_disk={self.current_snapshot is not None}")
             
             if not self.current_snapshot:
+                print(f"DEBUG: Building fresh static graph snapshot for {date.date()}")
                 logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
                 
                 # Use GraphBuilder to get a new graph

@@ -195,6 +195,8 @@ class TimeDependentGraph:
                 arrival_time=seg.arrival_time + timedelta(minutes=delay),
                 duration_minutes=seg.duration_minutes,
                 distance_km=seg.distance_km,
+                departure_code=seg.departure_code,
+                arrival_code=seg.arrival_code,
                 fare=seg.fare,
                 train_name=seg.train_name,
                 train_number=seg.train_number

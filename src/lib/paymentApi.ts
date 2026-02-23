@@ -26,6 +26,12 @@ export interface CreateOrderRequest {
   travel_date: string; // Made required for both unlock and booking
   route_id: string; // Add route_id for unlock flow
   is_unlock_payment?: boolean;
+  // NEW: Route details for verification (optional, speeds up verification)
+  train_number?: string; // Train number (e.g., "12951")
+  from_station_code?: string; // Source station code (e.g., "NDLS")
+  to_station_code?: string; // Destination station code (e.g., "MMCT")
+  source_station_name?: string; // Source station name (fallback)
+  destination_station_name?: string; // Destination station name (fallback)
 }
 
 export interface VerifyPaymentRequest {
@@ -45,7 +51,27 @@ export interface BookingRedirectRequest {
 }
 
 /** Uses token from apiClient config. */
-export const createPaymentOrder = async (data: CreateOrderRequest): Promise<{ success: boolean; message?: string; already_paid?: boolean; order: PaymentOrder; payment_id: string }> => {
+export const createPaymentOrder = async (data: CreateOrderRequest): Promise<{ 
+  success: boolean; 
+  message?: string; 
+  already_paid?: boolean; 
+  order: PaymentOrder; 
+  payment_id: string;
+  // NEW: Verification results (for unlock flow)
+  verification?: {
+    sl_availability?: any;
+    ac3_availability?: any;
+    sl_fare?: any;
+    ac3_fare?: any;
+  };
+  route_info?: {
+    train_number?: string;
+    from_station_code?: string;
+    to_station_code?: string;
+  };
+  warnings?: string[];
+  api_calls_made?: number;
+}> => {
   const response = await fetchWithAuth('/payments/create_order', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

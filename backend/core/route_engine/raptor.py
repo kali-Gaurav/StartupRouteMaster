@@ -618,6 +618,7 @@ class OptimizedRAPTOR:
                             'arrival_time': seg.arrival_time.isoformat(),
                             'duration_minutes': seg.duration_minutes,
                             'distance_km': seg.distance_km,
+                            'fare': seg.fare,
                             'fare_amount': seg.fare_amount,
                             'train_name': seg.train_name,
                             'train_number': seg.train_number
@@ -658,6 +659,9 @@ class OptimizedRAPTOR:
                     arrival_time=datetime.fromisoformat(seg_data['arrival_time']),
                     duration_minutes=seg_data['duration_minutes'],
                     distance_km=seg_data.get('distance_km', 0),
+                    departure_code=seg_data.get('departure_code', ''),
+                    arrival_code=seg_data.get('arrival_code', ''),
+                    fare=seg_data.get('fare', seg_data.get('fare_amount', 0)),
                     fare_amount=seg_data.get('fare_amount', 0),
                     train_name=seg_data.get('train_name', ''),
                     train_number=seg_data.get('train_number', '')
@@ -782,6 +786,10 @@ class HybridRAPTOR(OptimizedRAPTOR):
                         break
             
             if not is_dominated:
-                pareto_front.append(r)
+                # ONLY add routes that actually have segments (Filter Phase 3 Hub skeletons)
+                if len(r.segments) > 0:
+                    pareto_front.append(r)
+                else:
+                    logger.debug(f"Discarding empty skeleton route with duration {r.total_duration}")
                     
         return pareto_front[:10]

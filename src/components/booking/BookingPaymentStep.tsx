@@ -82,8 +82,22 @@ export function BookingPaymentStep() {
     setLoading(true);
 
     try {
+      // Extract route details for verification
+      const firstSegment = route?.segments?.[0];
+      const lastSegment = route?.segments?.[route.segments.length - 1];
+      
       const createOrderData = isUnlockFlow
-        ? { route_id: route.id, travel_date: travelDate, is_unlock_payment: true }
+        ? { 
+            route_id: route.id, 
+            travel_date: travelDate, 
+            is_unlock_payment: true,
+            // NEW: Send route details for verification
+            train_number: firstSegment?.trainNumber || trainNo,
+            from_station_code: firstSegment?.from,
+            to_station_code: lastSegment?.to,
+            source_station_name: originName,
+            destination_station_name: destName
+          }
         : {
             route_id: route.id, // Ensure route_id is always sent
             route_origin: routeOrigin,
@@ -102,6 +116,18 @@ export function BookingPaymentStep() {
         setAlreadyPaid(true);
         setLoading(false);
         return;
+      }
+
+      // NEW: Log verification results if available (for unlock flow)
+      if (isUnlockFlow && (orderResponse as any).verification) {
+        const verification = (orderResponse as any).verification;
+        const apiCalls = (orderResponse as any).api_calls_made || 0;
+        console.log(`Route verification complete - API calls: ${apiCalls}`, verification);
+        
+        // Display verification warnings if any
+        if ((orderResponse as any).warnings && (orderResponse as any).warnings.length > 0) {
+          console.warn('Verification warnings:', (orderResponse as any).warnings);
+        }
       }
 
       const order = orderResponse.order; // This order object needs to contain key_id, amount, currency, order_id (razorpay)

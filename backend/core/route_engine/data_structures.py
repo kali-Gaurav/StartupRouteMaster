@@ -28,7 +28,9 @@ class RouteSegment:
     arrival_time: datetime
     duration_minutes: int
     distance_km: float
-    fare: float
+    departure_code: str = ""        # Added for RapidAPI/Verification
+    arrival_code: str = ""          # Added for RapidAPI/Verification
+    fare: float = 0.0               # allow deserialization when fare missing
     fare_amount: Optional[float] = None
     train_name: str = ""
     train_number: str = ""
