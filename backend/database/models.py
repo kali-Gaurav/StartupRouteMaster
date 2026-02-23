@@ -84,6 +84,7 @@ class User(Base):
     bookings = relationship("Booking", back_populates="user")
     reviews = relationship("Review", back_populates="user")
     unlocked_routes = relationship("UnlockedRoute", back_populates="user")
+    subscription = relationship("Subscription", back_populates="user", uselist=False)
     commission_tracks = relationship("CommissionTracking", back_populates="user")
     disruptions_created = relationship("Disruption", back_populates="creator")
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
@@ -379,6 +380,21 @@ class PassengerDetails(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking", back_populates="passenger_details")
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    is_pro = Column(Boolean, default=False, index=True)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    source = Column(String(50), nullable=True)  # e.g. 'revenuecat'
+    original_app_user_id = Column(String(255), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="subscription")
+
 
 class UnlockedRoute(Base):
     __tablename__ = "unlocked_routes"

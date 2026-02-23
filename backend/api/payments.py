@@ -102,7 +102,7 @@ async def create_payment_order(
     else:
         # Handle Unlock Payment
         try:
-            if unlock_service.is_route_unlocked(current_user.id, request.route_id):
+            if await unlock_service.is_route_unlocked(current_user.id, request.route_id):
                  return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
             # NEW: Verify route before creating payment order

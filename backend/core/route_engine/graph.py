@@ -22,7 +22,7 @@ class StaticGraphSnapshot:
     # Algorithmic indexes
     route_patterns: Dict[Tuple[int, ...], List[int]] = field(default_factory=lambda: defaultdict(list))
     transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = field(default_factory=dict)
-    stop_index: Dict[int, int] = field(default_factory=dict)
+    stop_index: Dict[str, int] = field(default_factory=dict)
     
     version: str = "v2.0"
     created_at: datetime = field(default_factory=datetime.utcnow)

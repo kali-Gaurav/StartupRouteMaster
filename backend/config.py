@@ -16,6 +16,9 @@ class Config:
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 
+    # RevenueCat (server) API key used for verifying entitlements and receiving webhooks
+    REVENUECAT_API_KEY = os.getenv("REVENUECAT_API_KEY", "")
+
     ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "default_token_change_me")
 
     CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))

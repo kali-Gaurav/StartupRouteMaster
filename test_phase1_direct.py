@@ -4,6 +4,12 @@ import os
 from datetime import datetime
 from sqlalchemy.orm import Session
 
+import logging
+
+# Configure logging to see DEBUG output
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Add current directory to path
 sys.path.append(os.getcwd())
 

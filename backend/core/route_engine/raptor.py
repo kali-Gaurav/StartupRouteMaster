@@ -76,7 +76,8 @@ class OptimizedRAPTOR:
             include_wait_time=constraints.include_wait_time
         )
 
-        # Check cache first
+        # Check cache first (disabled for debugging)
+        """
         await multi_layer_cache.initialize()
         cache_start = _time.time()
         cached_result = await multi_layer_cache.get_route_query(cache_query)
@@ -86,14 +87,17 @@ class OptimizedRAPTOR:
                 logger.warning("RT-093: cache-hit latency exceeded threshold (%.2fms)", cache_elapsed_ms)
             logger.info(f"Route cache hit for {source_stop_id} -> {dest_stop_id}")
             return self._deserialize_cached_routes(cached_result)
+        """
 
         # Compute routes
         routes = await self._compute_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
-        # Cache the result
+        # Cache the result (disabled for debugging)
+        """
         if routes:
             serialized_routes = self._serialize_routes_for_cache(routes)
             await multi_layer_cache.set_route_query(cache_query, serialized_routes)
+        """
 
         return routes
 
@@ -183,22 +187,68 @@ class OptimizedRAPTOR:
 
         # Round 0: direct departures
         source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt)
+        logger.debug(f"RAPTOR: Found {len(source_departures)} departures from source {source_stop_id} at/after {departure_dt}")
         for dep_time, trip_id in source_departures[:50]:
             segments = graph.get_trip_segments(trip_id)
-            for segment in segments:
-                if segment.departure_stop_id == source_stop_id and segment.departure_time >= dep_time:
-                    route = Route()
-                    route.add_segment(segment)
-                    if segment.arrival_stop_id == dest_stop_id:
-                        if self._validate_route_constraints(route, constraints):
-                            score = await self._score_with_reliability(route, constraints)
-                            route.score = score
-                            key = f"direct_{trip_id}"
-                            if key not in best_routes or score < best_routes[key].score:
-                                best_routes[key] = route
-                    else:
-                        routes_by_round[0].append(route)
+            if not segments:
+                logger.debug(f"RAPTOR DEBUG: Trip {trip_id} has NO segments from graph!")
+                continue
+            arrival_stops = [s.arrival_stop_id for s in segments]
+            logger.debug(f"RAPTOR DEBUG: Trip {trip_id} stops: {arrival_stops}")
+            if dest_stop_id in arrival_stops:
+                logger.info(f"RAPTOR DEBUG *** FOUND DESTINATION {dest_stop_id} IN TRIP {trip_id}!")
+            
+            # Find index where source stop is
+            found_source_idx = -1
+            for idx, seg in enumerate(segments):
+                if seg.departure_stop_id == source_stop_id and seg.departure_time >= dep_time:
+                    found_source_idx = idx
                     break
+            
+            if found_source_idx == -1:
+                continue
+                
+            # Current journey from source - traverse the rest of the trip
+            current_route_segments = []
+            for i in range(found_source_idx, len(segments)):
+                seg = segments[i]
+                current_route_segments.append(seg)
+                
+                # Check if this stop is the destination
+                if seg.arrival_stop_id == dest_stop_id:
+                    # Found a direct route!
+                    final_route = Route(
+                        segments=list(current_route_segments),
+                        total_duration=sum(s.duration_minutes for s in current_route_segments),
+                        total_cost=sum(s.fare for s in current_route_segments),
+                        total_distance=sum(s.distance_km for s in current_route_segments)
+                    )
+                    
+                    logger.debug(f"RAPTOR: Route candidate trip {trip_id}: duration={final_route.total_duration}, cost={final_route.total_cost}, segs={len(final_route.segments)}")
+                    if self._validate_route_constraints(final_route, constraints):
+                        logger.debug(f"RAPTOR: Constraints passed for trip {trip_id}")
+                        score = await self._score_with_reliability(final_route, constraints)
+                        final_route.score = score
+                        key = f"direct_{trip_id}"
+                        if key not in best_routes or score < best_routes[key].score:
+                            best_routes[key] = final_route
+                            logger.debug(f"RAPTOR: Found direct route via trip {trip_id}, arrival {seg.arrival_time}")
+                    else:
+                        logger.debug(f"RAPTOR: Constraints FAILED for trip {trip_id}")
+                
+                # Also add this partial route to the next round search
+                # We limit what we pass to avoid combinatorial explosion
+                if (len(current_route_segments) % 5 == 0 or # Sample every 5 stops
+                    seg.arrival_stop_id == dest_stop_id or 
+                    i == len(segments) - 1): # Or the end of the trip
+                    
+                    partial_route = Route(
+                        segments=list(current_route_segments),
+                        total_duration=sum(s.duration_minutes for s in current_route_segments),
+                        total_cost=sum(s.fare for s in current_route_segments),
+                        total_distance=sum(s.distance_km for s in current_route_segments)
+                    )
+                    routes_by_round[0].append(partial_route)
 
         # transfer rounds
         for round_num in range(1, self.max_transfers + 1):
@@ -230,6 +280,7 @@ class OptimizedRAPTOR:
         # Deduplicate & dominance-prune
         unique = await self._deduplicate_routes(all_routes, graph)
         unique.sort(key=lambda r: (r.score, -r.reliability))
+        logger.info(f"RAPTOR: _search_single_departure for {departure_dt} found {len(unique)} unique routes (from {len(all_routes)} direct and {sum(len(l) for l in routes_by_round.values())} partials)")
         return unique
 
     async def _process_route_transfers(self, route: Route, graph: TimeDependentGraph,
@@ -260,63 +311,83 @@ class OptimizedRAPTOR:
                     continue
 
                 segments = graph.get_trip_segments(trip_id)
-                for segment in segments:
-                    if (segment.departure_stop_id == transfer.station_id and
-                        segment.departure_time >= transfer.departure_time):
+                # Find start point on this trip
+                start_idx = -1
+                for idx, seg in enumerate(segments):
+                    if seg.departure_stop_id == transfer.station_id and seg.departure_time >= transfer.departure_time:
+                        start_idx = idx
+                        break
+                
+                if start_idx == -1:
+                    continue
+                
+                # Traverse the rest of this trip
+                onward_segments = []
+                for i in range(start_idx, len(segments)):
+                    seg = segments[i]
+                    onward_segments.append(seg)
+                    
+                    # Prevent cycles
+                    existing_stations = set(route.get_all_stations())
+                    if seg.arrival_stop_id in existing_stations:
+                        continue
+                        
+                    # Initialize new_route
+                    new_route = Route(
+                        segments=route.segments + list(onward_segments),
+                        total_distance=route.total_distance + sum(s.distance_km for s in onward_segments),
+                        total_duration=route.total_duration + (seg.arrival_time - route.segments[-1].arrival_time).seconds // 60,
+                        transfers=route.transfers + [transfer]
+                    )
+                    # Note: total_cost calculation should sum fares too
+                    new_route.total_cost = route.total_cost + sum(s.fare for s in onward_segments)
 
-                        # Prevent cycles: do not revisit a station already present in the route
-                        existing_stations = set(route.get_all_stations())
-                        if segment.arrival_stop_id in existing_stations:
-                            # skip segments that would create loops
-                            continue
-
-                        # Initialize new_route
-                        new_route = Route(
-                            segments=route.segments + [segment],
-                            total_distance=route.total_distance + segment.distance_km,
-                            transfers=route.transfers + [transfer]
-                        )
-
-                        # Check if destination reached
-                        if segment.arrival_stop_id == dest_stop_id:
-                            if self._validate_route_constraints(new_route, constraints):
-                                score = await self._score_with_reliability(new_route, constraints)
-                                new_route.score = score
-                                new_routes.append(new_route)
-                        elif len(new_route.transfers) < constraints.max_transfers:
+                    # Check if destination reached
+                    if seg.arrival_stop_id == dest_stop_id:
+                        if self._validate_route_constraints(new_route, constraints):
+                            score = await self._score_with_reliability(new_route, constraints)
+                            new_route.score = score
                             new_routes.append(new_route)
-
-                        break  # Only one segment per trip
+                    elif len(new_route.transfers) < constraints.max_transfers:
+                        # Sample stops to keep complexity down
+                        if i % 10 == 0 or i == len(segments) - 1:
+                            new_routes.append(new_route)
 
         return new_routes
 
     def _validate_route_constraints(self, route: Route, constraints: RouteConstraints) -> bool:
         """Validate route against all constraints"""
         # Time constraints
-        if route.total_duration > constraints.max_journey_time:
+        if route.total_duration and route.total_duration > constraints.max_journey_time:
+            logger.debug(f"Route REJECTED: duration {route.total_duration} > max {constraints.max_journey_time}")
             return False
 
         # Transfer count constraint
         if len(route.transfers) > constraints.max_transfers:
+            logger.debug(f"Route REJECTED: transfers {len(route.transfers)} > max {constraints.max_transfers}")
             return False
 
         # Transfer constraints
         for transfer in route.transfers:
             if transfer.duration_minutes < constraints.min_transfer_time:
+                logger.debug(f"Route REJECTED: transfer duration {transfer.duration_minutes} < min {constraints.min_transfer_time}")
                 return False
             if transfer.duration_minutes > constraints.max_layover_time:
+                logger.debug(f"Route REJECTED: transfer duration {transfer.duration_minutes} > max {constraints.max_layover_time}")
                 return False
 
         # Night layover constraints
         if constraints.avoid_night_layovers:
             for transfer in route.transfers:
                 if self._is_night_layover(transfer.arrival_time, transfer.departure_time):
+                    logger.debug(f"Route REJECTED: night layover")
                     return False
 
         # Women safety constraints
         if constraints.women_safety_priority:
             for station_id in route.get_all_stations():
                 if not self._is_safe_station(station_id):
+                    logger.debug(f"Route REJECTED: unsafe station {station_id}")
                     return False
 
         return True

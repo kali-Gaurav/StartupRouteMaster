@@ -18,6 +18,7 @@ class SearchService:
     def __init__(self, db: Session, route_engine_instance: Optional[RouteEngine] = None):
         self.db = db
         self.route_engine = route_engine_instance or route_engine
+        print(f"DEBUG: SearchService using route_engine from: {self.route_engine.__module__}")
         self.reconstructor = JourneyReconstructionEngine(db)
 
     async def search_routes(
@@ -36,8 +37,13 @@ class SearchService:
         start_time = time.time()
         
         try:
-            # Parse travel_date to datetime
-            dt = datetime.strptime(travel_date, "%Y-%m-%d")
+            # Parse travel_date to datetime (handle both YYYY-MM-DD and YYYY-MM-DD HH:MM:SS)
+            if " " in travel_date:
+                dt = datetime.strptime(travel_date, "%Y-%m-%d %H:%M:%S")
+            else:
+                dt = datetime.strptime(travel_date, "%Y-%m-%d")
+                # Default to 08:00 AM if no time provided for search window
+                dt = dt.replace(hour=8, minute=0)
             
             # Use constraints from budget if provided
             from backend.core.route_engine.constraints import RouteConstraints
@@ -70,7 +76,7 @@ class SearchService:
             }
             
             for rt in internal_routes:
-                num_transfers = len(rt.segments) - 1
+                num_transfers = len(rt.transfers)  # Transfers, not segments
                 formatted_rt = self._format_route_for_frontend(rt)
                 
                 # Collect station info for the 'stations' dictionary
@@ -260,24 +266,29 @@ class SearchService:
         if not rt.segments:
             return {}
 
-        # If it's direct, use the first segment
-        if len(rt.segments) == 1:
-            seg = rt.segments[0]
+        # Calculate actual transfer count (not segment count)
+        num_transfers = len(rt.transfers)
+        
+        # If it's direct (0 transfers), aggregate all segments into one
+        if num_transfers == 0:
+            first_seg = rt.segments[0]
+            last_seg = rt.segments[-1]
             return {
-                "train_no": seg.train_number,
-                "train_name": seg.train_name,
-                "departure": seg.departure_time.strftime("%H:%M"),
-                "arrival": seg.arrival_time.strftime("%H:%M"),
-                "time_minutes": seg.duration_minutes,
-                "time_str": f"{seg.duration_minutes // 60}h {seg.duration_minutes % 60}m",
-                "fare": seg.fare,
+                "train_no": first_seg.train_number,
+                "train_name": first_seg.train_name,
+                "departure": first_seg.departure_time.strftime("%H:%M"),
+                "arrival": last_seg.arrival_time.strftime("%H:%M"),
+                "time_minutes": rt.total_duration,
+                "time_str": f"{rt.total_duration // 60}h {rt.total_duration % 60}m",
+                "fare": rt.total_cost,
                 "availability": "AVAILABLE", # Default to AVAILABLE if not checked
-                "distance": seg.distance_km
+                "distance": rt.total_distance,
+                "num_stops": len(rt.segments)  # Number of stops along the route
             }
         
         # If it's multi-transfer, format as expected by frontend
         res = {
-            "type": "one_transfer" if len(rt.segments) == 2 else ("two_transfer" if len(rt.segments) == 3 else "three_transfer"),
+            "type": "one_transfer" if num_transfers == 1 else ("two_transfer" if num_transfers == 2 else "three_transfer"),
             "total_time_minutes": rt.total_duration,
             "total_distance": rt.total_distance,
             "total_fare": rt.total_cost

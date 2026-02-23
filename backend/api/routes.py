@@ -60,7 +60,7 @@ async def get_route_details(
             raise HTTPException(status_code=404, detail="Route not found")
 
         unlock_service = UnlockService(db)
-        is_unlocked = unlock_service.is_route_unlocked(user_id=str(current_user.id), route_id=route_id)
+        is_unlocked = await unlock_service.is_route_unlocked(user_id=str(current_user.id), route_id=route_id)
 
         # Convert RouteModel to RouteDetailSchema and add is_unlocked status
         route_details = RouteDetailSchema.from_orm(route_model)

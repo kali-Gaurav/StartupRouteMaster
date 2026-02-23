@@ -111,6 +111,7 @@ class GraphBuilder:
         try:
             # Get active service IDs for the date
             service_ids = self._get_active_service_ids(session, date)
+            print(f"DEBUG BUILD: service_ids for {date.date()} = {service_ids}")
 
             # Build departures and arrivals index
             departures = defaultdict(list)
@@ -121,6 +122,7 @@ class GraphBuilder:
             # Precomputed indexes for algorithmic speedups
             route_patterns = defaultdict(list)    # stop-sequence tuple -> list of trip_ids
             transfer_cache = {}                   # (from_stop,to_stop) -> list[TransferConnection]
+            stop_index = {}                       # Internal stop_id (string) to id (integer) mapping
 
             # Query stop times for active services
             stop_times = session.query(StopTime).join(Trip).filter(
@@ -139,6 +141,11 @@ class GraphBuilder:
             for st in stop_times:
                 trip_groups[st.trip_id].append(st)
                 stops[st.stop_id] = st.stop
+                # Populate stop_index with BOTH internal code and stop_id if they differ
+                if st.stop.code:
+                    stop_index[st.stop.code] = st.stop.id
+                if st.stop.stop_id:
+                    stop_index[st.stop.stop_id] = st.stop.id
 
             # Check if we need to build indexes (Phase 1)
             try:
@@ -430,6 +437,7 @@ class GraphBuilder:
                     trip_segments=segments,
                     transfer_graph=transfers,
                     stop_cache=stops,
+                    stop_index=stop_index,
                     route_patterns=route_patterns,
                     transfer_cache=transfer_cache
                 )

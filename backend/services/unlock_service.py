@@ -3,6 +3,7 @@ from backend.models import UnlockedRoute, User, Route, Payment
 from datetime import datetime
 import logging
 from backend.config import Config
+from backend.services.revenue_cat_verifier import revenue_cat_verifier
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,23 @@ class UnlockService:
         logger.info(f"Route {route_id} unlocked by user {user_id} with payment {payment_id}.")
         return unlocked_route
 
-    def is_route_unlocked(self, user_id: str, route_id: str) -> bool:
+    async def is_route_unlocked(self, user_id: str, route_id: str) -> bool:
         """
         Checks if a user has already unlocked a specific route.
+        Also checks RevenueCat for 'Routemaster Pro' status which unlocks all routes.
         """
-        return self.db.query(UnlockedRoute).filter(
+        # 1. Check if user is "Pro" via RevenueCat
+        is_pro = await revenue_cat_verifier.is_user_pro(user_id)
+        if is_pro is True: # Explicitly check for True to be safe
+            return True
+
+        # 2. Check individual route unlock in database
+        exists = self.db.query(UnlockedRoute).filter(
             UnlockedRoute.user_id == user_id,
             UnlockedRoute.route_id == route_id
         ).first() is not None
+
+        return exists
 
     def get_unlocked_routes_by_user(self, user_id: str) -> list[UnlockedRoute]:
         """
