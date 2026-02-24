@@ -9,65 +9,32 @@ import {
   getStationByCode,
 } from "@/data/stations";
 
-describe("stations - searchStations", () => {
-  it("returns empty array for empty string", () => {
+describe("stations - searchStations (local placeholder)", () => {
+  it("always returns empty array since search is delegated to backend", () => {
     expect(searchStations("")).toEqual([]);
+    expect(searchStations("a")).toEqual([]);
+    expect(searchStations("Delhi")).toEqual([]);
+    expect(searchStations("NDLS")).toEqual([]);
   });
 
-  it("returns empty array for undefined", () => {
-    expect(searchStations(undefined as unknown as string)).toEqual([]);
-  });
-
-  it("returns empty array for single character", () => {
-    expect(searchStations("a").length).toBeLessThanOrEqual(50);
-  });
-
-  it("returns array of stations for valid query", () => {
-    const results = searchStations("Delhi");
-    expect(Array.isArray(results)).toBe(true);
-    expect(results.length).toBeLessThanOrEqual(50);
-  });
-
-  it("each result has code, name, city, state", () => {
-    const results = searchStations("Delhi");
-    results.forEach((s) => {
-      expect(s).toHaveProperty("code");
-      expect(s).toHaveProperty("name");
-      expect(s).toHaveProperty("city");
-      expect(s).toHaveProperty("state");
-    });
-  });
-
-  it("search by code returns matches", () => {
-    const results = searchStations("NDLS");
-    expect(Array.isArray(results)).toBe(true);
-  });
-
-  it("trims query", () => {
+  it("trims query and stays empty", () => {
     const r1 = searchStations("  Delhi  ");
     const r2 = searchStations("Delhi");
-    expect(r1.length).toBe(r2.length);
+    expect(r1).toEqual(r2);
   });
 });
 
 describe("stations - getStationByCode", () => {
-  it("returns undefined for empty code", () => {
+  it("returns undefined for empty or missing code", () => {
     expect(getStationByCode("")).toBeUndefined();
-  });
-
-  it("returns undefined for undefined", () => {
     expect(getStationByCode(undefined as unknown as string)).toBeUndefined();
   });
 
-  it("returns station or undefined for valid code", () => {
-    const s = getStationByCode("NDLS");
-    expect(s == null || (typeof s === "object" && "code" in s)).toBe(true);
-  });
-
-  it("is case-insensitive", () => {
-    const s1 = getStationByCode("ndls");
-    const s2 = getStationByCode("NDLS");
-    expect(s1).toEqual(s2);
+  it("can return cached station when added", () => {
+    const sample = { code: "XYZ", name: "Test", city: "T", state: "S" };
+    addStationsToCache([sample]);
+    expect(getStationByCode("XYZ")).toEqual(sample);
+    expect(getStationByCode("xyz")).toEqual(sample);
   });
 });
 
