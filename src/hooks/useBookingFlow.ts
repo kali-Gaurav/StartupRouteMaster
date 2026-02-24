@@ -71,7 +71,7 @@ export const useBookingFlow = () => {
         travel_class: bookingData.travelClass || 'SL',
       });
 
-      if (response.success && response.irctc_url) {
+      if (response.irctc_url) {
         logEvent('booking_redirect_success', { origin: bookingData.origin, destination: bookingData.destination });
         await invalidateBookingsCache();
         window.open(response.irctc_url, '_blank');

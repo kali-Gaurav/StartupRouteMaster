@@ -9,8 +9,7 @@ from backend.database.models import User, Booking, Payment
 @pytest.fixture(scope="function")
 def auth_client(db_session):
     # create a dummy user and override get_current_user dependency
-    import uuid
-    user = User(id=str(uuid.uuid4()), email=f"user+{uuid.uuid4()}@example.com", password_hash="hash")
+    user = User(id="user-1", email="user@example.com", password_hash="hash")
     db_session.add(user)
     db_session.commit()
 
@@ -29,32 +28,23 @@ def auth_client(db_session):
     app.dependency_overrides.clear()
 
 
-import uuid
-from datetime import datetime, date
-
-
 def create_booking_and_payment(db_session, user, route_id="route-123", travel_date="2026-03-01", status="pending"):
-    # ensure travel_date is a date object (SQLAlchemy Date expects that)
-    if isinstance(travel_date, str):
-        travel_date = datetime.fromisoformat(travel_date).date()
-
-    # create booking with unique identifiers
+    # create booking
     booking = Booking(
-        id=str(uuid.uuid4()),
-        pnr_number=str(uuid.uuid4())[:10],
+        id="bk-1",
+        pnr_number="PNR123",
         user_id=user.id,
         travel_date=travel_date,
         booking_status="pending",
         amount_paid=100.0,
-        booking_details={},
-        route_id=route_id,
+        booking_details={}
     )
     db_session.add(booking)
     db_session.flush()
     payment = Payment(
-        id=str(uuid.uuid4()),
+        id="pm-1",
         booking_id=booking.id,
-        razorpay_order_id=f"order-{uuid.uuid4()}",
+        razorpay_order_id="order-xyz",
         status=status,
         amount=100.0,
     )
@@ -114,7 +104,7 @@ def test_webhook_payment_event_updates_status(auth_client, db_session):
     payment.razorpay_payment_id = "pay_abc"
     payment.razorpay_order_id = "order_xyz"
     payment.status = "pending"
-    db_session.commit()
+    test_session.commit()
 
     payload = {
         "event": "payment.captured",

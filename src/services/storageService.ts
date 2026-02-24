@@ -106,5 +106,4 @@ export const storageService = {
     return db.favorites.orderBy('count').reverse().limit(limit).toArray();
   }
 };
-  }
-}
+

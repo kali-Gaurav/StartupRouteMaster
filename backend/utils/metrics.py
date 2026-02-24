@@ -15,6 +15,20 @@ SEARCH_REQUESTS_TOTAL = Counter(
     ['endpoint', 'status'] # Labels for endpoint and outcome (success/failure)
 )
 
+# --- Station Suggest Metrics ---
+STATION_SUGGEST_LATENCY_MS = Histogram(
+    'station_suggest_latency_ms',
+    'Latency histogram for the station suggest endpoint in milliseconds.',
+    ['endpoint'],
+    buckets=(1, 3, 5, 10, 25, 50, 100, 250)
+)
+
+STATION_SUGGEST_REQUESTS_TOTAL = Counter(
+    'station_suggest_requests_total',
+    'Total request count for station suggest endpoint.',
+    ['endpoint', 'status']
+)
+
 # --- Lock Contention Metrics ---
 # Counter for lock acquisition attempts
 LOCK_ACQUISITION_ATTEMPTS_TOTAL = Counter(
