@@ -7,27 +7,14 @@ import { MessageCircle, Mic, MicOff, Send, X, Bot, User, Plus } from "lucide-rea
 import { cn } from "@/lib/utils";
 import { getRailwayApiUrl } from "@/lib/utils";
 import { searchStationsApi } from "@/services/railwayBackApi";
+import { processLocalIntent } from "@/services/localChatBrain";
+import { useBackendHealth } from "@/hooks/useBackendHealth";
 
 // Declare SpeechRecognition for browser compatibility
 declare global {
   interface Window {
     SpeechRecognition: typeof SpeechRecognition | undefined;
     webkitSpeechRecognition: typeof SpeechRecognition | undefined;
-  }
-
-  interface SpeechRecognitionEvent extends Event {
-    results: {
-      [key: number]: {
-        [key: number]: {
-          transcript: string;
-        };
-      };
-    };
-  }
-
-  interface SpeechRecognitionErrorEvent extends Event {
-    error: string;
-    message: string;
   }
 }
 
@@ -111,6 +98,7 @@ function generateSessionId() {
 const TELEGRAM_BOT_URL = "https://t.me/RoutemasternagarindustrisBot";
 
 export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
+  const isBackendOnline = useBackendHealth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     { id: "welcome", role: "assistant", content: WELCOME_MSG, timestamp: new Date(), actions: QUICK_ACTIONS },
@@ -245,12 +233,24 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     addMessage("user", text);
     setIsLoading(true);
 
+    // 1. Try local intent processor first (Instant/Offline)
+    const localResult = processLocalIntent(text);
+    if (localResult) {
+      addMessage("assistant", localResult.reply, localResult.actions);
+      if (localResult.triggerSearch && localResult.collected) {
+        await resolveAndTriggerSearch(localResult.collected);
+      }
+      setIsLoading(false);
+      return;
+    }
+
+    // 2. Fallback to backend AI
     try {
       await sendToBackend(text);
     } finally {
       setIsLoading(false);
     }
-  }, [input, addMessage, sendToBackend]);
+  }, [input, addMessage, sendToBackend, resolveAndTriggerSearch]);
 
   const handleQuickAction = (label: string) => {
     if (label === "Open in Telegram") {
