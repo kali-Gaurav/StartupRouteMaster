@@ -1,14 +1,23 @@
-import stationData from "./station_search_data.json";
+import Fuse from "fuse.js";
+import { Station as StationRefined, stationsRefined } from "./stations_refined";
 
 // Popular Indian Railway Stations
-export interface Station {
-  code: string;
-  name: string;
-  city: string;
-  state: string;
-}
+export type Station = StationRefined;
 
-export const stations: Station[] = stationData.stations;
+export const stations: Station[] = stationsRefined;
+
+// Initialize Fuse.js for high-performance fuzzy search
+const fuse = new Fuse(stations, {
+  keys: [
+    { name: "code", weight: 2.0 },
+    { name: "name", weight: 1.5 },
+    { name: "city", weight: 1.0 }
+  ],
+  threshold: 0.35,
+  distance: 100,
+  minMatchCharLength: 1, // Start searching from 1 char for intelligent codes
+  includeScore: true,
+});
 
 // Cache for stations fetched from API (backend); used by getStationByCode
 const stationCache = new Map<string, Station>();
@@ -28,69 +37,51 @@ export const getStationByCode = (code: string): Station | undefined => {
   return stations.find((s) => s.code.toUpperCase() === upper);
 };
 
+/**
+ * Intelligent refined station search
+ * Logic:
+ * 1. Exact Code Match (e.g. "NDLS")
+ * 2. Starts with Code (e.g. "ND")
+ * 3. Starts with Name (e.g. "NEW")
+ * 4. Junctions with fuzzy match
+ * 5. General Fuzzy
+ */
 export const searchStations = (query: string): Station[] => {
   if (!query || typeof query !== "string") return [];
   const upperQuery = String(query).trim().toUpperCase();
   if (!upperQuery) return [];
 
-  // Try exact city match first
-  let filtered = stations.filter(
-    (s) => s?.city && String(s.city).toUpperCase() === upperQuery
-  );
-
-  // If no exact city match, search by station code (exact or prefix) then name
-  if (filtered.length === 0) {
-    filtered = stations.filter(
-      (s) =>
-        (s?.code && String(s.code).toUpperCase().startsWith(upperQuery)) ||
-        (s?.code && String(s.code).toUpperCase() === upperQuery) ||
-        (s?.name && String(s.name).toUpperCase().includes(upperQuery)) ||
-        (s?.city && String(s.city).toUpperCase().includes(upperQuery))
-    );
+  // Short queries (1-2 chars) - prioritise codes
+  if (upperQuery.length < 3) {
+    return stations
+      .filter(s => s.code.startsWith(upperQuery))
+      .sort((a, b) => (b.isJunction ? 1 : 0) - (a.isJunction ? 1 : 0))
+      .slice(0, 5);
   }
 
-  // Fuzzy: if still no results, match by tokens (e.g. "new del" → New Delhi)
-  if (filtered.length === 0) {
-    const tokens = upperQuery.split(/\s+/).filter(Boolean);
-    if (tokens.length > 0) {
-      filtered = stations.filter((s) => {
-        const name = String(s?.name ?? "").toUpperCase();
-        const code = String(s?.code ?? "").toUpperCase();
-        const city = String(s?.city ?? "").toUpperCase();
-        return tokens.every(
-          (t) => name.includes(t) || code.includes(t) || city.includes(t)
-        );
-      });
-    }
-  }
+  const results = fuse.search(upperQuery);
 
-  // Sort with smart prioritization
-  return filtered.sort((a, b) => {
-    const aCode = (a?.code && String(a.code).toUpperCase()) || "";
-    const bCode = (b?.code && String(b.code).toUpperCase()) || "";
-    const aName = (a?.name && String(a.name).toUpperCase()) || "";
-    const bName = (b?.name && String(b.name).toUpperCase()) || "";
-    
-    // Priority 1: Exact code match
-    const aCodeExact = aCode === upperQuery ? 0 : 1;
-    const bCodeExact = bCode === upperQuery ? 0 : 1;
-    if (aCodeExact !== bCodeExact) return aCodeExact - bCodeExact;
-    
-    // Priority 2: Code starts with query
-    const aCodeStarts = aCode.startsWith(upperQuery) ? 0 : 1;
-    const bCodeStarts = bCode.startsWith(upperQuery) ? 0 : 1;
-    if (aCodeStarts !== bCodeStarts) return aCodeStarts - bCodeStarts;
-    
-    // Priority 3: Major junctions first
-    const aIsMajor = aName.includes("JN") || aName.includes("JUNCTION") || aName.includes("TERMINUS") || aName.includes("CENTRAL");
-    const bIsMajor = bName.includes("JN") || bName.includes("JUNCTION") || bName.includes("TERMINUS") || bName.includes("CENTRAL");
-    if (aIsMajor && !bIsMajor) return -1;
-    if (!aIsMajor && bIsMajor) return 1;
-    
-    // Priority 4: Shorter names (more relevant)
-    if (aName.length !== bName.length) return aName.length - bName.length;
-    
-    // Priority 5: Alphabetical
-    return aName.localeCompare(bName);
-  }).slice(0, 50);
+  // Sorting results intelligently
+  const sorted = results.sort((a, b) => {
+    const sA = a.score || 1;
+    const sB = b.score || 1;
+
+    // 1. Exact Code gets absolute priority
+    if (a.item.code === upperQuery) return -1;
+    if (b.item.code === upperQuery) return 1;
+
+    // 2. Starts with Name gets high priority
+    const startsA = a.item.name.toUpperCase().startsWith(upperQuery);
+    const startsB = b.item.name.toUpperCase().startsWith(upperQuery);
+    if (startsA && !startsB) return -1;
+    if (startsB && !startsA) return 1;
+
+    // 3. Junction status boost
+    if (a.item.isJunction && !b.item.isJunction && sA < sB + 0.1) return -1;
+    if (b.item.isJunction && !a.item.isJunction && sB < sA + 0.1) return 1;
+
+    return sA - sB;
+  });
+
+  return sorted.slice(0, 10).map(r => r.item);
 };

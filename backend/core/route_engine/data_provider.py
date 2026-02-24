@@ -126,6 +126,39 @@ class DataProvider:
         1. Live Fares API (if configured and available)
         2. Database fallback
         """
+        # Live fare check
+        if self.has_live_fares and self.fare_service and self.fare_service.enabled:
+            try:
+                train_no = None
+                from_code = None
+                to_code = None
+                from ...database.models import Segment, Trip, StopTime, Stop
+                seg = self.session.query(Segment).filter(Segment.id == segment_id).first()
+                if seg and seg.trip_id:
+                    trip = self.session.query(Trip).filter(Trip.id == seg.trip_id).first()
+                    if trip:
+                        train_no = getattr(trip.route, 'short_name', None) or trip.trip_id
+                        st = self.session.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.asc()).first()
+                        et = self.session.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.desc()).first()
+                        if st:
+                            s = self.session.query(Stop).filter(Stop.id == st.stop_id).first()
+                            from_code = s.code if s else None
+                        if et:
+                            e = self.session.query(Stop).filter(Stop.id == et.stop_id).first()
+                            to_code = e.code if e else None
+                if train_no and from_code and to_code:
+                    fare_result = self.fare_service.get_fare(
+                        train_no=train_no,
+                        from_station=from_code,
+                        to_station=to_code,
+                        class_code="",
+                        date=""
+                    )
+                    if fare_result and fare_result.get("success"):
+                        data = fare_result.get("data", {})
+                        return data.get("fare") if isinstance(data, dict) else {}
+            except Exception as e:
+                logger.warning(f"Live fare service call failed: {e}")
         # Database fallback (Production source of truth)
         return self._get_database_fares(segment_id)
 
@@ -156,14 +189,42 @@ class DataProvider:
         1. Live Seats API (if configured and available)
         2. Database fallback
         """
-        # --- Live Verification (Commented out as per instructions) ---
-        # if self.has_live_seats:
-        #     try:
-        #         # seats = await self._call_real_live_api(f"/seats/{trip_id}/{date.isoformat()}")
-        #         # if seats: return seats
-        #     except Exception as e:
-        #         logger.warning(f"Live seat verification failed: {e}")
-
+        # attempt live seats API if possible
+        if self.has_live_seats and self.seat_service and self.seat_service.enabled:
+            train_no = None
+            from_code = None
+            to_code = None
+            try:
+                from ...database.models import Trip, StopTime, Stop
+                trip = self.session.query(Trip).filter(Trip.id == trip_id).first()
+                if trip:
+                    train_no = getattr(trip.route, 'short_name', None) or trip.trip_id
+                    st = self.session.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.asc()).first()
+                    et = self.session.query(StopTime).filter(StopTime.trip_id == trip.id).order_by(StopTime.stop_sequence.desc()).first()
+                    if st:
+                        sstop = self.session.query(Stop).filter(Stop.id == st.stop_id).first()
+                        from_code = sstop.code if sstop else None
+                    if et:
+                        estop = self.session.query(Stop).filter(Stop.id == et.stop_id).first()
+                        to_code = estop.code if estop else None
+            except Exception:
+                pass
+            if train_no and from_code and to_code:
+                try:
+                    seat_result = self.seat_service.get_seat_availability(
+                        train_no=train_no,
+                        date=date.strftime("%Y-%m-%d"),
+                        from_station=from_code,
+                        to_station=to_code,
+                        class_code="",
+                    )
+                    if seat_result and seat_result.get("success"):
+                        data = seat_result.get("data", {})
+                        if isinstance(data, dict) and "availability" in data:
+                            return data.get("availability")
+                        return seat_result.get("data")
+                except Exception as e:
+                    logger.warning(f"Live seat service call failed: {e}")
         # Database fallback
         return self._get_database_seats(trip_id, date)
 
@@ -216,13 +277,28 @@ class DataProvider:
 
         Returns delay from live verification API or 0 if unavailable.
         """
-        # --- Live Verification (Commented out as per instructions) ---
-        # if self.has_live_delays:
-        #     try:
-        #         # delay = await self._call_real_live_api(f"/delays/{trip_id}")
-        #         # if delay is not None: return delay
-        #     except Exception as e:
-        #         logger.warning(f"Live delay verification failed: {e}")
+        # attempt live delay using status API
+        if self.has_live_delays and self.live_status_service and self.live_status_service.enabled:
+            try:
+                train_no = None
+                from ...database.models import Trip
+                trip = self.session.query(Trip).filter(Trip.id == trip_id).first()
+                if trip:
+                    train_no = getattr(trip.route, 'short_name', None) or trip.trip_id
+                if train_no:
+                    status = self.live_status_service.get_live_status(train_no)
+                    if status and status.get("success"):
+                        stations = status.get("stations", [])
+                        if stations:
+                            last = stations[-1]
+                            delay = last.get("delay")
+                            if isinstance(delay, str) and delay.endswith("min"):
+                                try:
+                                    return int(delay.replace("min", ""))
+                                except ValueError:
+                                    pass
+            except Exception as e:
+                logger.warning(f"Live delay service call failed: {e}")
 
         return 0
 

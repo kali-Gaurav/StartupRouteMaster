@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText } from "lucide-react";
+import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText, WifiOff } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { StationSearch } from "@/components/StationSearch";
@@ -21,8 +21,12 @@ import { logEvent, logPerf } from "@/lib/observability";
 import { RouteSourceToggle, type RouteSource } from "@/components/RouteSourceToggle";
 import { getUnlockedRoutes } from "@/lib/paymentApi";
 import { useAuth } from "@/context/AuthContext";
+import { useBackendHealth } from "@/hooks/useBackendHealth";
+import { predictivePreloadService } from "@/services/predictivePreloadService";
+import { storageService } from "@/services/storageService";
 
 const Index = () => {
+  const isBackendOnline = useBackendHealth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [origin, setOrigin] = useState<Station | null>(null);
   const [destination, setDestination] = useState<Station | null>(null);
@@ -445,6 +449,7 @@ const Index = () => {
           name: node.name ?? node.code,
           city: node.name ?? node.code,
           state: "",
+          isJunction: (node as any).isJunction ?? false,
         });
       }
       if (out.length >= 8) break;
@@ -530,6 +535,13 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <Navbar />
 
+      {!isBackendOnline && (
+        <div className="bg-orange-600 text-white text-center py-2 text-[10px] sm:text-xs font-bold flex items-center justify-center gap-2 animate-in slide-in-from-top-full duration-500">
+          <WifiOff className="w-4 h-4" />
+          OFFLINE MODE: Using local station database and cached journeys. Some AI features may be limited.
+        </div>
+      )}
+
       {recoverableSession && (
         <div className="fixed top-16 left-0 right-0 z-40 container mx-auto px-4 pt-2">
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-2 shadow-lg">
@@ -583,7 +595,13 @@ const Index = () => {
                     label="From"
                     placeholder="e.g. Delhi, Mumbai, Kolkata"
                     value={origin}
-                    onChange={setOrigin}
+                    onChange={(s) => {
+                      setOrigin(s);
+                      if (s?.code) {
+                        predictivePreloadService.preloadPotentialRoutes(s.code);
+                        storageService.addRecentSearch(s.code, destination?.code || "");
+                      }
+                    }}
                     icon="origin"
                     recentStations={recentStations}
                   />
@@ -591,7 +609,12 @@ const Index = () => {
                     label="To"
                     placeholder="e.g. Delhi, Mumbai, Kolkata"
                     value={destination}
-                    onChange={setDestination}
+                    onChange={(s) => {
+                      setDestination(s);
+                      if (s?.code && origin?.code) {
+                        storageService.addRecentSearch(origin.code, s.code);
+                      }
+                    }}
                     icon="destination"
                     recentStations={recentStations}
                   />

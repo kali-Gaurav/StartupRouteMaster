@@ -21,7 +21,7 @@ export interface BackendRoutesResponse {
     two_transfer: unknown[];
     three_transfer: unknown[];
   };
-  stations?: Record<string, { code: string; name: string; city: string; state: string }>;
+  stations?: Record<string, Station>;
   journey_message?: string;
   booking_tips?: string[];
   message?: string;

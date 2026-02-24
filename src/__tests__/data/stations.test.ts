@@ -78,7 +78,7 @@ describe("stations - addStationsToCache", () => {
 
   it("adds stations with valid code", () => {
     addStationsToCache([
-      { code: "TST", name: "Test Station", city: "Test", state: "TS" },
+      { code: "TST", name: "Test Station", city: "Test", state: "TS", isJunction: false },
     ]);
     const s = getStationByCode("TST");
     expect(s?.code).toBe("TST");
@@ -86,7 +86,7 @@ describe("stations - addStationsToCache", () => {
 
   it("ignores entries with empty code", () => {
     addStationsToCache([
-      { code: "", name: "No Code", city: "", state: "" },
+      { code: "", name: "No Code", city: "", state: "", isJunction: false },
     ]);
     expect(getStationByCode("")).toBeUndefined();
   });

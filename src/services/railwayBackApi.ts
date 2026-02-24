@@ -5,7 +5,8 @@
 
 import { getRailwayApiUrl } from '@/lib/utils';
 import type { Route, RouteSegment } from '@/data/routes';
-import type { Station } from '@/data/stations';
+import { type Station, searchStations } from '@/data/stations';
+import { getCachedRoutes, cacheRoutes } from './storageService';
 
 export interface FareRow {
   class_code: string;
@@ -111,31 +112,40 @@ export interface BackendRoutesResponse {
     two_transfer: BackendTwoTransferRoute[];
     three_transfer: BackendThreeTransferRoute[];
   };
-  stations?: Record<string, { code: string; name: string; city: string; state: string }>;
+  stations?: Record<string, Station>;
   journey_message?: string;
   booking_tips?: string[];
   message?: string;
 }
 
 /**
- * Search stations from backend GET /stations/search
+ * Search stations from local DB first, then optionally backend
  */
 export async function searchStationsApi(q: string): Promise<Station[]> {
   if (!q || q.trim().length < 2) return [];
-  const url = getRailwayApiUrl(`/stations/search?q=${encodeURIComponent(q.trim())}`);
-  const res = await fetch(url);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Stations search failed: ${res.status}`);
+  
+  // 1. Always start with local search for instant results
+  const localResults = searchStations(q);
+  if (localResults.length > 0) return localResults;
+
+  // 2. Fallback to backend as a booster (or skip if offline)
+  try {
+    const url = getRailwayApiUrl(`/stations/search?q=${encodeURIComponent(q.trim())}`);
+    const res = await fetch(url);
+    if (!res.ok) return []; // Gracefully return empty if backend fails
+    const data = await res.json();
+    const list = data.stations || [];
+    return list.map((s: BackendStation & { code?: string; name?: string }) => ({
+      code: s.station_code ?? s.code ?? '',
+      name: (s.station_name ?? s.name ?? s.station_code ?? s.code ?? '').trim(),
+      city: (s.city ?? '').trim(),
+      state: (s.state ?? '').trim(),
+      isJunction: (s as any).is_junction ?? false,
+    }));
+  } catch (error) {
+    console.warn("Backend search failed, using local search results only", error);
+    return localResults;
   }
-  const data = await res.json();
-  const list = data.stations || [];
-  return list.map((s: BackendStation & { code?: string; name?: string }) => ({
-    code: s.station_code ?? s.code ?? '',
-    name: (s.station_name ?? s.name ?? s.station_code ?? s.code ?? '').trim(),
-    city: (s.city ?? '').trim(),
-    state: (s.state ?? '').trim(),
-  }));
 }
 
 export interface SearchRoutesParams {
@@ -160,6 +170,7 @@ function defaultDate(): string {
 /**
  * Search routes from backend GET /routes.
  * Normalizes station codes (uppercase), defaults date to today, retries on 504 with lighter params.
+ * Falls back to local IndexedDB cache if backend is unavailable.
  */
 export async function searchRoutesApi(
   source: string,
@@ -171,9 +182,6 @@ export async function searchRoutesApi(
   const src = String(source ?? '').trim().toUpperCase();
   const dest = String(destination ?? '').trim().toUpperCase();
   const date = params?.date?.trim() || defaultDate();
-
-  const headers: HeadersInit = {};
-  if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;
 
   const doFetch = (maxT: number, maxR: number, useDate: string) => {
     const searchParams = new URLSearchParams({
@@ -187,19 +195,47 @@ export async function searchRoutesApi(
     if (params?.confirmedOnly) searchParams.set('confirmed_only', 'true');
     if (params?.sortBy) searchParams.set('sort_by', params.sortBy || 'duration');
     if (params?.routeSource) searchParams.set('route_source', params.routeSource);
+    
+    const headers: HeadersInit = {};
+    if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;
+    
     return fetch(getRailwayApiUrl(`/routes?${searchParams.toString()}`), { headers });
   };
 
-  let res = await doFetch(maxTransfers, maxResults, date);
-  if (res.status === 504 && (maxTransfers > 1 || maxResults > 25)) {
-    res = await doFetch(1, 25, date);
+  try {
+    let res = await doFetch(maxTransfers, maxResults, date);
+    if (res.status === 504 && (maxTransfers > 1 || maxResults > 25)) {
+      res = await doFetch(1, 25, date);
+    }
+    
+    if (!res.ok) {
+      // If backend exists but returns error, try cache
+      const cached = await getCachedRoutes(src, dest);
+      if (cached) return { routes: cached, source: 'offline-cache' } as any;
+      
+      const err = await res.json().catch(() => ({}));
+      const msg = typeof err.message === 'string' ? err.message : (Array.isArray(err.detail) ? err.detail[0]?.msg : err.detail);
+      throw new Error(msg || `Routes search failed: ${res.status}`);
+    }
+
+    const data = await res.json();
+    // Cache the successful results for future offline use
+    if (data.routes && data.routes.length > 0) {
+      cacheRoutes(src, dest, data.routes);
+    }
+    return data;
+  } catch (error) {
+    console.warn("Backend route search failed, attempting to serve from cache", error);
+    const cached = await getCachedRoutes(src, dest);
+    if (cached) {
+      return { 
+        routes: cached, 
+        source: 'offline-cache',
+        message: 'You are viewing cached routes because you are offline.' 
+      } as any;
+    }
+    throw error;
   }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const msg = typeof err.message === 'string' ? err.message : (Array.isArray(err.detail) ? err.detail[0]?.msg : err.detail);
-    throw new Error(msg || `Routes search failed: ${res.status}`);
-  }
-  return res.json();
 }
 
 /**

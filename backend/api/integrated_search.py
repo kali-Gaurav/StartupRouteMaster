@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 from backend.database import SessionLocal, get_db
 from backend.database.models import Stop, Trip, Route
 from backend.services.search_service import SearchService
+from backend.services.booking_service import BookingService
 from backend.schemas import (
     SearchRequest, 
     JourneyInfoResponse, 
@@ -42,7 +43,7 @@ async def unified_search(request: SearchRequest, db: Session = Depends(get_db)):
         result = await service.search_routes(
             source=request.source,
             destination=request.destination,
-            travel_date=request.travel_date
+            travel_date=request.date  # schema field is named 'date'
         )
         
         if not result.get("journeys"):

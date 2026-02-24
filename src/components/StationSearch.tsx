@@ -49,7 +49,7 @@ export function StationSearch({
     }
   }, [highlightedIdx]);
 
-  // Search stations via backend API GET /stations/search
+  // Search stations via local DB and backend API
   const searchStations = useCallback((searchQuery: string) => {
     if (searchQuery.length < 2) {
       setResults([]);
@@ -64,51 +64,37 @@ export function StationSearch({
     if (resultsCache.current.has(cacheKey)) {
       const cachedResults = resultsCache.current.get(cacheKey)!;
       setResults(cachedResults);
-      if (cachedResults.length > 0 && cachedResults.every((s: StationType) => s.city && s.city.toLowerCase() === cacheKey)) {
-        setGroupedCity(cachedResults[0].city);
-      } else {
-        setGroupedCity(null);
-      }
       setIsOpen(cachedResults.length > 0);
       setHighlightedIdx(-1);
       setIsLoading(false);
       return;
     }
 
+    // 1. Instant local search
+    const localResults = searchStationsLocal(searchQuery);
+    if (localResults.length > 0) {
+      setResults(localResults);
+      setIsOpen(true);
+      setHighlightedIdx(-1);
+      resultsCache.current.set(cacheKey, localResults);
+    }
+
+    // 2. Background backend search to enrich/validate (optional)
     setIsLoading(true);
     setSearchError(null);
     searchStationsApi(searchQuery)
       .then((results) => {
-        if (results && Array.isArray(results)) {
+        if (results && Array.isArray(results) && results.length > 0) {
           resultsCache.current.set(cacheKey, results);
           addStationsToCache(results);
-          if (results.length > 0 && results.every((s) => s?.city && String(s.city).toLowerCase() === cacheKey)) {
-            setGroupedCity(results[0].city);
-          } else {
-            setGroupedCity(null);
-          }
           setResults(results);
-          setIsOpen(results.length > 0);
-          setHighlightedIdx(-1);
-          setSearchError(null);
+          setIsOpen(true);
         }
       })
-      .catch(() => {
-        // Fallback: use local station data when backend is unavailable
-        const localResults = searchStationsLocal(searchQuery);
-        if (localResults.length > 0) {
-          resultsCache.current.set(cacheKey, localResults);
-          addStationsToCache(localResults);
-          setResults(localResults);
-          setIsOpen(true);
-          setHighlightedIdx(-1);
-          setSearchError(null);
-        } else {
-          setSearchError("Backend unavailable. Using local stations only.");
-          setResults([]);
-          setIsOpen(false);
+      .catch((err) => {
+        if (localResults.length === 0) {
+          setSearchError("Stations search failed.");
         }
-        setGroupedCity(null);
       })
       .finally(() => setIsLoading(false));
   }, []);

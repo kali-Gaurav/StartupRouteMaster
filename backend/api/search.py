@@ -55,7 +55,10 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
             travel_date=travel_date_str
         )
 
-        if not result or not result.get("routes"):
+        # In production we may choose to signal 404 for no routes,
+        # but during development we want to return an empty structure so that
+        # the frontend can render gracefully without an error overlay.
+        if (not result or not result.get("routes")) and Config.ENVIRONMENT != "development":
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No routes found for {search_request.source} -> {search_request.destination} on {travel_date_str}"

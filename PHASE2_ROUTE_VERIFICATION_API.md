@@ -99,7 +99,9 @@ After populating the `.env` file or deploying these variables, restart the FastA
 
 > ⚠️ **Payment & Booking Deferred** – the current rollout focuses strictly on route search, graph construction and live verification. Booking/payment endpoints are deliberately disabled (`BOOKING_ENABLED=false`) and `LIVE_BOOKING_API` left blank; these will be integrated in a later phase after the core workflow is validated.
 >
-> 📍 **Domain configuration** – once your public domain is registered, set `FRONTEND_API_URL`/`FRONTEND_BASE_URL` in the env files. All API clients (mobile, web) should use that host instead of localhost.
+> � **API Budget & Caching** – IRCTC request limits are finite. Verification is performed only for the **top three** candidate journeys per search and results are cached for `VERIFICATION_CACHE_TTL` seconds (~3 min). Avoid calling the live APIs again on unlock – the cache ensures instant responses and conserves quota. Be mindful not to call seat/fare/status endpoints for every user interaction.
+>
+> �📍 **Domain configuration** – once your public domain is registered, set `FRONTEND_API_URL`/`FRONTEND_BASE_URL` in the env files. All API clients (mobile, web) should use that host instead of localhost.
 
 ## 6. Next Steps
 - Implement the schema + service updates to return the new `route_graph` + `verification_summary` payloads.

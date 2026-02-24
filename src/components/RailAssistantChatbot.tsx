@@ -220,9 +220,21 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
       const payload = action.value || action.label;
       addMessage("user", payload);
       setIsLoading(true);
+
+      // Try local brain for actions too
+      const localResult = processLocalIntent(payload);
+      if (localResult) {
+        addMessage("assistant", localResult.reply, localResult.actions);
+        if (localResult.triggerSearch && localResult.collected) {
+          resolveAndTriggerSearch(localResult.collected);
+        }
+        setIsLoading(false);
+        return;
+      }
+
       sendToBackend(payload).finally(() => setIsLoading(false));
     },
-    [addMessage, onSortChange, onNavigate, sendToBackend]
+    [addMessage, onSortChange, onNavigate, sendToBackend, resolveAndTriggerSearch]
   );
 
   const handleSend = useCallback(async () => {
@@ -277,10 +289,27 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     if (label.includes(" to ")) {
       addMessage("user", `Search trains ${label}`);
       setIsLoading(true);
+      
+      const localResult = processLocalIntent(label);
+      if (localResult) {
+        addMessage("assistant", localResult.reply, localResult.actions);
+        if (localResult.triggerSearch && localResult.collected) {
+          resolveAndTriggerSearch(localResult.collected);
+        }
+        setIsLoading(false);
+        return;
+      }
       sendToBackend(`Search trains ${label}`).finally(() => setIsLoading(false));
     } else {
       addMessage("user", label);
       setIsLoading(true);
+      
+      const localResult = processLocalIntent(label);
+      if (localResult) {
+        addMessage("assistant", localResult.reply, localResult.actions);
+        setIsLoading(false);
+        return;
+      }
       sendToBackend(label).finally(() => setIsLoading(false));
     }
   };
@@ -326,12 +355,18 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
           {/* AskDisha-style header - dark blue */}
           <div className="flex items-center justify-between px-5 py-4 bg-[#0f172a] dark:bg-[#0c4a6e]">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center shrink-0 border border-white/10 relative">
                 <Bot className="w-6 h-6 text-white" />
+                <div className={cn(
+                  "absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0f172a]",
+                  isBackendOnline ? "bg-green-500" : "bg-orange-500"
+                )} title={isBackendOnline ? "Backend Live" : "Backend Offline - Local Brain Active"} />
               </div>
               <div>
-                <h3 className="font-bold text-base text-white">Rail Assistant 2.0</h3>
-                <p className="text-xs text-white/80">NextGen AI Ticketing</p>
+                <h3 className="font-bold text-base text-white leading-none mb-1">Rail Assistant 2.0</h3>
+                <p className="text-[10px] text-white/60 font-semibold tracking-wider uppercase">
+                  {isBackendOnline ? "🟢 AI Live" : "🟠 Local Brain"}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">

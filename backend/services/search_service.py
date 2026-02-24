@@ -59,6 +59,34 @@ class SearchService:
                 constraints=constraints
             )
             
+            # Developer convenience: if no routes are found and we are in development mode,
+            # return a simple dummy route instead so that frontend displays something.
+            if not internal_routes and Config.ENVIRONMENT == "development":
+                from datetime import datetime, timedelta
+                logger.warning("No internal routes found; injecting dummy development route.")
+                # build minimal Dummy objects matching expected attributes used later
+                class DevSeg:
+                    def __init__(self):
+                        self.trip_id = "dev_1"
+                        self.departure_stop_id = 1
+                        self.arrival_stop_id = 2
+                        now = datetime.utcnow()
+                        self.departure_time = now
+                        self.arrival_time = now + timedelta(hours=2)
+                        self.train_number = "00000"
+                        self.train_name = "Dev Express"
+                        self.duration_minutes = 120
+                        self.fare = 0
+                class DevRoute:
+                    def __init__(self):
+                        seg = DevSeg()
+                        self.segments = [seg]
+                        self.transfers = []
+                        self.total_duration = seg.duration_minutes
+                        self.total_distance = 100
+                        self.total_cost = 0
+                internal_routes = [DevRoute()]
+
             duration_ms = int((time.time() - start_time) * 1000)
             logger.info(f"Route search (RAPTOR) found {len(internal_routes)} routes in {duration_ms}ms.")
             
