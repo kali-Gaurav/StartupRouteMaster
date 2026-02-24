@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from backend.database.models import Subscription
-from backend.utils import helpers  # assume we have some helpers for datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,7 +15,7 @@ class SubscriptionService:
         return self.db.query(Subscription).filter(Subscription.user_id == user_id).first()
 
     def set_subscription(self, user_id: str, is_pro: bool, expires_at: datetime | None = None,
-                         source: str = "revenuecat", original_app_user_id: str | None = None):
+                         source: str = "razorpay", original_app_user_id: str | None = None):
         sub = self.get_subscription(user_id)
         if not sub:
             sub = Subscription(

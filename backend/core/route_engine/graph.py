@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 import logging
 
@@ -26,12 +26,18 @@ class StaticGraphSnapshot:
     
     version: str = "v2.0"
     created_at: datetime = field(default_factory=datetime.utcnow)
+    transfer_metrics: Dict[str, Any] = field(default_factory=dict)
+    density_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
 class RealtimeOverlay:
     """
     Real-time delay and cancellation overlay (Phase 4/10).
     In Phase 10, this state is synchronized via Redis for distributed workers.
+
+    A numeric `version` is bumped on each mutation so that
+    clients can decide whether they need to fetch an updated
+    payload instead of syncing on every call.
     """
 
     def __init__(self):
@@ -39,14 +45,19 @@ class RealtimeOverlay:
         self.cancellations: Set[int] = set()  # trip_ids
         self.platform_changes: Dict[Tuple[int, int], str] = {}  # (trip_id, stop_id) -> platform
         self.last_updated: datetime = datetime.min # Start with very old time for sync logic
+        self.version: int = 0
+
+    def _bump(self):
+        self.version += 1
+        self.last_updated = datetime.utcnow()
 
     def apply_delay(self, trip_id: int, minutes: int):
         self.delays[trip_id] = minutes
-        self.last_updated = datetime.utcnow()
+        self._bump()
 
     def cancel_trip(self, trip_id: int):
         self.cancellations.add(trip_id)
-        self.last_updated = datetime.utcnow()
+        self._bump()
 
     def get_trip_delay(self, trip_id: int) -> int:
         return self.delays.get(trip_id, 0)
@@ -59,7 +70,8 @@ class RealtimeOverlay:
         return {
             "delays": {str(k): v for k, v in self.delays.items()},
             "cancellations": list(self.cancellations),
-            "last_updated": self.last_updated.isoformat()
+            "last_updated": self.last_updated.isoformat(),
+            "version": self.version,
         }
 
     @classmethod
@@ -72,6 +84,11 @@ class RealtimeOverlay:
         overlay.cancellations = set(data.get("cancellations", []))
         if "last_updated" in data:
             overlay.last_updated = datetime.fromisoformat(data["last_updated"])
+        if "version" in data:
+            try:
+                overlay.version = int(data["version"])
+            except Exception:
+                pass
         return overlay
 
 
@@ -94,6 +111,8 @@ class TimeDependentGraph:
         self.stop_count = len(self.stop_index)
         self.route_patterns = snapshot.route_patterns if snapshot else defaultdict(list)
         self.transfer_cache = snapshot.transfer_cache if snapshot else {}
+        self.transfer_metrics = snapshot.transfer_metrics if snapshot else {}
+        self.density_metrics = snapshot.density_metrics if snapshot else {}
 
         # Optional in-memory index
         self.station_time_index = None

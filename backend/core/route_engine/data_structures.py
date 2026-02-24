@@ -74,11 +74,13 @@ class Route:
     total_duration: int = 0
     total_cost: float = 0.0
     total_distance: float = 0.0
+    raw_segment_cost: float = 0.0
     score: float = 0.0
     ml_score: float = 0.0
     reliability: float = 1.0
     availability_probability: float = 1.0 # Phase 8: P(booking success)
     is_locked: bool = True  # Added for booking intelligence unlock flow
+    cost_diagnostics: Dict[str, float] = field(default_factory=dict)
 
     @property
     def total_fare(self) -> float:
@@ -93,8 +95,14 @@ class Route:
         """Add a segment and update totals"""
         self.segments.append(segment)
         self.total_duration += segment.duration_minutes
-        self.total_cost += segment.fare
         self.total_distance += segment.distance_km
+        self.raw_segment_cost += segment.fare
+        self.cost_diagnostics["legacy_segment_cost"] = self.raw_segment_cost
+
+    def recompute_total_cost(self, multiplier: float):
+        """Recompute the displayed fare using journey-level distance."""
+        self.total_cost = round(self.total_distance * multiplier, 2)
+        self.cost_diagnostics["normalized_cost"] = self.total_cost
 
     def add_transfer(self, transfer: TransferConnection):
         """Add a transfer connection"""

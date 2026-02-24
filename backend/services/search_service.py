@@ -8,7 +8,7 @@ from datetime import datetime
 from backend.core.route_engine import RouteEngine, route_engine
 from backend.config import Config
 from backend.services.seat_allocation import SeatAllocationService, CoachType
-from backend.services.verification_engine import verification_service
+from backend.services.verification_engine import verification_service, RouteVerificationEngine
 from backend.services.journey_reconstruction import JourneyReconstructionEngine
 from backend.database.models import Stop, Trip, Route
 
@@ -20,6 +20,7 @@ class SearchService:
         self.route_engine = route_engine_instance or route_engine
         print(f"DEBUG: SearchService using route_engine from: {self.route_engine.__module__}")
         self.reconstructor = JourneyReconstructionEngine(db)
+        self.verification_engine = RouteVerificationEngine(db)
 
     async def search_routes(
         self,
@@ -74,6 +75,8 @@ class SearchService:
                 "stations": {},
                 "journey_message": f"Found {len(internal_routes)} journey options."
             }
+            station_codes_by_id: Dict[int, str] = {}
+            route_candidates: List[Dict[str, Any]] = []
             
             for rt in internal_routes:
                 num_transfers = len(rt.transfers)  # Transfers, not segments
@@ -92,6 +95,10 @@ class SearchService:
                                     "city": stop.city,
                                     "state": stop.state
                                 }
+                                try:
+                                    station_codes_by_id[int(stop_id)] = stop.code
+                                except (TypeError, ValueError):
+                                    station_codes_by_id[stop_id] = stop.code
 
                 if num_transfers == 0:
                     formatted_response["routes"]["direct"].append(formatted_rt)
@@ -124,7 +131,35 @@ class SearchService:
                     "has_overnight": any((seg.arrival_time - seg.departure_time).days > 0 for seg in rt.segments),
                     "availability_status": "AVAILABLE"
                 })
+                first_seg = rt.segments[0] if rt.segments else None
+                last_seg = rt.segments[-1] if rt.segments else None
+                from_code = None
+                to_code = None
+                if first_seg:
+                    from_code = station_codes_by_id.get(first_seg.departure_stop_id) or self._lookup_stop_code(first_seg.departure_stop_id)
+                if last_seg:
+                    to_code = station_codes_by_id.get(last_seg.arrival_stop_id) or self._lookup_stop_code(last_seg.arrival_stop_id)
+                route_candidates.append({
+                    "journey_id": journey_id,
+                    "train_no": first_seg.train_number if first_seg else "",
+                    "from_code": from_code,
+                    "to_code": to_code,
+                    "from_stop_id": first_seg.departure_stop_id if first_seg else None,
+                    "to_stop_id": last_seg.arrival_stop_id if last_seg else None
+                })
             
+            verification_candidates = route_candidates[:3]
+            verification_results = await self.verification_engine.verify_routes_batch(
+                verification_candidates,
+                dt,
+                coach_preference="AC_THREE_TIER"
+            )
+            verification_lookup = {res["journey_id"]: res for res in verification_results}
+            for journey in journeys:
+                verification_payload = verification_lookup.get(journey["journey_id"])
+                journey["verification_summary"] = verification_payload
+                journey["verification_status"] = verification_payload["status"] if verification_payload else "pending"
+
             formatted_response["journeys"] = journeys
             return formatted_response
 
@@ -204,18 +239,111 @@ class SearchService:
             coach_preference=coach_preference
         )
         
-        # Verification
-        verification = await verification_service.verify_journey(
-            journey=journey,
-            travel_date=parsed_date,
-            coach_preference=coach_preference,
-            passenger_age=passenger_age,
-            concession_type=concession_type
-        )
+        # Verification: use cached live verification when possible
+        start_stop = self.db.query(Stop).filter(Stop.id == start_st.stop_id).first()
+        end_stop = self.db.query(Stop).filter(Stop.id == end_st.stop_id).first()
+        start_code = start_stop.code if start_stop else None
+        end_code = end_stop.code if end_stop else None
+        train_number = journey.segments[0].train_number if journey.segments else trip.trip_id
+
+        verification_payload = self.verification_engine.get_cached_verification(journey_id)
+        if not verification_payload:
+            verification_payload = await self.verification_engine.verify_route_async(
+                journey_id=journey_id,
+                train_number=train_number,
+                travel_date=parsed_date,
+                coach_preference=coach_preference,
+                from_code=start_code,
+                to_code=end_code,
+                from_stop_id=start_st.stop_id,
+                to_stop_id=end_st.stop_id
+            )
         
         total_duration_hours = journey.total_travel_time_mins // 60
         total_duration_mins = journey.total_travel_time_mins % 60
         
+        # build route graph nodes + edges for frontend visualization
+        nodes = []
+        for idx, seg in enumerate(journey.segments):
+            seg_dict = seg.to_dict()
+            seg_dict["segment_id"] = f"seg_{idx}"
+            # placeholder fields; can be overwritten by higher-level logic
+            seg_dict.setdefault("verification_source", None)
+            seg_dict.setdefault("availability_status", "UNKNOWN")
+            nodes.append(seg_dict)
+        edges = []
+        from backend.database.models import Stop
+        for idx, tr in enumerate(journey.transfers):
+            # transfer connects segment idx -> idx+1
+            station_code = None
+            try:
+                stop = self.db.query(Stop).filter(Stop.id == tr.station_id).first()
+                station_code = stop.code if stop else None
+            except Exception:
+                station_code = None
+            edge = {
+                "from_segment_id": f"seg_{idx}",
+                "to_segment_id": f"seg_{idx+1}",
+                "transfer_station_code": station_code or "",
+                "wait_minutes": tr.duration_minutes,
+                "platform": tr.platform_from or tr.platform_to,
+                "transfer_reason": "interchange"
+            }
+            edges.append(edge)
+        route_graph = {
+            "nodes": nodes,
+            "edges": edges,
+            "is_direct": len(journey.transfers) == 0
+        }
+
+        rapidapi_calls = sum(1 for called in verification_payload.get("verification_calls", {}).values() if called)
+        seat_data = verification_payload.get("seat_availability") or {}
+        fare_data = verification_payload.get("fare") or {}
+        live_status = verification_payload.get("live_status") or {}
+        warnings = [msg for msg in verification_payload.get("errors", []) if msg]
+        seat_check = {
+            "status": "verified" if seat_data.get("success") else "pending",
+            "available": seat_data.get("data", {}).get("availability") if isinstance(seat_data.get("data"), dict) else seat_data.get("data"),
+            "message": seat_data.get("error") or (seat_data.get("data", {}).get("message") if isinstance(seat_data.get("data"), dict) else None)
+        }
+        schedule_check = {
+            "status": "verified" if live_status.get("success") else "pending",
+            "delay_minutes": None,
+            "message": live_status.get("message") or live_status.get("error")
+        }
+        fare_payload_details = fare_data.get("data") if isinstance(fare_data.get("data"), dict) else {}
+        base_fare_candidate = fare_payload_details.get("fare") if isinstance(fare_payload_details.get("fare"), (int, float)) else fare_payload_details.get("fare")
+        base_fare = float(base_fare_candidate or 0.0)
+        verification_summary = {
+            "rapidapi_calls": rapidapi_calls,
+            "live_status": live_status,
+            "seat_availability": seat_data,
+            "fare_verification": fare_data,
+            "status": verification_payload.get("status"),
+            "errors": warnings,
+            "cache_hit": verification_payload.get("cached", False),
+            "timestamp": verification_payload.get("timestamp")
+        }
+
+        overall_status = "verified" if verification_payload.get("verified") else "pending"
+        can_unlock = verification_payload.get("verified", False)
+        fare_total = float(base_fare)
+        verification_block = {
+            "overall_status": overall_status,
+            "is_bookable": can_unlock,
+            "seat_check": seat_check,
+            "schedule_check": schedule_check,
+            "restrictions": [],
+            "warnings": warnings
+        }
+        fare_breakdown_payload = {
+            "base_fare": fare_total,
+            "gst": 0.0,
+            "total_fare": fare_total,
+            "cancellation_charges": 0.0,
+            "applicable_discounts": [],
+            "payload": fare_payload_details
+        }
         return {
             "journey": {
                 "journey_id": journey.journey_id,
@@ -235,30 +363,11 @@ class SearchService:
                 "waiting_list": seat_allocation["waiting_list"],
                 "seat_details": seat_allocation["seat_details"]
             },
-            "verification": {
-                "overall_status": verification.overall_status.value,
-                "is_bookable": verification.is_bookable,
-                "seat_check": {
-                    "status": verification.seat_verification.status.value,
-                    "available": verification.seat_verification.available_seats,
-                    "message": verification.seat_verification.message
-                },
-                "schedule_check": {
-                    "status": verification.schedule_verification.status.value,
-                    "delay_minutes": verification.schedule_verification.delay_minutes,
-                    "message": verification.schedule_verification.message
-                },
-                "restrictions": verification.restrictions,
-                "warnings": verification.warnings
-            },
-            "fare_breakdown": {
-                "base_fare": verification.fare_verification.base_fare,
-                "gst": verification.fare_verification.GST,
-                "total_fare": verification.fare_verification.total_fare,
-                "cancellation_charges": verification.fare_verification.cancellation_charges,
-                "applicable_discounts": verification.fare_verification.applicable_discounts
-            },
-            "can_unlock_details": verification.is_bookable
+            "verification": verification_block,
+            "fare_breakdown": fare_breakdown_payload,
+            "can_unlock_details": can_unlock,
+            "route_graph": route_graph,
+            "verification_summary": verification_summary
         }
 
     def _format_route_for_frontend(self, rt) -> dict:
@@ -340,6 +449,12 @@ class SearchService:
         from backend.models import Stop
         stop = self.db.query(Stop).filter(Stop.name.ilike(f"%{station_name}%")).first()
         return stop.id if stop else None
+
+    def _lookup_stop_code(self, stop_id: Optional[int]) -> Optional[str]:
+        if not stop_id:
+            return None
+        stop = self.db.query(Stop).filter(Stop.id == stop_id).first()
+        return stop.code if stop else None
 
     def _convert_journey_to_route(self, journey: Dict) -> Dict:
         """Convert multi-modal journey to route format."""

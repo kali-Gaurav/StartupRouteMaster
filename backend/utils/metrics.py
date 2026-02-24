@@ -153,6 +153,51 @@ ROUTING_ROUNDS_PROCESSED_TOTAL = Counter(
     'Total number of RAPTOR rounds processed.'
 )
 
+# --- Snapshot & graph infrastructure metrics (Phase-2) ---
+# Histogram for snapshot build duration in milliseconds
+SNAPSHOT_BUILD_TIME_MS = Histogram(
+    'snapshot_build_time_ms',
+    'Time taken to build or rebuild a static graph snapshot in ms.',
+    buckets=(100, 500, 1000, 2000, 5000, 10000)
+)
+
+# Histogram for hub precomputation time in milliseconds
+HUB_PRECOMPUTE_TIME_MS = Histogram(
+    'hub_precompute_time_ms',
+    'Time taken to precompute hub connectivity tables in ms.',
+    buckets=(10, 50, 100, 500, 1000, 5000)
+)
+
+# Gauge for current graph size (nodes)
+GRAPH_NODES = Gauge(
+    'graph_nodes',
+    'Number of stops/nodes in the loaded graph snapshot.'
+)
+
+# Gauge for current graph edge count (trips + transfers)
+GRAPH_EDGES = Gauge(
+    'graph_edges',
+    'Number of edges (trip segments + transfers) in the loaded graph snapshot.'
+)
+
+# Gauge for transfer density (edges per node)
+TRANSFER_DENSITY = Gauge(
+    'transfer_density',
+    'Average number of transfer connections per stop in the snapshot.'
+)
+
+# Gauge for memory footprint of graph in megabytes (approximate)
+MEMORY_USAGE_MB = Gauge(
+    'memory_usage_mb',
+    'Estimated memory usage of the graph snapshot in megabytes.'
+)
+
+# Gauge for the current overlay version
+OVERLAY_VERSION = Gauge(
+    'overlay_version',
+    'Version number of the currently applied realtime overlay.'
+)
+
 # --- Reliability-aware routing metrics (Phase-6) ---
 RMA_ROUTING_RELIABILITY_APPLIED_TOTAL = Counter(
     'rma_routing_reliability_applied_total',

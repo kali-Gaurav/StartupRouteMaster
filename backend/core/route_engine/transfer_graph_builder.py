@@ -57,7 +57,8 @@ class TransferGraphBuilder:
     }
 
     # Maximum walking distance for implicit transfers (meters)
-    MAX_WALKING_DISTANCE = 2000
+    # Increased to capture city-level transfers (e.g., NDLS↔NZM ~3km)
+    MAX_WALKING_DISTANCE = 10000  # 10km
 
     # Maximum time to walk the max distance (minutes)
     WALKING_SPEED_KMPH = 1.4  # ~4 min per 100m

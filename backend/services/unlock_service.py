@@ -3,7 +3,9 @@ from backend.database.models import UnlockedRoute
 from datetime import datetime
 import logging
 from backend.config import Config
-from backend.services.revenue_cat_verifier import revenue_cat_verifier
+# payment/booking logic has been simplified for Phase 2; mobile RevenueCat
+# integration is deprecated in favor of Razorpay.  We no longer call any
+# external verifier in backend tests.
 from backend.services.subscription_service import SubscriptionService
 from backend.services.cache_service import cache_service
 
@@ -49,8 +51,7 @@ class UnlockService:
         Production-ready unlock check:
           1. Check cache for "pro" status built from subscription or route.
           2. If not cached, check subscription table.
-          3. If still not active, query RevenueCat (with fallback).
-          4. If user is pro, return True; otherwise fall back to individual payment record.
+          3. If user is pro, return True; otherwise fall back to individual payment record.
         """
         cache_key = f"unlocked:route:{user_id}:{route_id}"
         cached = cache_service.get(cache_key)
@@ -62,15 +63,8 @@ class UnlockService:
             cache_service.set(cache_key, True, ttl_seconds=300)
             return True
 
-        # 2. revenuecat fallback
-        try:
-            rc_pro = await revenue_cat_verifier.is_user_pro(user_id, db=self.db)
-            if rc_pro:
-                cache_service.set(cache_key, True, ttl_seconds=300)
-                return True
-        except Exception as e:
-            logger.warning(f"RevenueCat check failed for {user_id}: {e}")
-            # proceed to check DB
+        # 2. external verifier fallback removed (was RevenueCat/needs Razorpay).
+        #    for now just proceed to database check.
 
         # 3. individual route unlock
         exists = self.db.query(UnlockedRoute).filter(

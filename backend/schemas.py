@@ -354,6 +354,34 @@ class JourneyInfoResponse(BaseModel):
     availability_status: str
 
 
+class RouteGraphNode(BaseModel):
+    segment_id: str
+    train_number: str
+    train_name: Optional[str]
+    from_station_code: str
+    to_station_code: str
+    departure_time: str
+    arrival_time: str
+    duration_minutes: int
+    distance_km: float
+    coach_preference: str
+    verification_source: Optional[str] = None
+    availability_status: str = "UNKNOWN"
+
+class RouteGraphEdge(BaseModel):
+    from_segment_id: str
+    to_segment_id: str
+    transfer_station_code: str
+    wait_minutes: int
+    platform: Optional[str] = None
+    transfer_reason: str = "interchange"
+
+class VerificationSummary(BaseModel):
+    rapidapi_calls: int
+    seat_availability: Dict[str, Dict]
+    fare_verification: Dict[str, Dict]
+    warnings: List[str]
+
 class DetailedJourneyResponse(BaseModel):
     """Complete detailed journey with all calculations"""
     journey: JourneyInfoResponse
@@ -362,6 +390,9 @@ class DetailedJourneyResponse(BaseModel):
     verification: Dict
     fare_breakdown: Dict
     can_unlock_details: bool
+    # new fields for visualization and transparency
+    route_graph: Optional[Dict[str, Any]] = None
+    verification_summary: Optional[VerificationSummary] = None
 
 
 class BookingConfirmationRequest(BaseModel):

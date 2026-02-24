@@ -16,8 +16,6 @@ class Config:
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 
-    # RevenueCat (server) API key used for verifying entitlements and receiving webhooks
-    REVENUECAT_API_KEY = os.getenv("REVENUECAT_API_KEY", "")
 
     ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "default_token_change_me")
 
@@ -31,8 +29,23 @@ class Config:
     TRANSFER_WINDOW_MAX = int(os.getenv("TRANSFER_WINDOW_MAX", "720")) # 12 hours
     MAX_SEARCH_RESULTS = int(os.getenv("MAX_SEARCH_RESULTS", "10"))
 
+    # Transfer graph enrichment controls
+    NEARBY_TRANSFER_RADIUS_KM = float(os.getenv("NEARBY_TRANSFER_RADIUS_KM", "1.25"))
+    KEY_HUB_TRANSFER_PAIRS = os.getenv("KEY_HUB_TRANSFER_PAIRS", "NDLS:NZM,BCT:SBC,CSMT:KYN")
+    PLATFORM_TRANSFER_JUNCTIONS = os.getenv("PLATFORM_TRANSFER_JUNCTIONS", "NDLS,BCT,CSMT,NZM")
+    PLATFORM_TRANSFER_EDGE_COUNT = int(os.getenv("PLATFORM_TRANSFER_EDGE_COUNT", "4"))
+
     # Pareto / multi-option search
     PARETO_LIMIT = int(os.getenv("PARETO_LIMIT", "3"))
+
+    # RAPTOR sampling + dominance controls
+    RAPTOR_DEFAULT_INITIAL_DEPARTURES = int(os.getenv("RAPTOR_DEFAULT_INITIAL_DEPARTURES", "200"))
+    RAPTOR_DEFAULT_ONWARD_DEPARTURES = int(os.getenv("RAPTOR_DEFAULT_ONWARD_DEPARTURES", "100"))
+    RAPTOR_DEFAULT_STOP_SAMPLING_INTERVAL = int(os.getenv("RAPTOR_DEFAULT_STOP_SAMPLING_INTERVAL", "5"))
+    RAPTOR_MAX_INITIAL_DEPARTURES = int(os.getenv("RAPTOR_MAX_INITIAL_DEPARTURES", "600"))
+    RAPTOR_MAX_ONWARD_DEPARTURES = int(os.getenv("RAPTOR_MAX_ONWARD_DEPARTURES", "400"))
+    RAPTOR_MAX_STOP_SAMPLING_INTERVAL = int(os.getenv("RAPTOR_MAX_STOP_SAMPLING_INTERVAL", "30"))
+    DISABLE_DOMINANCE_PRUNING = os.getenv("DISABLE_DOMINANCE_PRUNING", "false").lower() in ("1", "true", "yes")
 
     # Feasibility / ranking weights (used by route scoring)
     FEASIBILITY_WEIGHT_TIME = float(os.getenv("FEASIBILITY_WEIGHT_TIME", "1.0"))
@@ -57,6 +70,7 @@ class Config:
 
     # Phase 7: Booking & Seat API
     RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
+    RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "irctc1.p.rapidapi.com")
     LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", "https://irctc1.p.rapidapi.com/api/v1")
 
     # Redis graph storage + HMAC signing
@@ -112,6 +126,11 @@ class Config:
     REAL_TIME_ENABLED = os.getenv("REAL_TIME_ENABLED", "true").lower() in ("1", "true", "yes")  # Master switch for real-time
 
     # Live API Configuration (null/empty = use database fallback)
+    LIVE_STATUS_BASE_URL = os.getenv("LIVE_STATUS_BASE_URL", "https://rappid.in/apis/train.php")
+    ENABLE_LIVE_STATUS = os.getenv("ENABLE_LIVE_STATUS", "true").lower() in ("1", "true", "yes")
+    ENABLE_SEAT_VERIFICATION = os.getenv("ENABLE_SEAT_VERIFICATION", "true").lower() in ("1", "true", "yes")
+    ENABLE_FARE_VERIFICATION = os.getenv("ENABLE_FARE_VERIFICATION", "true").lower() in ("1", "true", "yes")
+    VERIFICATION_CACHE_TTL = int(os.getenv("VERIFICATION_CACHE_TTL", "180"))
     LIVE_FARES_API = os.getenv("LIVE_FARES_API", None)  # e.g., "http://api.fares.com"
     LIVE_DELAY_API = os.getenv("LIVE_DELAY_API", None)  # e.g., "http://api.delay.com"
     LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", None)  # e.g., "http://api.seats.com"

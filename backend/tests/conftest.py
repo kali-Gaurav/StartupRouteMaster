@@ -1,6 +1,10 @@
 """
 Pytest configuration and shared fixtures for all tests
 """
+
+import logging
+# reduce verbosity of SQLAlchemy logging during test database setup
+logging.getLogger("sqlalchemy.engine.Engine").setLevel(logging.WARNING)
 import pytest
 from datetime import date, timedelta
 from sqlalchemy.orm import Session

@@ -35,8 +35,8 @@ lightgbm==4.3.0
 joblib==1.3.2
 numpy==1.26.2
 matplotlib==3.8.2
-# pyroaring might cause build issues on windows, commenting out if not critical or use prebuilt
-# pyroaring==1.0.3
+# pyroaring provides bitmaps required by the station time index
+pyroaring==1.0.3
 
 # Authentication and security
 passlib[bcrypt]==1.7.4

@@ -282,11 +282,12 @@ async def payment_history(
 @router.get("/check_payment_status")
 async def check_payment_status(
     route_id: str,
-    travel_date: str,
+    travel_date: date_type,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Check whether the user has already paid for a route/date combination."""
+    # FastAPI will parse the incoming travel_date string into a date object.
     payment = (
         db.query(PaymentModel)
         .join(Booking, PaymentModel.booking_id == Booking.id)
@@ -301,3 +302,115 @@ async def check_payment_status(
     if not payment:
         return {"paid": False}
     return {"paid": payment.status == "completed", "already_paid_booking": bool(payment.booking_id)}
+
+
+# ==================================================================
+# Razorpay Webhook Handling
+# ==================================================================
+# This endpoint receives events from Razorpay (payments/refunds) and
+# updates internal records accordingly. Signature verification is
+# enforced via dependency to keep payloads secure.
+
+@router.post("/webhook", dependencies=[Depends(verify_webhook_signature)])
+async def payment_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Handle Razorpay webhook events to sync payment/refund status.
+
+    Ensures idempotency by recording event IDs (or dedup keys) and ignoring duplicates.
+    """
+    payload = await request.json()
+    event_id = payload.get("id")
+    event_type = payload.get("event")
+
+    payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+    refund_entity = payload.get("payload", {}).get("refund", {}).get("entity", {})
+
+    fallback_identifier = None
+    fallback_status = None
+    if event_type and event_type.startswith("payment."):
+        fallback_identifier = payment_entity.get("order_id") or payment_entity.get("id")
+        fallback_status = payment_entity.get("status")
+    elif event_type and event_type.startswith("refund."):
+        fallback_identifier = refund_entity.get("id")
+        fallback_status = refund_entity.get("status")
+
+    dedup_id = event_id or f"{event_type or 'unknown'}:{fallback_identifier or 'unknown'}:{fallback_status or 'unknown'}"
+
+    from backend.database.models import WebhookEvent
+
+    existing = db.query(WebhookEvent).filter(WebhookEvent.id == dedup_id).first()
+    if existing:
+        logger.info(f"Webhook event {dedup_id} already processed, skipping.")
+        return {"success": True, "message": "already processed"}
+
+    new_evt = WebhookEvent(id=dedup_id, event_type=event_type or "unknown")
+    db.add(new_evt)
+    db.commit()
+
+    # Payment events
+    if event_type and event_type.startswith("payment."):
+        r_payment_id = payment_entity.get("id")
+        r_order_id = payment_entity.get("order_id")
+        status = payment_entity.get("status")
+
+        payment_record = None
+        if r_payment_id:
+            payment_record = (
+                db.query(PaymentModel)
+                .filter(PaymentModel.razorpay_payment_id == r_payment_id)
+                .first()
+            )
+        if not payment_record and r_order_id:
+            payment_record = (
+                db.query(PaymentModel)
+                .filter(PaymentModel.razorpay_order_id == r_order_id)
+                .first()
+            )
+            if payment_record:
+                # map Razorpay status to our internal status
+                if status == "captured":
+                    payment_record.status = "completed"
+                elif status in ("failed", "cancelled"):
+                    payment_record.status = "failed"
+                else:
+                    payment_record.status = status
+                if r_payment_id:
+                    payment_record.razorpay_payment_id = r_payment_id
+                payment_record.razorpay_order_id = payment_record.razorpay_order_id or r_order_id
+                db.commit()
+                db.refresh(payment_record)
+
+                # propagate to booking/unlock if needed
+                if payment_record.booking_id and payment_record.status == "completed":
+                    from backend.services.booking_service import BookingService
+                    booking_service = BookingService(db)
+                    booking_service.confirm_booking(payment_record.booking_id)
+                else:
+                    unlocked_route = payment_record.unlocked_route
+                    if unlocked_route and payment_record.status == "completed":
+                        unlocked_route.is_active = True
+                        db.commit()
+    # Refund events
+    if event_type and event_type.startswith("refund."):
+        r_refund_id = refund_entity.get("id")
+        status = refund_entity.get("status")
+        if r_refund_id:
+            from backend.database.models import Refund as RefundModel
+            refund_record = (
+                db.query(RefundModel)
+                .filter(RefundModel.razorpay_refund_id == r_refund_id)
+                .first()
+            )
+            if refund_record:
+                if status in ("processed", "completed", "paid"):
+                    refund_record.status = "COMPLETED"
+                elif status in ("failed", "cancelled"):
+                    refund_record.status = "FAILED"
+                else:
+                    refund_record.status = status.upper()
+                refund_record.processed_at = datetime.utcnow()
+                db.commit()
+
+    return {"success": True}

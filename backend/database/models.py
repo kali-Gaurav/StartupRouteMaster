@@ -388,7 +388,7 @@ class Subscription(Base):
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     is_pro = Column(Boolean, default=False, index=True)
     expires_at = Column(DateTime, nullable=True, index=True)
-    source = Column(String(50), nullable=True)  # e.g. 'revenuecat'
+    source = Column(String(50), nullable=True)  # e.g. 'razorpay' or payment gateway name
     original_app_user_id = Column(String(255), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -495,13 +495,25 @@ class Review(Base):
     user = relationship("User", back_populates="reviews")
     booking = relationship("Booking", back_populates="review")
 
+from enum import Enum
+
+
+class PaymentStatus(str, Enum):
+    CREATED = "CREATED"
+    AUTHORIZED = "AUTHORIZED"
+    CAPTURED = "CAPTURED"
+    FAILED = "FAILED"
+    REFUNDED = "REFUNDED"
+    PARTIAL_REFUNDED = "PARTIAL_REFUNDED"
+
+
 class Payment(Base):
     __tablename__ = "payments"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=True, index=True)
     razorpay_order_id = Column(String(255), nullable=True, index=True)
     razorpay_payment_id = Column(String(255), nullable=True, index=True)
-    status = Column(String(50), default="pending")
+    status = Column(String(50), default=PaymentStatus.CREATED.value, nullable=False)
     amount = Column(Float, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -513,6 +525,15 @@ class Payment(Base):
 # ==============================================================================
 # NEW TABLES FOR ADVANCED FEATURES
 # ==============================================================================
+
+class WebhookEvent(Base):
+    """Stores Razorpay webhook event ids to ensure idempotent processing."""
+    __tablename__ = "webhook_events"
+
+    id = Column(String(100), primary_key=True)
+    event_type = Column(String(100), nullable=False)
+    processed_at = Column(DateTime, default=datetime.utcnow)
+
 
 class RealtimeData(Base):
     """For dynamic updates like train locations, delays, cancellations."""

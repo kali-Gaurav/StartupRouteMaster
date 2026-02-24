@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.database.config import Config
 from backend.database import init_db, close_db
-from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime, revenuecat_webhook
+from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime
 from backend.utils.limiter import limiter
 
 # FastAPI-Cache
@@ -22,7 +22,8 @@ import redis.asyncio as aioredis
 from prometheus_fastapi_instrumentator import Instrumentator
 from backend.core.monitoring import WS_CONNECTIONS  # Trigger metric registration
 
-from backend.core.route_engine import route_engine
+# route_engine imported lazily during startup to avoid heavy initialization and potential syntax errors
+route_engine = None
 from backend.database import SessionLocal
 from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
 
@@ -115,7 +116,6 @@ app.include_router(flow.router)
 app.include_router(websockets.router)
 app.include_router(bookings.router)
 app.include_router(realtime.router)
-app.include_router(revenuecat_webhook.router)
 # Backwards-compatible stations endpoint
 from backend.api import stations as stations_api
 app.include_router(stations_api.router)
@@ -140,7 +140,10 @@ async def startup():
 
         # Load the route engine graph into memory (optionally in background to speed startup)
         from backend.database import SessionLocal as _SessionLocal
-        from backend.core.route_engine import route_engine
+        # import route_engine here lazily
+        from backend.core.route_engine import route_engine as _route_engine
+        global route_engine
+        route_engine = _route_engine
 
         # Warm-up the route engine graph either synchronously or async based on config
         if Config.ROUTEENGINE_ASYNC_WARMUP:

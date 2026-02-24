@@ -12,6 +12,7 @@ from ...services.multi_layer_cache import multi_layer_cache, RouteQuery
 from ...ml_reliability_model import get_reliability_model
 from ...frequency_aware_range import get_frequency_aware_sizer
 from ...utils.graph_utils import haversine_distance
+from ... import config as cfg
 
 from ..validator.performance_validators import PerformanceValidator
 from ..validator.validation_manager import create_validation_manager_with_defaults, ValidationProfile, ValidationCategory
@@ -27,12 +28,46 @@ from ...services.ml.capacity_models import CapacityPredictionModel # Phase 8
 
 logger = logging.getLogger(__name__)
 
+CLASS_DISTANCE_MULTIPLIERS = {
+    "2S": 1.0,
+    "SL": 1.2,
+    "3A": 2.3,
+    "2A": 2.6,
+    "CC": 2.4,
+    "1A": 3.5,
+    "FC": 3.0,
+    "3E": 2.1,
+    "2E": 2.0,
+    "EC": 2.8,
+}
+DEFAULT_CLASS_DISTANCE_MULTIPLIER = CLASS_DISTANCE_MULTIPLIERS.get("SL", 1.2)
+
+def _get_class_distance_multiplier(preferred_class: Optional[str]) -> float:
+    if preferred_class:
+        return CLASS_DISTANCE_MULTIPLIERS.get(preferred_class.upper(), DEFAULT_CLASS_DISTANCE_MULTIPLIER)
+    return DEFAULT_CLASS_DISTANCE_MULTIPLIER
+
+def _sum_segment_fares(segments: List[RouteSegment]) -> float:
+    return sum((seg.fare or 0.0) for seg in segments)
+
 class OptimizedRAPTOR:
     """Production-optimized RAPTOR algorithm implementation"""
 
+    DEFAULT_MAX_INITIAL_DEPARTURES = cfg.Config.RAPTOR_DEFAULT_INITIAL_DEPARTURES
+    DEFAULT_MAX_ONWARD_DEPARTURES = cfg.Config.RAPTOR_DEFAULT_ONWARD_DEPARTURES
+    DEFAULT_STOP_SAMPLING_INTERVAL = cfg.Config.RAPTOR_DEFAULT_STOP_SAMPLING_INTERVAL
+
+    MAX_INITIAL_DEPARTURES = cfg.Config.RAPTOR_MAX_INITIAL_DEPARTURES
+    MAX_ONWARD_DEPARTURES = cfg.Config.RAPTOR_MAX_ONWARD_DEPARTURES
+    MAX_STOP_SAMPLING_INTERVAL = cfg.Config.RAPTOR_MAX_STOP_SAMPLING_INTERVAL
+
     def __init__(self, max_transfers: int = 3, validation_manager=None, 
                  graph_builder: Optional[GraphBuilder] = None, 
-                 snapshot_manager: Optional[SnapshotManager] = None):
+                 snapshot_manager: Optional[SnapshotManager] = None,
+                 max_initial_departures: Optional[int] = DEFAULT_MAX_INITIAL_DEPARTURES,
+                 max_onward_departures: Optional[int] = DEFAULT_MAX_ONWARD_DEPARTURES,
+                 stop_sampling_interval: Optional[int] = DEFAULT_STOP_SAMPLING_INTERVAL,
+                 disable_dominance_pruning: Optional[bool] = None):
         self.max_transfers = max_transfers
         self.executor = ThreadPoolExecutor(max_workers=4)
         # Keep the performance validator locally (used for timing checks in the engine)
@@ -49,6 +84,58 @@ class OptimizedRAPTOR:
         
         # Phase 8: Capacity Prediction
         self.capacity_model = CapacityPredictionModel()
+
+        self.max_initial_departures = self._normalize_sampling_value(
+            max_initial_departures,
+            self.DEFAULT_MAX_INITIAL_DEPARTURES,
+            self.MAX_INITIAL_DEPARTURES,
+            "initial departures"
+        )
+        self.max_onward_departures = self._normalize_sampling_value(
+            max_onward_departures,
+            self.DEFAULT_MAX_ONWARD_DEPARTURES,
+            self.MAX_ONWARD_DEPARTURES,
+            "onward departures"
+        )
+        self.stop_sampling_interval = self._normalize_sampling_value(
+            stop_sampling_interval,
+            self.DEFAULT_STOP_SAMPLING_INTERVAL,
+            self.MAX_STOP_SAMPLING_INTERVAL,
+            "stop sampling interval"
+        )
+        self.disable_dominance_pruning = disable_dominance_pruning if disable_dominance_pruning is not None else cfg.Config.DISABLE_DOMINANCE_PRUNING
+
+    def _apply_class_cost(self, route: Route, constraints: RouteConstraints):
+        multiplier = _get_class_distance_multiplier(constraints.preferred_class)
+        route.recompute_total_cost(multiplier)
+        route.cost_diagnostics["legacy_segment_cost"] = route.raw_segment_cost
+        route.cost_diagnostics["normalized_cost"] = route.total_cost
+        if route.raw_segment_cost and route.total_cost:
+            ratio = route.raw_segment_cost / max(0.1, route.total_cost)
+            if ratio > 3.0:
+                logger.debug(
+                    "RT-099: route cost recalculated (%.2f) vs raw segment sum (%.2f) using multiplier %.2f",
+                    route.total_cost,
+                    route.raw_segment_cost,
+                    multiplier
+                )
+
+    def _normalize_sampling_value(self, requested: Optional[int], default: int, limit: int, name: str) -> int:
+        value = requested if requested is not None else default
+        if value < 1:
+            logger.warning("RT-097: %s requested value %s is below 1, defaulting to %s", name, value, default)
+            value = default
+        if value > limit:
+            logger.warning("RT-098: %s requested %s, clamped to maximum %s", name, value, limit)
+            value = limit
+        return value
+
+    def get_sampling_configuration(self) -> Dict[str, int]:
+        return {
+            "max_initial_departures": self.max_initial_departures,
+            "max_onward_departures": self.max_onward_departures,
+            "stop_sampling_interval": self.stop_sampling_interval,
+        }
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
@@ -188,7 +275,8 @@ class OptimizedRAPTOR:
         # Round 0: direct departures
         source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt)
         logger.debug(f"RAPTOR: Found {len(source_departures)} departures from source {source_stop_id} at/after {departure_dt}")
-        for dep_time, trip_id in source_departures[:50]:
+        logger.debug("RAPTOR sampling configuration: %s", self.get_sampling_configuration())
+        for dep_time, trip_id in source_departures[:self.max_initial_departures]:
             segments = graph.get_trip_segments(trip_id)
             if not segments:
                 logger.debug(f"RAPTOR DEBUG: Trip {trip_id} has NO segments from graph!")
@@ -217,12 +305,27 @@ class OptimizedRAPTOR:
                 # Check if this stop is the destination
                 if seg.arrival_stop_id == dest_stop_id:
                     # Found a direct route!
+                    total_duration = sum(s.duration_minutes for s in current_route_segments)
+                    total_distance = sum(s.distance_km for s in current_route_segments)
+                    raw_cost = _sum_segment_fares(current_route_segments)
                     final_route = Route(
                         segments=list(current_route_segments),
-                        total_duration=sum(s.duration_minutes for s in current_route_segments),
-                        total_cost=sum(s.fare for s in current_route_segments),
-                        total_distance=sum(s.distance_km for s in current_route_segments)
+                        total_duration=total_duration,
+                        total_distance=total_distance,
+                        raw_segment_cost=raw_cost
                     )
+                    if final_route.segments:
+                        start = final_route.segments[0]
+                        end = final_route.segments[-1]
+                        try:
+                            src = graph.stop_cache.get(start.departure_stop_id)
+                            dst = graph.stop_cache.get(end.arrival_stop_id)
+                            if src and dst:
+                                dist = haversine_distance(src.latitude, src.longitude, dst.latitude, dst.longitude)
+                                final_route.total_distance = dist
+                        except Exception:
+                            pass
+                    self._apply_class_cost(final_route, constraints)
                     
                     logger.debug(f"RAPTOR: Route candidate trip {trip_id}: duration={final_route.total_duration}, cost={final_route.total_cost}, segs={len(final_route.segments)}")
                     if self._validate_route_constraints(final_route, constraints):
@@ -242,12 +345,15 @@ class OptimizedRAPTOR:
                     seg.arrival_stop_id == dest_stop_id or 
                     i == len(segments) - 1): # Or the end of the trip
                     
+                    total_dist = sum(s.distance_km for s in current_route_segments)
+                    raw_cost = _sum_segment_fares(current_route_segments)
                     partial_route = Route(
                         segments=list(current_route_segments),
                         total_duration=sum(s.duration_minutes for s in current_route_segments),
-                        total_cost=sum(s.fare for s in current_route_segments),
-                        total_distance=sum(s.distance_km for s in current_route_segments)
+                        total_distance=total_dist,
+                        raw_segment_cost=raw_cost
                     )
+                    self._apply_class_cost(partial_route, constraints)
                     routes_by_round[0].append(partial_route)
 
         # transfer rounds
@@ -306,7 +412,7 @@ class OptimizedRAPTOR:
                 transfer.station_id, transfer.departure_time
             )
 
-            for dep_time, trip_id in onward_departures[:20]:  # Limit onward connections
+            for dep_time, trip_id in onward_departures[:self.max_onward_departures]:  # Limit onward connections
                 if dep_time < transfer.departure_time:
                     continue
 
@@ -339,8 +445,8 @@ class OptimizedRAPTOR:
                         total_duration=route.total_duration + (seg.arrival_time - route.segments[-1].arrival_time).seconds // 60,
                         transfers=route.transfers + [transfer]
                     )
-                    # Note: total_cost calculation should sum fares too
-                    new_route.total_cost = route.total_cost + sum(s.fare for s in onward_segments)
+                    new_route.raw_segment_cost = route.raw_segment_cost + _sum_segment_fares(onward_segments)
+                    self._apply_class_cost(new_route, constraints)
 
                     # Check if destination reached
                     if seg.arrival_stop_id == dest_stop_id:
@@ -423,7 +529,15 @@ class OptimizedRAPTOR:
 
     async def _deduplicate_routes(self, routes: List[Route], graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         """Deduplicate + dominance-prune routes."""
-        kept: List[Route] = []
+        def compute_route_key(route: Route) -> Tuple[Any, Tuple[int, ...], Optional[str]]:
+            first_dep = route.segments[0].departure_time.isoformat() if route.segments else None
+            if use_bitset:
+                try:
+                    route_bits = graph.route_to_bitset(route)
+                except Exception:
+                    route_bits = 0
+                return (route_bits, tuple(t.station_id for t in route.transfers), first_dep)
+            return (tuple(route.get_all_stations()), tuple(t.station_id for t in route.transfers), first_dep)
 
         def dominates(a: Route, b: Route) -> bool:
             """Return True if route a dominates route b on all considered metrics."""
@@ -443,25 +557,26 @@ class OptimizedRAPTOR:
 
         # Precompute bitsets if graph available
         use_bitset = graph is not None and getattr(graph, 'stop_index', None) is not None
-        seen_keys: Set[Tuple[int, Tuple[int, ...]]] = set()
+
+        if self.disable_dominance_pruning:
+            logger.debug("RT-101: dominance pruning disabled; deduping by key only.")
+            best_routes: Dict[Tuple, Route] = {}
+            for route in routes:
+                key = compute_route_key(route)
+                existing = best_routes.get(key)
+                if existing is None or route.score < existing.score:
+                    best_routes[key] = route
+            return list(best_routes.values())
+
+        kept: List[Route] = []
+        seen_keys: Set[Tuple[int, Tuple[int, ...], Optional[str]]] = set()
 
         for route in routes:
-            # quick duplicate key: (stations-bitset or tuple(stations), tuple(transfer station ids))
-            if use_bitset:
-                try:
-                    route_bits = graph.route_to_bitset(route)
-                except Exception:
-                    route_bits = 0
-                transfer_ids = tuple(t.station_id for t in route.transfers)
-                key = (route_bits, transfer_ids)
-            else:
-                key = (tuple(route.get_all_stations()), tuple(t.station_id for t in route.transfers))
+            key = compute_route_key(route)
 
             if key in seen_keys:
-                # keep the better-scoring duplicate only
-                # find existing and replace if current has better score
                 for i, r in enumerate(kept):
-                    cmp_key = (graph.route_to_bitset(r) if use_bitset else tuple(r.get_all_stations()), tuple(t.station_id for t in r.transfers))
+                    cmp_key = compute_route_key(r)
                     if cmp_key == key:
                         if route.score < r.score:
                             kept[i] = route
@@ -611,7 +726,11 @@ class OptimizedRAPTOR:
         # Base scoring
         w = constraints.weights
         time_score = route.total_duration
-        cost_score = route.total_cost
+        cost_breakdown = route.cost_diagnostics
+        normalized_cost = cost_breakdown.get("normalized_cost", route.total_cost)
+        legacy_cost = cost_breakdown.get("legacy_segment_cost", route.raw_segment_cost)
+        logger.debug("RT-102: route cost breakdown normalized=%.2f legacy=%.2f", normalized_cost, legacy_cost)
+        cost_score = normalized_cost
         comfort_score = 0
         for tr in route.transfers:
             comfort_score += tr.facilities_score * 10

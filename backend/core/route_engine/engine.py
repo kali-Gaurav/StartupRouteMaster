@@ -1,8 +1,10 @@
 import asyncio
 import logging
-from datetime import datetime
+import time as _time
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 
 from ...database import SessionLocal
 from ...database.models import Stop
@@ -55,6 +57,13 @@ class RailwayRouteEngine:
 
         # Phase 5: Realtime Event Processor
         self.realtime_event_processor = RealtimeEventProcessor(self)
+
+        # concurrency guard for snapshot rebuilds (Phase 2)
+        self._snapshot_lock = asyncio.Lock()
+        self._snapshot_build_task: Optional[asyncio.Task] = None
+        # Overlay sync state
+        self._last_synced_version: int = -1  # -1 means never synced
+        self._last_synced_at: datetime = datetime.min
 
         # Phase 6: ML Ranking Model
         self.route_ranking_model = RouteRankingModel()
@@ -134,13 +143,23 @@ class RailwayRouteEngine:
             remote_state = await multi_layer_cache.get_overlay_state("global_v2")
             if remote_state:
                 remote_overlay = RealtimeOverlay.from_dict(remote_state)
-                # Sync if remote is newer OR if we haven't synced anything yet
-                # Added robust logs for Phase 10 validation
-                if (not hasattr(self, "_last_synced_at") or 
-                    remote_overlay.last_updated > self._last_synced_at):
+                needs_sync = (
+                    remote_overlay.version > self._last_synced_version or
+                    remote_overlay.last_updated > self._last_synced_at
+                )
+                if needs_sync:
                     self.current_overlay = remote_overlay
                     self._last_synced_at = remote_overlay.last_updated
-                    logger.info(f"Phase 10: Synced {len(remote_overlay.delays)} delays from Redis.")
+                    self._last_synced_version = remote_overlay.version
+                    try:
+                        from backend.utils import metrics
+                        metrics.OVERLAY_VERSION.set(self._last_synced_version)
+                    except Exception:
+                        pass
+                    logger.info(
+                        f"Phase 10: Synced overlay version {self._last_synced_version} "
+                        f"({len(remote_overlay.delays)} delays) from Redis."
+                    )
                 else:
                     logger.debug("Phase 10: Local overlay is already up to date.")
             else:
@@ -153,64 +172,219 @@ class RailwayRouteEngine:
         Get or rebuild the graph, ensuring snapshot is fresh (valid for 24h).
         Implements Phase 2: Snapshot System & Phase 10: Redis Sync.
         """
-        # Step 0: Sync Real-time Overlay (Phase 10)
+        # Step 0: Sync overlay first
         await self.sync_realtime_overlay()
 
-        # Step 1: Manage Static Snapshot (Daily build)
-        needs_rebuild = (
-            not self.current_snapshot or 
-            self.current_snapshot.date.date() != date.date() or
-            (self.last_snapshot_time is None) or # Rebuild if never built
-            (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400 # 24 hours
-        )
-        
-        print(f"DEBUG: needs_rebuild={needs_rebuild}, current_snapshot={self.current_snapshot is not None}")
+        # Step 1: Snapshot lifecycle (protected by lock to avoid races)
+        async with self._snapshot_lock:
+            needs_rebuild = (
+                not self.current_snapshot or
+                self.current_snapshot.date.date() != date.date() or
+                (self.last_snapshot_time is None) or
+                (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400
+            )
 
-        if needs_rebuild:
-            # Try loading from disk first
-            self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
-            print(f"DEBUG: loaded_from_disk={self.current_snapshot is not None}")
-            
-            if not self.current_snapshot:
-                print(f"DEBUG: Building fresh static graph snapshot for {date.date()}")
-                logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
-                
-                # Use GraphBuilder to get a new graph
-                temp_graph = await self.graph_builder.build_graph(date)
-                
-                # Extract snapshot data (graph.snapshot is already set by builder)
-                self.current_snapshot = temp_graph.snapshot
-                
-                # Precompute hub connectivity (Phase 3, Step 2)
-                self.hub_manager.initialize_hubs() # Ensure hubs are loaded
+            if needs_rebuild:
+                self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
+                if not self.current_snapshot:
+                    logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
+                    build_start = _time.time()
+                    temp_graph = await self.graph_builder.build_graph(date)
+                    build_ms = (_time.time() - build_start) * 1000.0
+                    try:
+                        from backend.utils import metrics
+                        metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
+                    except Exception:
+                        pass
+                    self.current_snapshot = temp_graph.snapshot
+                    try:
+                        await self.snapshot_manager.save_snapshot(self.current_snapshot)
+                    except Exception:
+                        logger.warning("Snapshot save failed during rebuild")
+                else:
+                    try:
+                        from backend.utils import metrics
+                        metrics.GRAPH_NODES.set(len(self.current_snapshot.stop_cache or {}))
+                        edges = sum(len(v) for v in self.current_snapshot.trip_segments.values())
+                        edges += sum(len(v) for v in self.current_snapshot.transfer_graph.values())
+                        metrics.GRAPH_EDGES.set(edges)
+                        if self.current_snapshot.stop_cache:
+                            metrics.TRANSFER_DENSITY.set(edges / len(self.current_snapshot.stop_cache))
+                    except Exception:
+                        pass
+            else:
+                logger.debug(f"Reusing snapshot for {date.date()} - no rebuild required")
+
+            if self.current_snapshot and not self.raptor._hub_table:
+                self.hub_manager.initialize_hubs()
+                hub_start = _time.time()
                 hub_table = await self.hub_manager.precompute_hub_connectivity(
-                    TimeDependentGraph(self.current_snapshot), # Use the newly built snapshot
+                    TimeDependentGraph(self.current_snapshot),
                     date
                 )
-                self.raptor.set_hub_table(hub_table) # Set in HybridRAPTOR
+                hub_ms = (_time.time() - hub_start) * 1000.0
+                try:
+                    from backend.utils import metrics
+                    metrics.HUB_PRECOMPUTE_TIME_MS.observe(hub_ms)
+                except Exception:
+                    pass
+                self.raptor.set_hub_table(hub_table)
 
-                # Save to disk for future use (already done by builder)
-            else:
-                # If loaded from disk, ensure hub_table is also loaded or re-initialized
-                # For simplicity, if snapshot is loaded, we can re-run hub precomputation
-                # or serialize/deserialize hub_table with the snapshot.
-                # For now, let's just ensure hubs are initialized and precompute if not.
-                if not self.raptor._hub_table: # Check if hub_table is empty
-                    self.hub_manager.initialize_hubs()
-                    hub_table = await self.hub_manager.precompute_hub_connectivity(
-                        TimeDependentGraph(self.current_snapshot), # Use the loaded snapshot
-                        date
-                    )
-                    self.raptor.set_hub_table(hub_table)
-            
             self.last_snapshot_time = datetime.utcnow()
-            
+
         # Step 2: Overlay Layer (Copy-on-Write)
-        # We create a new TimeDependentGraph that points to the snapshot but has its own overlay
         graph = TimeDependentGraph(self.current_snapshot)
         graph.overlay = self.current_overlay
-        
         return graph
+
+    async def _acquire_base_snapshot(self, date: datetime) -> StaticGraphSnapshot:
+        snapshot = self.current_snapshot
+        if snapshot and snapshot.date.date() != date.date():
+            snapshot = None
+        if not snapshot:
+            snapshot = await self.snapshot_manager.load_snapshot(date)
+            if snapshot:
+                self.current_snapshot = snapshot
+                self.last_snapshot_time = datetime.utcnow()
+        if snapshot and not self._validate_snapshot(snapshot):
+            logger.warning("Snapshot failed integrity validation, triggering rebuild")
+            snapshot = None
+            self.current_snapshot = None
+        needs_rebuild = (
+            snapshot is None or
+            self.last_snapshot_time is None or
+            (datetime.utcnow() - (self.last_snapshot_time or datetime.min)).total_seconds() > 86400
+        )
+        print(f"DEBUG: needs_rebuild={needs_rebuild}, snapshot_loaded={snapshot is not None}")
+        if needs_rebuild:
+            if snapshot:
+                self._launch_background_snapshot_build(date)
+            else:
+                logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
+                base_snapshot = await self._build_snapshot(date)
+                self.current_snapshot = base_snapshot
+                self.last_snapshot_time = datetime.utcnow()
+                return base_snapshot
+        if not snapshot:
+            raise RuntimeError("Snapshot generation failed and no previous state exists")
+        return snapshot
+
+    def _launch_background_snapshot_build(self, date: datetime) -> None:
+        if self._snapshot_build_task and not self._snapshot_build_task.done():
+            return
+        self._snapshot_build_task = asyncio.create_task(self._build_snapshot(date))
+        self._snapshot_build_task.add_done_callback(self._snapshot_build_callback)
+
+    async def _build_snapshot(self, date: datetime) -> StaticGraphSnapshot:
+        build_start = _time.time()
+        temp_graph = await self.graph_builder.build_graph(date)
+        snapshot = temp_graph.snapshot
+        try:
+            await self.snapshot_manager.save_snapshot(snapshot)
+        except Exception:
+            logger.warning("Snapshot save failed during rebuild")
+        build_ms = (_time.time() - build_start) * 1000.0
+        try:
+            from backend.utils import metrics
+            metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
+        except Exception:
+            pass
+        return snapshot
+
+    def _snapshot_build_callback(self, task: asyncio.Task):
+        self._snapshot_build_task = None
+        if task.cancelled():
+            return
+        try:
+            snapshot = task.result()
+        except Exception as exc:
+            logger.error(f"Background snapshot build failed: {exc}")
+            return
+        asyncio.create_task(self._publish_snapshot(snapshot))
+
+    async def _publish_snapshot(self, snapshot: StaticGraphSnapshot) -> None:
+        async with self._snapshot_lock:
+            self.current_snapshot = snapshot
+            self.last_snapshot_time = datetime.utcnow()
+
+    def _record_graph_metrics(self, snapshot: StaticGraphSnapshot) -> None:
+        try:
+            from backend.utils import metrics
+            metrics.GRAPH_NODES.set(len(snapshot.stop_cache or {}))
+            edges = sum(len(v) for v in snapshot.trip_segments.values())
+            edges += sum(len(v) for v in snapshot.transfer_graph.values())
+            metrics.GRAPH_EDGES.set(edges)
+            if snapshot.stop_cache:
+                metrics.TRANSFER_DENSITY.set(edges / len(snapshot.stop_cache))
+        except Exception:
+            pass
+
+    def _validate_snapshot(self, snapshot: Optional[StaticGraphSnapshot]) -> bool:
+        if not snapshot:
+            return False
+        stop_count = len(snapshot.stop_cache or {})
+        trip_count = len(snapshot.trip_segments or {})
+        if stop_count < 200:
+            logger.warning(f"Snapshot appears too small ({stop_count} stops)")
+            return False
+        if trip_count < 300:
+            logger.warning(f"Snapshot appears too small ({trip_count} trips)")
+            return False
+        transfer_edges = sum(len(v) for v in snapshot.transfer_graph.values())
+        if transfer_edges == 0:
+            logger.warning("Snapshot has no transfer edges")
+            return False
+        if not snapshot.date:
+            logger.warning("Snapshot missing date")
+            return False
+        if snapshot.date < datetime.utcnow() - timedelta(days=5):
+            logger.warning("Snapshot appears stale")
+            return False
+        if snapshot.date > datetime.utcnow() + timedelta(days=2):
+            logger.warning("Snapshot date in future")
+            return False
+        return True
+
+    async def _finalize_graph(self, base_snapshot: StaticGraphSnapshot, date: datetime) -> TimeDependentGraph:
+        delta = await self.snapshot_manager.load_delta_snapshot(date, date.hour)
+        static_snapshot = self._merge_static_snapshots(base_snapshot, delta) if delta else base_snapshot
+        graph = TimeDependentGraph(static_snapshot)
+        graph.overlay = self.current_overlay
+        return graph
+
+    def _merge_static_snapshots(self, base: StaticGraphSnapshot, delta: Optional[StaticGraphSnapshot]) -> StaticGraphSnapshot:
+        if not delta:
+            return base
+        merged = StaticGraphSnapshot(date=base.date)
+        merged.departures_by_stop = defaultdict(list)
+        for stop, values in base.departures_by_stop.items():
+            merged.departures_by_stop[stop].extend(values)
+        for stop, values in delta.departures_by_stop.items():
+            merged.departures_by_stop[stop].extend(values)
+        merged.arrivals_by_stop = defaultdict(list)
+        for stop, values in base.arrivals_by_stop.items():
+            merged.arrivals_by_stop[stop].extend(values)
+        for stop, values in delta.arrivals_by_stop.items():
+            merged.arrivals_by_stop[stop].extend(values)
+        merged.trip_segments = defaultdict(list)
+        for trip, segments in base.trip_segments.items():
+            merged.trip_segments[trip].extend(segments)
+        for trip, segments in delta.trip_segments.items():
+            merged.trip_segments[trip].extend(segments)
+        merged.transfer_graph = defaultdict(list)
+        for station, transfers in base.transfer_graph.items():
+            merged.transfer_graph[station].extend(transfers)
+        for station, transfers in delta.transfer_graph.items():
+            merged.transfer_graph[station].extend(transfers)
+        merged.stop_cache = {**base.stop_cache, **delta.stop_cache}
+        merged.route_patterns = {**base.route_patterns, **delta.route_patterns}
+        merged.transfer_cache = {**base.transfer_cache, **delta.transfer_cache}
+        merged.stop_index = {**base.stop_index, **delta.stop_index}
+        merged.transfer_metrics = {**base.transfer_metrics, **delta.transfer_metrics}
+        merged.density_metrics = {**base.density_metrics, **delta.density_metrics}
+        merged.version = delta.version or base.version
+        merged.created_at = base.created_at
+        return merged
 
     async def search_routes(self, source_code: str, destination_code: str,
                            departure_date: datetime,
@@ -222,10 +396,8 @@ class RailwayRouteEngine:
         if constraints is None:
             constraints = RouteConstraints()
 
-        # Get station IDs
         session = SessionLocal()
         try:
-            # Search both 'code' and 'stop_id' for source and destination
             from sqlalchemy import or_
             source_stop = session.query(Stop).filter(
                 or_(Stop.code == source_code.upper(), Stop.stop_id == source_code.upper())
@@ -241,58 +413,46 @@ class RailwayRouteEngine:
             if source_stop.id == dest_stop.id:
                 return []
 
-            # Step 1: Get the current graph (Snapshot + Overlay)
-            graph = await self._get_current_graph(departure_date)
+            date = departure_date
+            graph = await self._get_current_graph(date)
 
-            # Step 2: Execute RAPTOR search (Delegates to HybridRAPTOR for Phase 3)
             routes = await self.raptor.find_routes(
-                source_stop.id, dest_stop.id, departure_date, constraints, graph=graph
+                source_stop.id, dest_stop.id, date, constraints, graph=graph
             )
 
-            # Step 3: Apply ML ranking if user context provided
             if user_context:
                 routes = await self._apply_ml_ranking(routes, user_context)
 
-            # Step 4: Apply Booking Intelligence Unlock Logic (Phase 7)
             if self.seat_manager:
-                # Mark first 3 unlocked
                 for i, route in enumerate(routes):
                     route.is_locked = i >= 3
-                
-                # Silent Prefetching for top 2 routes (Point 12)
-                # Note: This is an async fire-and-forget task
-                asyncio.create_task(self._prefetch_availability(routes[:2], departure_date))
+                asyncio.create_task(self._prefetch_availability(routes[:2], date))
 
             return routes
-
         finally:
-            session.close()
+            try:
+                session.close()
+            except Exception:
+                pass
 
     async def _prefetch_availability(self, top_routes: List[Route], date: datetime):
         """Background task to prefetch seat availability for top routes."""
         if not self.seat_manager:
             return
-            
-        date_str = date.strftime("%Y-%m-%d") # API Expected format for IRCTC1 V1
-        
-        # Bridge domain objects to manager expected format
+
+        date_str = date.strftime("%Y-%m-%d")
         prefetch_items = []
         for route in top_routes:
             if not route.segments:
                 continue
-            
-            # Prefetch for the first train segment
             seg = route.segments[0]
             if seg.train_number:
-                # We need station codes. For now we assume they are passed or resolvable.
-                # In production, Segment object carries station codes.
                 prefetch_items.append({
                     "train_number": seg.train_number,
-                    "from_station": getattr(seg, 'from_code', 'ST'), # Placeholder resolution
-                    "to_station": getattr(seg, 'to_code', 'BVI'),
-                    "date": date_str
+                    "from_station": getattr(seg, 'from_code', ''),
+                    "to_station": getattr(seg, 'to_code', ''),
+                    "date": date_str,
                 })
-        
         if prefetch_items:
             await self.seat_manager.prefetch_top_routes(prefetch_items)
 

@@ -22,13 +22,15 @@ from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .data_structures import RouteSegment, TransferConnection
 from .regions import RegionManager
 from .snapshot_manager import SnapshotManager
+from ... import config as cfg
 
 logger = logging.getLogger(__name__)
 
 # Import validation pipeline
 try:
-    from ..graph_validation_pipeline import GraphBuildingValidationPipeline
-except ImportError:
+    # validator/graph_validation_pipeline.py is in sibling package `validator`
+    from ..validator.graph_validation_pipeline import GraphBuildingValidationPipeline
+except Exception:
     logger.debug("Graph validation pipeline not available (OK for backward compatibility)")
     GraphBuildingValidationPipeline = None
 
@@ -90,6 +92,26 @@ class GraphBuilder:
             logger.info("Loaded StationTimeIndex into graph.")
         except Exception as e:
             logger.debug("StationTimeIndex not available: %s", e)
+
+        # Log snapshot density / transfer metrics exposure
+        density_metrics = graph.density_metrics
+        transfer_metrics = graph.transfer_metrics
+        total_departures = density_metrics.get('total_departures', sum(len(v) for v in graph.departures_by_stop.values()))
+        logger.info(
+            "Graph snapshot %s: trip_segments=%d, departure_sources=%d, departures=%d",
+            date.date(), len(graph.trip_segments), len(graph.departures_by_stop), total_departures
+        )
+        if transfer_metrics:
+            logger.info(
+                "Transfer graph metrics: nodes=%d, edges=%d, avg_degree=%.2f",
+                transfer_metrics.get('node_count', 0), transfer_metrics.get('edge_count', 0), transfer_metrics.get('avg_degree', 0.0)
+            )
+        for stop_id, departure_count in density_metrics.get('sample_source_stats', []):
+            actual_departures = len(graph.departures_by_stop.get(stop_id, []))
+            logger.debug(
+                "Sample departures - stop %s: logged=%d graph=%d",
+                stop_id, departure_count, actual_departures
+            )
         
         # Apply validated transfer graph if available
         if GraphBuildingValidationPipeline:
@@ -118,6 +140,7 @@ class GraphBuilder:
             arrivals = defaultdict(list)
             segments = defaultdict(list)
             stops = {}
+            stop_code_to_id: Dict[str, int] = {}
 
             # Precomputed indexes for algorithmic speedups
             route_patterns = defaultdict(list)    # stop-sequence tuple -> list of trip_ids
@@ -144,6 +167,7 @@ class GraphBuilder:
                 # Populate stop_index with BOTH internal code and stop_id if they differ
                 if st.stop.code:
                     stop_index[st.stop.code] = st.stop.id
+                    stop_code_to_id[st.stop.code.upper()] = st.stop.id
                 if st.stop.stop_id:
                     stop_index[st.stop.stop_id] = st.stop.id
 
@@ -257,6 +281,10 @@ class GraphBuilder:
                             distance_km = 0.0
 
                     # Basic fare calculation (e.g. 1.2 INR per KM heuristic)
+                    # clamp unrealistic distances (bad stop coords may produce huge numbers)
+                    if distance_km and distance_km > 1000:
+                        # log once? simple clamp to 0 to avoid skewing totals
+                        distance_km = 0.0
                     fare_estimate = round(float(distance_km or 0.0) * 1.2, 2)
                     if fare_estimate < 10.0: fare_estimate = 60.0 # Min fare
 
@@ -373,6 +401,9 @@ class GraphBuilder:
                     )
                     transfers[stop.id].append(transfer)
 
+                # Enrich transfer graph with heuristics (nearby stations, key hubs, platform edges)
+                self._enrich_transfer_graph(transfers, stops, date, stop_code_to_id)
+
             # Build transfer_cache from transfers for O(1) pair lookups
             for from_stop, tlist in transfers.items():
                 for t in tlist:
@@ -422,6 +453,38 @@ class GraphBuilder:
                     logger.error("Failed to persist StationDepartures: %s", e)
                     session.rollback()
 
+            # Transfer graph metrics
+            transfer_edge_count = sum(len(v) for v in transfers.values())
+            transfer_node_count = len(transfers)
+            avg_transfer_degree = transfer_edge_count / max(1, transfer_node_count)
+            logger.info(
+                "Transfer graph for %s: nodes=%d, edges=%d, avg_degree=%.2f",
+                date.date(), transfer_node_count, transfer_edge_count, avg_transfer_degree
+            )
+
+            # Data density metrics (departures & segments)
+            departure_counts = [len(v) for v in departures.values()]
+            total_departure_events = sum(departure_counts)
+            avg_departures_per_stop = total_departure_events / max(1, len(departures))
+            top_departure_sources = sorted(departures.items(), key=lambda kv: len(kv[1]), reverse=True)[:3]
+            sample_source_stats = [(stop_id, len(events)) for stop_id, events in top_departure_sources]
+            logger.info(
+                "Snapshot %s density: segments=%d, departures=%d, avg_per_stop=%.2f, top_sources=%s",
+                date.date(), len(segments), total_departure_events, avg_departures_per_stop, sample_source_stats
+            )
+
+            transfer_metrics = {
+                'node_count': transfer_node_count,
+                'edge_count': transfer_edge_count,
+                'avg_degree': avg_transfer_degree
+            }
+            density_metrics = {
+                'total_trip_segments': len(segments),
+                'total_departures': total_departure_events,
+                'avg_departures_per_stop': avg_departures_per_stop,
+                'sample_source_stats': sample_source_stats
+            }
+
             return {
                 'departures': departures,
                 'arrivals': arrivals,
@@ -439,7 +502,9 @@ class GraphBuilder:
                     stop_cache=stops,
                     stop_index=stop_index,
                     route_patterns=route_patterns,
-                    transfer_cache=transfer_cache
+                    transfer_cache=transfer_cache,
+                    transfer_metrics=transfer_metrics,
+                    density_metrics=density_metrics
                 )
             }
 
@@ -541,3 +606,85 @@ class GraphBuilder:
     def _time_to_datetime(self, date: datetime, t: time) -> datetime:
         """Convert time to datetime on given date"""
         return datetime.combine(date.date(), t)
+
+    def _enrich_transfer_graph(self, transfers: Dict[int, List[TransferConnection]], stops: Dict[int, Stop], date: datetime, stop_code_to_id: Dict[str, int]):
+        """Augment the transfer graph with heuristics for nearby stations, hub slugs, and platform shuffles."""
+        added_pairs = set()
+
+        def add_connection(from_stop: Stop, to_stop: Stop, duration_minutes: int, label: Optional[str] = None,
+                           platform_from: Optional[str] = None, platform_to: Optional[str] = None):
+            key = (from_stop.id, to_stop.id, platform_from, platform_to)
+            if key in added_pairs:
+                return
+            added_pairs.add(key)
+            transfer = TransferConnection(
+                station_id=to_stop.id,
+                arrival_time=date.replace(hour=0, minute=0),
+                departure_time=date.replace(hour=23, minute=59),
+                duration_minutes=max(1, duration_minutes),
+                station_name=f"{to_stop.name}{f' ({label})' if label else ''}",
+                facilities_score=self._extract_facilities_score(to_stop),
+                safety_score=min(1.0, max(0.0, getattr(to_stop, 'safety_score', 50.0) / 100.0)),
+                platform_from=platform_from,
+                platform_to=platform_to
+            )
+            transfers[from_stop.id].append(transfer)
+
+        # Nearby stations within radius
+        radius_km = cfg.Config.NEARBY_TRANSFER_RADIUS_KM
+        if radius_km > 0:
+            stop_list = [stop for stop in stops.values() if getattr(stop, 'latitude', None) is not None and getattr(stop, 'longitude', None) is not None]
+            stop_list.sort(key=lambda s: (0 if getattr(s, 'is_major_junction', False) else 1, s.id))
+            if len(stop_list) > 400:
+                stop_list = stop_list[:400]
+            for idx, stop_a in enumerate(stop_list):
+                for stop_b in stop_list[idx + 1:]:
+                    try:
+                        distance = haversine_distance(stop_a.latitude, stop_a.longitude, stop_b.latitude, stop_b.longitude)
+                    except Exception:
+                        continue
+                    if distance <= radius_km:
+                        duration = max(3, int(distance * 8) + 2)
+                        add_connection(stop_a, stop_b, duration, label="nearby")
+                        add_connection(stop_b, stop_a, duration, label="nearby")
+
+        # Key hub pair connections
+        hub_pairs = [pair.strip() for pair in cfg.Config.KEY_HUB_TRANSFER_PAIRS.split(',') if pair.strip()]
+        for entry in hub_pairs:
+            pieces = entry.split(':')
+            if len(pieces) != 2:
+                continue
+            src_code, dst_code = pieces[0].upper(), pieces[1].upper()
+            src_id = stop_code_to_id.get(src_code)
+            dst_id = stop_code_to_id.get(dst_code)
+            if not src_id or not dst_id:
+                continue
+            src_stop = stops.get(src_id)
+            dst_stop = stops.get(dst_id)
+            if not src_stop or not dst_stop:
+                continue
+            duration = 20
+            add_connection(src_stop, dst_stop, duration, label="key-hub")
+            add_connection(dst_stop, src_stop, duration, label="key-hub")
+
+        # Platform-to-platform shuffles for busy junctions
+        platform_nodes = [code.strip().upper() for code in cfg.Config.PLATFORM_TRANSFER_JUNCTIONS.split(',') if code.strip()]
+        platform_edge_count = max(1, cfg.Config.PLATFORM_TRANSFER_EDGE_COUNT)
+        for code in platform_nodes:
+            stop_id = stop_code_to_id.get(code)
+            if not stop_id:
+                continue
+            stop_obj = stops.get(stop_id)
+            if not stop_obj:
+                continue
+            for idx in range(1, platform_edge_count + 1):
+                from_platform = f"P{idx}"
+                to_platform = f"P{idx + 1}"
+                add_connection(stop_obj, stop_obj, 1, label="platform", platform_from=from_platform, platform_to=to_platform)
+                add_connection(stop_obj, stop_obj, 1, label="platform", platform_from=to_platform, platform_to=from_platform)
+
+    def _extract_facilities_score(self, stop: Stop) -> float:
+        facilities = getattr(stop, 'facilities_json', {}) or {}
+        if isinstance(facilities, dict):
+            return facilities.get('walking_time_factor', 0.7)
+        return 0.7
