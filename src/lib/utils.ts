@@ -33,20 +33,22 @@ export const getSafeRedirectUrl = (path: string = "/"): string => {
  * Development: http://localhost:8000 + path.
  * Production: VITE_RAILWAY_API_URL + path, or /api + path for API routes when same-origin.
  */
+const ABSOLUTE_URL_REGEX = /^https?:\/\//i;
+
 export const getRailwayApiUrl = (path: string): string => {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  // Ensure /api prefix if not already present, except for absolute URLs
-  const useApiPrefix = !p.startsWith("/api") && !p.startsWith("http");
-  const apiPath = useApiPrefix ? `/api${p}` : p;
-  
-  const base = import.meta.env.VITE_RAILWAY_API_URL;
-  if (base) {
-    return base.replace(/\/$/, "") + (base.includes("/api") ? p : apiPath);
-  }
-  
-  if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-    return `http://localhost:8000${apiPath}`;
-  }
-  
-  return apiPath;
+  const trimmedPath = (path ?? "").trim();
+  if (!trimmedPath) throw new Error("getRailwayApiUrl requires a non-empty path");
+
+  const normalizedPath = trimmedPath.startsWith("/") ? trimmedPath : `/${trimmedPath}`;
+  const needsApiPrefix = !normalizedPath.startsWith("/api") && !ABSOLUTE_URL_REGEX.test(normalizedPath);
+  const apiPath = needsApiPrefix ? `/api${normalizedPath}` : normalizedPath;
+
+  const baseUrl =
+    import.meta.env.VITE_API_URL ??
+    import.meta.env.VITE_RAILWAY_API_URL ??
+    (typeof window !== "undefined" ? window.location.origin : undefined) ??
+    "http://localhost:8000";
+
+  const normalizedBase = baseUrl.replace(/\/$/, "");
+  return `${normalizedBase}${apiPath}`;
 };

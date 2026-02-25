@@ -98,6 +98,8 @@ RMA_RAPTOR_TRANSFER_EXPANSIONS_TOTAL = Counter(
 )
 
 # --- Cache Metrics ---
+# legacy counters with RMA_ prefix remain for backward compatibility; new
+# default names make regression detection easier.
 RMA_CACHE_HIT_TOTAL = Counter(
     'rma_cache_hit_total',
     'Total number of route cache hits.'
@@ -105,6 +107,78 @@ RMA_CACHE_HIT_TOTAL = Counter(
 RMA_CACHE_MISS_TOTAL = Counter(
     'rma_cache_miss_total',
     'Total number of route cache misses.'
+)
+
+ROUTE_CACHE_HITS_TOTAL = Counter(
+    'route_cache_hits_total',
+    'Total number of route cache hits.'
+)
+ROUTE_CACHE_MISSES_TOTAL = Counter(
+    'route_cache_misses_total',
+    'Total number of route cache misses.'
+)
+
+# --- Additional Route Metrics (Task 3) ---
+
+ROUTE_UNLOCK_LATENCY_MS = Histogram(
+    'route_unlock_latency_ms',
+    'Time spent in unlock_journey_details (ms).',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500)
+)
+
+ROUTE_GENERATION_LATENCY_MS = Histogram(
+    'route_generation_latency_ms',
+    'Time taken to generate route candidates (ms).',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000)
+)
+
+ROUTE_VERIFICATION_LATENCY_MS = Histogram(
+    'route_verification_latency_ms',
+    'Latency spent verifying top route candidates (ms).',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500)
+)
+
+# breakdown timers
+ROUTE_DB_QUERY_MS = Histogram(
+    'route_db_query_ms',
+    'Time spent querying database during route search (ms).',
+    buckets=(0.1, 1, 5, 10, 25, 50, 100, 250)
+)
+ROUTE_GRAPH_COMPUTE_MS = Histogram(
+    'route_graph_compute_ms',
+    'Time spent inside graph/RAPTOR computation (ms).',
+    buckets=(0.1, 1, 5, 10, 25, 50, 100, 250, 500)
+)
+ROUTE_VERIFICATION_API_MS = Histogram(
+    'route_verification_api_ms',
+    'Time spent calling external verification APIs (ms).',
+    buckets=(1, 5, 10, 25, 50, 100, 250)
+)
+ROUTE_RESPONSE_SERIALIZE_MS = Histogram(
+    'route_response_serialize_ms',
+    'Time required to format/serialize route response (ms).',
+    buckets=(0.1, 1, 5, 10, 25, 50, 100)
+)
+
+# user journey / product metrics
+SEARCH_TO_UNLOCK_TIME_MS = Histogram(
+    'search_to_unlock_time_ms',
+    'Time between a route search and subsequent unlock request (ms).',
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000)
+)
+VERIFICATION_SUCCESS_RATE = Gauge(
+    'verification_success_rate',
+    'Fraction of verified journeys among those requested.'
+)
+TOP3_VERIFIED_RATIO = Gauge(
+    'top3_verified_ratio',
+    'Ratio of top‑3 candidates that were verified successfully.'
+)
+
+# external API health timestamp (used by /health logic)
+EXTERNAL_API_LAST_SUCCESS_TIMESTAMP = Gauge(
+    'external_api_last_success_timestamp',
+    'Unix timestamp of the last successful external API call.'
 )
 
 # --- Event Streaming Metrics ---

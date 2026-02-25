@@ -13,7 +13,7 @@ import { FeaturesSection } from "@/components/FeaturesSection";
 import { Station, addStationsToCache, searchStations as searchStationsLocal } from "@/data/stations";
 import { Route, getCategoryBase } from "@/data/routes";
 import { getCachedRoutes, normalizeDate } from "@/data/cachedRoutes";
-import { searchRoutesApi, searchStationsApi, mapBackendRoutesToRoutes, getStatsRailway, getSearchHistory } from "@/services/railwayBackApi";
+import { searchRoutesApi, mapBackendRoutesToRoutes, resolveStationCode, getStatsRailway, getSearchHistory } from "@/services/railwayBackApi";
 import { ackFlow } from "@/api/flow";
 import { cn } from "@/lib/utils";
 import { toast, Toast } from "@/hooks/use-toast";
@@ -134,44 +134,62 @@ const Index = () => {
     openUnlockPayment({ route, travelDate, originName: origin?.name ?? "", destName: destination?.name ?? "" });
   }, [origin, destination, travelDate, openUnlockPayment]);
 
+  const resolveStationForChatbot = useCallback(
+    async (value: string) => {
+      const trimmed = (value ?? "").trim();
+      if (!trimmed) return null;
+      try {
+        const resolved = await resolveStationCode(trimmed);
+        if (resolved) return resolved;
+      } catch (error) {
+        console.warn("Station resolve via backend failed", error);
+      }
+
+      const normalized = trimmed.toUpperCase();
+      const localMatches = searchStationsLocal(trimmed);
+      if (localMatches.length === 0) return null;
+      return (
+        localMatches.find(
+          (station) =>
+            station.code.toUpperCase() === normalized ||
+            (station.name ?? "").toUpperCase() === normalized
+        ) ?? localMatches[0]
+      );
+    },
+    []
+  );
+
   const runSearchFromCodes = useCallback(
     async (fromCode: string, toCode: string, date?: string, correlationId?: string) => {
-      const norm = (c: string) => String(c ?? "").trim().toUpperCase();
-      const fromUpper = norm(fromCode);
-      const toUpper = norm(toCode);
-      if (!fromUpper || !toUpper) return;
-      try {
-        const [fromStations, toStations] = await Promise.all([
-          searchStationsApi(fromCode),
-          searchStationsApi(toCode),
-        ]);
-        const fromStation = fromStations?.find((s) => norm(s?.code) === fromUpper) ?? fromStations?.[0];
-        const toStation = toStations?.find((s) => norm(s?.code) === toUpper) ?? toStations?.[0];
-        if (fromStation && toStation) {
-          hasTriggeredChatbotSearch.current = false;
-          setOrigin(fromStation);
-          setDestination(toStation);
-          setTravelDate(date || "");
-          setSearchParams({ from: fromCode, to: toCode, ...(date && { date }) }, { replace: true });
-          setPendingChatbotSearch({ fromCode, toCode, date, correlationId });
-        }
-      } catch {
-        // Fallback: use local station data when backend is unavailable
-        const fromLocal = searchStationsLocal(fromCode);
-        const toLocal = searchStationsLocal(toCode);
-        const fromStation = fromLocal.find((s) => norm(s?.code) === fromUpper) ?? fromLocal[0];
-        const toStation = toLocal.find((s) => norm(s?.code) === toUpper) ?? toLocal[0];
-        if (fromStation && toStation) {
-          hasTriggeredChatbotSearch.current = false;
-          setOrigin(fromStation);
-          setDestination(toStation);
-          setTravelDate(date || "");
-          setSearchParams({ from: fromCode, to: toCode, ...(date && { date }) }, { replace: true });
-          setPendingChatbotSearch({ fromCode, toCode, date, correlationId });
-        }
-      }
+      const trimmedFrom = (fromCode ?? "").trim();
+      const trimmedTo = (toCode ?? "").trim();
+      if (!trimmedFrom || !trimmedTo) return;
+
+      const [fromStation, toStation] = await Promise.all([
+        resolveStationForChatbot(trimmedFrom),
+        resolveStationForChatbot(trimmedTo),
+      ]);
+
+      if (!fromStation || !toStation) return;
+
+      hasTriggeredChatbotSearch.current = false;
+      setOrigin(fromStation);
+      setDestination(toStation);
+      const resolvedFromCode = fromStation.code.toUpperCase();
+      const resolvedToCode = toStation.code.toUpperCase();
+      setTravelDate(date || "");
+      setSearchParams(
+        { from: resolvedFromCode, to: resolvedToCode, ...(date && { date }) },
+        { replace: true }
+      );
+      setPendingChatbotSearch({
+        fromCode: resolvedFromCode,
+        toCode: resolvedToCode,
+        date,
+        correlationId,
+      });
     },
-    [setSearchParams]
+    [resolveStationForChatbot, setSearchParams]
   );
 
   const [pendingChatbotSearch, setPendingChatbotSearch] = useState<{

@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { Station as StationType, addStationsToCache, searchStations as searchStationsLocal } from "@/data/stations";
 import { searchStationsApi } from "@/services/railwayBackApi";
 
+const STATION_SEARCH_DEBOUNCE_MS = 300;
+
 interface StationSearchProps {
   label: string;
   placeholder: string;
@@ -34,7 +36,46 @@ export function StationSearch({
   const containerRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const abortControllerRef = useRef<AbortController | null>(null);
   const resultsCache = useRef<Map<string, StationType[]>>(new Map());
+
+  const performBackendSearch = useCallback(async (searchQuery: string, hadLocalResults: boolean) => {
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setIsLoading(true);
+    setSearchError(null);
+    try {
+      const remoteResults = await searchStationsApi(searchQuery, controller.signal);
+      if (controller.signal.aborted) return;
+      if (remoteResults.length > 0) {
+        const cacheKey = searchQuery.toLowerCase();
+        resultsCache.current.set(cacheKey, remoteResults);
+        addStationsToCache(remoteResults);
+        setResults(remoteResults);
+        setIsOpen(true);
+        setHighlightedIdx(-1);
+        setSearchError(null);
+      } else if (!hadLocalResults) {
+        setResults([]);
+        setIsOpen(false);
+        setSearchError("No stations matched that query.");
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      if (!hadLocalResults) {
+        setResults([]);
+        setIsOpen(false);
+        setSearchError("Station search failed. Check your connection.");
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsLoading(false);
+      }
+    }
+  }, []);
 
   // Scroll highlighted item into view
   useEffect(() => {
@@ -51,7 +92,9 @@ export function StationSearch({
 
   // Search stations via local DB and backend API
   const searchStations = useCallback((searchQuery: string) => {
-    if (searchQuery.length < 2) {
+    const trimmedQuery = searchQuery.trim();
+    if (trimmedQuery.length < 2) {
+      abortControllerRef.current?.abort();
       setResults([]);
       setGroupedCity(null);
       setIsOpen(false);
@@ -60,44 +103,31 @@ export function StationSearch({
       return;
     }
 
-    const cacheKey = searchQuery.toLowerCase().trim();
-    if (resultsCache.current.has(cacheKey)) {
-      const cachedResults = resultsCache.current.get(cacheKey)!;
+    const cacheKey = trimmedQuery.toLowerCase();
+    const cachedResults = resultsCache.current.get(cacheKey);
+    if (cachedResults) {
       setResults(cachedResults);
       setIsOpen(cachedResults.length > 0);
       setHighlightedIdx(-1);
       setIsLoading(false);
+      setSearchError(null);
       return;
     }
 
-    // 1. Instant local search
-    const localResults = searchStationsLocal(searchQuery);
+    setSearchError(null);
+    const localResults = searchStationsLocal(trimmedQuery);
     if (localResults.length > 0) {
+      resultsCache.current.set(cacheKey, localResults);
       setResults(localResults);
       setIsOpen(true);
       setHighlightedIdx(-1);
-      resultsCache.current.set(cacheKey, localResults);
+    } else {
+      setResults([]);
+      setIsOpen(false);
     }
 
-    // 2. Background backend search to enrich/validate (optional)
-    setIsLoading(true);
-    setSearchError(null);
-    searchStationsApi(searchQuery)
-      .then((results) => {
-        if (results && Array.isArray(results) && results.length > 0) {
-          resultsCache.current.set(cacheKey, results);
-          addStationsToCache(results);
-          setResults(results);
-          setIsOpen(true);
-        }
-      })
-      .catch((err) => {
-        if (localResults.length === 0) {
-          setSearchError("Stations search failed.");
-        }
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
+    void performBackendSearch(trimmedQuery, localResults.length > 0);
+  }, [performBackendSearch]);
 
   // Click outside handler
   useEffect(() => {
@@ -124,7 +154,7 @@ export function StationSearch({
     // Local search is fast, but still debounce for better UX (100ms instead of 300ms)
     debounceTimerRef.current = setTimeout(() => {
       searchStations(val);
-    }, 100);
+    }, STATION_SEARCH_DEBOUNCE_MS);
   };
 
   // Cleanup debounce timer on unmount
@@ -133,6 +163,7 @@ export function StationSearch({
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
+      abortControllerRef.current?.abort();
     };
   }, []);
 

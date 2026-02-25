@@ -15,30 +15,65 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health")
 async def general_health_check(db: Session = Depends(get_db)):
-    """General health check endpoint for the application."""
+    """General health check endpoint returning component statuses.
+
+    Components include database, redis, route_engine and external_api.  The
+    external_api component does **not** hit remote services on every call – it
+    simply verifies that the most recent successful call was ``fresh`` (see
+    ``backend.utils.external_api_health``).
+    """
+    from backend.utils import external_api_health
+
+    components = {
+        "database": "down",
+        "redis": "down",
+        "route_engine": "unknown",
+        "external_api": "unknown"
+    }
+
+    overall = "ok"
+    # database
     try:
-        # Check database connectivity
         db.execute(text("SELECT 1"))
-        
-        # Check Redis connectivity
-        try:
-            redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
-            await redis_client.ping()
-            redis_health = "up"
-        except Exception as redis_err:
-            logger.warning(f"Redis health check failed: {redis_err}")
-            redis_health = "down"
-        
-        return {
-            "status": "healthy",
-            "database": "up",
-            "redis": redis_health,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        components["database"] = "ok"
     except Exception as e:
-        # Log full exception with stack trace for easier debugging in CI/local runs
-        logger.exception(f"General health check failed: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Application is unhealthy")
+        logger.warning(f"Database health failed: {e}")
+        components["database"] = "down"
+        overall = "degraded"
+
+    # redis
+    try:
+        redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
+        await redis_client.ping()
+        components["redis"] = "ok"
+    except Exception as redis_err:
+        logger.warning(f"Redis health check failed: {redis_err}")
+        components["redis"] = "down"
+        overall = "degraded"
+
+    # route engine
+    try:
+        loaded = route_engine.is_loaded()
+        components["route_engine"] = "loaded" if loaded else "loading"
+        if not loaded:
+            overall = "degraded"
+    except Exception as e:
+        logger.warning(f"Route engine health probe failed: {e}")
+        components["route_engine"] = "down"
+        overall = "degraded"
+
+    # external API freshness
+    if external_api_health.get_last_success():
+        if external_api_health.is_fresh():
+            components["external_api"] = "ok"
+        else:
+            components["external_api"] = "stale"
+            overall = "degraded"
+    else:
+        components["external_api"] = "unknown"
+        overall = "degraded"
+
+    return {"status": overall, "components": components, "timestamp": datetime.utcnow().isoformat()}
 
 @router.get("/health/live")
 async def liveness_probe():
@@ -49,32 +84,36 @@ async def liveness_probe():
     }
 
 @router.get("/health/ready")
-async def readiness_probe(db: Session = Depends(get_db)):
-    """Readiness probe: indicates if the application is ready to serve requests."""
+from fastapi import Request
+
+async def readiness_probe(request: Request, db: Session = Depends(get_db)):
+    """Readiness probe: indicates if the application is ready to serve requests.
+
+    Combines database connectivity, route engine load state and a simple flag that
+    is set once the warm‑up sequence (graph + station cache) completes.
+    """
     try:
         logger.debug("Readiness probe: starting checks")
-        # Check if database is ready
+        # Basic DB check
         db.execute(text("SELECT 1"))
         logger.debug("Readiness probe: database connectivity OK")
 
-        # Check Redis
+        # Redis is optional; warn but do not fail
         try:
             redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
             await redis_client.ping()
             logger.debug("Readiness probe: Redis connectivity OK")
         except Exception as redis_err:
             logger.warning(f"Redis not available during readiness check: {redis_err}")
-            # Don't fail readiness if Redis is down (can survive without it)
 
-        # Check if route engine is loaded (if applicable)
+        # Route engine must be loaded
         loaded = route_engine.is_loaded()
         logger.debug("Readiness probe: route_engine.is_loaded() -> %s", loaded)
 
-        # If route engine isn't loaded yet, attempt a synchronous lazy-load for the readiness probe.
         if not loaded:
+            # attempt synchronous load as a last resort
             try:
                 from backend.database import SessionLocal
-
                 db2 = SessionLocal()
                 try:
                     route_engine.load_graph_from_db(db2)
@@ -85,19 +124,18 @@ async def readiness_probe(db: Session = Depends(get_db)):
             except Exception as ex:
                 logger.exception("Failed to lazy-load route_engine during readiness check: %s", ex)
 
-        if not loaded:  # Still not ready
-            logger.debug("Readiness probe: route engine not loaded (will report NOT READY)")
+        if not loaded:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Route engine not loaded")
 
-        # Add other readiness checks here
-        return {
-            "status": "ready",
-            "database": "ready",
-            "route_engine": "loaded",
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        # check that startup warmup flag was set
+        if not getattr(request.app.state, "startup_complete", False):
+            logger.debug("Readiness probe: startup warmup not yet finished")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Warmup not finished")
+
+        return {"status": "ready", "components": {"database": "ready", "route_engine": "loaded"}, "timestamp": datetime.utcnow().isoformat()}
+    except HTTPException:
+        raise
     except Exception as e:
-        # Include full exception trace to help diagnose readiness failures
         logger.exception(f"Readiness probe failed: {e}")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Application is not ready")
 

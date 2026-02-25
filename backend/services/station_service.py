@@ -72,3 +72,7 @@ class StationService:
                 })
         
         return sorted(results, key=lambda x: x["distance_km"])[:limit]
+
+    def get_total_stations_count(self) -> int:
+        """Return total number of configured stations."""
+        return self.db.query(func.count(Station.id)).scalar() or 0

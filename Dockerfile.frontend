@@ -19,9 +19,11 @@ COPY vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY tailwind.config.js postcss.config.js eslint.config.js ./
 COPY index.html ./
 
-# Build the app (uses VITE_API_URL from build args or defaults)
+# Build the app (uses VITE_API_URL/VITE_RAILWAY_API_URL from build args or defaults)
 ARG VITE_API_URL=http://api_gateway:8000
+ARG VITE_RAILWAY_API_URL=http://api_gateway:8000
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_RAILWAY_API_URL=$VITE_RAILWAY_API_URL
 RUN npm run build
 
 # Stage 2: Serve

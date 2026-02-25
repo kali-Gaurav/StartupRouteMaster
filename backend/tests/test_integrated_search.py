@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pytest
 import uuid
 import logging
+from datetime import datetime
 
 # silence noisy SQLAlchemy engine logs during these simple endpoint tests
 logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
@@ -10,6 +11,8 @@ from backend.app import app
 from backend.api.dependencies import get_current_user
 from backend.services.search_service import SearchService
 from backend.services.verification_engine import RouteVerificationEngine
+from backend.services.verification_orchestrator import VerificationOrchestrator
+from backend.services.cache_service import cache_service
 
 
 @pytest.fixture(scope="function")
@@ -31,6 +34,8 @@ def auth_client(db_session, monkeypatch):
         return user
 
     app.dependency_overrides[get_current_user] = _override_current_user
+    cache_service.redis = None
+    cache_service._in_memory = {}
     with TestClient(app) as client:
         yield client, user
     app.dependency_overrides.clear()
@@ -110,10 +115,10 @@ async def test_search_routes_verification_integration(auth_client, monkeypatch):
         r2 = DummyRoute([DummySeg(2, 30, 40, datetime.now(), datetime.now(), "67890")])
         return [r1, r2]
 
-    monkeypatch.setattr('backend.core.route_engine.route_engine', 'search_routes', fake_search)
+    monkeypatch.setattr(route_engine, 'search_routes', fake_search)
 
     # patch the verification engine to return predetermined summaries
-    async def fake_verify_batch(self, candidates, travel_date, coach_preference, quota="GN"):
+    async def fake_verify_top_routes(self, candidates, travel_date, coach_preference, quota="GN"):
         return [{
             "journey_id": c["journey_id"],
             "status": "verified",
@@ -122,10 +127,13 @@ async def test_search_routes_verification_integration(auth_client, monkeypatch):
             "live_status": {"success": True},
             "seat_availability": {"success": True},
             "fare": {"success": True},
-            "cached": False
+            "confidence_score": 0.85,
+            "cached": False,
+            "timestamp": datetime.utcnow().isoformat(),
+            "errors": []
         } for c in candidates]
 
-    monkeypatch.setattr(RouteVerificationEngine, "verify_routes_batch", fake_verify_batch)
+    monkeypatch.setattr(VerificationOrchestrator, "verify_top_routes", fake_verify_top_routes)
 
     resp = client.get("/api/v2/search", params={"source":"NDLS","destination":"MMCT","travel_date":"2026-03-01"})
     assert resp.status_code == 200

@@ -166,6 +166,18 @@ async def startup():
             finally:
                 db.close()
 
+        # additional warmups for readiness: pre-populate station cache
+        try:
+            from backend.services.station_service import StationService
+            svc = StationService(_SessionLocal())
+            total = svc.get_total_stations_count()
+            logger.info(f"Station cache warmed with {total} stations.")
+        except Exception as e:
+            logger.warning(f"Failed to warm station cache: {e}")
+
+        # mark startup as complete so readiness will succeed
+        app.state.startup_complete = True
+
         # Start the payment reconciliation worker
         start_reconciliation_worker()
         logger.info("Payment reconciliation worker initialized.")

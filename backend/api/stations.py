@@ -31,10 +31,9 @@ async def legacy_station_search(q: str = Query(..., min_length=1), limit: int = 
     """
     cache_key = f"stations_search_v3:{q.lower()}:{limit}"
     
-    if cache_service.is_available():
-        cached_results = cache_service.get(cache_key)
-        if cached_results is not None:
-            return {"success": True, "stations": cached_results, "cached": True}
+    cached_results = cache_service.get(cache_key)
+    if cached_results is not None:
+        return {"success": True, "stations": cached_results, "cached": True}
     
     try:
         query_lower = q.lower()
@@ -63,8 +62,10 @@ async def legacy_station_search(q: str = Query(..., min_length=1), limit: int = 
             except Exception:
                 pass
 
-        if cache_service.is_available():
+        try:
             cache_service.set(cache_key, results)
+        except Exception as cache_err:
+            logger.warning("Station search cache set failed: %s", cache_err)
 
         return {"success": True, "stations": results, "cached": False}
     except Exception as e:

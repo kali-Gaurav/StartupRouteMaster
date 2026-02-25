@@ -5,8 +5,8 @@
 
 import { getRailwayApiUrl } from '@/lib/utils';
 import type { Route, RouteSegment } from '@/data/routes';
-import { type Station, searchStations } from '@/data/stations';
-import { getCachedRoutes, cacheRoutes } from './storageService';
+import { type Station } from '@/data/stations';
+import { storageService } from './storageService';
 
 export interface FareRow {
   class_code: string;
@@ -21,6 +21,50 @@ export interface BackendStation {
   state?: string | null;
   is_junction?: number | null;
   geo_hash?: string | null;
+}
+
+export interface StationSuggestionPayload {
+  code: string;
+  name?: string | null;
+  city?: string | null;
+  state?: string | null;
+}
+
+const STATION_SUGGEST_MIN_LENGTH = 2;
+const STATION_SUGGEST_MAX_LIMIT = 25;
+const DEFAULT_STATION_SUGGEST_LIMIT = 15;
+const STATION_RESOLVE_LIMIT = 5;
+
+export async function suggestStationsApi(
+  query: string,
+  signal?: AbortSignal,
+  limit: number = DEFAULT_STATION_SUGGEST_LIMIT
+): Promise<Station[]> {
+  const trimmed = query?.trim() ?? '';
+  if (trimmed.length < STATION_SUGGEST_MIN_LENGTH) return [];
+  const effectiveLimit = Math.min(limit, STATION_SUGGEST_MAX_LIMIT);
+  const params = new URLSearchParams({
+    q: trimmed,
+    limit: String(effectiveLimit),
+  });
+  const res = await fetch(getRailwayApiUrl(`/stations/suggest?${params.toString()}`), {
+    signal,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const message = (err as { detail?: string }).detail ?? `Station suggest failed: ${res.status}`;
+    throw new Error(message);
+  }
+  const payload = (await res.json()) as StationSuggestionPayload[];
+  return payload
+    .map((item) => ({
+      code: (item.code ?? '').trim(),
+      name: (item.name ?? item.code ?? '').trim(),
+      city: (item.city ?? '').trim(),
+      state: (item.state ?? '').trim(),
+      isJunction: false,
+    }))
+    .filter((station) => station.code.length > 0 && station.name.length > 0);
 }
 
 export interface BackendDirectRoute {
@@ -118,34 +162,20 @@ export interface BackendRoutesResponse {
   message?: string;
 }
 
-/**
- * Search stations from local DB first, then optionally backend
- */
-export async function searchStationsApi(q: string): Promise<Station[]> {
-  if (!q || q.trim().length < 2) return [];
-  
-  // 1. Always start with local search for instant results
-  const localResults = searchStations(q);
-  if (localResults.length > 0) return localResults;
+export async function searchStationsApi(q: string, signal?: AbortSignal): Promise<Station[]> {
+  return suggestStationsApi(q, signal);
+}
 
-  // 2. Fallback to backend as a booster (or skip if offline)
-  try {
-    const url = getRailwayApiUrl(`/stations/search?q=${encodeURIComponent(q.trim())}`);
-    const res = await fetch(url);
-    if (!res.ok) return []; // Gracefully return empty if backend fails
-    const data = await res.json();
-    const list = data.stations || [];
-    return list.map((s: BackendStation & { code?: string; name?: string }) => ({
-      code: s.station_code ?? s.code ?? '',
-      name: (s.station_name ?? s.name ?? s.station_code ?? s.code ?? '').trim(),
-      city: (s.city ?? '').trim(),
-      state: (s.state ?? '').trim(),
-      isJunction: (s as any).is_junction ?? false,
-    }));
-  } catch (error) {
-    console.warn("Backend search failed, using local search results only", error);
-    return localResults;
-  }
+export async function resolveStationCode(query: string, signal?: AbortSignal): Promise<Station | null> {
+  const trimmed = (query ?? "").trim();
+  if (trimmed.length < 1) return null;
+  const suggestions = await suggestStationsApi(trimmed, signal, STATION_RESOLVE_LIMIT);
+  if (suggestions.length === 0) return null;
+  const normalized = trimmed.toUpperCase();
+  const exactByCode = suggestions.find((station) => station.code.toUpperCase() === normalized);
+  if (exactByCode) return exactByCode;
+  const exactByName = suggestions.find((station) => (station.name ?? "").toUpperCase() === normalized);
+  return exactByName ?? suggestions[0];
 }
 
 export interface SearchRoutesParams {
@@ -210,7 +240,7 @@ export async function searchRoutesApi(
     
     if (!res.ok) {
       // If backend exists but returns error, try cache
-      const cached = await getCachedRoutes(src, dest);
+      const cached = await storageService.getCachedRoutes(src, dest);
       if (cached) return { routes: cached, source: 'offline-cache' } as any;
       
       const err = await res.json().catch(() => ({}));
@@ -221,12 +251,12 @@ export async function searchRoutesApi(
     const data = await res.json();
     // Cache the successful results for future offline use
     if (data.routes && data.routes.length > 0) {
-      cacheRoutes(src, dest, data.routes);
+      storageService.cacheRoutes(src, dest, data.routes);
     }
     return data;
   } catch (error) {
     console.warn("Backend route search failed, attempting to serve from cache", error);
-    const cached = await getCachedRoutes(src, dest);
+    const cached = await storageService.getCachedRoutes(src, dest);
     if (cached) {
       return { 
         routes: cached, 

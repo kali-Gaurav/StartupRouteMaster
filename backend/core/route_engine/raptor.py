@@ -6,6 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any, Tuple
 
+# import metrics for cache hit/miss tracking
+from backend.utils import metrics
+
 from ...database import SessionLocal
 from ...database.models import Stop, StopTime, TrainState
 from ...services.multi_layer_cache import multi_layer_cache, RouteQuery
@@ -163,28 +166,31 @@ class OptimizedRAPTOR:
             include_wait_time=constraints.include_wait_time
         )
 
-        # Check cache first (disabled for debugging)
-        """
+        # Check cache first and update metrics
+        from backend.utils import metrics
         await multi_layer_cache.initialize()
         cache_start = _time.time()
         cached_result = await multi_layer_cache.get_route_query(cache_query)
         cache_elapsed_ms = (_time.time() - cache_start) * 1000.0
         if cached_result:
+            metrics.ROUTE_CACHE_HITS_TOTAL.inc()
+            # keep legacy counter too
+            metrics.RMA_CACHE_HIT_TOTAL.inc()
             if not self.performance_validator.validate_cache_hit_performance(cache_elapsed_ms, expected_max_ms=50.0):
                 logger.warning("RT-093: cache-hit latency exceeded threshold (%.2fms)", cache_elapsed_ms)
             logger.info(f"Route cache hit for {source_stop_id} -> {dest_stop_id}")
             return self._deserialize_cached_routes(cached_result)
-        """
+        else:
+            metrics.ROUTE_CACHE_MISSES_TOTAL.inc()
+            metrics.RMA_CACHE_MISS_TOTAL.inc()
 
         # Compute routes
         routes = await self._compute_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
-        # Cache the result (disabled for debugging)
-        """
+        # Cache the result if available
         if routes:
             serialized_routes = self._serialize_routes_for_cache(routes)
             await multi_layer_cache.set_route_query(cache_query, serialized_routes)
-        """
 
         return routes
 
@@ -880,6 +886,25 @@ class OptimizedRAPTOR:
             routes.append(route)
 
         return routes
+
+    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
+        config = {'route': multimodal_route}
+        if validation_config:
+            config.update(validation_config)
+        report = self.validation_manager.validate(
+            config,
+            profile=ValidationProfile.STANDARD,
+            specific_categories={ValidationCategory.MULTIMODAL}
+        )
+        return report.all_passed
+
+    def validate_api_and_security(self, request_data: dict, auth_token: str) -> bool:
+        report = self.validation_manager.validate_api_request(
+            request_data,
+            auth_token,
+            profile=ValidationProfile.STANDARD
+        )
+        return report.all_passed
 
 
 class HybridRAPTOR(OptimizedRAPTOR):

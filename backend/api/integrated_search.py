@@ -27,6 +27,9 @@ from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/api/v2", tags=["integrated-search"])
 
+# store timestamp of search -> used by unlock to compute search_to_unlock_time_ms
+SEARCH_TIMESTAMP_CACHE: dict[str, float] = {}
+
 
 # ============================================================================
 # INTEGRATED SEARCH ENDPOINTS
@@ -52,6 +55,12 @@ async def unified_search(request: SearchRequest, db: Session = Depends(get_db)):
                 detail={"message": "No trains available on this route"}
             )
         
+        # record timestamp for each journey
+        import time
+        now = time.time()
+        for j in result["journeys"]:
+            SEARCH_TIMESTAMP_CACHE[j["journey_id"]] = now
+
         # Returns List[JourneyInfoResponse]
         return result["journeys"]
         
@@ -77,6 +86,7 @@ async def unlock_journey_details(
     """
     try:
         service = SearchService(db)
+        # note: search-to-unlock latency metric is recorded inside SearchService
         result = await service.unlock_journey_details(
             journey_id=journey_id,
             travel_date_str=travel_date,

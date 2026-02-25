@@ -9,6 +9,7 @@ from backend.core.route_engine import RouteEngine, route_engine
 from backend.config import Config
 from backend.services.seat_allocation import SeatAllocationService, CoachType
 from backend.services.verification_engine import verification_service, RouteVerificationEngine
+from backend.services.verification_orchestrator import VerificationOrchestrator
 from backend.services.journey_reconstruction import JourneyReconstructionEngine
 from backend.database.models import Stop, Trip, Route
 
@@ -21,6 +22,7 @@ class SearchService:
         print(f"DEBUG: SearchService using route_engine from: {self.route_engine.__module__}")
         self.reconstructor = JourneyReconstructionEngine(db)
         self.verification_engine = RouteVerificationEngine(db)
+        self.verification_orchestrator = VerificationOrchestrator(db)
 
     async def search_routes(
         self,
@@ -34,8 +36,10 @@ class SearchService:
         Performs route search using the unified RailwayRouteEngine.
         Returns routes formatted for the frontend BackendRoutesResponse.
         """
+        from backend.utils import metrics
+
         logger.info(f"Unified Route Search: {source} -> {destination} on {travel_date}")
-        start_time = time.time()
+        overall_start = time.time()
         
         try:
             # Parse travel_date to datetime (handle both YYYY-MM-DD and YYYY-MM-DD HH:MM:SS)
@@ -52,13 +56,16 @@ class SearchService:
             if budget_category == "budget":
                 constraints.max_transfers = 3 # Allow more transfers for budget
                 
+            # measure graph compute separately
+            graph_start = time.time()
             internal_routes = await self.route_engine.search_routes(
                 source_code=source,
                 destination_code=destination,
                 departure_date=dt,
                 constraints=constraints
             )
-            
+            metrics.ROUTE_GRAPH_COMPUTE_MS.observe((time.time() - graph_start) * 1000)
+
             # Developer convenience: if no routes are found and we are in development mode,
             # return a simple dummy route instead so that frontend displays something.
             if not internal_routes and Config.ENVIRONMENT == "development":
@@ -87,9 +94,10 @@ class SearchService:
                         self.total_cost = 0
                 internal_routes = [DevRoute()]
 
-            duration_ms = int((time.time() - start_time) * 1000)
+            duration_ms = int((time.time() - overall_start) * 1000)
             logger.info(f"Route search (RAPTOR) found {len(internal_routes)} routes in {duration_ms}ms.")
-            
+            metrics.ROUTE_GENERATION_LATENCY_MS.observe(duration_ms)
+
             # Format results for frontend BackendRoutesResponse
             formatted_response = {
                 "source": source,
@@ -106,6 +114,8 @@ class SearchService:
             station_codes_by_id: Dict[int, str] = {}
             route_candidates: List[Dict[str, Any]] = []
             
+            # track time spent doing DB lookups per-route portion
+            db_query_start = time.time()
             for rt in internal_routes:
                 num_transfers = len(rt.transfers)  # Transfers, not segments
                 formatted_rt = self._format_route_for_frontend(rt)
@@ -128,6 +138,7 @@ class SearchService:
                                 except (TypeError, ValueError):
                                     station_codes_by_id[stop_id] = stop.code
 
+                # categorize route by transfers
                 if num_transfers == 0:
                     formatted_response["routes"]["direct"].append(formatted_rt)
                 elif num_transfers == 1:
@@ -136,6 +147,9 @@ class SearchService:
                     formatted_response["routes"]["two_transfer"].append(formatted_rt)
                 else:
                     formatted_response["routes"]["three_transfer"].append(formatted_rt)
+            # end for loop
+            db_query_ms = (time.time() - db_query_start) * 1000
+            metrics.ROUTE_DB_QUERY_MS.observe(db_query_ms)
             
             # --- JOURNEY LIST FOR INTEGRATED FLOW ---
             journeys = []
@@ -177,11 +191,23 @@ class SearchService:
                 })
             
             verification_candidates = route_candidates[:3]
-            verification_results = await self.verification_engine.verify_routes_batch(
+            # verify top candidates and measure latency
+            verif_start = time.time()
+            verification_results = await self.verification_orchestrator.verify_top_routes(
                 verification_candidates,
                 dt,
-                coach_preference="AC_THREE_TIER"
+                coach_preference="AC_THREE_TIER",
+                quota="GN"
             )
+            metrics.ROUTE_VERIFICATION_LATENCY_MS.observe((time.time() - verif_start) * 1000)
+
+            # compute product metrics
+            if verification_results:
+                success_cnt = sum(1 for r in verification_results if r.get("verified"))
+                ratio = success_cnt / len(verification_results)
+                metrics.VERIFICATION_SUCCESS_RATE.set(ratio)
+                metrics.TOP3_VERIFIED_RATIO.set(ratio)
+
             verification_lookup = {res["journey_id"]: res for res in verification_results}
             for journey in journeys:
                 verification_payload = verification_lookup.get(journey["journey_id"])
@@ -189,6 +215,12 @@ class SearchService:
                 journey["verification_status"] = verification_payload["status"] if verification_payload else "pending"
 
             formatted_response["journeys"] = journeys
+            # capture serialization time
+            serialize_start = time.time()
+            # (nothing else to do here but we could measure downstream if additional formatting occurs)
+            serialize_ms = (time.time() - serialize_start) * 1000
+            metrics.ROUTE_RESPONSE_SERIALIZE_MS.observe(serialize_ms)
+
             return formatted_response
 
         except Exception as e:
@@ -211,6 +243,7 @@ class SearchService:
         if not parsed_date:
             return {"success": False, "message": "Invalid travel date"}
 
+        from backend.utils import metrics
         # Extract trip_id from journey_id if possible
         trip_id = None
         if journey_id.startswith("rt_"):
@@ -352,6 +385,13 @@ class SearchService:
             "cache_hit": verification_payload.get("cached", False),
             "timestamp": verification_payload.get("timestamp")
         }
+
+        # track unlock latency if we recorded a search timestamp
+        from backend.api import integrated_search
+        timestamp = integrated_search.SEARCH_TIMESTAMP_CACHE.pop(journey_id, None)
+        if timestamp:
+            elapsed_ms = (time.time() - timestamp) * 1000
+            metrics.SEARCH_TO_UNLOCK_TIME_MS.observe(elapsed_ms)
 
         overall_status = "verified" if verification_payload.get("verified") else "pending"
         can_unlock = verification_payload.get("verified", False)

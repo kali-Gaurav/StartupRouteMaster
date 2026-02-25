@@ -219,6 +219,14 @@ class DataProvider:
                         class_code="",
                     )
                     if seat_result and seat_result.get("success"):
+                        # external API succeeded
+                        try:
+                            from ...utils import external_api_health, metrics as _metrics
+                            external_api_health.record_success()
+                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                        except Exception:
+                            pass
+
                         data = seat_result.get("data", {})
                         if isinstance(data, dict) and "availability" in data:
                             return data.get("availability")
@@ -288,6 +296,14 @@ class DataProvider:
                 if train_no:
                     status = self.live_status_service.get_live_status(train_no)
                     if status and status.get("success"):
+                        # record external API success
+                        try:
+                            from ...utils import external_api_health, metrics as _metrics
+                            external_api_health.record_success()
+                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                        except Exception:
+                            pass
+
                         stations = status.get("stations", [])
                         if stations:
                             last = stations[-1]
@@ -467,6 +483,14 @@ class DataProvider:
                 )
                 
                 if result and result.get("status") != "error":
+                    # record external API success and update gauge
+                    try:
+                        from ...utils import external_api_health, metrics as _metrics
+                        external_api_health.record_success()
+                        _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                    except Exception:
+                        pass
+
                     # Parse RapidAPI response
                     available_seats = result.get("availableSeats", 0)
                     total_seats = result.get("totalSeats", 64)
