@@ -17,12 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy requirements and install
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt uvicorn
 
 # Copy application code
 COPY backend /app
 
 EXPOSE 8000
 
-# Start the app (uvicorn reads the `app` object in app.py)
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use absolute path for uvicorn or ensure it's in PATH
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
