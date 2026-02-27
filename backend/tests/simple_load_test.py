@@ -20,8 +20,8 @@ os.environ['KAFKA_ENABLE_EVENTS'] = 'true'
 # Use real Kafka broker for success path testing
 os.environ['KAFKA_BOOTSTRAP_SERVERS'] = 'localhost:9092'
 
-from backend.services.event_producer import get_event_producer, KafkaEventProducer, publish_route_searched, publish_booking_created, publish_train_delayed, _event_producer
-from backend.services.analytics_consumer import start_analytics_consumer, get_analytics_consumer
+from services.event_producer import get_event_producer, KafkaEventProducer, publish_route_searched, publish_booking_created, publish_train_delayed, _event_producer
+from services.analytics_consumer import start_analytics_consumer, get_analytics_consumer
 
 logging.basicConfig(level=logging.WARNING)  # Reduce log noise
 logger = logging.getLogger(__name__)

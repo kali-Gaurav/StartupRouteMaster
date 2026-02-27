@@ -47,6 +47,7 @@ export async function suggestStationsApi(
     q: trimmed,
     limit: String(effectiveLimit),
   });
+  // Backend prefix is /api/stations/suggest (getRailwayApiUrl adds /api)
   const res = await fetch(getRailwayApiUrl(`/stations/suggest?${params.toString()}`), {
     signal,
   });
@@ -68,11 +69,13 @@ export async function suggestStationsApi(
 }
 
 export interface BackendDirectRoute {
-  train_no: number;
+  train_no: string;
   train_name?: string;
   train_type?: string;
   departure: string;
   arrival: string;
+  departure_stop_id?: number;
+  arrival_stop_id?: number;
   distance?: number;
   time_minutes?: number;
   time_str?: string;
@@ -83,6 +86,7 @@ export interface BackendDirectRoute {
   availability?: string | null;
   availability_summary?: {
     probability?: number;
+    status?: string;
   };
 }
 
@@ -205,42 +209,43 @@ function defaultDate(): string {
 export async function searchRoutesApi(
   source: string,
   destination: string,
-  maxTransfers: number = 2,
-  maxResults: number = 50,
+  _maxTransfers: number = 2,
+  _maxResults: number = 50,
   params?: Partial<SearchRoutesParams & { routeSource?: 'live' | 'cached' }>
 ): Promise<BackendRoutesResponse> {
-  const src = String(source ?? '').trim().toUpperCase();
-  const dest = String(destination ?? '').trim().toUpperCase();
+  const src = String(source ?? '').trim();
+  const dest = String(destination ?? '').trim();
   const date = params?.date?.trim() || defaultDate();
 
-  const doFetch = (maxT: number, maxR: number, useDate: string) => {
-    const searchParams = new URLSearchParams({
+  const doFetch = () => {
+    // Backend expects POST /api/search/ with SearchRequestSchema
+    const payload = {
       source: src,
       destination: dest,
-      max_transfers: String(maxT),
-      max_results: String(maxR),
-    });
-    searchParams.set('date', useDate);
-    if (params?.dateWindow != null && params.dateWindow > 0) searchParams.set('date_window', String(params.dateWindow));
-    if (params?.confirmedOnly) searchParams.set('confirmed_only', 'true');
-    if (params?.sortBy) searchParams.set('sort_by', params.sortBy || 'duration');
-    if (params?.routeSource) searchParams.set('route_source', params.routeSource);
+      date: date,
+      budget: params?.sortBy === 'cost' ? 'economy' : 'all',
+      multi_modal: false, // Trains-only focus
+      journey_type: 'single'
+    };
     
-    const headers: HeadersInit = {};
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json'
+    };
     if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;
     
-    return fetch(getRailwayApiUrl(`/routes?${searchParams.toString()}`), { headers });
+    return fetch(getRailwayApiUrl('/search/'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
   };
 
   try {
-    let res = await doFetch(maxTransfers, maxResults, date);
-    if (res.status === 504 && (maxTransfers > 1 || maxResults > 25)) {
-      res = await doFetch(1, 25, date);
-    }
+    const res = await doFetch();
     
     if (!res.ok) {
       // If backend exists but returns error, try cache
-      const cached = await storageService.getCachedRoutes(src, dest);
+      const cached = await storageService.getCachedRoutes(src.toUpperCase(), dest.toUpperCase());
       if (cached) return { routes: cached, source: 'offline-cache' } as any;
       
       const err = await res.json().catch(() => ({}));
@@ -248,15 +253,15 @@ export async function searchRoutesApi(
       throw new Error(msg || `Routes search failed: ${res.status}`);
     }
 
-    const data = await res.json();
+    const data = (await res.json()) as BackendRoutesResponse;
     // Cache the successful results for future offline use
-    if (data.routes && data.routes.length > 0) {
-      storageService.cacheRoutes(src, dest, data.routes);
+    if (data.routes && (data.routes.direct.length > 0 || data.routes.one_transfer.length > 0)) {
+      storageService.cacheRoutes(src.toUpperCase(), dest.toUpperCase(), data.routes as any);
     }
     return data;
   } catch (error) {
     console.warn("Backend route search failed, attempting to serve from cache", error);
-    const cached = await storageService.getCachedRoutes(src, dest);
+    const cached = await storageService.getCachedRoutes(src.toUpperCase(), dest.toUpperCase());
     if (cached) {
       return { 
         routes: cached, 
@@ -269,7 +274,7 @@ export async function searchRoutesApi(
 }
 
 /**
- * Integrated Unified Search (POST /api/v2/search/unified)
+ * Integrated Unified Search (POST /v2/search/unified)
  */
 export async function unifiedSearchApi(
   source: string,
@@ -277,13 +282,13 @@ export async function unifiedSearchApi(
   date: string,
   passengers: number = 1
 ): Promise<BackendJourney[]> {
-  const res = await fetch(getRailwayApiUrl('/api/v2/search/unified'), {
+  const res = await fetch(getRailwayApiUrl('/v2/search/unified'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      source: source.toUpperCase(),
-      destination: destination.toUpperCase(),
-      travel_date: date,
+      source: source,
+      destination: destination,
+      date: date, // Schema in integrated_search.py uses 'date' from SearchRequest
       num_passengers: passengers
     })
   });
@@ -296,7 +301,7 @@ export async function unifiedSearchApi(
 }
 
 /**
- * Unlock Journey Details (GET /api/v2/journey/{id}/unlock-details)
+ * Unlock Journey Details (GET /v2/journey/{id}/unlock-details)
  */
 export async function unlockJourneyDetailsApi(
   journeyId: string,
@@ -310,7 +315,7 @@ export async function unlockJourneyDetailsApi(
     passenger_age: String(age)
   });
   
-  const res = await fetch(getRailwayApiUrl(`/api/v2/journey/${journeyId}/unlock-details?${params.toString()}`));
+  const res = await fetch(getRailwayApiUrl(`/v2/journey/${journeyId}/unlock-details?${params.toString()}`));
   
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -337,6 +342,16 @@ export function mapBackendRoutesToRoutes(
 ): Route[] {
   const routes: Route[] = [];
   let routeId = 0;
+  const stationsMap = data.stations || {};
+
+  const getStationName = (id: number | undefined, code: string): string => {
+    if (id && stationsMap[String(id)]) {
+      return stationsMap[String(id)].name;
+    }
+    // Fallback search in map by code
+    const fromMap = Object.values(stationsMap).find(s => s.code === code);
+    return fromMap ? fromMap.name : code;
+  };
 
   const makeSegment = (
     train: BackendDirectRoute,
@@ -347,7 +362,12 @@ export function mapBackendRoutesToRoutes(
     category: string
   ): RouteSegment => {
     const fare = train.fare != null ? Number(train.fare) : 0;
-    const availability = train.availability != null ? String(train.availability) : '—';
+    const availability = train.availability != null ? String(train.availability) : (train.availability_summary?.status ?? '—');
+    
+    // Resolve names for display
+    const fromName = getStationName(train.departure_stop_id, fromCode);
+    const toName = getStationName(train.arrival_stop_id, toCode);
+
     return {
       routeId: rid,
       category,
@@ -356,6 +376,8 @@ export function mapBackendRoutesToRoutes(
       trainName: train.train_name || `Train ${train.train_no}`,
       from: fromCode,
       to: toCode,
+      fromName,
+      toName,
       departure: formatTime(train.departure),
       arrival: formatTime(train.arrival),
       distance: train.distance ?? 0,
@@ -374,10 +396,6 @@ export function mapBackendRoutesToRoutes(
     const rid = `route_${routeId}`;
     const category = 'DIRECT';
     const seg = makeSegment(train, source, destination, 0, rid, category);
-    // backend currently does not populate numeric ids but keep hooks here
-    // if in future the API returns them we can pass them through.
-    // (seg as any).from_stop_id = train.from_stop_id;
-    // (seg as any).to_stop_id = train.to_stop_id;
     const totalFare = seg.liveFare ?? 0;
     const directSeatProb = Number(train.availability_summary?.probability ?? (seg.seatAvailable ? 0.85 : 0.1));
     routes.push({
@@ -400,10 +418,16 @@ export function mapBackendRoutesToRoutes(
     routeId++;
     const rid = `route_${routeId}`;
     const category = '1 TRANSFER';
+    const junctionName = getStationName(r.leg1.arrival_stop_id, r.junction);
+    
     const seg1 = makeSegment(r.leg1, source, r.junction, 0, rid, category);
     const seg2 = makeSegment(r.leg2, r.junction, destination, r.waiting_time_minutes ?? 0, rid, category);
+    
+    seg1.toName = junctionName;
+    seg2.fromName = junctionName;
     seg1.segment = 1;
     seg2.segment = 2;
+    
     const totalFare = (seg1.liveFare ?? 0) + (seg2.liveFare ?? 0);
     const oneProb = Number(r.availability_summary?.probability ?? Math.min(seg1.seatAvailable ? 0.85 : 0.1, seg2.seatAvailable ? 0.85 : 0.1));
     routes.push({
@@ -428,9 +452,19 @@ export function mapBackendRoutesToRoutes(
     const category = '2 TRANSFERS';
     const j1 = r.junction1 ?? '';
     const j2 = r.junction2 ?? '';
+    
+    const j1Name = getStationName(r.leg1.arrival_stop_id, j1);
+    const j2Name = getStationName(r.leg2.arrival_stop_id, j2);
+
     const seg1 = makeSegment(r.leg1, source, j1, 0, rid, category);
     const seg2 = makeSegment(r.leg2, j1, j2, r.waiting1_minutes ?? 0, rid, category);
     const seg3 = makeSegment(r.leg3, j2, destination, r.waiting2_minutes ?? 0, rid, category);
+    
+    seg1.toName = j1Name;
+    seg2.fromName = j1Name;
+    seg2.toName = j2Name;
+    seg3.fromName = j2Name;
+    
     seg1.segment = 1;
     seg2.segment = 2;
     seg3.segment = 3;

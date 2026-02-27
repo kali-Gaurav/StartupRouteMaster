@@ -1,6 +1,6 @@
 def test_core_managers_smoke_import():
     """Smoke test for new manager/engine facades (importability + basic API)."""
-    from backend.core import GraphManager, RouteManager
+    from core import GraphManager, RouteManager
 
     assert GraphManager is not None
     assert RouteManager is not None

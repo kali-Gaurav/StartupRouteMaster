@@ -1,7 +1,7 @@
 # backend/services/price_calculation_service.py
 import logging
 from typing import Dict, Any
-from backend.models import Route
+from models import Route
 
 
 

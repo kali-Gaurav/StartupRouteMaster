@@ -643,7 +643,7 @@ const MiniAppSearch = () => {
             {searchResults.map((route, index) => (
               <RouteCardMini
                 key={route.journey_id || index}
-                route={route}
+                route={route as any}
                 originCode={formData.origin?.code || ""}
                 destinationCode={formData.destination?.code || ""}
                 isUnlocked={!!(route.journey_id && unlockedJourneys[route.journey_id])}

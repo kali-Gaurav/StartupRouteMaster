@@ -12,11 +12,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 
 import booking_pb2
 import booking_pb2_grpc
-from backend.database import SessionLocal
-from backend.services.booking_orchestrator import booking_orchestrator, BookingRequest
-from backend.services.booking_service import BookingService
-from backend.services.payment_service import PaymentService
-from backend.models import Booking, User
+from database import SessionLocal
+from services.booking_orchestrator import booking_orchestrator, BookingRequest
+from services.booking_service import BookingService
+from services.payment_service import PaymentService
+from models import Booking, User
 from google.protobuf.timestamp_pb2 import Timestamp
 
 logging.basicConfig(level=logging.INFO)

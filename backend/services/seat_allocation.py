@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 import logging
 
-from backend.database.models import SeatInventory, Trip, Booking, StopTime
+from database.models import SeatInventory
 
 logger = logging.getLogger(__name__)
 

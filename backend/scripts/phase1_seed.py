@@ -1,5 +1,5 @@
-from backend.database import SessionLocal
-from backend.database.models import Stop, Trip, Route, Agency, Calendar, StopTime, CalendarDate
+from database import SessionLocal
+from database.models import Stop, Trip, Route, Agency, Calendar, StopTime, CalendarDate
 from datetime import datetime, date, time
 import uuid
 

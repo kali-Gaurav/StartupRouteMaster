@@ -9,11 +9,11 @@ import pytest
 from datetime import datetime, time, timedelta
 from sqlalchemy.orm import Session
 
-from backend.database import SessionLocal
-from backend.database.models import (
+from database import SessionLocal
+from database.models import (
     Stop, Trip, Route, Calendar, Agency, StopTime, StationDeparture
 )
-from backend.services.station_departure_service import (
+from services.station_departure_service import (
     StationDepartureService, get_departures, rebuild_cache
 )
 

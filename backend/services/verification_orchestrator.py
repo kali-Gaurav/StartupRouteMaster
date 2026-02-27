@@ -8,11 +8,11 @@ from functools import partial
 from time import monotonic
 from typing import Any, Dict, Iterable, List, Optional
 
-from backend.config import Config
-from backend.services.cache_service import cache_service
-from backend.services.fare_service import FareService
-from backend.services.live_status_service import LiveStatusService
-from backend.services.seat_availability_service import SeatAvailabilityService
+from database.config import Config
+from services.cache_service import cache_service
+from services.fare_service import FareService
+from services.live_status_service import LiveStatusService
+from services.seat_availability_service import SeatAvailabilityService
 
 logger = logging.getLogger(__name__)
 

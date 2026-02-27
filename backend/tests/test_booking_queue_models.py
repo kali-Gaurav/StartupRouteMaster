@@ -13,7 +13,7 @@ def test_model_imports():
     """Test that all new models can be imported."""
     print("Testing model imports...")
     try:
-        from backend.database.models import (
+        from database.models import (
             BookingRequest,
             BookingRequestPassenger,
             BookingQueue,
@@ -31,7 +31,7 @@ def test_model_relationships():
     """Test that model relationships are properly defined."""
     print("\nTesting model relationships...")
     try:
-        from backend.database.models import BookingRequest, BookingQueue, User
+        from database.models import BookingRequest, BookingQueue, User
         
         # Check if relationships exist
         assert hasattr(BookingRequest, 'queue_entry'), "BookingRequest missing queue_entry relationship"
@@ -60,7 +60,7 @@ def test_model_attributes():
     """Test that models have required attributes."""
     print("\nTesting model attributes...")
     try:
-        from backend.database.models import BookingRequest
+        from database.models import BookingRequest
         
         # Check BookingRequest has required columns
         required_attrs = [

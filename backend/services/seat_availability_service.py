@@ -3,7 +3,7 @@ import os
 import requests
 from typing import Optional, Dict
 
-from backend.config import Config
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 

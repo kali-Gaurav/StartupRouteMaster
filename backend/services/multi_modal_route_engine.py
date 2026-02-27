@@ -1,6 +1,6 @@
 # Consolidated wrapper - actual implementation is in backend.core.route_engine
 # This file maintained for backwards compatibility
-from backend.core.route_engine import RouteEngine, route_engine
+from core.route_engine import RouteEngine, route_engine
 
 # Export RouteEngine as MultiModalRouteEngine (alias for compatibility)
 MultiModalRouteEngine = RouteEngine

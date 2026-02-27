@@ -4,9 +4,9 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 from unittest.mock import Mock, patch
 
-from backend.services.multi_modal_route_engine import MultiModalRouteEngine
-from backend.models import Stop, Route, Trip, StopTime, Transfer, Calendar
-from backend.database import get_db
+from services.multi_modal_route_engine import MultiModalRouteEngine
+from models import Stop, Route, Trip, StopTime, Transfer, Calendar
+from database import get_db
 
 
 class TestMultiModalRouteEngine:

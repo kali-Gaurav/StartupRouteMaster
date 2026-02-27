@@ -1,9 +1,9 @@
 from sqlalchemy.orm import Session
-from backend.models import UnlockedRoute, User, Route, Payment
+from models import UnlockedRoute, User, Route, Payment
 from datetime import datetime
 import logging
 import random
-from backend.config import Config
+from config import Config
 
 logger = logging.getLogger(__name__)
 

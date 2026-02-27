@@ -1,26 +1,41 @@
+
 import os
 import sys
+from pathlib import Path
+
+# Add backend to path
+backend_path = Path(__file__).resolve().parent.parent
+sys.path.append(str(backend_path))
+
 from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+from database.config import Config
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("init_extensions")
 
 def init_extensions():
-    load_dotenv('backend/.env')
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("Error: DATABASE_URL not found")
+    url = Config.DATABASE_URL
+    if not url or Config.OFFLINE_MODE:
+        logger.error("OFFLINE_MODE is enabled or DATABASE_URL is missing. Skipping extension initialization.")
         return
 
-    engine = create_engine(db_url)
     try:
+        engine = create_engine(url)
         with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gin;"))
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS btree_gist;"))
-            conn.commit()
-            print("Successfully initialized PostgreSQL extensions (postgis, pg_trgm, btree_gin/gist)")
+            # We need to use a transaction for some extensions
+            with conn.begin():
+                logger.info("Enabling pg_trgm extension for fuzzy search...")
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
+                
+                # Check for postgis if you plan to use geometry (optional, might need superuser)
+                # logger.info("Enabling postgis extension for geographical queries...")
+                # conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+                
+            logger.info("✅ Extensions initialized successfully.")
     except Exception as e:
-        print(f"Error initializing extensions: {e}")
+        logger.error(f"❌ Failed to initialize extensions: {e}")
+        logger.info("Note: You might need to enable extensions manually in the Supabase Dashboard (Database -> Extensions) if the user lacks permissions.")
 
 if __name__ == "__main__":
     init_extensions()

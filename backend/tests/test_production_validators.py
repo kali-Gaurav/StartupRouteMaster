@@ -1,9 +1,9 @@
 import pytest
-from backend.core.validator.validation_manager import create_validation_manager_with_defaults, ValidationCategory
+from core.validator.validation_manager import create_validation_manager_with_defaults, ValidationCategory
 
 
 def test_production_validators_direct_and_manager():
-    from backend.core.validator.production_validators import ProductionExcellenceValidator
+    from core.validator.production_validators import ProductionExcellenceValidator
 
     pv = ProductionExcellenceValidator()
 

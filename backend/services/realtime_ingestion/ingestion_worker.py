@@ -27,8 +27,10 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 import schedule
 
-from ...database import SessionLocal
-from ...database.models import TrainLiveUpdate, TrainMaster
+from database.models import TrainLiveUpdate
+from database.session import SessionLocal
+
+
 from .api_client import RappidAPIClient, AsyncRappidAPIClient, get_active_trains
 from .parser import extract_train_update
 

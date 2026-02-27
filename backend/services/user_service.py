@@ -1,9 +1,9 @@
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models import User
-from backend.schemas import UserCreate
-from backend.utils.security import get_password_hash, verify_password
+from database.models import User
+from schemas import UserCreate
+from utils.security import get_password_hash, verify_password
 
 
 class UserService:
@@ -22,6 +22,12 @@ class UserService:
         Used by the OTP authentication flow.
         """
         return self.db.query(User).filter(User.phone_number == phone).first()
+
+    def get_user_by_supabase_id(self, supabase_id: str) -> Optional[User]:
+        """
+        Return a user record by the supabase auth user ID.
+        """
+        return self.db.query(User).filter(User.supabase_id == supabase_id).first()
 
     def create_user(self, user_create: UserCreate) -> User:
         """
@@ -58,4 +64,39 @@ class UserService:
         user = self.get_user_by_email(email)
         if not user or not verify_password(password, user.password_hash):
             return None
+        return user
+
+    def update_user_profile(self, user: User, changes: dict) -> User:
+        """Apply profile changes to both User and Profile tables."""
+       
+        profile_fields = {k: v for k, v in changes.items() if k in ("name", "phone", "gender", "emergency_contact")}
+        user_fields = {k: v for k, v in changes.items() if k in ("email", "phone_number")}
+        if user_fields:
+            for k, v in user_fields.items():
+                setattr(user, k, v)
+        if profile_fields:
+            # ensure profile row exists
+            if not getattr(user, "profile", None):
+                from database.models import Profile
+                prof = Profile(id=user.id, **profile_fields)
+                self.db.add(prof)
+            else:
+                for k, v in profile_fields.items():
+                    setattr(user.profile, k, v)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def update_user_location(self, user: User, latitude: float, longitude: float) -> User:
+        """Record the current location in LiveLocation table and optionally on
+        the user row itself for convenience.
+        """
+        from database.models import LiveLocation
+        loc = LiveLocation(user_id=user.id, latitude=latitude, longitude=longitude)
+        self.db.add(loc)
+        # optionally store last known coordinates on user
+        user.latitude = latitude
+        user.longitude = longitude
+        self.db.commit()
+        self.db.refresh(user)
         return user

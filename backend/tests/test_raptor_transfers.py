@@ -1,7 +1,7 @@
 from datetime import date
 
-from backend.services.route_engine import RouteEngine
-from backend.config import Config
+from services.route_engine import RouteEngine
+from config import Config
 
 
 def test_single_transfer_respects_transfer_window():

@@ -6,8 +6,11 @@ from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
-from ...database import SessionLocal
-from ...database.models import Stop, Route as RouteModel, Trip as TripModel
+from pydantic import RootModel
+
+from services import multi_layer_cache
+from database.models import Stop, Route as RouteModel, Trip as TripModel
+from database.session import SessionLocal
 
 from ..validator.validation_manager import create_validation_manager_with_defaults, ValidationProfile, ValidationCategory
 
@@ -22,12 +25,9 @@ from .data_provider import DataProvider
 from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
 from ..validator.live_validators import create_live_validators
-
-from ...services.multi_layer_cache import multi_layer_cache
-
 # Point 5: Advanced Booking Layer
-from backend.services.booking.manager import SeatAvailabilityManager
-from backend.services.booking.rapid_api_client import RapidAPIClient
+from services.booking.manager import SeatAvailabilityManager
+from services.booking.rapid_api_client import RapidAPIClient
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +81,47 @@ class RailwayRouteEngine:
         self._log_startup_status()
         self._loaded = False
 
+    async def initialize(self, date_override: Optional[datetime] = None):
+        """Production startup hook (Topic 1). Warm up the engine and cache."""
+        start_init = _time.time()
+        target_date = date_override or datetime.now().replace(hour=8, minute=0, second=0)
+        logger.info(f"Initializing RouteMaster Engine for {target_date.date()}...")
+        
+        # Trigger graph load/build
+        graph = await self._get_current_graph(target_date)
+        
+        # Perform major hub coverage validation (Topic 4)
+        major_stations = ["NDLS", "BCT", "CSMT", "MAS", "HWH", "ADI", "SBC", "SDAH", "PNBE"]
+        missing_hubs = []
+        for code in major_stations:
+            # Check if station exists in graph
+            found = False
+            for s in graph.snapshot.stop_cache.values():
+                if getattr(s, 'code', None) == code or getattr(s, 'stop_id', None) == code:
+                    found = True
+                    break
+            if not found:
+                missing_hubs.append(code)
+        
+        if missing_hubs:
+            logger.warning(f"Engine Warning: Major stations {missing_hubs} not found in current graph snapshot!")
+        else:
+            logger.info("Engine Success: All major hubs verified in memory graph.")
+            
+        self._loaded = True
+        duration = _time.time() - start_init
+        logger.info(f"🚀 RouteMaster Engine initialized in {duration:.2f} seconds.")
+        return True
+
     def _init_booking_manager(self):
         """Initialize seat availability manager with API keys from config."""
         try:
-            from ... import config as cfg
-            config = cfg.Config
-            # Point 1: Securely fetch from environment via Config
+            # try both import paths in case PYTHONPATH differs
+            try:
+                from database.config import Config as config
+            except ImportError:
+                from database.config import Config as config
+
             api_key = getattr(config, 'RAPIDAPI_KEY', "") 
             if api_key:
                 client = RapidAPIClient(api_key)
@@ -105,8 +140,10 @@ class RailwayRouteEngine:
         Called during initialization to determine mode (offline/hybrid/online).
         """
         try:
-            from ... import config as cfg
-            config = cfg.Config
+            try:
+                from database.config import Config as config
+            except ImportError:
+                from database.config import Config as config
         except ImportError:
             logger.warning("Config not available, assuming offline mode")
             return
@@ -153,7 +190,7 @@ class RailwayRouteEngine:
                     self._last_synced_at = remote_overlay.last_updated
                     self._last_synced_version = remote_overlay.version
                     try:
-                        from backend.utils import metrics
+                        from utils import metrics
                         metrics.OVERLAY_VERSION.set(self._last_synced_version)
                     except Exception:
                         pass
@@ -184,16 +221,21 @@ class RailwayRouteEngine:
                 (self.last_snapshot_time is None) or
                 (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400
             )
+            
+            logger.info(f"Engine: needs_rebuild={needs_rebuild}, snapshot exists={self.current_snapshot is not None}")
+            if self.current_snapshot:
+                logger.info(f"Engine: snapshot stops={len(self.current_snapshot.stop_cache or {})}, departures={len(self.current_snapshot.departures_by_stop or {})}")
 
             if needs_rebuild:
+                logger.info(f"Loading or rebuilding snapshot for {date.date()}")
                 self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
-                if not self.current_snapshot:
+                if not self.current_snapshot or not self.current_snapshot.stop_cache:
                     logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
                     build_start = _time.time()
                     temp_graph = await self.graph_builder.build_graph(date)
                     build_ms = (_time.time() - build_start) * 1000.0
                     try:
-                        from backend.utils import metrics
+                        from utils import metrics
                         metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
                     except Exception:
                         pass
@@ -202,9 +244,11 @@ class RailwayRouteEngine:
                         await self.snapshot_manager.save_snapshot(self.current_snapshot)
                     except Exception:
                         logger.warning("Snapshot save failed during rebuild")
+                    logger.info(f"Built new snapshot with {len(self.current_snapshot.stop_cache)} stops and {len(self.current_snapshot.trip_segments)} trip segments.")
                 else:
+                    logger.info(f"Loaded snapshot with {len(self.current_snapshot.stop_cache)} stops and {len(self.current_snapshot.trip_segments)} trip segments.")
                     try:
-                        from backend.utils import metrics
+                        from utils import metrics
                         metrics.GRAPH_NODES.set(len(self.current_snapshot.stop_cache or {}))
                         edges = sum(len(v) for v in self.current_snapshot.trip_segments.values())
                         edges += sum(len(v) for v in self.current_snapshot.transfer_graph.values())
@@ -217,18 +261,30 @@ class RailwayRouteEngine:
                 logger.debug(f"Reusing snapshot for {date.date()} - no rebuild required")
 
             if self.current_snapshot and not self.raptor._hub_table:
-                self.hub_manager.initialize_hubs()
-                hub_start = _time.time()
-                hub_table = await self.hub_manager.precompute_hub_connectivity(
-                    TimeDependentGraph(self.current_snapshot),
-                    date
-                )
-                hub_ms = (_time.time() - hub_start) * 1000.0
-                try:
-                    from backend.utils import metrics
-                    metrics.HUB_PRECOMPUTE_TIME_MS.observe(hub_ms)
-                except Exception:
-                    pass
+                # Try loading from disk first
+                hub_table = await self.snapshot_manager.load_hub_table(date)
+                if not hub_table:
+                    logger.info(f"Scheduling Hub Connectivity precomputation for {date.date()} in background...")
+                    
+                    async def _bg_hub_precompute():
+                        try:
+                            self.hub_manager.initialize_hubs()
+                            hub_start = _time.time()
+                            ht = await self.hub_manager.precompute_hub_connectivity(
+                                TimeDependentGraph(self.current_snapshot),
+                                date
+                            )
+                            await self.snapshot_manager.save_hub_table(ht, date)
+                            logger.info(f"✅ Background Hub Connectivity built in {(_time.time() - hub_start):.2f}s")
+                        except Exception as e:
+                            logger.error(f"❌ Background hub precompute failed: {e}")
+                            
+                    asyncio.create_task(_bg_hub_precompute())
+                else:
+                    logger.info(f"Loaded Hub Connectivity Table from persistent storage.")
+                    hub_count = len(hub_table._table) if hasattr(hub_table, '_table') else 0
+                    logger.info(f"Validated persistent Hub table: {hub_count} entries.")
+                
                 self.raptor.set_hub_table(hub_table)
 
             self.last_snapshot_time = datetime.utcnow()
@@ -286,7 +342,7 @@ class RailwayRouteEngine:
             logger.warning("Snapshot save failed during rebuild")
         build_ms = (_time.time() - build_start) * 1000.0
         try:
-            from backend.utils import metrics
+            from utils import metrics
             metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
         except Exception:
             pass
@@ -310,7 +366,7 @@ class RailwayRouteEngine:
 
     def _record_graph_metrics(self, snapshot: StaticGraphSnapshot) -> None:
         try:
-            from backend.utils import metrics
+            from utils import metrics
             metrics.GRAPH_NODES.set(len(snapshot.stop_cache or {}))
             edges = sum(len(v) for v in snapshot.trip_segments.values())
             edges += sum(len(v) for v in snapshot.transfer_graph.values())
@@ -393,13 +449,17 @@ class RailwayRouteEngine:
                            user_context: Optional[UserContext] = None) -> List[Route]:
         """
         Search for routes between source and destination using Hybrid Hub-RAPTOR.
+        Uses TransitSessionLocal (SQLite) for identifier resolution consistency.
         """
+        logger.info(f"Searching routes from {source_code} to {destination_code} on {departure_date}")
         if constraints is None:
             constraints = RouteConstraints()
 
-        session = SessionLocal()
+        from .builder import TransitSessionLocal
+        session = TransitSessionLocal()
         try:
             from sqlalchemy import or_
+            # Use Stop model but from local SQLite
             source_stop = session.query(Stop).filter(
                 or_(Stop.code == source_code.upper(), Stop.stop_id == source_code.upper())
             ).first()
@@ -408,10 +468,11 @@ class RailwayRouteEngine:
             ).first()
 
             if not source_stop or not dest_stop:
-                logger.warning(f"Stop not found: {source_code} or {destination_code}")
+                logger.warning(f"Stop not found: source_code='{source_code}', destination_code='{destination_code}'. source_stop found: {source_stop is not None}, dest_stop found: {dest_stop is not None}")
                 return []
 
             if source_stop.id == dest_stop.id:
+                logger.warning("Source and destination stops are the same.")
                 return []
 
             date = departure_date
@@ -420,6 +481,7 @@ class RailwayRouteEngine:
             routes = await self.raptor.find_routes(
                 source_stop.id, dest_stop.id, date, constraints, graph=graph
             )
+            logger.info(f"RAPTOR found {len(routes)} routes.")
 
             if user_context:
                 routes = await self._apply_ml_ranking(routes, user_context)
@@ -430,6 +492,9 @@ class RailwayRouteEngine:
                 asyncio.create_task(self._prefetch_availability(routes[:2], date))
 
             return routes
+        except Exception as e:
+            logger.error(f"Error during RAPTOR search: {e}", exc_info=True)
+            return []
         finally:
             try:
                 session.close()
@@ -602,7 +667,7 @@ class RailwayRouteEngine:
     def get_total_routes_count(self) -> int:
         session = SessionLocal()
         try:
-            return session.query(RouteModel).count()
+            return session.query(RootModel).count()
         finally:
             session.close()
 

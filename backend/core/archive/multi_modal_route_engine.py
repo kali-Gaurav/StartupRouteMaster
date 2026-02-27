@@ -10,13 +10,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 import heapq
 
-from backend.database.config import Config
-from backend.database.models import (
+from database.config import Config
+from database.models import (
     Agency, Stop, Route, Trip, StopTime, Transfer,
     Calendar, CalendarDate, Disruption, SeatInventory
 )
-from backend.database import get_db
-from backend.services.cache_service import cache_service
+from database import get_db
+from services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 

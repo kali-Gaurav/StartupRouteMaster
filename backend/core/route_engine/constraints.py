@@ -4,7 +4,7 @@ from typing import Optional
 @dataclass
 class RouteConstraints:
     """Constraints for route finding"""
-    max_journey_time: int = 48 * 60  # 48 hours in minutes (rail journeys can be long)
+    max_journey_time: int =  60 * 60  # 60 hours in minutes (rail journeys can be long)
     max_transfers: int = 3
     min_transfer_time: int = 15  # minutes
     max_layover_time: int = 8 * 60  # 8 hours

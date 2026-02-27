@@ -17,10 +17,10 @@ import logging
 from datetime import datetime, timedelta, date
 from typing import Dict, Optional, Tuple
 import redis.asyncio as redis
+from sqlalchemy import func
 
-from sqlalchemy import func, and_
-from .database import SessionLocal
-from .database.models import Trip, StopTime, Calendar, CalendarDate
+from database.models import Calendar, CalendarDate, StopTime
+from database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 

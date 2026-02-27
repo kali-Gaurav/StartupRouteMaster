@@ -1,7 +1,7 @@
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { useSosSocket } from "@/hooks/useSosWebSocket";
 import { useAuth } from "@/context/AuthContext";
-import { vi, type Mock } from "vitest";
+import { vi, type Mock, describe, beforeEach, afterEach, it, expect } from "vitest";
 
 // mock auth context to provide token
 vi.mock("@/context/AuthContext", () => ({
@@ -25,7 +25,7 @@ describe("useSosSocket", () => {
         this.url = url;
         instances.push(this);
         // simulate open shortly
-        setTimeout(() => this.onopen && this.onopen());
+        setTimeout(() => this.onopen && this.onopen(), 10);
       }
       send() {}
       close() { if (this.onclose) this.onclose(); }
@@ -41,13 +41,15 @@ describe("useSosSocket", () => {
     vi.resetAllMocks();
   });
 
-  it("opens websocket with token and calls alert callback", () => {
+  it("opens websocket with token and calls alert callback", async () => {
     const mockAuth = useAuth as Mock;
     mockAuth.mockReturnValue({ token: "abc123" });
     const onAlert = vi.fn();
     const { result } = renderHook(() => useSosSocket(onAlert));
-    // WebSocket constructor should have been called
-    expect(result.current.connected).toBe(true);
+    
+    // Wait for connection to be established (asynchronous onopen)
+    await waitFor(() => expect(result.current.connected).toBe(true), { timeout: 1000 });
+    
     // verify url contains token
     const wsInst = (global as any).WebSocketInstances[0];
     expect(wsInst.url).toContain("token=abc123");

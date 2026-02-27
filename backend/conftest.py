@@ -24,8 +24,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.database import Base, get_db
-from backend.models import StationMaster
+from database import Base, get_db
+from models import StationMaster
 
 # Any shared pytest fixtures can be added here later (db, client, test data)
 

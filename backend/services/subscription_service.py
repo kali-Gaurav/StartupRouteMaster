@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from backend.database.models import Subscription
+from database.models import Subscription
 import logging
 
 logger = logging.getLogger(__name__)

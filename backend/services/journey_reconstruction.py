@@ -1,6 +1,6 @@
 # Consolidated wrapper - actual implementation is in backend.core.route_engine
 # This file maintained for backwards compatibility
-from backend.core.route_engine import RouteEngine
+from core.route_engine import RouteEngine
 
 # Provide a thin wrapper around RouteEngine so that older callers
 # (such as SearchService) can continue to pass a database parameter even

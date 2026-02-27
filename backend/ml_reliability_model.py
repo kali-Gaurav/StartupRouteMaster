@@ -20,6 +20,9 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import joblib
 
+from database.models import Stop, StopTime, TrainState
+from database.session import SessionLocal
+
 try:
     import lightgbm as lgb  # type: ignore[reportMissingImports]
     HAS_LGBM = True
@@ -28,8 +31,7 @@ except Exception:
     lgb = None
 
 from sqlalchemy import func
-from .database import SessionLocal
-from .database.models import Trip, StopTime, Stop, Transfer, TrainState
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +107,11 @@ class MLReliabilityModel:
                     distance_km=distance_km,
                 )
                 X = self._vectorize_features(features)
-                pred = self.model.predict_proba(X)[0][1]  # P(reliable=1)
+                if hasattr(self.model, "predict_proba"):
+                    pred = self.model.predict_proba(X)[0][1]  # P(reliable=1)
+                else:
+                    # Fallback if model is a regressor or doesn't support proba
+                    pred = self.model.predict(X)[0]
                 return float(np.clip(pred, 0.0, 1.0))
             except Exception as e:
                 logger.warning(f"ML prediction failed: {e}, falling back to heuristics")
@@ -211,7 +217,20 @@ class MLReliabilityModel:
         for fname in self.feature_names:
             X.append(features.get(fname, 0.0))
         
-        return np.array([X])
+        X_arr = np.array([X])
+        
+        # Ensure we match the model's expected feature count (Topic 3 Resilience)
+        if self.model and hasattr(self.model, "n_features_in_"):
+            n_expected = self.model.n_features_in_
+            if X_arr.shape[1] > n_expected:
+                logger.debug(f"Trimming features from {X_arr.shape[1]} to {n_expected} to match model.")
+                X_arr = X_arr[:, :n_expected]
+            elif X_arr.shape[1] < n_expected:
+                logger.debug(f"Padding features from {X_arr.shape[1]} to {n_expected} to match model.")
+                padding = np.zeros((1, n_expected - X_arr.shape[1]))
+                X_arr = np.hstack([X_arr, padding])
+                
+        return X_arr
 
     async def _fallback_heuristic(
         self,

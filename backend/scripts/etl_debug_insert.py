@@ -15,7 +15,7 @@ print('mapping size', len(mapping))
 print('sample lookup', seg0['source_station_code'], '->', mapping.get(seg0['source_station_code']))
 vid = loader.get_or_create_vehicle(seg0['train_no'], seg0['operator'])
 print('vehicle id created', vid)
-from backend.models import Segment
+from models import Segment
 seg_id = loader.create_segment({
     'id':'test-seg-1',
     'source_station_id': mapping.get(seg0['source_station_code']),
@@ -33,8 +33,8 @@ seg_id = loader.create_segment({
 print('created seg id', seg_id)
 loader.db.commit()
 loader.close()
-from backend.database import SessionLocal
-from backend.models import Vehicle, Segment
+from database import SessionLocal
+from models import Vehicle, Segment
 s=SessionLocal()
 print('vehicles=', s.query(Vehicle).filter(Vehicle.vehicle_number==seg0['train_no']).count())
 print('segments=', s.query(Segment).filter(Segment.id=='test-seg-1').count())

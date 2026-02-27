@@ -179,7 +179,7 @@ class TestAvailabilityService:
     def test_availability_endpoint_http(self, sample_trip_data):
         """Ensure the FastAPI availability route is reachable and returns expected fields."""
         from fastapi.testclient import TestClient
-        from backend.app import app
+        from app import app
 
         client = TestClient(app)
         payload = {
@@ -325,7 +325,7 @@ class TestBookingOrchestrator:
         assert result.total_amount is not None
 
         # validate passenger persistence in database
-        from backend.database.models import Booking as BookingModel
+        from database.models import Booking as BookingModel
         booking = test_session.query(BookingModel).filter(BookingModel.pnr_number == result.pnr_number).first()
         assert booking is not None
         assert len(booking.passenger_details) == 2

@@ -1,13 +1,13 @@
 from sqlalchemy.orm import Session
-from backend.database.models import UnlockedRoute
+from database.models import UnlockedRoute
 from datetime import datetime
 import logging
-from backend.config import Config
+from database.config import Config
 # payment/booking logic has been simplified for Phase 2; mobile RevenueCat
 # integration is deprecated in favor of Razorpay.  We no longer call any
 # external verifier in backend tests.
-from backend.services.subscription_service import SubscriptionService
-from backend.services.cache_service import cache_service
+from services.subscription_service import SubscriptionService
+from services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 

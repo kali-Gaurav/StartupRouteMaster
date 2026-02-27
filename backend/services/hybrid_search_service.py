@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 import time
 from datetime import datetime
 
-from backend.core.route_engine import RouteEngine, route_engine
-from backend.config import Config
+from core.route_engine import RouteEngine, route_engine
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class HybridSearchService:
             dt = datetime.strptime(travel_date, "%Y-%m-%d")
             
             # Use constraints from budget if provided
-            from backend.core.route_engine.constraints import RouteConstraints
+            from core.route_engine.constraints import RouteConstraints
             constraints = RouteConstraints(max_transfers=3)
             if budget_category == "budget":
                 constraints.max_transfers = 3 # Allow more transfers for budget
@@ -69,7 +69,7 @@ class HybridSearchService:
                 formatted_rt = self._format_route_for_frontend(rt)
                 
                 # Collect station info for the 'stations' dictionary
-                from backend.database.models import Stop
+                from database.models import Stop
                 for seg in rt.segments:
                     for stop_id in [seg.departure_stop_id, seg.arrival_stop_id]:
                         if str(stop_id) not in formatted_response["stations"]:
@@ -168,7 +168,7 @@ class HybridSearchService:
 
     def _resolve_stop_id(self, station_name: str) -> Optional[int]:
         """Resolve station name to stop ID."""
-        from backend.models import Stop
+        from models import Stop
         stop = self.db.query(Stop).filter(Stop.name.ilike(f"%{station_name}%")).first()
         return stop.id if stop else None
 

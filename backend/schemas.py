@@ -67,9 +67,10 @@ class RouteSegmentSchema(BaseModel):
 class SearchRequestSchema(BaseModel):
     source: str = Field(..., min_length=2, max_length=100)  # Relaxed pattern (fuzzy matching handles typos)
     destination: str = Field(..., min_length=2, max_length=100)
-    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}(T|\s)?.*$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
+    women_safety_mode: bool = Field(False, description="Prioritize safer routes and avoid night layovers")
 
     # New fields for advanced features
     journey_type: Optional[str] = Field(None, pattern="^(single|connecting|circular|multi_city)$")
@@ -114,6 +115,12 @@ class BookingCreateSchema(BaseModel):
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
 
 
+class LocationUpdateSchema(BaseModel):
+    latitude: float
+    longitude: float
+    speed: Optional[float] = None
+
+
 # --- Availability Schemas ---------------------------------------------------
 class AvailabilityCheckRequestSchema(BaseModel):
     trip_id: int
@@ -138,7 +145,7 @@ class AvailabilityCheckResponseSchema(BaseModel):
     probability: Optional[float] = None
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
 
 class BookingResponseSchema(BaseModel):
     id: str

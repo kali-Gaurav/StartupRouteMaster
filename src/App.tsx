@@ -7,12 +7,14 @@ import { lazy, Suspense } from "react";
 import { MiniAppGate } from "@/components/MiniAppGate";
 import { RailAssistantChatbot } from "@/components/RailAssistantChatbot";
 import { NetworkStatusBanner } from "@/components/NetworkStatusBanner";
+import { BottomNav } from "@/components/BottomNav"; // Added BottomNav
 import { DevBootstrap } from "@/components/DevBootstrap";
 import { DevDebugPanel } from "@/components/DevDebugPanel";
 import { AuthProvider } from "@/context/AuthContext";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { queryClient } from "@/infrastructure/queryClient";
+import { usePushNotifications } from "@/hooks/usePushNotifications"; // Added usePushNotifications
 
 // Lazy load pages for code splitting
 const Index = lazy(() => import("./pages/Index"));
@@ -22,6 +24,9 @@ const Bookings = lazy(() => import("./pages/Bookings"));
 const Ticket = lazy(() => import("./pages/Ticket"));
 const Responder = lazy(() => import("./pages/Responder"));
 const NotFound = lazy(() => import("./pages/NotFound"));
+const Privacy = lazy(() => import("./pages/Privacy"));
+const Terms = lazy(() => import("./pages/Terms"));
+const Safety = lazy(() => import("./pages/Safety"));
 
 // Lazy load Mini App pages
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
@@ -64,48 +69,60 @@ function ChatbotWrapper() {
   return <RailAssistantChatbot onSearchRequest={onSearch} onSortChange={onSort} onNavigate={onNavigate} />;
 }
 
+const AppContent = () => {
+  usePushNotifications(); // Initial push setup
+  return (
+    <TooltipProvider>
+      <Toaster />
+      <Toaster />
+      <Sonner />
+      <NetworkStatusBanner />
+      <DevBootstrap />
+      <DevDebugPanel />
+      <BrowserRouter>
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route path="/" element={<Index />} />
+            <Route path="/sos" element={<SOS />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/bookings" element={<Bookings />} />
+            <Route path="/ticket/:bookingId" element={<Ticket />} />
+            <Route path="/responder" element={<Responder />} />
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/safety" element={<Safety />} />
+
+            {/* Mini App Routes: gate runs Telegram initData → JWT auth then renders child */}
+            <Route path="/mini-app" element={<MiniAppGate><Outlet /></MiniAppGate>}>
+              <Route index element={<Navigate to="home" replace />} />
+              <Route path="home" element={<MiniAppHome />} />
+              <Route path="search" element={<MiniAppSearch />} />
+              <Route path="booking" element={<MiniAppBooking />} />
+              <Route path="sos" element={<MiniAppSOS />} />
+              <Route path="track" element={<MiniAppTrack />} />
+              <Route path="saved" element={<MiniAppSaved />} />
+              <Route path="profile" element={<MiniAppProfile />} />
+            </Route>
+            
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
+        <Routes>
+          <Route path="*" element={<ChatbotWrapper />} />
+        </Routes>
+        <BottomNav />
+      </BrowserRouter>
+    </TooltipProvider>
+  );
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <ThemeProvider>
       <AuthProvider>
         <BookingFlowProvider>
-          <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <NetworkStatusBanner />
-        <DevBootstrap />
-        <DevDebugPanel />
-        <BrowserRouter>
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route path="/" element={<Index />} />
-              <Route path="/sos" element={<SOS />} />
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/bookings" element={<Bookings />} />
-              <Route path="/ticket/:bookingId" element={<Ticket />} />
-              <Route path="/responder" element={<Responder />} />
-
-              {/* Mini App Routes: gate runs Telegram initData → JWT auth then renders child */}
-              <Route path="/mini-app" element={<MiniAppGate><Outlet /></MiniAppGate>}>
-                <Route index element={<Navigate to="home" replace />} />
-                <Route path="home" element={<MiniAppHome />} />
-                <Route path="search" element={<MiniAppSearch />} />
-                <Route path="booking" element={<MiniAppBooking />} />
-                <Route path="sos" element={<MiniAppSOS />} />
-                <Route path="track" element={<MiniAppTrack />} />
-                <Route path="saved" element={<MiniAppSaved />} />
-                <Route path="profile" element={<MiniAppProfile />} />
-              </Route>
-              
-              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-          <Routes>
-            <Route path="*" element={<ChatbotWrapper />} />
-          </Routes>
-        </BrowserRouter>
-          </TooltipProvider>
+          <AppContent />
         </BookingFlowProvider>
       </AuthProvider>
     </ThemeProvider>

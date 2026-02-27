@@ -13,13 +13,13 @@ from datetime import datetime, time
 from typing import Optional, Dict
 import json
 
-from backend.database import get_db
-from backend.core.route_engine.offline_engine import (
+from database import get_db
+from core.route_engine.offline_engine import (
     OfflineRouteEngine,
     RouteSearchResponse,
     DetailedJourney,
 )
-from backend.utils.limiter import limiter
+from utils.limiter import limiter
 
 router = APIRouter(prefix="/api/offline", tags=["offline-search"])
 logger = logging.getLogger(__name__)

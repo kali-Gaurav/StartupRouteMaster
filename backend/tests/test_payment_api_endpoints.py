@@ -1,9 +1,9 @@
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy.orm import sessionmaker
-from backend.app import app
-from backend.api.dependencies import get_current_user
-from backend.database.models import User, Booking, Payment
+from app import app
+from api.dependencies import get_current_user
+from database.models import User, Booking, Payment
 
 
 @pytest.fixture(scope="function")
@@ -19,7 +19,7 @@ def auth_client(db_session):
     app.dependency_overrides[get_current_user] = _override_current_user
 
     # override webhook verification to bypass signature checking during tests
-    from backend.api.dependencies import verify_webhook_signature
+    from api.dependencies import verify_webhook_signature
 
     app.dependency_overrides[verify_webhook_signature] = lambda request: None
     with TestClient(app) as client:
@@ -126,7 +126,7 @@ def test_webhook_refund_event_updates_status(auth_client, db_session):
     """Simulate a Razorpay refund event and ensure refund record updates."""
     client, user = auth_client
     # create dummy refund record
-    from backend.database.models import Refund
+    from database.models import Refund
     refund = Refund(
         id="ref-1",
         booking_request_id="req-1",

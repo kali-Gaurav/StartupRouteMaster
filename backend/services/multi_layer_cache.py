@@ -22,24 +22,22 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Any, Set, Tuple, Union
 from dataclasses import dataclass, asdict
+from collections import OrderedDict
 import hashlib
 import pickle
 import zlib
 
 import redis.asyncio as redis
-from redis.lock import Lock
 
-from .cache_service import CacheService
-from ..config import Config
-from ..models import Station, Trip, StopTime
-from ..database import SessionLocal
+from database.config import Config
+from database.models import Station, StopTime
+from database.session import SessionLocal
+
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class CacheMetrics:
-    """Cache performance metrics"""
     hits: int = 0
     misses: int = 0
     sets: int = 0
@@ -52,15 +50,10 @@ class CacheMetrics:
         return self.hits / total if total > 0 else 0.0
 
     def to_dict(self) -> Dict:
-        return {
-            **asdict(self),
-            'hit_rate': self.hit_rate
-        }
-
+        return {**asdict(self), 'hit_rate': self.hit_rate}
 
 @dataclass
 class RouteQuery:
-    """Route query parameters for caching"""
     from_station: str
     to_station: str
     date: date
@@ -69,17 +62,11 @@ class RouteQuery:
     include_wait_time: bool = True
 
     def cache_key(self) -> str:
-        """Generate cache key for route query"""
-        key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}"
-        if self.class_preference:
-            key_data += f":{self.class_preference}"
-        key_data += f":{self.max_transfers}:{self.include_wait_time}"
+        key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
         return f"route:{hashlib.md5(key_data.encode()).hexdigest()[:16]}"
-
 
 @dataclass
 class AvailabilityQuery:
-    """Availability query parameters"""
     train_id: int
     from_stop_id: int
     to_stop_id: int
@@ -88,15 +75,38 @@ class AvailabilityQuery:
     passengers: int = 1
 
     def cache_key(self) -> str:
-        """Generate cache key for availability query"""
         key_data = f"{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{self.travel_date.isoformat()}:{self.quota_type}"
         return f"availability:{hashlib.md5(key_data.encode()).hexdigest()[:16]}"
+
+
+class LRUCache:
+    """Simple LRU Cache for Layer 0."""
+    def __init__(self, capacity: int = 100):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+
+    def get(self, key: str) -> Optional[Any]:
+        if key not in self.cache:
+            return None
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def put(self, key: str, value: Any):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last=False)
+
+    def delete(self, key: str):
+        self.cache.pop(key, None)
 
 
 class MultiLayerCache:
     """
     Multi-Layer Cache System for Railway Operations
 
+    Layer 0: In-Memory LRU (New) - Ultra-fast local access
     Layer 1: Query Cache (Redis) - Route search results
     Layer 2: Partial Route Cache - Station reachability
     Layer 3: Seat Availability Cache - Real-time inventory
@@ -105,12 +115,14 @@ class MultiLayerCache:
 
     def __init__(self):
         self.redis: Optional[redis.Redis] = None
+        self.lru = LRUCache(capacity=500) # Local Layer 0
         self.metrics = {
             'query_cache': CacheMetrics(),
             'partial_route_cache': CacheMetrics(),
             'availability_cache': CacheMetrics(),
             'ml_cache': CacheMetrics(),
-            'infrastructure_cache': CacheMetrics()
+            'infrastructure_cache': CacheMetrics(),
+            'lru_cache': CacheMetrics()
         }
         self._initialized = False
 
@@ -120,9 +132,15 @@ class MultiLayerCache:
             return
 
         try:
-            self.redis = redis.Redis.from_url(Config.REDIS_URL, decode_responses=False)
+            # Use rediss:// if SSL is enabled, and disable cert verify for Upstash
+            redis_url = Config.REDIS_URL
+            self.redis = redis.Redis.from_url(
+                redis_url, 
+                decode_responses=False,
+                ssl_cert_reqs=None
+            )
             await self.redis.ping()
-            logger.info("Multi-layer cache initialized with Redis")
+            logger.info("Multi-layer cache initialized with Redis + LRU (Layer 0)")
         except Exception as e:
             logger.warning(f"Redis not available for multi-layer cache: {e}")
             self.redis = None
@@ -130,20 +148,30 @@ class MultiLayerCache:
         self._initialized = True
 
     # ============================================================================
-    # LAYER 1: QUERY CACHE - Route Search Results
+    # LAYER 1: QUERY CACHE - Route Search Results (with Layer 0)
     # ============================================================================
 
     async def get_route_query(self, query: RouteQuery) -> Optional[Dict]:
-        """Get cached route search result"""
+        """Get cached route search result from LRU or Redis"""
+        key = query.cache_key()
+        
+        # 1. Try Layer 0 (LRU)
+        lru_data = self.lru.get(key)
+        if lru_data:
+            self.metrics['lru_cache'].hits += 1
+            return lru_data
+
         if not self.redis:
             return None
 
-        key = query.cache_key()
+        # 2. Try Layer 1 (Redis)
         try:
             data = await self.redis.get(key)
             if data:
+                result = json.loads(data.decode('utf-8'))
+                self.lru.put(key, result) # Promote to Layer 0
                 self.metrics['query_cache'].hits += 1
-                return json.loads(data.decode('utf-8'))
+                return result
             else:
                 self.metrics['query_cache'].misses += 1
                 return None
@@ -152,21 +180,32 @@ class MultiLayerCache:
             return None
 
     async def set_route_query(self, query: RouteQuery, result: Dict, ttl_minutes: int = 5):
-        """Cache route search result"""
+        """Cache route search result in both Redis and LRU"""
+        key = query.cache_key()
+        
+        # Store in Layer 0
+        try:
+            self.lru.put(key, result)
+        except Exception as e:
+            logger.warning(f"LRU put failed: {e}")
+
         if not self.redis:
             return
 
-        key = query.cache_key()
+        # Store in Layer 1
         try:
             data = json.dumps(result, default=str)
             await self.redis.setex(key, ttl_minutes * 60, data)
             self.metrics['query_cache'].sets += 1
-            logger.debug(f"Cached route query: {key}")
         except Exception as e:
-            logger.error(f"Error setting route query cache: {e}")
+            logger.error(f"Redis set_route_query failed (degrading to local memory): {e}")
+            # Do not raise - allow system to continue
 
     async def invalidate_route_queries(self, station_ids: List[int]):
         """Invalidate route queries involving specific stations"""
+        # Always clear local Layer 0 when invalidating
+        self.lru = LRUCache(capacity=self.lru.capacity)
+        
         if not self.redis:
             return
 
@@ -187,10 +226,10 @@ class MultiLayerCache:
                         break
 
             self.metrics['query_cache'].deletes += deleted
-            logger.info(f"Invalidated {deleted} route query cache entries")
+            logger.info(f"Invalidated {deleted} route query cache entries in Redis")
 
         except Exception as e:
-            logger.error(f"Error invalidating route queries: {e}")
+            logger.error(f"Redis invalidate_route_queries failed: {e}")
 
     # ============================================================================
     # LAYER 2: PARTIAL ROUTE CACHE - Station Reachability

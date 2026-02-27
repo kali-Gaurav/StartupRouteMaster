@@ -3,8 +3,12 @@ from sqlalchemy.orm import Session
 import logging
 from typing import Dict, Any
 
-from backend.database import get_db
-from backend.services.realtime_ingestion.position_estimator import TrainPositionEstimator
+from database import get_db
+from services.realtime_ingestion.position_estimator import TrainPositionEstimator
+from pydantic import BaseModel
+from typing import Optional
+from database.models import LiveLocation, User
+from api.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/realtime", tags=["realtime"])
 logger = logging.getLogger(__name__)
@@ -62,7 +66,42 @@ async def get_detailed_train_status(
             },
             "position": position
         }
-        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching status for {train_number}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Live location ingestion -------------------------------------------------
+
+class LocationUpdateSchema(BaseModel):
+    latitude: float
+    longitude: float
+    speed: Optional[float] = None
+
+@router.post("/locations")
+async def ingest_location(
+    payload: LocationUpdateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Record a live location for the authenticated user.
+
+    This endpoint can be called frequently by mobile/web clients and the data
+    is stored in the `live_locations` table.  Optionally additional broadcasting
+    logic (e.g. via Redis or WebSocket) can be added here.
+    """
+    loc = LiveLocation(
+        user_id=str(current_user.id),
+        latitude=payload.latitude,
+        longitude=payload.longitude,
+        speed=payload.speed,
+    )
+    try:
+        db.add(loc)
+        db.commit()
+        db.refresh(loc)
+        return {"status": "ok", "id": loc.id}
+    except Exception as e:
+        logger.error(f"Error ingesting location: {e}")
         raise HTTPException(status_code=500, detail=str(e))

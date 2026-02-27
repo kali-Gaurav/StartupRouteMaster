@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from backend.app import app
+from app import app
 import pytest
 
 
@@ -27,12 +27,12 @@ def test_health_components_and_readiness(monkeypatch):
 @pytest.mark.asyncio
 async def test_external_api_health_before_and_after():
     # manually manipulate external_api_health to simulate freshness
-    from backend.utils.external_api_health import record_success, is_fresh
+    from utils.external_api_health import record_success, is_fresh
     record_success()  # now should be fresh
     assert is_fresh() is True
 
     # backdate beyond threshold
     import datetime
-    from backend.utils import external_api_health
+    from utils import external_api_health
     external_api_health._last_success = datetime.datetime.utcnow() - external_api_health.STALE_THRESHOLD * 2
     assert is_fresh() is False

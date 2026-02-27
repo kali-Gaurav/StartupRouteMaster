@@ -1,5 +1,5 @@
-from backend.database import SessionLocal
-from backend.services.route_engine import route_engine
+from database import SessionLocal
+from services.route_engine import route_engine
 
 print("Running local health debug")
 

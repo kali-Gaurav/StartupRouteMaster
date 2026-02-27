@@ -11,26 +11,54 @@ logger = logging.getLogger(__name__)
 
 # --- Database Engines ---
 # Primary (write) database engine
-engine_write = create_engine(
-    Config.DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-    echo=Config.ENVIRONMENT == "development",
-)
+# Since connectivity may fail (e.g. offline mode or unreachable host), we
+# wrap creation in a helper that can fall back to an in-memory SQLite engine.
+
+def _create_primary_engine():
+    try:
+        # Use DATABASE_URL from config which now handles OFFLINE_MODE logic
+        url = Config.DATABASE_URL
+        if not url:
+            if Config.OFFLINE_MODE:
+                logger.info("OFFLINE_MODE enabled with no DATABASE_URL; using in-memory SQLite.")
+                return create_engine("sqlite:///:memory:", echo=Config.ENVIRONMENT == "development")
+            else:
+                raise RuntimeError("DATABASE_URL is not set and OFFLINE_MODE is false.")
+
+        return create_engine(
+            url,
+            poolclass=QueuePool,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            echo=Config.ENVIRONMENT == "development",
+        )
+    except Exception as e:
+        if Config.OFFLINE_MODE:
+            logger.warning(f"Unable to create primary database engine ({e}); falling back to SQLite in-memory.")
+            return create_engine("sqlite:///:memory:", echo=Config.ENVIRONMENT == "development")
+        else:
+            logger.critical(f"DATABASE CONNECTION FAILURE: {e}")
+            # In production-like environments, we want to fail fast if the primary DB is down
+            raise e
+
+engine_write = _create_primary_engine()
 
 # Read replica database engine (if configured)
 engine_read = None
-if Config.READ_DATABASE_URL:
-    engine_read = create_engine(
-        Config.READ_DATABASE_URL,
-        poolclass=QueuePool,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=True,
-        echo=Config.ENVIRONMENT == "development",
-    )
+if Config.READ_DATABASE_URL and not Config.OFFLINE_MODE:
+    try:
+        engine_read = create_engine(
+            Config.READ_DATABASE_URL,
+            poolclass=QueuePool,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            echo=Config.ENVIRONMENT == "development",
+        )
+    except Exception as e:
+        logger.warning(f"Unable to create read-replica engine ({e}); continuing without replica.")
+        engine_read = None
 
 # --- Custom Connection Routing ---
 class RoutingSession(Session):
@@ -110,7 +138,12 @@ async def init_db():
     try:
         # For init_db, ensure required Postgres extensions exist (pg_trgm for trigram indexes)
         # then create tables on the write engine.
-        if engine_write.dialect.name == "postgresql":
+        try:
+            dialect = engine_write.dialect.name
+        except Exception:
+            dialect = ""
+
+        if dialect == "postgresql":
             try:
                 with engine_write.connect() as conn:
                     conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm;"))
@@ -122,7 +155,7 @@ async def init_db():
         # Create all tables and indexes. 
         # Using a safer approach for existing databases with pre-existing indexes.
         try:
-            if engine_write.dialect.name == "sqlite":
+            if dialect == "sqlite":
                 # For SQLite, we might not have SpatiaLite, so create_all might fail
                 # on geometry columns. We'll try to catch that specifically.
                 try:
@@ -141,6 +174,25 @@ async def init_db():
             else:
                 raise sqlalchemy_error
     except Exception as e:
+        # catch operational errors due to network/DNS
+        from sqlalchemy.exc import OperationalError
+        if isinstance(e, OperationalError):
+            # treat unreachable database as acceptable if offline mode or DNS error
+            errstr = str(e).lower()
+            if Config.OFFLINE_MODE or "could not translate host name" in errstr:
+                logger.warning("Database unreachable; switching to SQLite fallback.")
+                # re-create engines using in-memory SQLite and retry once
+                new_engine = create_engine("sqlite:///:memory:", echo=Config.ENVIRONMENT == "development")
+                globals()['engine_write'] = new_engine
+                globals()['engine_read'] = None
+                SessionLocal.configure(bind=new_engine)
+                globals()['engine'] = new_engine
+                try:
+                    Base.metadata.create_all(bind=new_engine)
+                    logger.info("SQLite fallback schema created successfully.")
+                    return
+                except Exception as inner:
+                    logger.error(f"SQLite fallback schema creation also failed: {inner}")
         logger.error(f"Failed to initialize database: {e}")
         raise
 

@@ -10,7 +10,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
-from backend.utils.metrics import ML_INFERENCE_LATENCY_MS
+from utils.metrics import ML_INFERENCE_LATENCY_MS
 
 logger = logging.getLogger(__name__)
 

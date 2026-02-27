@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ChevronDown, ChevronUp, Clock, Timer, Lock } from "lucide-react"; // Removed ArrowRight, Check, AlertTriangle
+import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck } from "lucide-react"; // Added ShieldCheck, ShieldAlert, BadgeCheck
 import { Route, RouteSegment, formatDuration, formatCost, formatLiveFare, getAvailabilityBadgeClasses, summarizeAvailability, getSeatAvailabilityState, formatAvailabilityForDisplay } from "@/data/routes"; // Added RouteSegment
 import { getStationByCode } from "@/data/stations";
 import { cn } from "@/lib/utils";
@@ -56,7 +56,10 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
   const lastSegment = route.segments[route.segments.length - 1];
   const availabilitySummary = summarizeAvailability(route.segments);
   const availabilityBadgeClasses = getAvailabilityBadgeClasses(availabilitySummary.state);
-  // Removed const liveFareDisplay = formatLiveFare(route.liveFareTotal ?? route.totalCost);
+  
+  // Safety Logic
+  const isHighSafety = (route.safetyScore ?? 0) >= 90;
+  const safetyColor = isHighSafety ? "text-emerald-500" : (route.safetyScore ?? 0) > 60 ? "text-amber-500" : "text-red-500";
 
   return (
     <div className="bg-card rounded-2xl border-2 overflow-hidden transition-all duration-300 hover:shadow-card hover:border-primary/30 border-primary shadow-soft animate-slide-in opacity-0"
@@ -64,7 +67,7 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
       {/* Header */}
       <div className="p-5">
         <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <div
               className={cn(
                 "px-3 py-1.5 rounded-full text-white text-sm font-semibold",
@@ -74,6 +77,12 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
             >
               {route.category}
             </div>
+            {isHighSafety && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-bold border border-blue-500/20 shadow-sm animate-in zoom-in duration-300">
+                <ShieldCheck className="w-3.5 h-3.5" />
+                Verified Safe
+              </span>
+            )}
             {isRecommended && (
               <span className="px-2 py-1 bg-green-500/10 text-green-600 dark:text-green-400 text-xs font-semibold rounded-full border border-green-500/20">
                 Best overall
@@ -89,17 +98,17 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 Cheapest
               </span>
             )}
-            {badges?.mostReliable && (
-              <span className="px-2 py-1 bg-blue-500/15 text-blue-700 dark:text-blue-300 text-xs font-semibold rounded-full border border-blue-500/30">
-                Most reliable
-              </span>
-            )}
           </div>
-          <div className="text-right">
+          <div className="text-right shrink-0">
             <div className="text-2xl font-bold text-foreground">
               {route.totalCost > 0 ? formatCost(route.totalCost) : "N/A" }
             </div>
-            <div className="text-sm text-muted-foreground">Total fare</div>
+            <div className="flex items-center justify-end gap-1.5 mt-1">
+              <span className={cn("text-xs font-black uppercase tracking-tighter", safetyColor)}>
+                Safety {route.safetyScore}/100
+              </span>
+              {isHighSafety ? <BadgeCheck className="w-3.5 h-3.5 text-emerald-500" /> : <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />}
+            </div>
           </div>
         </div>
 
@@ -108,11 +117,11 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-foreground">
-                {getStationByCode(firstSegment.from)?.name || firstSegment.from}
+                {firstSegment.fromName || getStationByCode(firstSegment.from)?.name || firstSegment.from}
               </span>
               <span className="text-muted-foreground">→</span>
               <span className="text-sm font-semibold text-foreground">
-                {getStationByCode(lastSegment.to)?.name || lastSegment.to}
+                {lastSegment.toName || getStationByCode(lastSegment.to)?.name || lastSegment.to}
               </span>
             </div>
             <div className={cn("px-2 py-1 rounded-md text-xs font-semibold", availabilityBadgeClasses)} title={availabilitySummary.state === "unknown" ? "Fare and seat availability will be shown at booking" : undefined}>
@@ -197,7 +206,7 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                     </div>
                     <div className="min-w-0">
                       <div className="text-xs font-medium text-amber-700 dark:text-amber-300 uppercase tracking-wide">
-                        Transfer at {getStationByCode(segment.from)?.name || segment.from}
+                        Transfer at {segment.fromName || getStationByCode(segment.from)?.name || segment.from}
                       </div>
                       <div className="text-lg font-bold text-foreground">
                         Wait time: {formatDuration(segment.waitBefore)}
@@ -208,7 +217,7 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 <div className="border border-border rounded-lg p-4 bg-card/50">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-semibold text-sm">
-                      Train {segment.trainNumber}
+                      Train {segment.trainNumber} - {segment.trainName}
                     </span>
                     <span className={cn("text-xs font-semibold px-2 py-1 rounded", getAvailabilityBadgeClasses(getSeatAvailabilityState(segment.liveSeatAvailability)))}>
                       {formatAvailabilityForDisplay(segment.liveSeatAvailability) === "Check at booking" ? "Check at booking" : `${formatAvailabilityForDisplay(segment.liveSeatAvailability)} seats`}
@@ -217,11 +226,11 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                   <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground mb-2">
                     <div>
                       <div className="text-foreground font-semibold">{segment.departure}</div>
-                      <div>{getStationByCode(segment.from)?.name || segment.from}</div>
+                      <div>{segment.fromName || getStationByCode(segment.from)?.name || segment.from}</div>
                     </div>
                     <div className="text-right">
                       <div className="text-foreground font-semibold">{segment.arrival}</div>
-                      <div>{getStationByCode(segment.to)?.name || segment.to}</div>
+                      <div>{segment.toName || getStationByCode(segment.to)?.name || segment.to}</div>
                     </div>
                   </div>
                   {(segment.liveFare != null && segment.liveFare > 0) && (

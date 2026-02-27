@@ -75,7 +75,7 @@ export function useRailwaySearch({
           const data = await searchRoutesApi(sourceCode, destCode, options?.maxTransfers || 2, options?.maxResults || 50, {
             date: normalizedDate,
             routeSource: "live",
-            sortBy: options?.sortBy || "duration",
+            sortBy: (options?.sortBy || "duration") as "duration" | "cost" | "score",
           });
 
           const routes = mapBackendRoutesToRoutes(data, sourceCode, destCode);

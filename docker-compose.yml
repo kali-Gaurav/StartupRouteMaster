@@ -1,57 +1,28 @@
 version: '3.8'
 
 services:
-  db:
-    # Pin PostGIS to a PostgreSQL 15 image so existing pgdata (PG15) remains compatible
-    image: postgis/postgis:15-3.3
-    container_name: startupv2_postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "55432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+  # --- database has been removed in favor of Supabase ---
+  # all Postgres containers (db, routemaster_db, routemaster_ml_db) were
+  # originally declared here.  RouteMaster now uses a managed Supabase
+  # PostgreSQL instance; set `DATABASE_URL` environment variables in each
+  # service to the connection string supplied by Supabase, or leave the
+  # variable unset entirely if the service only uses the Supabase client.  
+  #
+  # To clean up an existing development machine, stop and remove the old
+  # containers/volumes:
+  #   docker compose stop db routemaster_db routemaster_ml_db
+  #   docker compose rm -v db routemaster_db routemaster_ml_db
+  #
+  # The remainder of this compose file continues with non‑database services.
 
-  routemaster_ml_db:
-    image: postgis/postgis:15-3.3
-    container_name: startupv2_routemaster_ml_db
+  redis:
+    image: redis/redis-stack:7.2.0-v9
+    container_name: startupv2_redis
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: routemaster
-      POSTGRES_PASSWORD: routemaster
-      POSTGRES_DB: routemaster_ml
-    volumes:
-      - routemaster_ml_pgdata:/var/lib/postgresql/data
     ports:
-      - "55434:5432"
+      - "6379:6379"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U routemaster -d routemaster_ml"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  routemaster_db:
-    image: postgis/postgis:15-3.3
-    container_name: startupv2_routemaster_db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: routemaster
-    volumes:
-      - routemaster_pgdata:/var/lib/postgresql/data
-    ports:
-      - "55433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d routemaster"]
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -195,12 +166,15 @@ services:
     container_name: startupv2_route_service
     ports:
       - "8002:8002"
+    # no local database container; this service should use
+    # $DATABASE_URL pointing at your Supabase Postgres or rely on
+    # the shared supabase_client for auth/queries.
     depends_on:
-      - db
       - redis
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     networks:
       - default
 
@@ -225,11 +199,11 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=your-secret-key-change-in-production
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     depends_on:
-      - db
       - redis
     networks:
       - default
@@ -241,13 +215,13 @@ services:
     ports:
       - "8005:8005"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379
       - SECRET_KEY=your-secret-key-change-in-production
       - STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
       - STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     depends_on:
-      - db
       - redis
     networks:
       - default
@@ -259,15 +233,15 @@ services:
     ports:
       - "8006:8006"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379
       - TWILIO_ACCOUNT_SID=your_twilio_account_sid
       - TWILIO_AUTH_TOKEN=your_twilio_auth_token
       - TWILIO_PHONE_NUMBER=your_twilio_phone_number
       - SENDGRID_API_KEY=your_sendgrid_api_key
       - FROM_EMAIL=noreply@railwayintelligence.com
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     depends_on:
-      - db
       - redis
     networks:
       - default
@@ -299,10 +273,10 @@ services:
     ports:
       - "8008:8008"
     environment:
-      - RMA_DATABASE_URL=postgresql://postgres:postgres@routemaster_db:5432/routemaster
       - REDIS_URL=redis://redis:6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     depends_on:
-      - routemaster_db
       - redis
     networks:
       - default
@@ -330,12 +304,12 @@ services:
     volumes:
       - .:/usr/src/app # Mount the entire project root
     working_dir: /usr/src/app # Set working directory to project root
-    depends_on:
-      db:
-        condition: service_healthy # Ensure DB is ready
+    # assumes migrations will run against the Supabase database; make sure
+    # DATABASE_URL is set accordingly in your environment before invoking.
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
       - PYTHONPATH=/usr/src/app # Add project root to PYTHONPATH
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -343,7 +317,7 @@ services:
         alembic -c backend/alembic.ini upgrade head
 
 volumes:
-  pgdata: {}
+  # pgdata: {}                    # no longer used - Supabase provides managed storage
   grafana_data: {}
-  routemaster_pgdata: {}
-  routemaster_ml_pgdata: {}
+  # routemaster_pgdata: {}
+  # routemaster_ml_pgdata: {}

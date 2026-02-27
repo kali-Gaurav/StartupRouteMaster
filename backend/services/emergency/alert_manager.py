@@ -9,9 +9,9 @@ from typing import Dict, Any, Optional
 import time
 from sqlalchemy.orm import Session
 
-from backend.database import SessionLocal
-from backend.services.realtime_ingestion.position_estimator import TrainPositionEstimator
-from backend.core.monitoring import SOS_ALERTS_TOTAL, SOS_ENRICHMENT_LATENCY, SOS_BROADCAST_LATENCY
+from database.session import SessionLocal
+from services.realtime_ingestion.position_estimator import TrainPositionEstimator
+from core.monitoring import SOS_ALERTS_TOTAL, SOS_ENRICHMENT_LATENCY, SOS_BROADCAST_LATENCY
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class EmergencyAlertManager:
         and journey context.
         """
         # Lazy import to avoid circular dependency
-        from backend.api.websockets import manager
+        from api.websockets import manager
         
         start_time = time.perf_counter()
         SOS_ALERTS_TOTAL.labels(severity=raw_event.get("severity", "medium"), status="received").inc()

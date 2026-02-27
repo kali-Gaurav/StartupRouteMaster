@@ -1,9 +1,9 @@
 import pytest
 import asyncio
 from datetime import datetime, timedelta
-from backend.core.route_engine import RailwayRouteEngine, RouteConstraints, HubToHubConnection
-from backend.database import SessionLocal
-from backend.database.models import Stop, Route as GTFRoute, Trip, StopTime
+from core.route_engine import RailwayRouteEngine, RouteConstraints, HubToHubConnection
+from database import SessionLocal
+from database.models import Stop, Route as GTFRoute, Trip, StopTime
 
 @pytest.mark.async_timeout(30)
 @pytest.mark.asyncio

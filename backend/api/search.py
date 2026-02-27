@@ -1,68 +1,61 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 import logging
 import time
-import json
-from datetime import datetime, date
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional, Any
 
-from backend.database import get_db
-from backend.schemas import SearchRequestSchema
-from backend.core.route_engine import route_engine
-from backend.database.models import StationMaster, Station, Disruption
-from backend.services.cache_service import cache_service
-from backend.services.station_service import StationService
-from backend.services.search_service import SearchService
-from backend.database.config import Config
-from backend.api.websockets import manager as websocket_manager
-from backend.utils.limiter import limiter
-from backend.utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
-from backend.utils.station_utils import resolve_stations, find_stations_by_partial_name  # NEW
-from backend.utils.validation import SearchRequestValidator, validate_date_string  # NEW
+from database import get_db
+from schemas import SearchRequestSchema
+from core.route_engine import route_engine
+from database.models import Stop, Disruption
+from services.station_service import StationService
+from services.search_service import SearchService
+from database.config import Config
+from utils.limiter import limiter
+from utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
+from utils.validation import validate_date_string
+from fastapi_cache.decorator import cache
+from api.websockets import manager as websocket_manager
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
-# --- Route Search Endpoint ---
-
-@router.post("/", response_model=None)
-@limiter.limit("5/minute")
+@router.post("/")
+@limiter.limit("60/minute")
+@cache(expire=300) # 5 minute cache
 async def search_routes_endpoint(request: Request, search_request: SearchRequestSchema, db: Session = Depends(get_db)):
     """
-    Search for multi-modal routes using the consolidated SearchService.
-    Ensures consistency between legacy and integrated search responses.
+    Search for routes using the unified Stop (GTFS) model.
     """
     start_time = time.time()
-    # initial increment handled later with labels; avoid unlabelled increment which
-    # would raise errors when metrics expect label values
-    request_id = f"{datetime.utcnow().timestamp()}"
     status_label = "failure"
 
     try:
-        # Validate travel date string
         travel_date_str = search_request.date or datetime.now().strftime("%Y-%m-%d")
         if not validate_date_string(travel_date_str):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"message": "Invalid travel date format. Use YYYY-MM-DD."}
+                detail="Invalid travel date format. Use YYYY-MM-DD."
             )
 
-        # Use unified SearchService
+        # Unified SearchService handles the engine call
         service = SearchService(db)
         result = await service.search_routes(
             source=search_request.source,
             destination=search_request.destination,
-            travel_date=travel_date_str
+            travel_date=travel_date_str,
+            budget_category=search_request.budget,
+            multi_modal=search_request.multi_modal,
+            women_safety_mode=search_request.women_safety_mode
         )
 
-        # In production we may choose to signal 404 for no routes,
-        # but during development we want to return an empty structure so that
-        # the frontend can render gracefully without an error overlay.
-        if (not result or not result.get("routes")) and Config.ENVIRONMENT != "development":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No routes found for {search_request.source} -> {search_request.destination} on {travel_date_str}"
-            )
+        if not result or not result.get("journeys"):
+            if Config.ENVIRONMENT != "development":
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No routes found for {search_request.source} -> {search_request.destination}"
+                )
 
         status_label = "success"
         return result
@@ -70,129 +63,29 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Search endpoint error for request {request_id}: {e}", exc_info=True)
+        logger.error(f"Search endpoint error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An internal server error occurred during search."
+            detail="An internal server error occurred."
         )
     finally:
         duration = time.time() - start_time
         SEARCH_LATENCY_SECONDS.labels(endpoint="/api/search").observe(duration)
         SEARCH_REQUESTS_TOTAL.labels(endpoint="/api/search", status=status_label).inc()
-
-# --- Station Autocomplete Endpoint (Rate Limited) ---
         ROUTE_LATENCY_MS.observe(duration * 1000)
 
-
-# --- Station Autocomplete Endpoint (Rate Limited) ---
-
-def calculate_station_score(station, query_lower):
+@router.get("/stations")
+@limiter.limit("120/minute")
+@cache(expire=3600) # 1 hour cache
+async def autocomplete_stations(request: Request, q: str = Query(..., min_length=2), db: Session = Depends(get_db)):
     """
-    Calculate a relevance score for a station based on the search query.
-    """
-    name_lower = station.name.lower()
-    code_lower = station.id.lower()
-    
-    score = 0
-    if query_lower == code_lower:
-        score += 1000
-    elif query_lower == name_lower:
-        score += 800
-    elif name_lower.startswith(query_lower):
-        score += 500
-    elif code_lower.startswith(query_lower):
-        score += 400
-    elif query_lower in name_lower:
-        score += 200
-    
-    if getattr(station, 'is_junction', False):
-        score += 100
-        
-    return score
-
-
-@router.get("/stations/autocomplete")
-@limiter.limit("10/minute")  # NEW: Rate limiting to prevent enumeration
-def autocomplete_stations(request: Request, query: str = Query(..., min_length=2, max_length=100), 
-                         db: Session = Depends(get_db)):
-    """
-    Autocomplete stations based on partial name.
-    NEW: Rate limited to prevent abuse. Accepts `request` so slowapi can access limiter context.
+    Autocomplete using the GTFS Stop table.
     """
     try:
-        stations = find_stations_by_partial_name(db, query, limit=10)
-        
-        results = [
-            {
-                "id": station.stop_id,
-                "name": station.name,
-                "city": station.city,
-                "code": station.code
-            }
-            for station in stations
-        ]
-        
-        logger.debug(f"Autocomplete for '{query}': {len(results)} results")
-        return {"results": results}
-    
+        station_service = StationService(db)
+        return station_service.search_stations_by_name(q)
     except Exception as e:
         logger.error(f"Autocomplete error: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                          detail="Failed to autocomplete stations")
-
-@router.get("/stations", response_model=List[Dict])
-# @cached(ttl=3600) # Cache station autocomplete results for 1 hour
-@limiter.limit("30/minute") # New: Rate limit to 30 requests per minute
-async def search_stations_endpoint(
-    request: Request, # Added Request dependency
-    q: str = Query(..., min_length=2, description="Search query for stations"),
-    db: Session = Depends(get_db),
-):
-    """
-    Provides intelligent, ranked autocomplete results for station searches.
-    """
-    # The cache_service.get and cache_service.set logic is now handled by @cached decorator
-    # Remove manual caching logic
-    # cache_key = f"stations_autocomplete:{q.lower()}"
-    # if cache_service.is_available():
-    #     cached_results = cache_service.get(cache_key)
-    #     if cached_results:
-    #         return cached_results
-
-    try:
-        query_lower = q.lower()
-        # Use Station model for querying, as it now has geom column
-        candidates = db.query(Station).filter(
-            (Station.name.ilike(f"%{query_lower}%")) |
-            (Station.id.ilike(f"{query_lower}%")) # Assuming station ID can be used as code
-        ).limit(50).all()
-
-        if not candidates:
-            return []
-
-        # Rank candidates in Python
-        scored_stations = [
-            (calculate_station_score(station, query_lower), station) for station in candidates
-        ]
-        
-        # Sort by score (descending), then by name (ascending)
-        scored_stations.sort(key=lambda x: (-x[0], x[1].name)) # Use station.name now
-        
-        # Format the top results
-        results = [{
-            "name": station.name,
-            "code": station.id, # Use station.id as code
-            "city": station.city,
-        } for score, station in scored_stations[:10]]
-
-        # The cache_service.set logic is now handled by @cached decorator
-        # if cache_service.is_available():
-        #     cache_service.set(cache_key, results, ttl_seconds=3600) # Cache for 1 hour
-
-        return results
-    except Exception as e:
-        logger.error(f"Station search autocomplete error: {e}")
-        # Return empty list on error to prevent frontend from crashing
         return []
 
 @router.get("/stations/near", response_model=List[Dict])
@@ -218,6 +111,59 @@ async def get_nearby_stations_endpoint(
     except Exception as e:
         logger.error(f"Error fetching nearby stations: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An unexpected error occurred during search.")
+
+@router.get("/quick")
+@limiter.limit("120/minute")
+@cache(expire=300)
+async def quick_search_endpoint(
+    request: Request,
+    source: str = Query(..., description="Source station code (e.g. NDLS)"),
+    destination: str = Query(..., description="Destination station code (e.g. BCT)"),
+    departure_time: Optional[datetime] = Query(None, description="Preferred departure time (ISO format)"),
+    women_safety_mode: bool = Query(False, description="Enable women safety constraints"),
+    db: Session = Depends(get_db)
+):
+    """
+    Blueprint-compliant quick search endpoint (Topic 1).
+    Returns direct and multi-hop routes as a simple list.
+    """
+    start_time = time.time()
+    try:
+        # Use current time if not provided
+        search_dt = departure_time or datetime.now()
+        
+        # We call the engine directly for maximum speed, bypassing service overhead
+        from core.route_engine import route_engine
+        from core.route_engine.constraints import RouteConstraints
+        
+        # Default production constraints
+        constraints = RouteConstraints(max_transfers=2, range_minutes=360) # 6h window
+        if women_safety_mode:
+            constraints.women_safety_priority = True
+            constraints.avoid_night_layovers = True
+            constraints.weights.safety = 1.0
+        
+        routes = await route_engine.search_routes(
+            source_code=source,
+            destination_code=destination,
+            departure_date=search_dt,
+            constraints=constraints
+        )
+        
+        return {
+            "source": source,
+            "destination": destination,
+            "departure_date": search_dt.isoformat(),
+            "routes": [r.to_dict() for r in routes],
+            "count": len(routes),
+            "latency_ms": int((time.time() - start_time) * 1000)
+        }
+    except Exception as e:
+        logger.error(f"Quick search error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

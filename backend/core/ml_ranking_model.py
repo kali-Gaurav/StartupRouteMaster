@@ -8,7 +8,7 @@ import asyncio
 import logging
 from typing import List, Any, Optional
 
-from backend.services.route_ranking_predictor import RouteRankingPredictor
+from services.route_ranking_predictor import RouteRankingPredictor
 
 logger = logging.getLogger(__name__)
 

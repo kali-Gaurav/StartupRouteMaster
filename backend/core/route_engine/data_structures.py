@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 
 @dataclass
 class SpaceTimeNode:
@@ -50,6 +50,21 @@ class RouteSegment:
     def arrival_station(self) -> int:
         return self.arrival_stop_id
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Production serialization for API response."""
+        return {
+            "trip_id": self.trip_id,
+            "train_number": self.train_number,
+            "train_name": self.train_name,
+            "from_station": self.departure_code,
+            "to_station": self.arrival_code,
+            "departure_time": self.departure_time.isoformat(),
+            "arrival_time": self.arrival_time.isoformat(),
+            "duration": self.duration_minutes,
+            "distance": self.distance_km,
+            "fare": self.fare
+        }
+
 
 @dataclass
 class TransferConnection:
@@ -64,6 +79,15 @@ class TransferConnection:
     # Optional platform information (does not affect transfer feasibility by default)
     platform_from: Optional[str] = None
     platform_to: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "station_id": self.station_id,
+            "station_name": self.station_name,
+            "arrival_time": self.arrival_time.isoformat() if self.arrival_time != datetime.min else None,
+            "departure_time": self.departure_time.isoformat() if self.departure_time != datetime.max else None,
+            "wait_minutes": self.duration_minutes
+        }
 
 
 @dataclass
@@ -81,6 +105,22 @@ class Route:
     availability_probability: float = 1.0 # Phase 8: P(booking success)
     is_locked: bool = True  # Added for booking intelligence unlock flow
     cost_diagnostics: Dict[str, float] = field(default_factory=dict)
+    visited_stations: Set[int] = field(default_factory=set) # Optimization for RAPTOR cycle detection
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Production serialization matching the blueprint."""
+        return {
+            "route_id": f"rt_{self.segments[0].trip_id}_{int(self.segments[0].departure_time.timestamp())}" if self.segments else "unknown",
+            "segments": [s.to_dict() for s in self.segments],
+            "transfers": [t.to_dict() for t in self.transfers],
+            "total_duration": self.total_duration,
+            "total_fare": self.total_cost,
+            "total_distance": self.total_distance,
+            "reliability": self.reliability,
+            "score": self.score,
+            "is_locked": self.is_locked,
+            "availability_prob": self.availability_probability
+        }
 
     @property
     def total_fare(self) -> float:
@@ -97,11 +137,14 @@ class Route:
         self.total_duration += segment.duration_minutes
         self.total_distance += segment.distance_km
         self.raw_segment_cost += segment.fare
+        # Use literal database cost without normalization
+        self.total_cost = self.raw_segment_cost
         self.cost_diagnostics["legacy_segment_cost"] = self.raw_segment_cost
 
     def recompute_total_cost(self, multiplier: float):
-        """Recompute the displayed fare using journey-level distance."""
-        self.total_cost = round(self.total_distance * multiplier, 2)
+        """Recompute the displayed fare. Now strictly uses raw segment cost as per user mandate."""
+        # multiplier ignored - we use the cost given in tables
+        self.total_cost = round(self.raw_segment_cost, 2)
         self.cost_diagnostics["normalized_cost"] = self.total_cost
 
     def add_transfer(self, transfer: TransferConnection):

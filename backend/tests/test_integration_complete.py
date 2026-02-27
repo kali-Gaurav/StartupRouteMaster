@@ -7,13 +7,13 @@ from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
-from backend.app import app
-from backend.database import SessionLocal, Base, engine_write
-from backend.models import User, Stop, Trip, Calendar, Route, StopTime, Agency, Booking
-from backend.services.booking_service import BookingService
-from backend.utils.generators import generate_pnr, validate_pnr_format
-from backend.utils.validation import SearchRequestValidator, validate_date_string, validate_station_name
-from backend.utils.station_utils import resolve_station_by_name, resolve_stations
+from app import app
+from database import SessionLocal, Base, engine_write
+from models import User, Stop, Trip, Calendar, Route, StopTime, Agency, Booking
+from services.booking_service import BookingService
+from utils.generators import generate_pnr, validate_pnr_format
+from utils.validation import SearchRequestValidator, validate_date_string, validate_station_name
+from utils.station_utils import resolve_station_by_name, resolve_stations
 
 client = TestClient(app)
 
@@ -575,7 +575,7 @@ class TestSearchToBookingFlow:
         user = User(id="pay_user", email="pay@example.com", password_hash="x", role="user")
         db_session.add(user)
         db_session.commit()
-        from backend.services.booking_service import BookingService
+        from services.booking_service import BookingService
         bs = BookingService(db_session)
         booking = bs.create_booking(
             user_id="pay_user",
@@ -586,7 +586,7 @@ class TestSearchToBookingFlow:
         )
         assert booking is not None
         # insert a fake payment record that we'll verify
-        from backend.database.models import Payment
+        from database.models import Payment
         payment = Payment(
             razorpay_order_id="order123",
             status="pending",

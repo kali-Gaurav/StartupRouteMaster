@@ -13,11 +13,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 
 import route_pb2
 import route_pb2_grpc
-from backend.database import SessionLocal
-from backend.core.route_engine import route_engine, RouteEngine
-from backend.services.route_ranking_predictor import route_ranking_predictor
-from backend.services.advanced_route_engine import AdvancedRouteEngine
-from backend.models import Stop, Trip
+from database import SessionLocal
+from core.route_engine import route_engine, RouteEngine
+from services.route_ranking_predictor import route_ranking_predictor
+from services.advanced_route_engine import AdvancedRouteEngine
+from models import Stop, Trip
 from google.protobuf.timestamp_pb2 import Timestamp
 
 logging.basicConfig(level=logging.INFO)
@@ -131,7 +131,7 @@ class RouteServicer(route_pb2_grpc.RouteServiceServicer):
                    f"delay={request.delay_minutes}m, status={request.status}")
         
         try:
-            from backend.graph_mutation_engine import graph_mutation_engine
+            from graph_mutation_engine import graph_mutation_engine
             
             # Apply mutation to graph
             if request.status == "delayed":

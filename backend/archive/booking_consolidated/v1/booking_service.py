@@ -5,13 +5,13 @@ import logging
 from time import sleep
 import asyncio
 
-from backend.models import Booking, Route as RouteModel, Payment, User, PassengerDetails
-from backend.schemas import BookingResponseSchema
+from models import Booking, Route as RouteModel, Payment, User, PassengerDetails
+from schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
-from backend.services.event_producer import publish_booking_created
-from backend.config import Config
-from backend.utils.generators import generate_pnr  # NEW: PNR generation
-from backend.utils.validation import validate_date_string  # NEW: Validation
+from services.event_producer import publish_booking_created
+from config import Config
+from utils.generators import generate_pnr  # NEW: PNR generation
+from utils.validation import validate_date_string  # NEW: Validation
 
 logger = logging.getLogger(__name__)
 

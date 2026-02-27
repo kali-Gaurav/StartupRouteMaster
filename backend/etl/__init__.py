@@ -1,2 +1,3 @@
-# backend/etl/__init__.py
-"""ETL utilities for syncing railway_manager.db to Supabase."""
+from .sqlite_to_postgres import run_etl
+
+__all__ = ["run_etl"]

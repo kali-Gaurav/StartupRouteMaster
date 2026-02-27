@@ -21,10 +21,10 @@ from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-from backend.models import Route, Trip, StopTime, Stop
-from backend.services.tatkal_demand_predictor import TatkalDemandPredictor
-from backend.services.route_ranking_predictor import RouteRankingPredictor
-from backend.config import Config
+from database.models import Route, Trip, StopTime, Stop
+from services.tatkal_demand_predictor import TatkalDemandPredictor
+from services.route_ranking_predictor import RouteRankingPredictor
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +98,8 @@ class DynamicPricingEngine:
         self.is_ready = False
         
         try:
-            self.demand_predictor.load_from_file()
-            self.route_ranker.load_from_file()
+            self.demand_predictor.load_model()
+            self.route_ranker.load_model()
             self.is_ready = True
             logger.info("Dynamic pricing engine initialized with ML models")
         except Exception as e:

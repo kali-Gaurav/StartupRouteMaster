@@ -1,10 +1,10 @@
 import asyncio
 from datetime import datetime
-from backend.core.route_engine.engine import RailwayRouteEngine
+from core.route_engine.engine import RailwayRouteEngine
 
 async def test_search_ndls_mmct():
     # seed database with minimal route data
-    from backend.scripts.phase1_seed import seed_phase1
+    from scripts.phase1_seed import seed_phase1
     seed_phase1()
 
     engine = RailwayRouteEngine()

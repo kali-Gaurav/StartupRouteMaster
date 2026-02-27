@@ -6,9 +6,9 @@ from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
 from fastapi import Depends
-from backend.database import get_db
+from database import get_db
 from .db_utils import get_stop_by_id_cached
-from backend.models import Stop
+from models import Stop
 
 app = FastAPI(title="Route Search & Optimization Service")
 

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from backend.services.cache_service import cache_service
+from services.cache_service import cache_service
 
 router = APIRouter(prefix="/api/flow", tags=["flow"])
 

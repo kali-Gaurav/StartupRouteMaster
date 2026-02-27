@@ -1,4 +1,4 @@
-﻿"""Add commission tracking table for secure attribution
+"""Add commission tracking table for secure attribution
 
 Revision ID: 16871f90bb4d
 Revises: 924ba912e096

@@ -6,10 +6,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend.app import app
-from backend.database import get_db
-from backend.database.models import Booking as BookingModel
-from backend.schemas import AvailabilityCheckRequestSchema
+from app import app
+from database import get_db
+from database.models import Booking as BookingModel
+from schemas import AvailabilityCheckRequestSchema
 
 client = TestClient(app)
 
@@ -38,7 +38,7 @@ def test_full_user_flow_and_ws(tmp_path, monkeypatch, test_db_setup):
 
     # Monkeypatch search to return a dummy route so the test doesn't require
     # a fully populated transit dataset.
-    from backend.services.search_service import SearchService
+    from services.search_service import SearchService
 
     async def _dummy_search(self, source, destination, travel_date, *args, **kwargs):
         # minimal response structure expected by the endpoint/consumer
@@ -96,7 +96,7 @@ def test_full_user_flow_and_ws(tmp_path, monkeypatch, test_db_setup):
 
     # verify DB persistence
     # open a fresh session from the same engine used by the application
-    from backend.database import engine_write
+    from database import engine_write
     SessionLocal = sessionmaker(bind=engine_write)
     sess = SessionLocal()
     db_booking = sess.query(BookingModel).filter(BookingModel.pnr_number == booking["pnr_number"]).first()

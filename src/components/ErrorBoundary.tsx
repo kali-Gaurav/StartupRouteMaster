@@ -22,8 +22,8 @@ export class ErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    reportError(String(error), { componentStack: errorInfo.componentStack });
+  componentCatch(error: Error, errorInfo: ErrorInfo) {
+    reportError(error, { componentStack: errorInfo.componentStack || undefined });
   }
 
   render() {

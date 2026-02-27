@@ -3,7 +3,7 @@ import httpx
 import pytest
 from typing import Any, Dict
 
-from backend.api_gateway.app import app as gateway_app
+from api_gateway.app import app as gateway_app
 
 # Helper fake response to mimic httpx.Response in tests
 class FakeResponse:
@@ -77,12 +77,12 @@ def test_search_booking_notification_integration(db):
     """Integration-style test: search -> create booking (DB) -> notify via notification service API.
     This verifies the high-level flow (services may be separate in production).
     """
-    from backend.notification_service.models import Booking as Booking
+    from notification_service.models import Booking as Booking
 
     # Prepare notification service tables in the same in-memory DB and override its dependency
-    from backend.notification_service.app import app as notif_app
-    from backend.notification_service.database import get_db as notif_get_db
-    from backend.notification_service import models as notif_models
+    from notification_service.app import app as notif_app
+    from notification_service.database import get_db as notif_get_db
+    from notification_service import models as notif_models
 
     # create notification_service tables in the same test DB engine
     notif_models.Base.metadata.create_all(bind=db.bind)

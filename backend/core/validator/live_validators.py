@@ -409,12 +409,18 @@ def create_live_validators(data_provider=None, config=None) -> Dict[str, object]
     validators = {}
 
     if config is None:
+        # attempt to import using package-relative or top-level path
         try:
             from ... import config as cfg
             config = cfg.Config
         except ImportError:
-            logger.warning("Config not available, live validators disabled")
-            return validators
+            try:
+                # fallback if workspace root is in PYTHONPATH
+                from database import config as cfg
+                config = cfg.Config
+            except ImportError:
+                logger.warning("Config not available, live validators disabled")
+                return validators
 
     # Only load if real-time is enabled
     if not getattr(config, 'REAL_TIME_ENABLED', False):

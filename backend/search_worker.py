@@ -1,8 +1,8 @@
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from backend.services.route_engine import route_engine
-from backend.database import SessionLocal
+from services.route_engine import route_engine
+from database import SessionLocal
 
 logger = logging.getLogger(__name__)
 

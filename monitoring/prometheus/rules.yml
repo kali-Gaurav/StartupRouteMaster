@@ -1,200 +1,59 @@
 groups:
-  - name: routemaster.rules
+  - name: RouteMasterAlerts
     rules:
-      - alert: API_P95_High
-        expr: |
-          histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le)) > 0.25
-        for: 5m
+      # --- SOS & Safety Alerts ---
+      - alert: HighSOSTriggers
+        expr: increase(sos_alerts_total[5m]) > 5
+        for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "API p95 latency is above 250ms"
-          description: "p95 latency for all endpoints is > 250ms for the last 5 minutes."
+          summary: "High number of SOS triggers detected"
+          description: "There have been {{ $value }} SOS triggers in the last 5 minutes. Immediate investigation required."
 
-      - alert: Backend_Error_Rate_High
-        expr: |
-          (sum(rate(http_server_requests_seconds_count{status!~"2.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m]))) * 100 > 5
-        for: 5m
+      - alert: AbnormalStopsDetected
+        expr: increase(abnormal_stop_detected_total[10m]) > 2
+        for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Backend error rate > 5%"
-          description: "The percentage of non-2xx responses exceeds 5% over the last 5 minutes."
+          summary: "Abnormal stops detected by AI"
+          description: "Multiple abnormal stops detected. Guardian mode may need manual oversight."
 
-      # --- RouteMaster-specific alert rules ---
-      - alert: RMA_Extraction_Success_Rate_Low
-        expr: |
-          (sum(rate(rma_extraction_success_total[10m])) / sum(rate(rma_extraction_attempts_total[10m]))) * 100 < 95
-        for: 10m
+      # --- API Performance & Availability ---
+      - alert: HighAPIErrorRate
+        expr: (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 5
+        for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "RouteMaster extraction success rate below 95%"
-          description: "Extraction success rate (success/attempts) < 95% over the last 10 minutes. Investigate selector drift or network/proxy issues."
+          summary: "High API Error Rate (> 5%)"
+          description: "The API error rate is currently {{ $value | printf \"%.2f\" }}%."
 
-      - alert: RMA_Proxy_Disabled_Fraction_High
-        expr: |
-          (sum((rma_proxy_health_score < 0.5)) / count(rma_proxy_health_score)) > 0.5
+      - alert: SlowRouteSearch
+        expr: histogram_quantile(0.95, sum(rate(search_request_duration_seconds_bucket[5m])) by (le)) > 2.0
         for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow Route Search Latency"
+          description: "95th percentile of route search latency is above 2 seconds ({{ $value | printf \"%.2f\" }}s)."
+
+      # --- Infrastructure ---
+      - alert: RedisConnectionFailure
+        expr: redis_health_checks_total{status="failure"} > 0
+        for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "More than 50% of proxies unhealthy/disabled"
-          description: "Proxy pool health score indicates >50% of proxies are below 0.5 health over the last 5 minutes. Check proxy provider and rotation."
+          summary: "Redis Connection Failure"
+          description: "Backend is unable to connect to Redis. Caching and Rate Limiting are affected."
 
-      - alert: RMA_RAPTOR_P95_SLOW
-        expr: |
-          histogram_quantile(0.95, sum(rate(rma_raptor_runtime_seconds_bucket[5m])) by (le)) > 0.2
+      - alert: HighMemoryUsage
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "RAPTOR p95 search time > 200ms"
-          description: "95th percentile RAPTOR runtime over the last 5 minutes exceeds 200ms. Consider scaling or profiling the route engine."
-
-      # --- Staging Rollout Critical Alerts ---
-      - alert: Route_Latency_P95_High
-        expr: |
-          histogram_quantile(0.95, sum(rate(route_latency_ms_bucket[5m])) by (le)) > 50
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Route search p95 latency > 50ms"
-          description: "95th percentile route search latency exceeds 50ms over the last 5 minutes. Check route engine performance and scaling."
-
-      - alert: Circuit_Breaker_Open_Rate_High
-        expr: |
-          rate(circuit_breaker_opens_total[5m]) > 10/60
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Circuit breaker opening > 10/min"
-          description: "Circuit breaker is opening more than 10 times per minute. Check event streaming health and downstream service availability."
-
-      - alert: Consumer_Lag_High
-        expr: |
-          consumer_lag_seconds > 30
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Kafka consumer lag > 30 seconds"
-          description: "Consumer lag exceeds 30 seconds. Event processing may be falling behind - check consumer throughput and scaling."
-
-      - alert: Routing_Labels_Spike
-        expr: |
-          rate(routing_labels_generated_total[5m]) > 5 * avg_over_time(rate(routing_labels_generated_total[1h])[1d:1h])
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Routing labels generated rate 5x above baseline"
-          description: "Routing labels generation rate is 5x above the daily average. Check for algorithm instability or unusual search patterns."
-
-      - alert: Memory_Usage_High
-        expr: |
-          (1 - (avg_over_time(process_resident_memory_bytes[5m]) / avg_over_time(process_virtual_memory_bytes[5m]))) * 100 > 85
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Memory usage > 85%"
-          description: "Process memory usage exceeds 85%. Check for memory leaks, especially in delay map or ML inference components."
-
-      # --- ML Pipeline Data Quality Alerts ---
-      - alert: ML_Feature_Extraction_Failure_Rate_High
-        expr: |
-          rate(ml_feature_extraction_failures_total[5m]) / rate(ml_feature_extraction_attempts_total[5m]) > 0.05
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "ML feature extraction failure rate > 5%"
-          description: "Feature extraction is failing for more than 5% of events. Check feature engineering logic and data quality."
-
-      - alert: ML_Missing_Feature_Rate_High
-        expr: |
-          ml_missing_feature_rate > 0.1
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "ML missing feature rate > 10%"
-          description: "More than 10% of features are missing from the feature store. Check data completeness and ETL pipeline."
-
-      - alert: ML_Label_Delay_High
-        expr: |
-          histogram_quantile(0.95, sum(rate(ml_label_delay_seconds_bucket[5m])) by (le)) > 3600
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "ML label delay p95 > 1 hour"
-          description: "95th percentile label delay exceeds 1 hour. Delayed labeling may be falling behind event processing."
-
-      - alert: ML_Feature_Null_Percentage_High
-        expr: |
-          ml_feature_null_percentage > 0.2
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "ML feature null percentage > 20%"
-          description: "More than 20% of feature values are null. Check data quality and feature extraction logic."
-
-      - alert: ML_Outlier_Rate_High
-        expr: |
-          ml_outlier_rate > 0.05
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "ML outlier rate > 5%"
-          description: "More than 5% of feature values are detected as outliers. Check for data quality issues or unusual patterns."
-
-      # --- Train Reliability Alerts ---
-      - alert: RMA_Train_Reliability_Drop
-        expr: |
-          (rma_train_reliability_score - rma_train_reliability_score offset 6h) < -0.25
-        for: 10m
-        labels:
-          severity: warning
-          type: reliability_drop
-        annotations:
-          summary: "Train reliability dropped >25% in 6h"
-          description: "Train {{ $labels.train_number }} reliability dropped by >25% in 6 hours. Possible causes: extraction failure, UI drift, live disruption."
-
-      - alert: RMA_Global_Reliability_Collapse
-        expr: |
-          avg(rma_train_reliability_score) < 0.7
-        for: 15m
-        labels:
-          severity: critical
-          type: reliability_collapse
-        annotations:
-          summary: "Global average train reliability < 0.7"
-          description: "Average rma_train_reliability_score is below 0.7 for the last 15 minutes. Possible causes: proxy outage, site layout change, scheduler stopped, or parser failure."
-
-      - alert: RMA_Reliability_Job_Failure
-        expr: |
-          sum(increase(rma_train_reliability_updates_total[1h])) == 0
-        for: 70m
-        labels:
-          severity: critical
-          type: reliability_job_failure
-        annotations:
-          summary: "Reliability hourly job produced 0 updates in the last hour"
-          description: "No reliability updates recorded in the past hour (increase(rma_train_reliability_updates_total[1h]) == 0). The scheduler or job may be down."
-
-      - alert: RMA_Reliability_Computation_Slowdown
-        expr: |
-          histogram_quantile(0.95, sum(rate(rma_train_reliability_computation_seconds_bucket[5m])) by (le)) > 5
-        for: 10m
-        labels:
-          severity: warning
-          type: reliability_slowdown
-        annotations:
-          summary: "Train reliability computation p95 > 5s"
-          description: "95th percentile of reliability computation duration exceeds 5s. Investigate DB contention, heavy batch sizes, or resource pressure."
+          summary: "High Memory Usage"
+          description: "Available memory is below 10% on the host."

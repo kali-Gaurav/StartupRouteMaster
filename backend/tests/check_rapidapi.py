@@ -1,5 +1,5 @@
 import asyncio, os
-from backend.core.route_engine.data_provider import DataProvider
+from core.route_engine.data_provider import DataProvider
 
 async def main():
     provider = DataProvider()

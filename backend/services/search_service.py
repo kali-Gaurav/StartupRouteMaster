@@ -1,25 +1,31 @@
 import asyncio
 import logging
+import json
 from typing import List, Dict, Optional, Any
 from sqlalchemy.orm import Session
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from backend.core.route_engine import RouteEngine, route_engine
-from backend.config import Config
-from backend.services.seat_allocation import SeatAllocationService, CoachType
-from backend.services.verification_engine import verification_service, RouteVerificationEngine
-from backend.services.verification_orchestrator import VerificationOrchestrator
-from backend.services.journey_reconstruction import JourneyReconstructionEngine
-from backend.database.models import Stop, Trip, Route
+from core.route_engine import RouteEngine, route_engine
+from database.config import Config
+from services.seat_allocation import SeatAllocationService, CoachType
+from services.verification_engine import verification_service, RouteVerificationEngine
+from services.verification_orchestrator import VerificationOrchestrator
+from services.journey_reconstruction import JourneyReconstructionEngine
+from database.models import Stop, Trip, Route
+from core.redis import redis_client
+from utils.station_utils import resolve_stations
 
 logger = logging.getLogger(__name__)
+
+# Request coalescing to prevent search storms (Topic 4)
+_inflight_searches: Dict[str, asyncio.Event] = {}
+_search_results: Dict[str, Any] = {}
 
 class SearchService:
     def __init__(self, db: Session, route_engine_instance: Optional[RouteEngine] = None):
         self.db = db
         self.route_engine = route_engine_instance or route_engine
-        print(f"DEBUG: SearchService using route_engine from: {self.route_engine.__module__}")
         self.reconstructor = JourneyReconstructionEngine(db)
         self.verification_engine = RouteVerificationEngine(db)
         self.verification_orchestrator = VerificationOrchestrator(db)
@@ -30,18 +36,60 @@ class SearchService:
         destination: str,
         travel_date: str,
         budget_category: Optional[str] = None,
-        multi_modal: bool = False
+        multi_modal: bool = False,
+        women_safety_mode: bool = False  # Added for Phase 2 Product USP
     ) -> Dict[str, Any]:
         """
         Performs route search using the unified RailwayRouteEngine.
         Returns routes formatted for the frontend BackendRoutesResponse.
+        Includes Redis caching and Request Coalescing.
         """
-        from backend.utils import metrics
+        from utils import metrics
 
-        logger.info(f"Unified Route Search: {source} -> {destination} on {travel_date}")
-        overall_start = time.time()
+        # --- CACHE CHECK ---
+        cache_key = f"search:{source}:{destination}:{travel_date}:{budget_category}:{multi_modal}:{women_safety_mode}"
+        
+        # 1. Check Request Coalescing (Topic 4: Search Storm Prevention)
+        if cache_key in _inflight_searches:
+            logger.info(f"COALESCE: Waiting for in-flight search: {cache_key}")
+            await _inflight_searches[cache_key].wait()
+            return _search_results.get(cache_key)
+
+        try:
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"CACHE HIT for search: {cache_key}")
+                return json.loads(cached_data)
+        except Exception as ce:
+            logger.warning(f"Cache lookup failed: {ce}")
+
+        # Start Coalescing
+        _inflight_searches[cache_key] = asyncio.Event()
         
         try:
+            logger.info(f"Unified Route Search: {source} -> {destination} on {travel_date} (Safety: {women_safety_mode})")
+            overall_start = time.time()
+            
+            # Resolve station names/codes to Stop objects
+            source_stop, dest_stop = resolve_stations(self.db, source, destination)
+            if not source_stop or not dest_stop:
+                missing = []
+                if not source_stop: missing.append(f"source '{source}'")
+                if not dest_stop: missing.append(f"destination '{destination}'")
+                result = {
+                    "source": source, 
+                    "destination": destination, 
+                    "routes": {"direct":[], "one_transfer":[], "two_transfer":[], "three_transfer":[]}, 
+                    "message": f"Could not resolve: {', '.join(missing)}", 
+                    "journeys": []
+                }
+                _search_results[cache_key] = result
+                return result
+            
+            # Use resolved stop_id for the search engine (this is usually the code like 'NDLS')
+            source_code = source_stop.stop_id
+            dest_code = dest_stop.stop_id
+
             # Parse travel_date to datetime (handle both YYYY-MM-DD and YYYY-MM-DD HH:MM:SS)
             if " " in travel_date:
                 dt = datetime.strptime(travel_date, "%Y-%m-%d %H:%M:%S")
@@ -51,25 +99,34 @@ class SearchService:
                 dt = dt.replace(hour=8, minute=0)
             
             # Use constraints from budget if provided
-            from backend.core.route_engine.constraints import RouteConstraints
+            from core.route_engine.constraints import RouteConstraints
             constraints = RouteConstraints(max_transfers=3, range_minutes=1440)
             if budget_category == "budget":
                 constraints.max_transfers = 3 # Allow more transfers for budget
                 
+            # Apply Product USP: Women Safety Mode
+            if women_safety_mode:
+                constraints.women_safety_priority = True
+                constraints.avoid_night_layovers = True
+                # Prioritize safety in scoring weights
+                constraints.weights.safety = 1.0
+                constraints.weights.comfort = 0.5
+                constraints.weights.time = 0.3
+                constraints.weights.cost = 0.2
+                logger.info(f"Applying Women Safety Constraints for {source} -> {destination}")
+
             # measure graph compute separately
             graph_start = time.time()
             internal_routes = await self.route_engine.search_routes(
-                source_code=source,
-                destination_code=destination,
+                source_code=source_code,
+                destination_code=dest_code,
                 departure_date=dt,
                 constraints=constraints
             )
             metrics.ROUTE_GRAPH_COMPUTE_MS.observe((time.time() - graph_start) * 1000)
 
             # Developer convenience: if no routes are found and we are in development mode,
-            # return a simple dummy route instead so that frontend displays something.
             if not internal_routes and Config.ENVIRONMENT == "development":
-                from datetime import datetime, timedelta
                 logger.warning("No internal routes found; injecting dummy development route.")
                 # build minimal Dummy objects matching expected attributes used later
                 class DevSeg:
@@ -79,7 +136,7 @@ class SearchService:
                         self.arrival_stop_id = 2
                         now = datetime.utcnow()
                         self.departure_time = now
-                        self.arrival_time = now + timedelta(hours=2)
+                        self.arrival_time = now + timedelta(days=0, hours=2) # Ensure timedelta is available
                         self.train_number = "00000"
                         self.train_name = "Dev Express"
                         self.duration_minutes = 120
@@ -111,34 +168,65 @@ class SearchService:
                 "stations": {},
                 "journey_message": f"Found {len(internal_routes)} journey options."
             }
-            station_codes_by_id: Dict[int, str] = {}
-            route_candidates: List[Dict[str, Any]] = []
             
-            # track time spent doing DB lookups per-route portion
-            db_query_start = time.time()
+            # --- OPTIMIZED STATION LOOKUP ---
+            all_stop_ids = set()
             for rt in internal_routes:
-                num_transfers = len(rt.transfers)  # Transfers, not segments
-                formatted_rt = self._format_route_for_frontend(rt)
-                
-                # Collect station info for the 'stations' dictionary
-                from backend.database.models import Stop
                 for seg in rt.segments:
-                    for stop_id in [seg.departure_stop_id, seg.arrival_stop_id]:
-                        if str(stop_id) not in formatted_response["stations"]:
-                            stop = self.db.query(Stop).filter(Stop.id == stop_id).first()
-                            if stop:
-                                formatted_response["stations"][str(stop_id)] = {
-                                    "code": stop.code,
-                                    "name": stop.name,
-                                    "city": stop.city,
-                                    "state": stop.state
-                                }
-                                try:
-                                    station_codes_by_id[int(stop_id)] = stop.code
-                                except (TypeError, ValueError):
-                                    station_codes_by_id[stop_id] = stop.code
+                    all_stop_ids.add(seg.departure_stop_id)
+                    all_stop_ids.add(seg.arrival_stop_id)
+            
+            if all_stop_ids:
+                stops = self.db.query(Stop).filter(Stop.id.in_(list(all_stop_ids))).all()
+                for stop in stops:
+                    formatted_response["stations"][str(stop.id)] = {
+                        "code": stop.code or stop.stop_id,
+                        "name": stop.name,
+                        "city": stop.city,
+                        "state": stop.state
+                    }
 
-                # categorize route by transfers
+            station_codes_by_id: Dict[int, str] = {int(sid): s["code"] for sid, s in formatted_response["stations"].items()}
+            route_candidates: List[Dict[str, Any]] = []
+            journeys = []
+            
+            # --- SINGLE PASS FOR CATEGORIZATION, FARE, AND JOURNEYS ---
+            from core.pricing.fare_calculator import get_fare_for_train
+            
+            # Map budget to default coach
+            budget_to_class = {
+                "economy": "SL",
+                "standard": "3A",
+                "premium": "2A",
+                "all": "SL"
+            }
+            preferred_class = budget_to_class.get(budget_category, "SL")
+
+            for rt in internal_routes:
+                # 1. Fare Calculation
+                total_fare = 0
+                for seg in rt.segments:
+                    try:
+                        from_code = station_codes_by_id.get(seg.departure_stop_id) or self._lookup_stop_code(seg.departure_stop_id)
+                        to_code = station_codes_by_id.get(seg.arrival_stop_id) or self._lookup_stop_code(seg.arrival_stop_id)
+                        
+                        fare_details = None
+                        if from_code and to_code and seg.train_number:
+                            fare_details = get_fare_for_train(self.db, seg.train_number, from_code, to_code, preferred_class)
+                        
+                        if fare_details and fare_details.get("total_fare"):
+                            total_fare += fare_details["total_fare"]
+                        else:
+                            total_fare += (seg.fare or 0)
+                    except Exception as e:
+                        logger.error(f"Fare calc error: {e}")
+                        total_fare += (seg.fare or 0)
+                
+                rt.total_cost = total_fare
+                
+                # 2. Categorization for formatted_response
+                num_transfers = len(rt.transfers)
+                formatted_rt = self._format_route_for_frontend(rt)
                 if num_transfers == 0:
                     formatted_response["routes"]["direct"].append(formatted_rt)
                 elif num_transfers == 1:
@@ -147,20 +235,39 @@ class SearchService:
                     formatted_response["routes"]["two_transfer"].append(formatted_rt)
                 else:
                     formatted_response["routes"]["three_transfer"].append(formatted_rt)
-            # end for loop
-            db_query_ms = (time.time() - db_query_start) * 1000
-            metrics.ROUTE_DB_QUERY_MS.observe(db_query_ms)
-            
-            # --- JOURNEY LIST FOR INTEGRATED FLOW ---
-            journeys = []
-            for rt in internal_routes:
-                num_transfers = len(rt.segments) - 1
+                
+                # 3. Construct Journey List for integrated flow (DetailedJourneyResponse)
                 total_duration_hours = rt.total_duration // 60
                 total_duration_mins = rt.total_duration % 60
-                
-                # Create JourneyInfoResponse compatible data
                 journey_id = f"rt_{rt.segments[0].trip_id}_{int(rt.segments[0].departure_time.timestamp())}"
                 
+                # Format legs for this journey
+                legs = []
+                for seg in rt.segments:
+                    legs.append({
+                        "train_number": seg.train_number,
+                        "train_name": seg.train_name,
+                        "from_station_code": station_codes_by_id.get(seg.departure_stop_id) or self._lookup_stop_code(seg.departure_stop_id),
+                        "to_station_code": station_codes_by_id.get(seg.arrival_stop_id) or self._lookup_stop_code(seg.arrival_stop_id),
+                        "departure_time": seg.departure_time.isoformat(),
+                        "arrival_time": seg.arrival_time.isoformat(),
+                        "duration_minutes": seg.duration_minutes,
+                        "distance_km": seg.distance_km,
+                        "fare": seg.fare,
+                        "mode": "rail"
+                    })
+
+                # Format transfers for this journey
+                transfers = []
+                for t in rt.transfers:
+                    transfers.append({
+                        "station_name": t.station_name,
+                        "station_id": t.station_id,
+                        "wait_minutes": t.duration_minutes,
+                        "arrival_time": t.arrival_time.isoformat() if t.arrival_time != datetime.min else None,
+                        "departure_time": t.departure_time.isoformat() if t.departure_time != datetime.max else None
+                    })
+
                 journeys.append({
                     "journey_id": journey_id,
                     "num_segments": len(rt.segments),
@@ -169,44 +276,50 @@ class SearchService:
                     "num_transfers": num_transfers,
                     "is_direct": num_transfers == 0,
                     "cheapest_fare": rt.total_cost,
-                    "premium_fare": rt.total_cost * 2.2, # Simplified premium fare logic
+                    "premium_fare": round(rt.total_cost * 2.2, 2),
                     "has_overnight": any((seg.arrival_time - seg.departure_time).days > 0 for seg in rt.segments),
-                    "availability_status": "AVAILABLE"
+                    "availability_status": "AVAILABLE",
+                    "legs": legs,
+                    "transfers": transfers,
+                    "score": getattr(rt, 'score', 0.0)
                 })
-                first_seg = rt.segments[0] if rt.segments else None
-                last_seg = rt.segments[-1] if rt.segments else None
-                from_code = None
-                to_code = None
-                if first_seg:
-                    from_code = station_codes_by_id.get(first_seg.departure_stop_id) or self._lookup_stop_code(first_seg.departure_stop_id)
-                if last_seg:
-                    to_code = station_codes_by_id.get(last_seg.arrival_stop_id) or self._lookup_stop_code(last_seg.arrival_stop_id)
+                
+                # 4. Route Candidates for verification
+                first_seg = rt.segments[0]
+                last_seg = rt.segments[-1]
                 route_candidates.append({
                     "journey_id": journey_id,
-                    "train_no": first_seg.train_number if first_seg else "",
-                    "from_code": from_code,
-                    "to_code": to_code,
-                    "from_stop_id": first_seg.departure_stop_id if first_seg else None,
-                    "to_stop_id": last_seg.arrival_stop_id if last_seg else None
+                    "train_no": first_seg.train_number,
+                    "from_code": station_codes_by_id.get(first_seg.departure_stop_id) or self._lookup_stop_code(first_seg.departure_stop_id),
+                    "to_code": station_codes_by_id.get(last_seg.arrival_stop_id) or self._lookup_stop_code(last_seg.arrival_stop_id),
+                    "from_stop_id": first_seg.departure_stop_id,
+                    "to_stop_id": last_seg.arrival_stop_id
                 })
-            
-            verification_candidates = route_candidates[:3]
-            # verify top candidates and measure latency
-            verif_start = time.time()
-            verification_results = await self.verification_orchestrator.verify_top_routes(
-                verification_candidates,
-                dt,
-                coach_preference="AC_THREE_TIER",
-                quota="GN"
-            )
-            metrics.ROUTE_VERIFICATION_LATENCY_MS.observe((time.time() - verif_start) * 1000)
 
-            # compute product metrics
+            # --- VERIFICATION ENRICHMENT ---
+            verification_results = []
+            try:
+                verification_candidates = route_candidates[:3]
+                verif_start = time.time()
+                verification_results = await self.verification_orchestrator.verify_top_routes(
+                    verification_candidates,
+                    dt,
+                    coach_preference="AC_THREE_TIER",
+                    quota="GN"
+                )
+                metrics.ROUTE_VERIFICATION_LATENCY_MS.observe((time.time() - verif_start) * 1000)
+            except Exception as ve:
+                logger.warning(f"Verification enrichment failed: {ve}")
+
+            # compute product metrics if verification was successful
             if verification_results:
-                success_cnt = sum(1 for r in verification_results if r.get("verified"))
-                ratio = success_cnt / len(verification_results)
-                metrics.VERIFICATION_SUCCESS_RATE.set(ratio)
-                metrics.TOP3_VERIFIED_RATIO.set(ratio)
+                try:
+                    success_cnt = sum(1 for r in verification_results if r.get("verified"))
+                    ratio = success_cnt / len(verification_results)
+                    metrics.VERIFICATION_SUCCESS_RATE.set(ratio)
+                    metrics.TOP3_VERIFIED_RATIO.set(ratio)
+                except Exception:
+                    pass
 
             verification_lookup = {res["journey_id"]: res for res in verification_results}
             for journey in journeys:
@@ -221,11 +334,36 @@ class SearchService:
             serialize_ms = (time.time() - serialize_start) * 1000
             metrics.ROUTE_RESPONSE_SERIALIZE_MS.observe(serialize_ms)
 
+            # --- STORE IN CACHE ---
+            try:
+                # Cache for 10 minutes (Config.CACHE_TTL_SECONDS is 300s/5m by default, 
+                # but search results can be slightly longer if stable)
+                ttl = Config.CACHE_TTL_SECONDS
+                redis_client.setex(cache_key, ttl, json.dumps(formatted_response))
+                logger.debug(f"CACHE SET for search: {cache_key} with TTL: {ttl}s")
+            except Exception as ce:
+                logger.warning(f"Cache set failed: {ce}")
+
+            _search_results[cache_key] = formatted_response
             return formatted_response
 
         except Exception as e:
             logger.error(f"Error searching routes for {source} -> {destination}: {e}", exc_info=True)
-            return {"source": source, "destination": destination, "routes": {"direct":[], "one_transfer":[], "two_transfer":[], "three_transfer":[]}, "message": str(e), "journeys": []}
+            error_res = {"source": source, "destination": destination, "routes": {"direct":[], "one_transfer":[], "two_transfer":[], "three_transfer":[]}, "message": str(e), "journeys": []}
+            _search_results[cache_key] = error_res
+            return error_res
+        finally:
+            # Signal completion to other waiting requests (Topic 4)
+            event = _inflight_searches.pop(cache_key, None)
+            if event:
+                event.set()
+                # Clean up cached result after a short delay to keep memory low
+                asyncio.create_task(self._cleanup_search_result(cache_key))
+
+    async def _cleanup_search_result(self, cache_key: str):
+        """Clean up search results from local memory after small delay."""
+        await asyncio.sleep(10)
+        _search_results.pop(cache_key, None)
 
     async def unlock_journey_details(
         self,
@@ -238,12 +376,12 @@ class SearchService:
         """
         Unlocks detailed journey info with seat allocation and verification.
         """
-        from backend.utils.validation import validate_date_string
+        from utils.validation import validate_date_string
         parsed_date = validate_date_string(travel_date_str, allow_past=False)
         if not parsed_date:
             return {"success": False, "message": "Invalid travel date"}
 
-        from backend.utils import metrics
+        from utils import metrics
         # Extract trip_id from journey_id if possible
         trip_id = None
         if journey_id.startswith("rt_"):
@@ -252,7 +390,7 @@ class SearchService:
                 trip_id = parts[1]
 
         # Use Database to find trip and stops
-        from backend.database.models import StopTime
+        from database.models import StopTime
         
         trip = None
         if trip_id:
@@ -290,7 +428,7 @@ class SearchService:
             "gender": "M"
         }]
         
-        from backend.database.models import CoachType as ModelCoachType
+        from database.models import CoachType as ModelCoachType
         # Mapping frontend preferences to model coach types if needed
         # Assuming coach_preference matches CoachType enum strings
         
@@ -333,7 +471,7 @@ class SearchService:
             seg_dict.setdefault("availability_status", "UNKNOWN")
             nodes.append(seg_dict)
         edges = []
-        from backend.database.models import Stop
+        from database.models import Stop
         for idx, tr in enumerate(journey.transfers):
             # transfer connects segment idx -> idx+1
             station_code = None
@@ -387,7 +525,7 @@ class SearchService:
         }
 
         # track unlock latency if we recorded a search timestamp
-        from backend.api import integrated_search
+        from api import integrated_search
         timestamp = integrated_search.SEARCH_TIMESTAMP_CACHE.pop(journey_id, None)
         if timestamp:
             elapsed_ms = (time.time() - timestamp) * 1000
@@ -514,15 +652,16 @@ class SearchService:
 
     def _resolve_stop_id(self, station_name: str) -> Optional[int]:
         """Resolve station name to stop ID."""
-        from backend.models import Stop
+        from database.models import Stop
         stop = self.db.query(Stop).filter(Stop.name.ilike(f"%{station_name}%")).first()
         return stop.id if stop else None
 
     def _lookup_stop_code(self, stop_id: Optional[int]) -> Optional[str]:
         if not stop_id:
             return None
+        from database.models import Stop
         stop = self.db.query(Stop).filter(Stop.id == stop_id).first()
-        return stop.code if stop else None
+        return stop.code or stop.stop_id if stop else None
 
     def _convert_journey_to_route(self, journey: Dict) -> Dict:
         """Convert multi-modal journey to route format."""

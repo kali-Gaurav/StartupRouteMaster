@@ -9,8 +9,8 @@ from datetime import datetime, date
 from unittest.mock import Mock, AsyncMock, patch
 from sqlalchemy.orm import Session
 
-from backend.services.route_verification_service import RouteVerificationService
-from backend.database.models import Trip, Stop, StopTime, Route, Segment, Station
+from services.route_verification_service import RouteVerificationService
+from database.models import Trip, Stop, StopTime, Route, Segment, Station
 
 
 @pytest.fixture

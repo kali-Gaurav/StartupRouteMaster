@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from backend.core.route_engine import RouteEngine, RouteConstraints, Route, RouteSegment
+from core.route_engine import RouteEngine, RouteConstraints, Route, RouteSegment
 
 
 def test_rt_001_direct_single_leg_route_exists():
@@ -105,7 +105,7 @@ def test_rt_004_journey_time_calculation():
 @pytest.mark.asyncio
 async def test_rt_005_unique_route_ids_present_in_multi_modal():
     # multi_modal produces journey_id; ensure multi-modal wrapper sets stable ids
-    from backend.core.multi_modal_route_engine import multi_modal_route_engine
+    from core.multi_modal_route_engine import multi_modal_route_engine
     # build a simple mock journey via the multi-modal engine (it generates journey_id)
     jm = multi_modal_route_engine
     j = {'origin': 1, 'destination': 2, 'trains': [{'trip_id': 1}], 'distance_km': 100}
@@ -151,7 +151,7 @@ def test_rt_008_response_schema_sanity_for_route_summary():
 @pytest.mark.asyncio
 async def test_rt_009_pagination_not_supported_but_api_handles_limit_param():
     # Search API does not implement pagination at engine-level; ensure search endpoint (not engine) can accept limit param (unit test)
-    from backend.api.search import autocomplete_stations
+    from api.search import autocomplete_stations
     # function exists and is callable; we won't call HTTP here — just ensure function signature supports 'limit' in nearby endpoint
     assert callable(autocomplete_stations)
 
@@ -176,7 +176,7 @@ def test_rt_010_source_destination_swap_behaviour():
 
 
 def test_rt_011_station_alias_handling_resolve():
-    from backend.utils.station_utils import resolve_station_by_name
+    from utils.station_utils import resolve_station_by_name
     # function exists and returns None for unknown names in unit test environment
     assert resolve_station_by_name is not None
 
@@ -240,7 +240,7 @@ def test_rt_014_max_journey_duration_constraint():
 
 def test_rt_015_max_transfers_enforced():
     # Build a route with transfers and ensure constraints check blocks too many transfers
-    from backend.core.route_engine import TransferConnection
+    from core.route_engine import TransferConnection
     r = Route()
     seg1 = RouteSegment(
         trip_id=7,
@@ -261,6 +261,6 @@ def test_rt_015_max_transfers_enforced():
         r.add_transfer(transfer)
     constraints = RouteConstraints()
     constraints.max_transfers = 2
-    from backend.core.route_engine import OptimizedRAPTOR
+    from core.route_engine import OptimizedRAPTOR
     o = OptimizedRAPTOR()
     assert not o._validate_route_constraints(r, constraints)

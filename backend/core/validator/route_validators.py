@@ -2,11 +2,13 @@ from __future__ import annotations
 from typing import List, TYPE_CHECKING
 from datetime import datetime, timedelta
 
+from database.models import Segment
+from database.session import SessionLocal
+
 # Import at runtime for type hints to avoid NameError
 from ..route_engine.data_structures import Route, RouteSegment, TransferConnection
 from ..route_engine.constraints import RouteConstraints
-from ...database import SessionLocal
-from ...database.models import Segment # For check_missing_stop_link
+
 
 class RouteValidator:
     """Class to handle route validation logic."""

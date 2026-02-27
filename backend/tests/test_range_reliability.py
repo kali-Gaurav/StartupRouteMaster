@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from backend.core.route_engine import OptimizedRAPTOR, Route, RouteSegment, TransferConnection, RouteConstraints
+from core.route_engine import OptimizedRAPTOR, Route, RouteSegment, TransferConnection, RouteConstraints
 
 
 @pytest.mark.asyncio

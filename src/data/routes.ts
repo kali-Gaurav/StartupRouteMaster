@@ -9,6 +9,8 @@ export interface RouteSegment {
   trainName: string;
   from: string;             // station code
   to: string;               // station code
+  fromName?: string;        // station full name
+  toName?: string;          // station full name
   departure: string;
   arrival: string;
   distance: number;

@@ -16,12 +16,12 @@ import json
 import sys
 import os
 
-from backend.train_state_service import (
+from train_state_service import (
     TrainState,
     TrainStateStore,
     GraphMutationEngine
 )
-from backend.graph_mutation_service import (
+from graph_mutation_service import (
     apply_delay,
     cancel_train,
     update_location,
@@ -32,7 +32,7 @@ from backend.graph_mutation_service import (
     LocationUpdateRequest,
     OccupancyUpdateRequest
 )
-from backend.route_engine import OptimizedRAPTOR
+from route_engine import OptimizedRAPTOR
 
 
 class TestTrainState:
@@ -236,7 +236,7 @@ class TestGraphMutationAPI:
     @pytest.mark.asyncio
     async def test_apply_delay_endpoint(self):
         """Test delay application endpoint"""
-        from backend.graph_mutation_service import train_state_store
+        from graph_mutation_service import train_state_store
 
         # Mock the store
         train_state_store.apply_delay = AsyncMock()
@@ -278,8 +278,8 @@ class TestIntegration:
         """Test complete mutation flow from API to graph"""
         # This would test the full integration
         # For now, just verify components can be imported
-        from backend.train_state_service import TrainState, TrainStateStore
-        from backend.graph_mutation_service import router
+        from train_state_service import TrainState, TrainStateStore
+        from graph_mutation_service import router
 
         assert TrainState is not None
         assert TrainStateStore is not None
@@ -287,7 +287,7 @@ class TestIntegration:
 
     def test_database_model(self):
         """Test that the TrainState model is properly defined"""
-        from backend.models import TrainState as DBTrainState
+        from models import TrainState as DBTrainState
 
         # Check that the model has the expected columns
         assert hasattr(DBTrainState, 'trip_id')

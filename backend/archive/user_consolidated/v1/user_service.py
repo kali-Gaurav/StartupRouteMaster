@@ -1,9 +1,9 @@
 from sqlalchemy.orm import Session
 from typing import Optional
 
-from backend.models import User
-from backend.schemas import UserCreate
-from backend.utils.security import get_password_hash, verify_password
+from models import User
+from schemas import UserCreate
+from utils.security import get_password_hash, verify_password
 
 
 class UserService:

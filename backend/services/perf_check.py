@@ -12,7 +12,7 @@ import subprocess
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-from backend.utils import metrics
+from utils import metrics
 
 # in-memory store for last check
 _last_result: Optional[Dict[str, Any]] = None

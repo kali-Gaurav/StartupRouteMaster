@@ -26,7 +26,7 @@ export function prefetchBookings(): void {
   queryClient.prefetchQuery({
     queryKey: BOOKINGS_QUERY_KEY,
     queryFn: async () => {
-      const res = await getBookingHistory();
+      const res = await getBookingHistory() as any;
       if (!res?.success) throw new Error(res?.message || "Failed to load bookings");
       return res.bookings ?? [];
     },

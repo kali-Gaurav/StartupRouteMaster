@@ -40,6 +40,6 @@ export const getStationByCode = (code: string): Station | undefined => {
  * 5. General Fuzzy
  */
 // local search helper now returns empty list; backend search is used instead
-export const searchStations = (query: string): Station[] => {
+export const searchStations = (_query: string): Station[] => {
   return [];
 };

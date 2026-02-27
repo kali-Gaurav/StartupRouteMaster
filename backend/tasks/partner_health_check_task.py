@@ -4,8 +4,8 @@ import asyncio
 from datetime import datetime
 from pybreaker import CircuitBreakerError
 
-from backend.services.redirect_service import redirect_service
-from backend.services.cache_service import cache_service # New: Import cache_service
+from services.redirect_service import redirect_service
+from services.cache_service import cache_service # New: Import cache_service
 
 logger = logging.getLogger(__name__)
 

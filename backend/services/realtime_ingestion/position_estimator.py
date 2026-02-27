@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from backend.database.models import Stop, TrainLiveUpdate, TrainStation
+from database.models import Stop, TrainLiveUpdate, TrainStation
 
 logger = logging.getLogger(__name__)
 

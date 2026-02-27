@@ -1,12 +1,12 @@
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
-from backend.core.route_engine import OptimizedRAPTOR, Route
-from backend.core.validator.validation_manager import (
+from core.route_engine import OptimizedRAPTOR, Route
+from core.validator.validation_manager import (
     ValidationManager, ValidationCategory, ValidationProfile,
     create_validation_manager_with_defaults
 )
-from backend.core.validator.multimodal_validators import MultimodalRoute, ModalitySegment, TransportMode
+from core.validator.multimodal_validators import MultimodalRoute, ModalitySegment, TransportMode
 
 def test_validation_manager_delegation():
     """Test that OptimizedRAPTOR delegates to ValidationManager correctly."""

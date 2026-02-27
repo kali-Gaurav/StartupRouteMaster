@@ -14,8 +14,8 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from backend.core.route_engine.data_provider import DataProvider
-from backend.database.models import Trip, StopTime, Stop, Segment, Station
+from core.route_engine.data_provider import DataProvider
+from database.models import Trip, StopTime, Stop, Segment, Station
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +321,7 @@ class RouteVerificationService:
                         # Method 3: Query TrainState if available
                         if not train_no:
                             try:
-                                from backend.database.models import TrainState
+                                from database.models import TrainState
                                 train_state = self.db.query(TrainState).filter(
                                     TrainState.trip_id == trip.id
                                 ).first()

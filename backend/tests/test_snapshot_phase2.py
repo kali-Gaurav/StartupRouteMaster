@@ -4,10 +4,10 @@ import os
 from datetime import datetime
 import pytest
 
-from backend.core.route_engine import RailwayRouteEngine, TimeDependentGraph, StaticGraphSnapshot
-from backend.core.route_engine.snapshot_manager import SnapshotManager
-from backend.utils import metrics
-from backend.services.multi_layer_cache import multi_layer_cache
+from core.route_engine import RailwayRouteEngine, TimeDependentGraph, StaticGraphSnapshot
+from core.route_engine.snapshot_manager import SnapshotManager
+from utils import metrics
+from services.multi_layer_cache import multi_layer_cache
 
 
 @pytest.mark.asyncio
@@ -129,7 +129,7 @@ async def test_overlay_sync_versioning(monkeypatch):
     await engine.sync_realtime_overlay()
     assert engine._last_synced_version == 2
     # metric set correctly
-    from backend.utils import metrics as m
+    from utils import metrics as m
     assert m.OVERLAY_VERSION._value.get() == 2
 
 

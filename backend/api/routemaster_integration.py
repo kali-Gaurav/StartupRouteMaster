@@ -24,15 +24,15 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from backend.database import get_db
-from backend.models import (
+from database import get_db
+from database.models import (
     Trip, Stop, Route, StopTime, TrainState, 
     Disruption, RLFeedbackLog
 )
-from backend.graph_mutation_engine import GraphMutationEngine
-from backend.services.cache_service import cache_service
-from backend.services.event_producer import publish_event
-from backend.config import Config
+from graph_mutation_engine import GraphMutationEngine
+from services.cache_service import cache_service
+from services.event_producer import publish_event
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 

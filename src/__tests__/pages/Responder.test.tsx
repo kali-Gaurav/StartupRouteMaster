@@ -1,4 +1,3 @@
-import React from "react";
 import { render, screen } from "@testing-library/react";
 import ResponderPage from "@/pages/Responder";
 import { useAuth } from "@/context/AuthContext";
@@ -13,7 +12,7 @@ describe("ResponderPage", () => {
     const mockAuth = useAuth as unknown as any;
     mockAuth.mockReturnValue({ user: null, isAuthenticated: false });
     render(<ResponderPage />);
-    expect(screen.getByText(/login to use emergency/i)).toBeInTheDocument();
+    expect(screen.getByText(/Please login to view SOS alerts/i)).toBeInTheDocument();
   });
 
   it("blocks non-responder roles", () => {

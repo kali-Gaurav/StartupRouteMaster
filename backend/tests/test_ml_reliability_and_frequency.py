@@ -9,8 +9,8 @@ from datetime import datetime, date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
-from backend.ml_reliability_model import MLReliabilityModel
-from backend.frequency_aware_range import FrequencyAwareWindowSizer
+from ml_reliability_model import MLReliabilityModel
+from frequency_aware_range import FrequencyAwareWindowSizer
 
 
 # ==============================================================================

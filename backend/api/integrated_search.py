@@ -11,11 +11,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from backend.database import SessionLocal, get_db
-from backend.database.models import Stop, Trip, Route
-from backend.services.search_service import SearchService
-from backend.services.booking_service import BookingService
-from backend.schemas import (
+from database import SessionLocal, get_db
+from database.models import Stop, Trip, Route
+from services.search_service import SearchService
+from services.booking_service import BookingService
+from schemas import (
     SearchRequest, 
     JourneyInfoResponse, 
     DetailedJourneyResponse, 
@@ -123,7 +123,7 @@ async def station_autocomplete(
     db = SessionLocal()
     
     try:
-        from backend.utils.station_utils import find_stations_by_partial_name
+        from utils.station_utils import find_stations_by_partial_name
         
         stations = find_stations_by_partial_name(db, query, limit=10)
         

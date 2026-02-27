@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from backend.core.route_engine import OptimizedRAPTOR, TransferConnection, RouteConstraints
+from core.route_engine import OptimizedRAPTOR, TransferConnection, RouteConstraints
 
 
 def test_rt_022_station_multiple_platforms():

@@ -1,16 +1,19 @@
-from sqlalchemy.orm import Session, joinedload
-from datetime import datetime, date
-from typing import Optional, Dict, List, Any
-import logging
 import asyncio
+import logging
+from time import sleep
+from datetime import datetime, date
+from typing import Optional, Dict, List, Any, Tuple
 
-from backend.database.models import Booking, Route as RouteModel, Payment, User, PassengerDetails
-from backend.schemas import BookingResponseSchema
+from requests import Session
+
+from database.models import Booking, Route as RouteModel, Payment, User, PassengerDetails
+from schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
-from backend.services.event_producer import publish_booking_created
-from backend.database.config import Config
-from backend.utils.generators import generate_pnr  # NEW: PNR generation
-from backend.utils.validation import validate_date_string  # NEW: Validation
+from sqlalchemy.orm import joinedload
+from services.event_producer import publish_booking_created
+from database.config import Config
+from utils.generators import generate_pnr  # NEW: PNR generation
+from utils.validation import validate_date_string  # NEW: Validation
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +296,7 @@ class BookingService:
             logger.error(f"Failed to fetch booking by PNR: {e}")
             return None
 
-    def get_user_bookings(self, user_id: str, skip: int = 0, limit: int = 20) -> (List[Booking], int):
+    def get_user_bookings(self, user_id: str, skip: int = 0, limit: int = 20) -> Tuple[List[Booking], int]:
         """Get bookings for a user with pagination.
 
         Returns a tuple of (bookings_list, total_count).
@@ -306,12 +309,6 @@ class BookingService:
         except Exception as e:
             logger.error(f"Failed to fetch user bookings: {e}")
             return [], 0
-
-            return payment
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Failed to create pending payment: {e}")
-            return None
 
     def confirm_booking_payment(
         self, order_id: str, payment_id: str, payment_status: str

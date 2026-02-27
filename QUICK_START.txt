@@ -122,7 +122,7 @@ COMMON ISSUES
 ✗ Backend won't start:
   → Check Python version: python --version (need 3.9+)
   → Check dependencies: pip install -r backend/requirements.txt
-  → Check .env file exists and has DATABASE_URL
+  → Check .env file exists and has SUPABASE_URL, SUPABASE_KEY and optionally DATABASE_URL (pointing at the Supabase Postgres connection string)
 
 ✗ Frontend won't start:
   → Check Node: node --version (need 18+)
@@ -138,7 +138,7 @@ COMMON ISSUES
 ✗ Database errors:
   → Check Docker: docker-compose ps
   → Should see postgres, redis, kafka running
-  → Check .env DATABASE_URL points to localhost:55432
+  → Check .env DATABASE_URL points to your Supabase Postgres (or leave unset, the service will use SUPABASE_URL/KEY)
 
 ================================================================================
 NEXT STEPS

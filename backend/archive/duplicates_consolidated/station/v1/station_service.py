@@ -4,7 +4,7 @@ from geoalchemy2.functions import ST_MakePoint, ST_DWithin # Import PostGIS func
 from geoalchemy2.types import Geography # Import Geography type for explicit casting if needed
 from sqlalchemy import func, text # Import func from sqlalchemy for generic functions, and text for raw SQL
 
-from backend.models import Station
+from models import Station
 
 class StationService:
     def __init__(self, db: Session):

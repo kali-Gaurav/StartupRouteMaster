@@ -8,11 +8,11 @@ import logging
 # create logger for this module
 logger = logging.getLogger(__name__)
 
-from backend.services.cache_service import cache_service
-from backend.api.websockets import manager
-from backend.services.emergency.alert_manager import EmergencyAlertManager
-# Use the shared limiter from its source module
-from backend.utils.limiter import limiter
+from services.cache_service import cache_service
+from api.websockets import manager
+from services.emergency.alert_manager import EmergencyAlertManager
+# Usered limiter from its source module
+from utils.limiter import limiter
 
 # HTTP client for calling other internal services
 import os
@@ -93,9 +93,21 @@ def _load_event(event_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+from core.monitoring import SOS_ALERTS_TOTAL, GUARDIAN_MODE_ACTIVATIONS
+
 @router.post('/', response_model=SOSEventResponse)
 @limiter.limit("5/minute")
 async def trigger_sos(request: Request, payload: SOSPayload):
+    # Track metrics
+    is_guardian = payload.trip and payload.trip.mode == "GUARDIAN"
+    if is_guardian:
+        GUARDIAN_MODE_ACTIVATIONS.inc()
+    
+    SOS_ALERTS_TOTAL.labels(
+        severity="high" if not is_guardian else "medium", 
+        status="active"
+    ).inc()
+
     event_id = str(uuid.uuid4())
     new_event = {
         "id": event_id,

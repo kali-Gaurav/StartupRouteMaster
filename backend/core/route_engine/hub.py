@@ -4,8 +4,10 @@ from datetime import datetime
 import logging
 
 from sqlalchemy import or_
-from ...database.models import Stop
-from ...utils.graph_utils import haversine_distance
+
+from database.models import Stop
+
+from utils.graph_utils import haversine_distance
 from .graph import TimeDependentGraph
 
 logger = logging.getLogger(__name__)
@@ -46,17 +48,9 @@ class HubManager:
         self.hub_id_to_code: Dict[int, str] = {}
 
     def initialize_hubs(self):
-        """Load hub information from DB
-
-        During testing or in fresh in-memory databases the `stops` table may not
-        yet exist or may be missing recently added columns.  Accessing it in
-        those situations raises an ``OperationalError`` which would blow up the
-        entire import of ``backend.api`` (see test failures).  We catch any
-        database errors here and simply log a warning so the application can
-        continue starting; the hub list will be empty until the database is
-        properly initialized later.
-        """
-        session = self.session_factory()
+        """Load hub information from DB using the fastest available session."""
+        from .builder import TransitSessionLocal
+        session = TransitSessionLocal()
         try:
             try:
                 hubs = session.query(Stop).filter(
@@ -65,15 +59,17 @@ class HubManager:
                         Stop.code.in_(self.MAJOR_HUB_CODES)
                     )
                 ).all()
-            except Exception as e:  # pylint: disable=broad-except
-                logger.warning(
-                    f"Could not query hubs during initialization (may be running "
-                    f"against an unprepared test database): {e}"
-                )
-                # leave hub_ids empty and bail out early
-                self.hub_ids = set()
-                self.hub_id_to_code = {}
-                return
+            except Exception as e:
+                # Fallback to Postgres if SQLite fails or is unprepared
+                logger.warning(f"SQLite hub query failed ({e}), falling back to Postgres")
+                session.close()
+                session = self.session_factory()
+                hubs = session.query(Stop).filter(
+                    or_(
+                        Stop.is_major_junction == True,
+                        Stop.code.in_(self.MAJOR_HUB_CODES)
+                    )
+                ).all()
 
             self.hub_ids = {h.id for h in hubs}
             self.hub_id_to_code = {h.id: h.code for h in hubs}
@@ -121,8 +117,12 @@ class HubManager:
         from .raptor import OptimizedRAPTOR
         from .constraints import RouteConstraints
         
-        raptor = OptimizedRAPTOR()
-        constraints = RouteConstraints(max_transfers=1) # Fast hub-to-hub lookup
+        raptor = OptimizedRAPTOR(max_initial_departures=50)
+        # Topic 2: Performance optimization - use a single departure time for hubs
+        constraints = RouteConstraints(
+            max_transfers=1,
+            range_minutes=0 # ONLY check the specific time
+        )
         
         hub_list = list(self.hub_ids)
         table = HubConnectivityTable()

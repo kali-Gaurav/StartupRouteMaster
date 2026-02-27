@@ -14,8 +14,8 @@ import schedule
 import threading
 from sqlalchemy.orm import Session
 
-from backend.database.session import SessionLocal
-from backend.services.ml.delayed_models import (
+from database.session import SessionLocal
+from services.ml.delayed_models import (
     DelayPredictionModel, 
     ReliabilityScoreModel, 
     TransferSuccessProbabilityModel

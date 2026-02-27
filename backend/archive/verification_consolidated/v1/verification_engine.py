@@ -9,7 +9,7 @@ from dataclasses import dataclass, asdict
 import json
 
 # Consolidated route engine provides journey-related utilities
-from backend.core.route_engine import RouteSegment, TransferConnection
+from core.route_engine import RouteSegment, TransferConnection
 
 
 class VerificationStatus(str, Enum):

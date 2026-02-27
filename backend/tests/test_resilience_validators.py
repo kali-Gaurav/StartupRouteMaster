@@ -1,5 +1,5 @@
 import pytest
-from backend.core.validator.validation_manager import (
+from core.validator.validation_manager import (
     create_validation_manager_with_defaults,
     ValidationCategory,
     ValidationProfile,
@@ -7,7 +7,7 @@ from backend.core.validator.validation_manager import (
 
 
 def test_resilience_validator_direct_methods():
-    from backend.core.validator.resilience_validators import ResilienceValidator
+    from core.validator.resilience_validators import ResilienceValidator
 
     v = ResilienceValidator()
 

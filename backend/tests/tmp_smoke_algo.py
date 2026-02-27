@@ -1,4 +1,4 @@
-from backend.core.route_engine import TimeDependentGraph, Route, RouteSegment, TransferConnection, OptimizedRAPTOR
+from core.route_engine import TimeDependentGraph, Route, RouteSegment, TransferConnection, OptimizedRAPTOR
 from datetime import datetime
 
 def make_segment(trip_id, dep_stop, arr_stop, dep_time=None, arr_time=None, distance=10.0):

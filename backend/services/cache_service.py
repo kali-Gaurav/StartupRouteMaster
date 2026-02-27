@@ -5,8 +5,8 @@ import logging
 from typing import Optional, Any, Dict
 import time # New: Import time for duration calculation
 
-from backend.config import Config
-from backend.utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
+from config import Config
+from utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class CacheService:
         self.version_prefix = Config.REDIS_VERSION_PREFIX
         try:
             # Note: decode_responses=True is important for locks and general use
-            self.redis = redis.from_url(redis_url, decode_responses=True)
+            self.redis = redis.from_url(redis_url, decode_responses=True, ssl_cert_reqs=None)
             self.redis.ping()
             logger.info("Successfully connected to Redis.")
         except Exception as e:

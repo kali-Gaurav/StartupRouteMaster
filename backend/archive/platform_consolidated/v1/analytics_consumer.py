@@ -9,9 +9,9 @@ import json
 import logging
 from typing import Dict, Any
 from datetime import datetime
-from backend.config import Config
-from backend.utils.metrics import CONSUMER_LAG_SECONDS
-from backend.services.delay_predictor import delay_predictor
+from config import Config
+from utils.metrics import CONSUMER_LAG_SECONDS
+from services.delay_predictor import delay_predictor
 
 logger = logging.getLogger(__name__)
 

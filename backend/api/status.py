@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
 from datetime import datetime
 import redis.asyncio as aioredis
 
-from backend.database import get_db
-from backend.services.station_service import StationService
-from backend.services.route_engine import route_engine # Assuming route_engine can provide stats
-from backend.database.config import Config
+from database import get_db
+from services.station_service import StationService
+from services.route_engine import route_engine # Assuming route_engine can provide stats
+from database.config import Config
 
 router = APIRouter(prefix="/api", tags=["status"])
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ async def general_health_check(db: Session = Depends(get_db)):
     simply verifies that the most recent successful call was ``fresh`` (see
     ``backend.utils.external_api_health``).
     """
-    from backend.utils import external_api_health
+    from utils import external_api_health
 
     components = {
         "database": "down",
@@ -84,7 +84,7 @@ async def liveness_probe():
     }
 
 @router.get("/health/ready")
-from fastapi import Request
+
 
 async def readiness_probe(request: Request, db: Session = Depends(get_db)):
     """Readiness probe: indicates if the application is ready to serve requests.
@@ -113,7 +113,7 @@ async def readiness_probe(request: Request, db: Session = Depends(get_db)):
         if not loaded:
             # attempt synchronous load as a last resort
             try:
-                from backend.database import SessionLocal
+                from database import SessionLocal
                 db2 = SessionLocal()
                 try:
                     route_engine.load_graph_from_db(db2)

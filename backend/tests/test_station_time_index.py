@@ -1,8 +1,8 @@
 import uuid
 from pyroaring import BitMap
-from backend.database import SessionLocal, Base, engine_write
-from backend.database.models import Station, TimeIndexKey, StationDepartureBucket
-from backend.station_time_index import StationTimeIndex
+from database import SessionLocal, Base, engine_write
+from database.models import Station, TimeIndexKey, StationDepartureBucket
+from station_time_index import StationTimeIndex
 
 
 def test_station_time_index_build_and_query():

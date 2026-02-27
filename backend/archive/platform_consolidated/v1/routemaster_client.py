@@ -1,5 +1,5 @@
 import httpx
-from backend.config import Config
+from config import Config
 
 RMA_URL = Config.RMA_URL if hasattr(Config, 'RMA_URL') else 'http://routemaster_agent:8008'
 
@@ -28,7 +28,7 @@ def get_train_reliabilities(train_ids: list) -> dict:
 
     try:
         # Query the shared DB table populated by `routemaster_agent`.
-        from backend.database import engine
+        from database import engine
         from sqlalchemy import text, bindparam
 
         stmt = text("""

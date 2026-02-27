@@ -6,9 +6,9 @@ from typing import List, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from backend.database import SessionLocal
-from backend.database.models import SeatInventory, Coach, Trip
-from backend.config import Config
+from database.session import SessionLocal
+from database.models import SeatInventory, Coach, Trip
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 

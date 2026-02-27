@@ -2,7 +2,7 @@ from alembic.config import Config
 from alembic import command
 from alembic.migration import MigrationContext
 from alembic.autogenerate import compare_metadata
-from backend.database import engine, Base
+from database import engine, Base
 
 
 def test_models_and_migrations_are_in_sync():

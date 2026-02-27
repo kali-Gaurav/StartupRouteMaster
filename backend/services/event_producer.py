@@ -11,8 +11,8 @@ import json
 import time
 import asyncio
 import logging
-from backend.config import Config
-from backend.utils.metrics import EVENT_PUBLISH_LATENCY_MS, EVENT_PUBLISH_FAILURES_TOTAL, CIRCUIT_BREAKER_STATE, CIRCUIT_BREAKER_OPENS_TOTAL
+from config import Config
+from utils.metrics import EVENT_PUBLISH_LATENCY_MS, EVENT_PUBLISH_FAILURES_TOTAL, CIRCUIT_BREAKER_STATE, CIRCUIT_BREAKER_OPENS_TOTAL
 
 logger = logging.getLogger(__name__)
 

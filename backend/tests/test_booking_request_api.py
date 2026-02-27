@@ -15,7 +15,7 @@ def test_schemas():
     """Test that schemas can be imported and validated."""
     print("Testing schemas...")
     try:
-        from backend.schemas import (
+        from schemas import (
             BookingRequestCreateSchema,
             BookingRequestResponseSchema,
             BookingRequestPassengerSchema
@@ -59,7 +59,7 @@ def test_endpoint_imports():
     print("\nTesting endpoint imports...")
     try:
         # Just check if the file can be imported without errors
-        from backend.api import bookings
+        from api import bookings
         assert hasattr(bookings, 'router'), "Router not found"
         print("✅ Endpoints imported successfully")
         return True
@@ -73,7 +73,7 @@ def test_data_provider_rapidapi():
     """Test RapidAPI integration in DataProvider."""
     print("\nTesting RapidAPI integration...")
     try:
-        from backend.core.route_engine.data_provider import DataProvider
+        from core.route_engine.data_provider import DataProvider
         
         provider = DataProvider()
         

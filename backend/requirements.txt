@@ -14,6 +14,7 @@ supabase==2.4.3
 # Caching
 redis==5.0.1
 fastapi-cache2==0.2.2
+fastapi-limiter==0.1.6
 
 # Task queues and messaging
 celery==5.3.6
@@ -47,6 +48,8 @@ python-multipart==0.0.9
 python-dotenv==1.0.1
 requests==2.31.0
 httpx==0.25.2
+# Retry helper for resilient API calls
+tenacity==8.2.2
 prometheus-fastapi-instrumentator==7.0.0
 twilio==8.11.0
 sendgrid==6.11.0

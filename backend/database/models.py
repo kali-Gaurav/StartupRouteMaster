@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
-from geoalchemy2 import Geometry, func
+from geoalchemy2 import Geometry
 import enum
 
 from .session import Base
@@ -74,6 +74,14 @@ class User(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     # email may be nullable to support phone-only OTP logins (especially in tests)
     email = Column(String(255), unique=True, nullable=True, index=True)
+    # optional Supabase user ID (uuid) – makes it easier to synchronise with
+    # the auth table.  Not every user will have one during transition, hence
+    # nullable.
+    # optional Supabase user ID (uuid) – makes it easier to synchronise with
+    # the auth table.  Not every user will have one during transition, hence
+    # nullable.  We also add a foreign key constraint so SQLAlchemy can
+    # automatically join profiles and users.
+    supabase_id = Column(String(255), ForeignKey("profiles.id"), unique=True, nullable=True, index=True)
     # password_hash is required when an email/password account is created.
     # OTP-created users may leave this blank or use a placeholder.
     password_hash = Column(String(255), nullable=False)
@@ -91,6 +99,53 @@ class User(Base):
     booking_requests = relationship("BookingRequest", foreign_keys="BookingRequest.user_id", overlaps="user")
     executed_bookings = relationship("BookingQueue", foreign_keys="BookingQueue.executed_by", overlaps="executor")
     processed_refunds = relationship("Refund", foreign_keys="Refund.processed_by", overlaps="processor")
+    # reciprocal relationship to Profile (one-to-one)
+    profile = relationship("Profile", back_populates="user", uselist=False, foreign_keys=[supabase_id])
+
+
+# Supabase-specific companion table for additional profile information.  Its
+# primary key is the same as auth.users.id so we can join easily in queries.
+class Profile(Base):
+    __tablename__ = "profiles"
+
+    id = Column(String(255), primary_key=True)
+    name = Column(String(255), nullable=True)
+    phone = Column(String(50), nullable=True)
+    gender = Column(String(50), nullable=True)
+    emergency_contact = Column(String(255), nullable=True)
+    ai_memory = Column(JSON, default={}, nullable=False) # Stores lastIntent, guardianState, riskFactors etc.
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # explicit foreign key relationship pointing back to User.supabase_id
+    user = relationship(
+        "User",
+        back_populates="profile",
+        primaryjoin="Profile.id == User.supabase_id",
+        foreign_keys="User.supabase_id",
+    )
+
+
+class RiskZone(Base):
+    __tablename__ = "risk_zones"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    risk_level = Column(Integer, nullable=False)
+    description = Column(Text, nullable=True)
+
+
+class LiveLocation(Base):
+    __tablename__ = "live_locations"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    speed = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
 
 # ==============================================================================
 # NEW GTFS-INSPIRED TRANSIT MODELS
@@ -114,8 +169,8 @@ class Stop(Base):
     """Consolidated and enhanced model for all stops/stations."""
     __tablename__ = "stops"
     __table_args__ = (
-        Index("idx_stops_geom", "geom", postgresql_using="gist"),
-        Index("idx_stops_name_trgm", "name", postgresql_ops={"name": "gin_trgm_ops"}, postgresql_using="gin"),
+        # Index("idx_stops_geom", "geom", postgresql_using="gist"),
+        # Index("idx_stops_name_trgm", "name", postgresql_ops={"name": "gin_trgm_ops"}, postgresql_using="gin"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -221,7 +276,6 @@ class StopTime(Base):
         UniqueConstraint('trip_id', 'stop_sequence', name='uq_trip_stop_sequence'),
         Index("idx_stop_times_stop_id", "stop_id"),
         Index("idx_stop_times_trip_id", "trip_id"),
-        CheckConstraint("arrival_time <= departure_time", name="arrival_before_departure"),
     )
 
     id = Column(Integer, primary_key=True)
@@ -269,7 +323,7 @@ class Fare(Base):
     """Fare information for segments."""
     __tablename__ = "fares"
     id = Column(Integer, primary_key=True)
-    segment_id = Column(Integer, index=True) # Linked to segment logic
+    segment_id = Column(String(36), index=True) # Linked to segment logic
     trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True)
     class_type = Column(String(50), nullable=False) # AC_1, AC_2, SL, etc.
     amount = Column(Float, nullable=False)
@@ -545,6 +599,8 @@ class RealtimeData(Base):
     entity_id = Column(String(100), nullable=False, index=True)  # ID of the affected entity
     data = Column(JSON, nullable=False)  # Flexible JSON for event-specific data
     timestamp = Column(DateTime, nullable=False, index=True)
+    status = Column(String(20), default="new", index=True) # 'new', 'processed', 'failed'
+    processed_at = Column(DateTime, nullable=True)
     source = Column(String(100), nullable=False)  # e.g., 'api', 'web_scraper', 'iot_sensor'
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -974,14 +1030,13 @@ class Vehicle(Base):
 class Station(Base):
     __tablename__ = "stations"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    code = Column(String(10), unique=True, index=True)
     name = Column(String(255), nullable=False, index=True)
     city = Column(String(255), nullable=False, index=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     geom = Column(String, nullable=True)  # Changed from Geometry for SQLite compatibility
     created_at = Column(DateTime, default=datetime.utcnow)
-    segments_from = relationship("Segment", foreign_keys="Segment.source_station_id", back_populates="source_station")
-    segments_to = relationship("Segment", foreign_keys="Segment.dest_station_id", back_populates="dest_station")
     departure_buckets = relationship("StationDepartureBucket", back_populates="station", cascade="all, delete-orphan")
 
 class Segment(Base):
@@ -991,8 +1046,8 @@ class Segment(Base):
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    source_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
-    dest_station_id = Column(String(36), ForeignKey("stations.id"), nullable=False, index=True)
+    source_station_id = Column(Integer, ForeignKey("stops.id"), nullable=False, index=True)
+    dest_station_id = Column(Integer, ForeignKey("stops.id"), nullable=False, index=True)
     vehicle_id = Column(String(36), ForeignKey("vehicles.id"), nullable=True, index=True)
     trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True, index=True)
 
@@ -1006,8 +1061,8 @@ class Segment(Base):
     cost = Column(Float, nullable=False)
     operating_days = Column(String(7), nullable=False, default="1111111")
 
-    source_station = relationship("Station", foreign_keys=[source_station_id], back_populates="segments_from")
-    dest_station = relationship("Station", foreign_keys=[dest_station_id], back_populates="segments_to")
+    source_stop = relationship("Stop", foreign_keys=[source_station_id])
+    dest_stop = relationship("Stop", foreign_keys=[dest_station_id])
     vehicle = relationship("Vehicle", back_populates="segments")
     trip = relationship("Trip", back_populates="segments", lazy='joined')
     # SeatInventory now references `stop_time_id`; remove direct Segment->SeatInventory relationship to avoid FK mismatch in tests
@@ -1188,6 +1243,23 @@ class SeatAvailability(Base):
 
     def __repr__(self):
         return f"<SeatAvailability(train={self.train_number}, date={self.travel_date}, status={self.availability_status})>"
+
+class APIUsage(Base):
+    """Tracks daily request counts for external APIs to prevent budget overruns."""
+    __tablename__ = "api_usage"
+    __table_args__ = (
+        UniqueConstraint('api_name', 'date', name='uq_api_usage_date'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    api_name = Column(String(100), nullable=False, index=True)  # e.g., 'rapid_api_irctc1'
+    date = Column(Date, nullable=False, index=True)
+    request_count = Column(Integer, default=0, nullable=False)
+    daily_limit = Column(Integer, default=500, nullable=False)
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<APIUsage(api={self.api_name}, date={self.date}, count={self.request_count})>"
 
 class TrainMaster(Base):
     """Minimal train metadata used for capacity baseline predictions."""

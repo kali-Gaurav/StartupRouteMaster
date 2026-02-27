@@ -4,8 +4,10 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
-from backend.config import Config
+
 import logging
+
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +106,14 @@ class RouteRankingPredictor:
         
         df = pd.DataFrame([route_features])
         df = df[feature_order]  # Reorder columns to match training
-        prob = self.model.predict_proba(df)[0][1]  # prob of class 1 (booking)
-        return prob
+        
+        if hasattr(self.model, "predict_proba"):
+            prob = self.model.predict_proba(df)[0][1]  # prob of class 1 (booking)
+        else:
+            # Fallback for regressors
+            prob = self.model.predict(df)[0]
+            
+        return float(np.clip(prob, 0.0, 1.0))
 
     def load_model(self):
         """Load trained model from disk."""

@@ -5,7 +5,7 @@ from datetime import datetime, time, date, timedelta
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
-from backend.models import Stop, Route, Trip, StopTime, Calendar, Agency
+from models import Stop, Route, Trip, StopTime, Calendar, Agency
 from .db_utils import get_stop_by_id_cached # Leverage caching for stops
 
 logger = logging.getLogger(__name__)

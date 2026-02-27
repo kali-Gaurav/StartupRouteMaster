@@ -4,7 +4,9 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
-from ...database.models import Stop, TrainState
+from database.models import Stop, TrainState
+
+
 from .data_structures import TransferConnection, Route
 from .constraints import RouteConstraints
 
@@ -18,72 +20,47 @@ class TransferIntelligenceManager:
 
     def __init__(self, db_session_factory):
         self.db_session_factory = db_session_factory
-        # Pre-load static data if needed (e.g., average congestion per station)
         
     async def calculate_transfer_risk(self, transfer: TransferConnection, 
                                       previous_segment_trip_id: Optional[int],
                                       current_route: Route,
-                                      constraints: RouteConstraints) -> float:
+                                      constraints: RouteConstraints,
+                                      graph: Any = None) -> float:
         """
         Calculates the probability of missing a specific transfer.
         Formula: P(miss) = sigmoid(delay_history + congestion + buffer_time)
-        Returns a float between 0 (low risk) and 1 (high risk).
         """
-        delay_factor = await self._get_delay_history_factor(previous_segment_trip_id, transfer.arrival_time)
-        congestion_factor = self._get_congestion_factor(transfer.station_id, transfer.arrival_time)
+        delay_factor = self._get_delay_history_factor_optimized(previous_segment_trip_id, graph)
+        congestion_factor = self._get_congestion_factor_optimized(transfer.station_id, transfer.arrival_time, graph)
         buffer_factor = self._get_buffer_time_factor(transfer, constraints)
         
-        # Simple linear combination for now, to be replaced by a proper sigmoid/ML model (Phase 6)
         risk_score = (delay_factor * 0.4) + (congestion_factor * 0.3) + (buffer_factor * 0.3)
-        
-        # Clamp to [0, 1]
         return max(0.0, min(1.0, risk_score))
 
-    async def _get_delay_history_factor(self, trip_id: Optional[int], arrival_time: datetime) -> float:
-        """
-        Estimates a delay factor based on historical data for a trip.
-        (Step 3 — Historical Delay Data)
-        """
-        if not trip_id:
-            # No previous trip info — use a low-but-nonzero default risk so transfers without history aren't treated as perfect
-            return 0.1 # Base historical unreliability
-            
-        session = self.db_session_factory()
-        try:
-            # For simplicity, check live TrainState first
-            train_state = session.query(TrainState).filter(TrainState.trip_id == trip_id).first()
-            if train_state and train_state.delay_minutes > 0:
-                # Immediate delay, higher risk
-                return min(train_state.delay_minutes / 60.0, 1.0) # Max 1.0 for 60+ min delay
+    def _get_delay_history_factor_optimized(self, trip_id: Optional[int], graph: Any) -> float:
+        """Uses graph overlay for zero-DB-access delay lookup."""
+        if not trip_id or not graph:
+            return 0.1
+        
+        delay_mins = graph.overlay.get_trip_delay(trip_id)
+        if delay_mins > 0:
+            return min(delay_mins / 60.0, 1.0)
+        return 0.1
 
-            # Placeholder for actual historical data lookup
-            # In a real system, this would query aggregated historical delay data for this trip/segment
-            # For now, return a low risk if no live delay
-            return 0.1 # Base historical unreliability
-        finally:
-            session.close()
+    def _get_congestion_factor_optimized(self, station_id: int, time_of_day: datetime, graph: Any) -> float:
+        """Uses graph stop_cache for zero-DB-access congestion lookup."""
+        if not graph or station_id not in graph.stop_cache:
+            base_congestion = 0.2
+        else:
+            stop = graph.stop_cache[station_id]
+            # Handle both dict and object Stop types if necessary
+            facilities = getattr(stop, 'facilities_json', {}) or {}
+            base_congestion = facilities.get('average_congestion_factor', 0.2)
 
-    def _get_congestion_factor(self, station_id: int, time_of_day: datetime) -> float:
-        """
-        Estimates a congestion factor for a station at a given time.
-        (Step 2 — Station Congestion Score)
-        """
-        session = self.db_session_factory()
-        try:
-            stop = session.query(Stop).filter(Stop.id == station_id).first()
-            if stop and stop.facilities_json:
-                # Use facilities_json for some static congestion factor
-                base_congestion = stop.facilities_json.get('average_congestion_factor', 0.2)
-            else:
-                base_congestion = 0.2
-
-            # Adjust based on peak hours (placeholder)
-            hour = time_of_day.hour
-            if 7 <= hour <= 10 or 17 <= hour <= 20: # Peak hours
-                return min(base_congestion * 1.5, 1.0)
-            return base_congestion
-        finally:
-            session.close()
+        hour = time_of_day.hour
+        if 7 <= hour <= 10 or 17 <= hour <= 20:
+            return min(base_congestion * 1.5, 1.0)
+        return base_congestion
 
     def _get_buffer_time_factor(self, transfer: TransferConnection, constraints: RouteConstraints) -> float:
         """

@@ -1,10 +1,10 @@
 import uuid
 from datetime import datetime, time
 
-from backend.database import SessionLocal, Base, engine_write
-from backend.database.models import Stop, TimeIndexKey, StopDepartureBucket
-from backend.station_time_index import StationTimeIndex
-from backend.core.route_engine import TimeDependentGraph
+from database import SessionLocal, Base, engine_write
+from database.models import Stop, TimeIndexKey, StopDepartureBucket
+from station_time_index import StationTimeIndex
+from core.route_engine import TimeDependentGraph
 
 
 def test_stop_time_index_used_by_graph():

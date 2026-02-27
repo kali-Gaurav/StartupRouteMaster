@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText, WifiOff } from "lucide-react";
+import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText, WifiOff, ShieldAlert } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { StationSearch } from "@/components/StationSearch";
@@ -596,6 +596,24 @@ const Index = () => {
         <div className="container mx-auto px-4 relative flex flex-col lg:flex-row gap-8 items-start justify-center">
           {/* IRCTC-style Booking Box - Large prominent form */}
           <div className="w-full max-w-2xl flex-shrink-0">
+            {/* Trust Banner */}
+            <div className="mb-6 flex flex-wrap items-center justify-center gap-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 animate-in slide-in-from-top-4 duration-500">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-500" />
+                <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-widest">Verified Safe Routes</span>
+              </div>
+              <div className="h-4 w-px bg-emerald-500/20 hidden sm:block" />
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-700 dark:text-amber-400 uppercase tracking-widest">Women-Friendly Scores</span>
+              </div>
+              <div className="h-4 w-px bg-emerald-500/20 hidden sm:block" />
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-red-500" />
+                <span className="text-xs font-bold text-red-700 dark:text-red-400 uppercase tracking-widest">Instant SOS Link</span>
+              </div>
+            </div>
+
             <div className="bg-white dark:bg-card rounded-2xl border-2 border-border shadow-xl overflow-hidden">
               {/* Dark header like IRCTC */}
               <div className="flex gap-1 px-6 pt-4 pb-2 bg-[#0f172a] dark:bg-[#0c4a6e]">
@@ -615,6 +633,7 @@ const Index = () => {
                     value={origin}
                     onChange={(s) => {
                       setOrigin(s);
+                      console.log("Selected origin station:", s);
                       if (s?.code) {
                         predictivePreloadService.preloadPotentialRoutes(s.code);
                         storageService.addRecentSearch(s.code, destination?.code || "");
@@ -964,9 +983,27 @@ const Index = () => {
                       )}
                     </>
                   ) : (
-                    <div className="text-center py-12 bg-card rounded-2xl border-2 border-dashed border-border">
-                      <Filter className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-20" />
-                      <p className="text-muted-foreground">No routes match the selected filter.</p>
+                    <div className="text-center py-16 bg-card rounded-2xl border-2 border-dashed border-border animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto mb-6">
+                        <Filter className="w-10 h-10 text-muted-foreground opacity-40" />
+                      </div>
+                      <h3 className="text-xl font-bold text-foreground mb-2">No routes match your filters</h3>
+                      <p className="text-muted-foreground max-w-sm mx-auto mb-8">
+                        Try adjusting your filters or enabling flexible search to see more options.
+                      </p>
+                      <button
+                        onClick={() => {
+                          setFilterTransfers(null);
+                          setFilterDeparture(null);
+                          setFilterMaxDurationHours(null);
+                          setFilterMaxCost(null);
+                          setSelectedCategory(null);
+                          setViewMode("all");
+                        }}
+                        className="px-6 py-3 bg-primary text-primary-foreground rounded-xl font-bold shadow-lg shadow-primary/20 hover:opacity-90 active:scale-95 transition-all"
+                      >
+                        Reset All Filters
+                      </button>
                     </div>
                   )}
                 </div>

@@ -3,11 +3,11 @@ from sqlalchemy.orm import Session
 from typing import List
 import logging
 
-from backend.database import get_db
-from backend.schemas import AdminBookingSchema
-from backend.services.booking_service import BookingService
-from backend.models import Disruption, CommissionTracking, Booking, User, Payment
-from backend.config import Config
+from database import get_db
+from schemas import AdminBookingSchema
+from services.booking_service import BookingService
+from database.models import Disruption, CommissionTracking, Booking, User, Payment
+from database.config import Config
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def filter_bookings(
 ):
     """Filter bookings by payment status (admin only)."""
     try:
-        from backend.models import Booking, Payment
+        from models import Booking, Payment
 
         query = db.query(Booking).order_by(Booking.created_at.desc())
 
@@ -127,7 +127,7 @@ async def trigger_etl_sync(
             raise HTTPException(status_code=401, detail="Unauthorized")
 
         # Import ETL module
-        from backend.etl.sqlite_to_postgres import run_etl
+        from etl.sqlite_to_postgres import run_etl
 
         # Run ETL (uses defaults when called without arguments)
         results = run_etl()
@@ -155,7 +155,7 @@ async def reload_route_engine_graph(
     if token != Config.ADMIN_API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
-        from backend.core.route_engine import route_engine
+        from core.route_engine import route_engine
         # Route engine is a singleton that handles its own graph management
         logger.info("Route engine is ready to serve requests")
         return {"status": "success", "message": "Route engine graph is loaded and ready."}
@@ -180,7 +180,7 @@ async def trigger_performance_check(
     immediately with 202 Accepted.
     """
     try:
-        from backend.services.perf_check import run_perf_check
+        from services.perf_check import run_perf_check
 
         # schedule background execution
         background_tasks.add_task(run_perf_check, stations, route_length, queries, ml_enabled)
@@ -195,7 +195,7 @@ async def trigger_performance_check(
 async def get_performance_check_status(_: bool = Depends(verify_admin_token)):
     """Return last performance-check result (if any)."""
     try:
-        from backend.services.perf_check import get_last_result
+        from services.perf_check import get_last_result
 
         last = get_last_result()
         return {"status": "ok", "last": last}
@@ -213,7 +213,7 @@ async def admin_enrich_trains(
 ):
     """Admin endpoint that forwards enrich request to the RouteMaster agent service."""
     try:
-        from backend.services.routemaster_client import enrich_trains_remote
+        from services.routemaster_client import enrich_trains_remote
         result = await enrich_trains_remote(train_numbers, date=date, use_disha=True, per_segment=per_segment)
         return {"status": "ok", "result": result}
     except Exception as e:

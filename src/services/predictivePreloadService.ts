@@ -22,6 +22,8 @@ export const predictivePreloadService = {
     // In a real app, this would fetch from a "Frequently Traveled" API or local history
     // For now, we seed the most common destinations from this source
     const commonDestinations = ["NDLS", "MMCT", "HWH", "BCT", "MAS"];
+
+    console.log(`[Predictive] Common destinations from ${source}: ${commonDestinations.join(", ")}`);
     
     for (const dest of commonDestinations) {
       if (dest !== source) {

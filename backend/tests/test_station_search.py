@@ -1,10 +1,10 @@
 import pytest
 from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
-from backend.app import app
-from backend.database import get_db
-from backend.models import StationMaster
-from backend.services.cache_service import CacheService
+from app import app
+from database import get_db
+from models import StationMaster
+from services.cache_service import CacheService
 
 client = TestClient(app)
 

@@ -126,7 +126,7 @@ export function StationSearch({
       setIsOpen(false);
     }
 
-    void performBackendSearch(trimmedQuery, localResults.length > 0);
+    performBackendSearch(trimmedQuery, localResults.length > 0);
   }, [performBackendSearch]);
 
   // Click outside handler

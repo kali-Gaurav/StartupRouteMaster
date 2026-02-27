@@ -4,7 +4,7 @@ import hmac
 import logging
 from typing import Dict, Optional, Tuple
 
-from backend.config import Config
+from config import Config
 
 logger = logging.getLogger(__name__)
 

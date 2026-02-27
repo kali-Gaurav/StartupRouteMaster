@@ -4,18 +4,17 @@ services:
   api:
     image: python:3.11-slim
     container_name: startupv2_api
+    # no local database service; DATABASE_URL must point at Supabase
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - redis
     volumes:
       - ./backend:/app
     working_dir: /app
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
-      REDIS_URL: redis://redis:6379/0
-      LOG_LEVEL: info
+      # Supabase pooler URL provided via host env
+      - DATABASE_URL
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
     command: /bin/sh -c "pip install -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
@@ -27,18 +26,16 @@ services:
   search-worker:
     image: python:3.11-slim
     container_name: startupv2_search_worker
+    # relies on DATABASE_URL environment variable pointing at Supabase
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - redis
     volumes:
       - ./backend:/app
     working_dir: /app
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
-      REDIS_URL: redis://redis:6379/0
-      LOG_LEVEL: info
+      - DATABASE_URL
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
     command: /bin/sh -c "pip install -r requirements.txt && python search_worker.py"
     ports:
       - "8001:8001"
@@ -53,17 +50,15 @@ services:
       dockerfile: scraper_service/Dockerfile
     container_name: startupv2_scraper_service
     depends_on:
-      kafka:
-        condition: service_healthy
-      db: # Assuming scraper might need DB access for station mapping or storing raw data
-        condition: service_healthy
+      - kafka
+      # database access is via SUPABASE; set DATABASE_URL in .env
     volumes:
       - ./scraper_service:/app
     working_dir: /app
     environment:
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres # Example
-      LOG_LEVEL: info
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DATABASE_URL
+      - LOG_LEVEL=info
     command: /bin/sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8002"
     ports:
       - "8002:8002"

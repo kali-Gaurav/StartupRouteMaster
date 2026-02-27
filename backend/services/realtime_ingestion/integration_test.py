@@ -20,8 +20,8 @@ from typing import List, Dict
 from sqlalchemy.orm import Session
 
 # Import pipeline components
-from backend.database import SessionLocal
-from backend.database.models import (
+from database import SessionLocal
+from database.models import (
     TrainLiveUpdate, TrainMaster, TrainStation, TrainState,
     RealtimeData, RealtimeData as Event
 )
@@ -33,7 +33,7 @@ from .ingestion_worker import LiveIngestionWorker
 
 # Optional ML imports (might not be available in all environments)
 try:
-    from backend.services.ml import (
+    from services.ml import (
         DelayPredictionModel,
         ReliabilityScoreModel,
         TransferSuccessProbabilityModel,

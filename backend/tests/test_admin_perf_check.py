@@ -2,8 +2,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.api.admin import router as admin_router
-from backend.app import app
+from api.admin import router as admin_router
+from app import app
 
 client = TestClient(app)
 
@@ -23,7 +23,7 @@ def test_trigger_perf_check_schedules(monkeypatch):
     assert resp.status_code == 401
 
     # use real token from config (or set a test override)
-    from backend.config import Config
+    from config import Config
     resp = client.post(f'/api/admin/perf-check?stations=10&route_length=3&queries=5&ml_enabled=false&token={Config.ADMIN_API_TOKEN}')
     # admin endpoint expects token via query param in this route; ensure accepted
     assert resp.status_code in (200, 202)
@@ -31,7 +31,7 @@ def test_trigger_perf_check_schedules(monkeypatch):
 
 def test_get_perf_check_status(monkeypatch):
     monkeypatch.setattr('backend.services.perf_check.get_last_result', lambda: {"success": True, "result": {"p95_runtime_ms": 10.0}})
-    from backend.config import Config
+    from config import Config
     resp = client.get(f'/api/admin/perf-check/status?token={Config.ADMIN_API_TOKEN}')
     assert resp.status_code == 200
     body = resp.json()

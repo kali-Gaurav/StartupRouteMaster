@@ -3,8 +3,8 @@ from typing import Dict, Optional, Tuple, List
 from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
 import hashlib
 import time
-from backend.services.cache_service import cache_service # New: Import cache_service
-from backend.config import Config
+from services.cache_service import cache_service # New: Import cache_service
+from database.config import Config
 from pybreaker import CircuitBreaker, CircuitBreakerError # New: Import CircuitBreaker
 
 logger = logging.getLogger(__name__)

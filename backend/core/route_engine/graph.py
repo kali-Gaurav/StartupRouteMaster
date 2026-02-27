@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 import logging
 
-from ...database.models import Stop
+from database.models import Stop
+
+
 from .data_structures import RouteSegment, TransferConnection, Route
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,8 @@ class RealtimeOverlay:
         return overlay
 
 
+from bisect import bisect_left
+
 class TimeDependentGraph:
     """Optimized time-dependent graph with Snapshot + Real-time Overlay support"""
 
@@ -101,6 +105,10 @@ class TimeDependentGraph:
 
         # Core data structures (aliased from snapshot or empty)
         self.departures_by_stop = snapshot.departures_by_stop if snapshot else defaultdict(list)
+        # Ensure departures are sorted by time for bisect
+        for stop_id in self.departures_by_stop:
+            self.departures_by_stop[stop_id].sort(key=lambda x: x[0])
+            
         self.arrivals_by_stop = snapshot.arrivals_by_stop if snapshot else defaultdict(list)
         self.trip_segments = snapshot.trip_segments if snapshot else defaultdict(list)
         self.transfer_graph = snapshot.transfer_graph if snapshot else defaultdict(list)
@@ -138,36 +146,44 @@ class TimeDependentGraph:
         self.transfer_cache.setdefault(key, []).append(transfer)
 
     # ----------------------------- lookup helpers -----------------------------
-    def get_departures_from_stop(self, stop_id: int, after_time: datetime, lookahead_minutes: int = 60) -> List[Tuple[datetime, int]]:
-        """Get departures from stop after given time, considering real-time delays and cancellations."""
-        
-        # 1. Base departures from static snapshot
+    def get_departures_from_stop(self, stop_id: int, after_time: datetime, lookahead_minutes: int = 1440) -> List[Tuple[datetime, int]]:
+        """Get departures from stop after given time, considering real-time delays and cancellations.
+        Uses binary search for O(log N) lookup efficiency.
+        """
+        if after_time >= datetime(3000, 1, 1): # Safety check for datetime.max
+            return []
+            
         base_departures = self.departures_by_stop.get(stop_id, [])
         if not base_departures:
             return []
 
-        # 2. Filter via index if available
-        candidates = base_departures
-        if self.station_time_index is not None:
-            try:
-                minute_of_day = after_time.hour * 60 + after_time.minute
-                entities = self.station_time_index.query(stop_id, minute_of_day, lookahead_minutes)
-                candidate_trip_ids = {int(e['entity_id']) for e in entities if e.get('entity_type') == 'trip'}
-                if candidate_trip_ids:
-                    candidates = [(dt, tid) for dt, tid in base_departures if tid in candidate_trip_ids]
-            except Exception:
-                pass
+        # Find the insertion point for after_time (using dummy trip_id -1 for comparison)
+        idx = bisect_left(base_departures, (after_time, -1))
+        candidates = base_departures[idx:]
 
-        # 3. Apply Real-time Overlay (Phase 2: COW Layer)
+        # Apply Real-time Overlay (Phase 2: COW Layer)
         adjusted = []
+        try:
+            limit_time = after_time + timedelta(minutes=lookahead_minutes)
+        except OverflowError:
+            limit_time = datetime.max
+        
         for dt, trip_id in candidates:
+            # Since base_departures is sorted by time, we can break once dt exceeds limit
+            if dt > limit_time:
+                break
+                
             if self.overlay.is_cancelled(trip_id):
                 continue
             
             delay = self.overlay.get_trip_delay(trip_id)
-            effective_time = dt + timedelta(minutes=delay)
+            try:
+                effective_time = dt + timedelta(minutes=delay)
+            except OverflowError:
+                effective_time = datetime.max
             
-            if effective_time >= after_time:
+            # Check after delay adjustment (might have shifted earlier or later)
+            if after_time <= effective_time <= limit_time:
                 adjusted.append((effective_time, trip_id))
 
         return sorted(adjusted, key=lambda x: x[0])

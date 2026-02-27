@@ -21,10 +21,10 @@ from typing import Dict, Optional, Tuple, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-from backend.models import Route, Trip, StopTime, Stop
-from backend.services.tatkal_demand_predictor import TatkalDemandPredictor
-from backend.services.route_ranking_predictor import RouteRankingPredictor
-from backend.config import Config
+from models import Route, Trip, StopTime, Stop
+from services.tatkal_demand_predictor import TatkalDemandPredictor
+from services.route_ranking_predictor import RouteRankingPredictor
+from config import Config
 
 logger = logging.getLogger(__name__)
 

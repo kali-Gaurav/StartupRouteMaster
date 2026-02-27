@@ -14,7 +14,7 @@ from signal import signal, SIGINT, SIGTERM
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from backend.services.analytics_consumer import start_analytics_consumer
+from services.analytics_consumer import start_analytics_consumer
 
 logging.basicConfig(
     level=logging.INFO,

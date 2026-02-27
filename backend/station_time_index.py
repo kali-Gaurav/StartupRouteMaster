@@ -44,7 +44,7 @@ from datetime import time
 
 from sqlalchemy.orm import Session
 
-from backend.database.models import StationDepartureBucket, StopDepartureBucket, TimeIndexKey
+from database.models import StationDepartureBucket, StopDepartureBucket, TimeIndexKey
 
 
 class StationTimeIndex:
@@ -144,7 +144,7 @@ class StationTimeIndex:
 
 if __name__ == '__main__':
     # quick local demo (requires a DB session)
-    from backend.database import SessionLocal
+    from database import SessionLocal
 
     db = SessionLocal()
     idx = StationTimeIndex(db)

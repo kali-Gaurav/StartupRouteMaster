@@ -6,8 +6,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text, or_
 from typing import List, Dict
 import math
+import json
+import logging
 
-from backend.models import Stop as Station # Use Stop as alias
+from database.models import Stop
+from core.redis import redis_client
+
+logger = logging.getLogger(__name__)
 
 class StationService:
     def __init__(self, db: Session):
@@ -15,41 +20,82 @@ class StationService:
 
     def search_stations_by_name(self, query: str, limit: int = 10) -> List[Dict]:
         """
-        Unified search for stations by name.
-        Uses standard LIKE for generic compatibility. Fuzziness handled by client or resolver.
+        Unified search for stations by name using the GTFS 'stops' table.
+        Prioritizes prefix matches for better UX.
         """
         if not query or len(query) < 2:
             return []
             
-        stations = self.db.query(Station).filter(
-            or_(
-                Station.name.ilike(f"%{query}%"),
-                Station.stop_id.ilike(f"%{query}%"),
-                Station.city.ilike(f"%{query}%")
-            )
-        ).limit(limit).all()
+        cache_key = f"station_search_v2:{query.lower()}:{limit}"
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
 
-        return [
-            {"name": station.name, "code": station.stop_id, "city": station.city, "id": station.id}
-            for station in stations
+        # 1. Exact matches on code or name
+        exact = self.db.query(Stop).filter(
+            or_(
+                Stop.stop_id == query.upper(),
+                Stop.name.ilike(query)
+            )
+        ).all()
+
+        # 2. Prefix matches on name or city
+        prefix = self.db.query(Stop).filter(
+            or_(
+                Stop.name.ilike(f"{query}%"),
+                Stop.city.ilike(f"{query}%")
+            )
+        ).filter(Stop.id.notin_([s.id for s in exact])).limit(limit).all()
+
+        # 3. Substring matches elsewhere
+        substring = []
+        if len(exact) + len(prefix) < limit:
+            remaining = limit - (len(exact) + len(prefix))
+            substring = self.db.query(Stop).filter(
+                or_(
+                    Stop.name.ilike(f"%{query}%"),
+                    Stop.city.ilike(f"%{query}%")
+                )
+            ).filter(
+                Stop.id.notin_([s.id for s in exact] + [s.id for s in prefix])
+            ).limit(remaining).all()
+
+        # Merge results maintaining priority
+        combined = exact + prefix + substring
+        results = [
+            {
+                "name": station.name,
+                "code": station.stop_id,
+                "city": station.city,
+                "id": station.id,
+                "state": station.state
+            }
+            for station in combined[:limit]
         ]
+
+        try:
+            redis_client.setex(cache_key, 3600, json.dumps(results))
+        except Exception:
+            pass
+
+        return results
 
     def get_stations_near_me(self, latitude: float, longitude: float, radius_km: float, limit: int = 10) -> List[Dict]:
         """
-        Finds stations within a radius.
+        Finds stations within a radius using the GTFS 'stops' table.
         Uses Haversine approximation for database compatibility.
         """
-        # SQLite doesnt support math functions like COS directly in SQL without extensions.
-        # We fetch a bounding box of stations first, then filter in memory.
-        
         # Approx 111km per degree latitude
         lat_range = radius_km / 111.0
         # Approx 111km * cos(lat) per degree longitude
         lon_range = radius_km / (111.0 * math.cos(math.radians(latitude)))
 
-        stations = self.db.query(Station).filter(
-            Station.latitude.between(latitude - lat_range, latitude + lat_range),
-            Station.longitude.between(longitude - lon_range, longitude + lon_range)
+        stations = self.db.query(Stop).filter(
+            Stop.latitude.between(latitude - lat_range, latitude + lat_range),
+            Stop.longitude.between(longitude - lon_range, longitude + lon_range)
         ).limit(limit * 2).all()
 
         results = []
@@ -65,6 +111,7 @@ class StationService:
                 results.append({
                     "id": station.id,
                     "name": station.name,
+                    "code": station.stop_id,
                     "city": station.city,
                     "latitude": station.latitude,
                     "longitude": station.longitude,
@@ -74,5 +121,5 @@ class StationService:
         return sorted(results, key=lambda x: x["distance_km"])[:limit]
 
     def get_total_stations_count(self) -> int:
-        """Return total number of configured stations."""
-        return self.db.query(func.count(Station.id)).scalar() or 0
+        """Return total number of configured stops."""
+        return self.db.query(func.count(Stop.id)).scalar() or 0

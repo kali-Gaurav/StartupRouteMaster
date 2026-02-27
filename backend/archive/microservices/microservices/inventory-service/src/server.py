@@ -12,12 +12,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 
 import inventory_pb2
 import inventory_pb2_grpc
-from backend.database import SessionLocal
-from backend.services.availability_service import availability_service, AvailabilityRequest
-from backend.services.advanced_seat_allocation_engine import advanced_seat_allocation_engine
-from backend.services.cancellation_predictor import cancellation_predictor
-from backend.seat_inventory_models import QuotaType
-from backend.models import SeatInventory, Booking
+from database import SessionLocal
+from services.availability_service import availability_service, AvailabilityRequest
+from services.advanced_seat_allocation_engine import advanced_seat_allocation_engine
+from services.cancellation_predictor import cancellation_predictor
+from seat_inventory_models import QuotaType
+from models import SeatInventory, Booking
 from google.protobuf.timestamp_pb2 import Timestamp
 
 logging.basicConfig(level=logging.INFO)
@@ -100,7 +100,7 @@ class InventoryServicer(inventory_pb2_grpc.InventoryServiceServicer):
         
         try:
             # Create distributed lock in Redis
-            from backend.services.cache_service import cache_service
+            from services.cache_service import cache_service
             
             lock_key = f"seat_lock:{request.train_id}:{request.user_id}"
             lock = cache_service.get_lock(lock_key, timeout=request.ttl_seconds or 600)
@@ -134,7 +134,7 @@ class InventoryServicer(inventory_pb2_grpc.InventoryServiceServicer):
         logger.info(f"ReleaseSeats: lock_id={request.lock_id}")
         
         try:
-            from backend.services.cache_service import cache_service
+            from services.cache_service import cache_service
             
             # Release the lock
             cache_service.redis.delete(request.lock_id)
@@ -159,7 +159,7 @@ class InventoryServicer(inventory_pb2_grpc.InventoryServiceServicer):
         
         try:
             # Parse passenger preferences
-            from backend.services.advanced_seat_allocation_engine import PassengerPreference, BerthType
+            from services.advanced_seat_allocation_engine import PassengerPreference, BerthType
             
             preferences = []
             for pref in request.preferences:

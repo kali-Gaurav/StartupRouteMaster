@@ -5,8 +5,8 @@ import logging
 from typing import Optional, Any, Dict
 import time # New: Import time for duration calculation
 
-from backend.config import Config
-from backend.utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
+from config import Config
+from utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
 
 logger = logging.getLogger(__name__)
 

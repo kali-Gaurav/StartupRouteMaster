@@ -2,45 +2,161 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
-import structlog
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 from datetime import datetime
 import os
+import asyncio
+from contextlib import asynccontextmanager
 
 from slowapi.errors import RateLimitExceeded
 
-from backend.database.config import Config
-from backend.database import init_db, close_db
-from backend.api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime
-from backend.utils.limiter import limiter
+from worker import start_reconciliation_worker, stop_reconciliation_worker
+from database.config import Config
+from database import init_db, close_db
+from api import search, routes, payments, admin, chat, users, reviews, auth, status, sos, flow, websockets, bookings, realtime
+from utils.limiter import limiter
+from core.rate_limit import init_rate_limiter
 
 # FastAPI-Cache
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
-import redis.asyncio as aioredis
+from core.redis import async_redis_client # Use shared async client
 
 # Prometheus instrumentation
 from prometheus_fastapi_instrumentator import Instrumentator
-from backend.core.monitoring import WS_CONNECTIONS  # Trigger metric registration
+from core.monitoring import WS_CONNECTIONS  # Trigger metric registration
 
-# route_engine imported lazily during startup to avoid heavy initialization and potential syntax errors
+# route_engine imported lazily during startup
 route_engine = None
-from backend.database import SessionLocal
-from backend.worker import start_reconciliation_worker, stop_reconciliation_worker
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-logger = structlog.get_logger()
+logger = logging.getLogger("app")
+
+from utils.metrics import ACTIVE_SESSIONS
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle events for the FastAPI application."""
+    ACTIVE_SESSIONS.set(1) # Base session for the API process itself
+    # ensure required configuration exists (Supabase URL/key, database URL)
+    try:
+        Config.validate()
+    except Exception as err:
+        logger.critical(f"Configuration validation failed: {err}")
+        raise
+
+    logger.info("Starting RouteMaster API...")
+
+    # quick Supabase connectivity check
+    try:
+        from supabase_client import supabase
+        resp = supabase.from_("profiles").select("id").limit(1).execute()
+        if hasattr(resp, "error") and resp.error:
+            raise RuntimeError(resp.error)
+        logger.info("Supabase connection verified.")
+    except Exception as sup_err:
+        logger.warning(f"Unable to verify Supabase connectivity: {sup_err}")
+
+    try:
+        # Initialize database schema
+        await init_db()
+        logger.info("Database initialized")
+
+        # Initialize FastAPI-Cache
+        FastAPICache.init(RedisBackend(async_redis_client), prefix="fastapi-cache")
+        logger.info("FastAPI-Cache initialized with Redis.")
+
+        # Initialize FastAPI-Limiter
+        await init_rate_limiter()
+        logger.info("FastAPI-Limiter initialized with Redis.")
+
+        # Load the route engine graph into memory
+        from database.session import SessionLocal as _SessionLocal
+        from core.route_engine import route_engine as _route_engine
+        global route_engine
+        route_engine = _route_engine
+
+        # Production initialization (Topic 1)
+        # We call initialize() directly; background warmup task is now part of it
+        try:
+            logger.info("Starting RouteEngine production initialization...")
+            await route_engine.initialize()
+            logger.info("✅ RouteEngine initialized and major hubs verified.")
+            
+            # Risk 1: Verify Memory Usage
+            try:
+                import psutil
+                process = psutil.Process()
+                mem_info = process.memory_info()
+                rss_mb = mem_info.rss / (1024 * 1024)
+                logger.info(f"📈 Post-Initialization Memory Usage: {rss_mb:.2f} MB")
+                if rss_mb > 2048:
+                    logger.warning(f"⚠️ HIGH MEMORY USAGE: {rss_mb:.2f} MB exceeds recommended 2GB limit.")
+            except ImportError:
+                logger.warning("psutil not installed; skipping memory verification.")
+        except Exception as e:
+            logger.critical(f"CRITICAL: RouteEngine failed to initialize: {e}")
+
+        # prep station cache
+        try:
+            from services.station_service import StationService
+            svc = StationService(_SessionLocal())
+            total = svc.get_total_stations_count()
+            logger.info(f"Station cache warmed with {total} stations.")
+        except Exception as e:
+            logger.warning(f"Failed to warm station cache: {e}")
+
+        # Start workers
+        start_reconciliation_worker()
+        logger.info("Payment reconciliation worker initialized.")
+
+        # Analytics
+        if Config.KAFKA_ENABLE_EVENTS:
+            from services.analytics_consumer import start_analytics_consumer
+            asyncio.create_task(start_analytics_consumer())
+            logger.info("Analytics consumer initialized.")
+
+        # Position Broadcaster
+        try:
+            from services.realtime_ingestion.position_broadcaster import broadcaster
+            asyncio.create_task(broadcaster.start())
+            logger.info("✅ WebSocket Position Broadcaster initialized")
+        except Exception as e:
+            logger.warning(f"Position Broadcaster failed to start: {e}")
+
+        # ETL Scheduler
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        import httpx
+
+        scheduler = AsyncIOScheduler()
+        async def monthly_etl_job():
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        "http://localhost:8000/api/admin/etl-sync",
+                        params={"token": Config.ADMIN_API_TOKEN}
+                    )
+            except Exception as e:
+                logger.error(f"Monthly ETL job failed: {e}")
+
+        scheduler.add_job(monthly_etl_job, trigger=CronTrigger(day=1, hour=2), id="monthly_etl")
+        scheduler.start()
+        
+        app.state.startup_complete = True
+        yield
+    finally:
+        # Shutdown logic
+        logger.info("Shutting down RouteMaster API...")
+        stop_reconciliation_worker()
+        await close_db()
+        try:
+            await FastAPICache.clear()
+        except Exception:
+            pass
+        logger.info("Cleanup complete.")
 
 # Get CORS configuration from environment
 ALLOWED_ORIGINS = os.getenv(
@@ -57,6 +173,7 @@ app = FastAPI(
     title="RouteMaster API",
     description="High-performance route optimization and booking platform",
     version="1.0.0",
+    lifespan=lifespan
 )
 
 # Standard HTTPException handler that wraps detail in a consistent schema
@@ -117,177 +234,11 @@ app.include_router(websockets.router)
 app.include_router(bookings.router)
 app.include_router(realtime.router)
 # Backwards-compatible stations endpoint
-from backend.api import stations as stations_api
+from api import stations as stations_api
 app.include_router(stations_api.router)
-# New integrated search with full journey reconstruction
-from backend.api import integrated_search
+
+from api import integrated_search
 app.include_router(integrated_search.router)
-
-
-@app.on_event("startup")
-async def startup():
-    """Initialize services on startup."""
-    logger.info("Starting RouteMaster API...")
-    try:
-        # Initialize database schema
-        await init_db()
-        logger.info("Database initialized")
-
-        # Initialize FastAPI-Cache
-        cache_redis = aioredis.from_url(Config.REDIS_URL, encoding="utf8", decode_responses=True)
-        FastAPICache.init(RedisBackend(cache_redis), prefix="fastapi-cache")
-        logger.info("FastAPI-Cache initialized with Redis.")
-
-        # Load the route engine graph into memory (optionally in background to speed startup)
-        from backend.database import SessionLocal as _SessionLocal
-        # import route_engine here lazily
-        from backend.core.route_engine import route_engine as _route_engine
-        global route_engine
-        route_engine = _route_engine
-
-        # Warm-up the route engine graph either synchronously or async based on config
-        if Config.ROUTEENGINE_ASYNC_WARMUP:
-            async def _warmup():
-                db_w = _SessionLocal()
-                try:
-                    # use the public API; underlying implementation will manage snapshots
-                    await route_engine.search_routes("NDLS", "MMCT", datetime.utcnow())
-                finally:
-                    db_w.close()
-            import asyncio
-            asyncio.create_task(_warmup())
-            logger.info("RouteEngine warm-up scheduled in background (async warmup enabled).")
-        else:
-            db = _SessionLocal()
-            try:
-                # perform an initial dummy search to load graph into memory
-                import asyncio
-                asyncio.run(route_engine.search_routes("NDLS", "MMCT", datetime.utcnow()))
-            finally:
-                db.close()
-
-        # additional warmups for readiness: pre-populate station cache
-        try:
-            from backend.services.station_service import StationService
-            svc = StationService(_SessionLocal())
-            total = svc.get_total_stations_count()
-            logger.info(f"Station cache warmed with {total} stations.")
-        except Exception as e:
-            logger.warning(f"Failed to warm station cache: {e}")
-
-        # mark startup as complete so readiness will succeed
-        app.state.startup_complete = True
-
-        # Start the payment reconciliation worker
-        start_reconciliation_worker()
-        logger.info("Payment reconciliation worker initialized.")
-
-        # Phase 3: Unified Intelligent System - Auto-detect and log features
-        try:
-            logger.info("")
-            logger.info("=" * 70)
-            logger.info("🚀 Phase 3: Unified Intelligent System Initialization")
-            logger.info("=" * 70)
-
-            # Route engine auto-detects features on initialization
-            detected_mode = Config.get_mode()
-            logger.info(f"📡 Detected Mode: {detected_mode}")
-            logger.info(f"🔧 Feature Flags:")
-            logger.info(f"   • OFFLINE_MODE: {Config.OFFLINE_MODE}")
-            logger.info(f"   • REAL_TIME_ENABLED: {Config.REAL_TIME_ENABLED}")
-            logger.info(f"🌐 Live API Configuration:")
-            logger.info(f"   • LIVE_FARES_API: {'✅ Configured' if Config.LIVE_FARES_API else '❌ Not configured'}")
-            logger.info(f"   • LIVE_DELAY_API: {'✅ Configured' if Config.LIVE_DELAY_API else '❌ Not configured'}")
-            logger.info(f"   • LIVE_SEAT_API: {'✅ Configured' if Config.LIVE_SEAT_API else '❌ Not configured'}")
-            logger.info(f"   • LIVE_BOOKING_API: {'✅ Configured' if Config.LIVE_BOOKING_API else '❌ Not configured'}")
-            logger.info(f"📦 Data Provider Status: {'🟢 ONLINE' if detected_mode == 'ONLINE' else '🟡 HYBRID' if detected_mode == 'HYBRID' else '🔴 OFFLINE'}")
-
-            # Log from route engine
-            logger.info("")
-
-        except Exception as e:
-            logger.warning(f"Phase 3 feature detection had non-fatal error: {e}")
-
-        # Advanced 4-Pipeline Architecture - Initialize pipeline system
-        try:
-            from backend.pipelines.system import initialize_pipelines
-            if initialize_pipelines(Config):
-                logger.info("✅ Advanced 4-Pipeline System initialized successfully")
-            else:
-                logger.warning("⚠️  Pipeline system initialization had issues, continuing with reduced capabilities")
-        except Exception as e:
-            logger.warning(f"Pipeline system initialization failed: {e}")
-
-        # Start analytics consumer if events are enabled
-        if Config.KAFKA_ENABLE_EVENTS:
-            from backend.services.analytics_consumer import start_analytics_consumer
-            import asyncio
-            asyncio.create_task(start_analytics_consumer())
-            logger.info("Analytics consumer initialized.")
-        else:
-            logger.info("Analytics consumer disabled (KAFKA_ENABLE_EVENTS=false)")
-
-        # Start WebSocket Position Broadcaster (Phase 12)
-        try:
-            from backend.services.realtime_ingestion.position_broadcaster import broadcaster
-            import asyncio
-            asyncio.create_task(broadcaster.start())
-            logger.info("✅ WebSocket Position Broadcaster initialized")
-        except Exception as e:
-            logger.warning(f"Position Broadcaster failed to start: {e}")
-
-        # Set up monthly ETL scheduler
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from apscheduler.triggers.cron import CronTrigger
-        import httpx
-
-        scheduler = AsyncIOScheduler()
-
-        async def monthly_etl_job():
-            """Run monthly ETL sync job."""
-            try:
-                logger.info("Starting scheduled monthly ETL sync")
-                # Call the ETL endpoint internally
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        "http://localhost:8000/api/admin/etl-sync",
-                        params={"token": Config.ADMIN_API_TOKEN}
-                    )
-                    if response.status_code == 200:
-                        logger.info("Monthly ETL sync completed successfully")
-                    else:
-                        logger.error(f"Monthly ETL sync failed: {response.status_code} - {response.text}")
-            except Exception as e:
-                logger.error(f"Monthly ETL job failed: {e}")
-
-        # Schedule ETL to run on the 1st of every month at 2 AM
-        scheduler.add_job(
-            monthly_etl_job,
-            trigger=CronTrigger(day=1, hour=2, minute=0),
-            id="monthly_etl",
-            name="Monthly ETL Sync",
-            max_instances=1,
-            replace_existing=True
-        )
-
-        scheduler.start()
-        logger.info("Monthly ETL scheduler initialized (runs 1st of each month at 2 AM)")
-
-    except Exception as e:
-        logger.error(f"Failed during startup: {e}")
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Close database on shutdown."""
-    logger.info("Shutting down RouteMaster API...")
-    # Stop the payment reconciliation worker
-    stop_reconciliation_worker()
-    logger.info("Payment reconciliation worker stopped.")
-    await close_db()
-    await FastAPICache.clear() # Clear cache on shutdown, optional
-    logger.info("FastAPI-Cache cleared.")
 
 
 @app.get("/")
@@ -298,6 +249,31 @@ async def root():
         "version": "1.0.0",
         "status": "running",
         "docs": "/docs",
+    }
+
+@app.get("/health")
+async def health():
+    """Blueprint-compliant health check."""
+    return {
+        "status": "ok",
+        "service": "RouteMaster Backend",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/debug/engine")
+async def engine_status():
+    """Manual engine debug endpoint."""
+    global route_engine
+    if route_engine is None or not getattr(route_engine, 'current_snapshot', None):
+        return {"status": "not_initialized"}
+
+    snapshot = route_engine.current_snapshot
+    return {
+        "status": "running",
+        "stops": len(snapshot.stop_cache),
+        "trips": len(snapshot.trip_segments),
+        "departures": len(snapshot.departures_by_stop),
+        "hubs_initialized": hasattr(route_engine, 'hub_manager')
     }
 
 

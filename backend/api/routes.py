@@ -3,12 +3,13 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 import logging
 
-from backend.database import get_db
-from backend.schemas import RouteDetailSchema, UserRead
-from backend.database.models import Route as RouteModel, User, Stop
-from backend.services.unlock_service import UnlockService
-from backend.services.search_service import SearchService
-from backend.api.dependencies import get_current_user # Assuming get_current_user is defined here or in a similar dependencies file
+from api.dependencies import get_current_user
+from database import get_db
+from schemas import RouteDetailSchema, UserRead
+from database.models import Route as RouteModel, User, Stop
+from services.unlock_service import UnlockService
+from services.search_service import SearchService
+# Assuming get_current_user is defined here or in a similar dependencies file
 
 router = APIRouter(prefix="/api/routes", tags=["routes"])
 logger = logging.getLogger(__name__)

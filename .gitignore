@@ -21,8 +21,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
-backend/database/railway_data.db
-backend/database/transit_graph.db
+.env.*
+backend/database/*.db
+backend/database/*.db-*
+snapshots/*.pkl
 
 # Python / runtime artifacts
 __pycache__/

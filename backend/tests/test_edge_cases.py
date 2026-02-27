@@ -6,13 +6,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-from backend.utils.generators import generate_pnr
-from backend.utils.validation import (
+from utils.generators import generate_pnr
+from utils.validation import (
     SearchRequestValidator, validate_date_string, validate_station_name,
     validate_passenger_type, validate_age, validate_email, validate_phone_number,
     validate_gender, validate_concessions
 )
-from backend.models import User, Booking, Stop
+from models import User, Booking, Stop
 
 
 class TestDateEdgeCases:

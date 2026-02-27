@@ -13,7 +13,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 
 # Import gRPC client manager
-from backend.microservices.common.grpc_clients import grpc_clients
+from microservices.common.grpc_clients import grpc_clients
 
 # Import proto messages (proto src dirs are added to sys.path by grpc_clients)
 import route_pb2

@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 import json
 
-from backend.models import Trip, Stop, StopTime, Booking, PassengerDetails, Disruption
-from backend.utils.generators import generate_pnr
+from models import Trip, Stop, StopTime, Booking, PassengerDetails, Disruption
+from utils.generators import generate_pnr
 
 
 class CoachType(str, Enum):

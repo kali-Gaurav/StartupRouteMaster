@@ -1,6 +1,6 @@
 import pytest
 from ..core.route_engine import OptimizedRAPTOR, RouteConstraints
-from backend.models import Route
+from models import Route
 
 @pytest.mark.asyncio
 async def test_rt_026_zero_transfers():

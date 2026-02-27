@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
-from backend.database.models import SeatAvailability, TrainMaster
+from database.models import SeatAvailability, TrainMaster
 
 logger = logging.getLogger(__name__)
 

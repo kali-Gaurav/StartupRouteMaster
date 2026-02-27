@@ -3,7 +3,7 @@ import random
 import psutil
 import pytest
 
-from backend.core.validator.performance_validators import PerformanceValidator
+from core.validator.performance_validators import PerformanceValidator
 
 pv = PerformanceValidator()
 

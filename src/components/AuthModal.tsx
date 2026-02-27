@@ -1,6 +1,6 @@
 /**
  * Authentication Modal
- * Handles Phone OTP, Email OTP, and Google OAuth
+ * Handles Phone OTP, Email OTP, and Google OAuth using Supabase
  */
 
 import React, { useState } from 'react';
@@ -9,9 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { sendOTP, verifyOTP, googleAuth } from '@/lib/authApi';
-import { useAuth } from '@/context/AuthContext';
-import { sendOTPSchema, verifyOTPSchema } from '@/lib/schemas/authSchema';
+import { supabase } from '@/lib/supabase';
 import { Loader2, Phone, Mail, CheckCircle2 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -21,7 +19,6 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }) => {
-  const { login } = useAuth();
   const [authMethod, setAuthMethod] = useState<'phone' | 'email'>('phone');
   const [step, setStep] = useState<'input' | 'verify'>('input');
   const [contact, setContact] = useState('');
@@ -42,26 +39,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     e.preventDefault();
     setError('');
     setMessage('');
-    const data = authMethod === 'phone' ? { phone: contact } : { email: contact };
-    const parsed = sendOTPSchema.safeParse(data);
-    if (!parsed.success) {
-      const first = parsed.error.flatten().fieldErrors?.phone?.[0] ?? parsed.error.flatten().fieldErrors?.email?.[0] ?? parsed.error.message;
-      setError(first ?? 'Invalid input');
-      return;
-    }
     setLoading(true);
+    
     try {
-      const response = await sendOTP(parsed.data);
+      const { error: sbError } = await supabase.auth.signInWithOtp(
+        authMethod === 'email' 
+          ? { email: contact } 
+          : { phone: contact }
+      );
 
-      if (response.success) {
-        setMessage(response.message);
-        setStep('verify');
-      } else {
-        setError(response.message || 'Failed to send OTP');
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
-      setError(errorMessage);
+      if (sbError) throw sbError;
+
+      setMessage(`OTP sent to your ${authMethod}.`);
+      setStep('verify');
+    } catch (err: any) {
+      setError(err.message || 'Failed to send OTP');
     } finally {
       setLoading(false);
     }
@@ -70,32 +62,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
   const handleVerifyOTP = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const data = authMethod === 'phone' ? { phone: contact, otp } : { email: contact, otp };
-    const parsed = verifyOTPSchema.safeParse(data);
-    if (!parsed.success) {
-      const first = parsed.error.flatten().fieldErrors?.otp?.[0] ?? parsed.error.message;
-      setError(first ?? 'Invalid OTP');
-      return;
-    }
     setLoading(true);
+    
     try {
-      const response = await verifyOTP(parsed.data);
+      const { error: sbError } = await (authMethod === 'email' 
+        ? supabase.auth.verifyOtp({ email: contact, token: otp, type: 'magiclink' })
+        : supabase.auth.verifyOtp({ phone: contact, token: otp, type: 'sms' })
+      );
 
-      if (response.success && response.token && response.user) {
-        login(response.token, response.user, response.refresh_token);
-        setMessage('Login successful!');
-        
-        setTimeout(() => {
-          onClose();
-          resetForm();
-          onSuccess?.();
-        }, 1000);
-      } else {
-        setError(response.message || 'Invalid OTP');
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
-      setError(errorMessage);
+      if (sbError) throw sbError;
+
+      setMessage('Login successful!');
+      setTimeout(() => {
+        onClose();
+        resetForm();
+        onSuccess?.();
+      }, 1000);
+    } catch (err: any) {
+      setError(err.message || 'Invalid OTP');
     } finally {
       setLoading(false);
     }
@@ -105,29 +89,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setLoading(true);
     setError('');
     try {
-      // Simulate Google OAuth popup and token reception
-      console.log('Opening Google OAuth popup...');
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      const mockIdToken = 'mock_google_token_' + Math.random().toString(36).substring(7);
-      const response = await googleAuth(mockIdToken);
-
-      if (response.success && response.token && response.user) {
-        login(response.token, response.user, response.refresh_token);
-        setMessage('Google login successful!');
-        
-        setTimeout(() => {
-          onClose();
-          resetForm();
-          onSuccess?.();
-        }, 1000);
-      } else {
-        setError(response.message || 'Google authentication failed');
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Google authentication error. Please try again.';
-      setError(errorMessage);
-    } finally {
+      const { error: sbError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (sbError) throw sbError;
+    } catch (err: any) {
+      setError(err.message || 'Google authentication failed');
       setLoading(false);
     }
   };
@@ -139,17 +109,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setLoading(true);
 
     try {
-      const data = authMethod === 'phone' ? { phone: contact } : { email: contact };
-      const response = await sendOTP(data);
-
-      if (response.success) {
-        setMessage('OTP resent successfully!');
-      } else {
-        setError(response.message || 'Failed to resend OTP');
-      }
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Network error. Please try again.';
-      setError(errorMessage);
+      const { error: sbError } = await supabase.auth.signInWithOtp(
+        authMethod === 'email' ? { email: contact } : { phone: contact }
+      );
+      if (sbError) throw sbError;
+      setMessage('OTP resent successfully!');
+    } catch (err: any) {
+      setError(err.message || 'Failed to resend OTP');
     } finally {
       setLoading(false);
     }

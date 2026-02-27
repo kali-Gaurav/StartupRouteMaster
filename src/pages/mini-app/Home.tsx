@@ -53,7 +53,7 @@ const MiniAppHome = () => {
   useEffect(() => {
     if (isAuthenticated && user?.user_id) {
       loadUserStats();
-      loadRecommendations(user.user_id);
+      loadRecommendations(Number(user.user_id));
     }
     loadPopularRoutes();
 

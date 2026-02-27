@@ -3,8 +3,8 @@
 
 import asyncio
 from datetime import datetime, date
-from backend.ml_reliability_model import MLReliabilityModel
-from backend.frequency_aware_range import FrequencyAwareWindowSizer
+from ml_reliability_model import MLReliabilityModel
+from frequency_aware_range import FrequencyAwareWindowSizer
 
 
 async def test_ml_reliability():

@@ -2,9 +2,9 @@ import pytest
 import backend.seat_inventory_models  # ensure Coach model is registered with Base before DB mapper configuration
 from datetime import datetime, date, time, timedelta
 
-from backend.core.route_engine import RouteEngine, RouteConstraints
-from backend.database import SessionLocal
-from backend.database.models import Trip, StopTime
+from core.route_engine import RouteEngine, RouteConstraints
+from database import SessionLocal
+from database.models import Trip, StopTime
 
 
 @pytest.mark.asyncio

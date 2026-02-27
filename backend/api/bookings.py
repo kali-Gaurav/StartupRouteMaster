@@ -3,12 +3,12 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import logging
 
-from backend.database import get_db
-from backend.services.booking_service import BookingService
-from backend.api.dependencies import get_current_user
-from backend.models import User
-from backend.database.models import Payment
-from backend.schemas import (
+from database import get_db
+from services.booking_service import BookingService
+from api.dependencies import get_current_user
+from database.models import User
+from database.models import Payment
+from schemas import (
     BookingResponseSchema,
     PassengerDetailsSchema,
     BookingCreateSchema,  # NEW: BookingCreateSchema
@@ -95,7 +95,7 @@ async def create_booking(
     }
     return resp
 
-from backend.schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
+from schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
 
 @router.get("/", response_model=BookingListSchema)
 async def list_bookings(
@@ -132,7 +132,7 @@ async def check_availability(
         raise HTTPException(status_code=400, detail="Invalid date format; expected YYYY-MM-DD")
 
     # resolve trip_id which may be a string representing backend route/trip
-    from backend.database.models import Trip
+    from database.models import Trip
 
     numeric_trip_id = None
     if isinstance(request.trip_id, str):
@@ -147,8 +147,8 @@ async def check_availability(
         numeric_trip_id = request.trip_id
 
     # delegate to the availability service
-    from backend.availability_service import availability_service, AvailabilityRequest
-    from backend.database.models import QuotaType
+    from availability_service import availability_service, AvailabilityRequest
+    from database.models import QuotaType
 
     # Convert quota_type string to QuotaType enum
     # Handle both uppercase and lowercase inputs
@@ -247,7 +247,7 @@ async def create_booking_request(
     
     The request will be added to the booking queue for admin/automated execution.
     """
-    from backend.database.models import BookingRequest, BookingRequestPassenger, BookingQueue, Payment, UnlockedRoute
+    from database.models import BookingRequest, BookingRequestPassenger, BookingQueue, Payment, UnlockedRoute
     from datetime import datetime
     
     # Verify user has unlocked this route (has paid ₹39)
@@ -354,7 +354,7 @@ async def get_booking_request(
     db: Session = Depends(get_db)
 ):
     """Get booking request details by ID."""
-    from backend.database.models import BookingRequest, BookingQueue
+    from database.models import BookingRequest, BookingQueue
     
     booking_request = db.query(BookingRequest).filter(
         BookingRequest.id == request_id,
@@ -397,7 +397,7 @@ async def get_my_booking_requests(
     db: Session = Depends(get_db)
 ):
     """Get all booking requests for current user."""
-    from backend.database.models import BookingRequest, BookingQueue
+    from database.models import BookingRequest, BookingQueue
     
     requests = db.query(BookingRequest).filter(
         BookingRequest.user_id == str(current_user.id)
@@ -451,8 +451,8 @@ async def create_refund(
     4. Creates refund record in database
     5. Updates booking request status
     """
-    from backend.database.models import BookingRequest, Refund
-    from backend.services.payment_service import PaymentService
+    from database.models import BookingRequest, Refund
+    from services.payment_service import PaymentService
     from datetime import datetime
     
     # Payment is already imported at top of file
@@ -617,7 +617,7 @@ async def get_refund_status(
     db: Session = Depends(get_db)
 ):
     """Get refund status for a booking request."""
-    from backend.database.models import BookingRequest, Refund
+    from database.models import BookingRequest, Refund
     
     # Verify booking request belongs to user
     booking_request = db.query(BookingRequest).filter(
@@ -657,7 +657,7 @@ async def get_my_refunds(
     db: Session = Depends(get_db)
 ):
     """Get all refunds for current user."""
-    from backend.database.models import BookingRequest, Refund
+    from database.models import BookingRequest, Refund
     
     # Get user's booking requests
     user_requests = db.query(BookingRequest).filter(

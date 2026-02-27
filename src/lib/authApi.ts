@@ -6,13 +6,14 @@
 import { fetchWithAuth } from './apiClient';
 
 export interface User {
-  user_id: number;
+  user_id: string | number;
   id?: string; // Keep id as optional string just in case
   phone?: string;
   email?: string;
   first_name?: string;
   last_name?: string;
   telegram_id?: number;
+  location_enabled?: boolean;
 }
 
 export interface AuthResponse {

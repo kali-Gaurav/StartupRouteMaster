@@ -7,19 +7,19 @@ from datetime import datetime
 # silence noisy SQLAlchemy engine logs during these simple endpoint tests
 logging.getLogger('sqlalchemy.engine.Engine').setLevel(logging.WARNING)
 
-from backend.app import app
-from backend.api.dependencies import get_current_user
-from backend.services.search_service import SearchService
-from backend.services.verification_engine import RouteVerificationEngine
-from backend.services.verification_orchestrator import VerificationOrchestrator
-from backend.services.cache_service import cache_service
+from app import app
+from api.dependencies import get_current_user
+from services.search_service import SearchService
+from services.verification_engine import RouteVerificationEngine
+from services.verification_orchestrator import VerificationOrchestrator
+from services.cache_service import cache_service
 
 
 @pytest.fixture(scope="function")
 def auth_client(db_session, monkeypatch):
     # re-use same auth_client strategy from payment tests
-    from backend.database.models import User
-    from backend.core.route_engine import route_engine
+    from database.models import User
+    from core.route_engine import route_engine
 
     # prevent route engine warmup from hitting missing methods by stubbing search
     async def dummy_search(*args, **kwargs):

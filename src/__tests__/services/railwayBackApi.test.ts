@@ -11,7 +11,7 @@ import {
 
 describe("railwayBackApi - mapBackendRoutesToRoutes", () => {
   const mockDirect: BackendDirectRoute = {
-    train_no: 12301,
+    train_no: "12301",
     train_name: "Rajdhani",
     departure: "16:00:00",
     arrival: "08:30:00",
@@ -65,8 +65,8 @@ describe("railwayBackApi - mapBackendRoutesToRoutes", () => {
         one_transfer: [
           {
             type: "one_transfer",
-            leg1: { ...mockDirect, train_no: 12301 },
-            leg2: { ...mockDirect, train_no: 12302 },
+            leg1: { ...mockDirect, train_no: "12301" },
+            leg2: { ...mockDirect, train_no: "12302" },
             junction: "AGC",
             waiting_time_minutes: 45,
             total_distance: 1500,
@@ -86,7 +86,7 @@ describe("railwayBackApi - mapBackendRoutesToRoutes", () => {
 
   it("handles missing optional fields", () => {
     const minimal: BackendDirectRoute = {
-      train_no: 999,
+      train_no: "999",
       departure: "00:00:00",
       arrival: "23:59:00",
     };

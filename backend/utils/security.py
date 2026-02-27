@@ -4,15 +4,22 @@ from typing import Optional
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 
-from backend.config import Config
-from backend.schemas import TokenData
+from schemas import TokenData
+from database.config import Config
+
 
 # Password Hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
-# In a real production environment, this should be a unique, strong secret
-# and not shared with other services like Supabase.  We now read from Config.JWT_SECRET_KEY
+# NOTE: the application now uses Supabase to issue and verify tokens.  Most
+# endpoints should not call these helpers directly.  They remain here for
+# legacy support / internal tokens (e.g. scheduled jobs) that may still rely
+# on `Config.JWT_SECRET_KEY`.
+#
+# The Supabase JWT secret and/or anon API key is sometimes reused here when
+# the legacy utilities are exercised, but new authentication should always be
+# performed through the Supabase client (see `supabase_client.py`).
 SECRET_KEY = Config.JWT_SECRET_KEY or Config.SUPABASE_KEY or "a_very_secret_key_that_is_long_and_secure"
 ALGORITHM = "HS256"
 # expiration can still be configured via Config or env if needed later

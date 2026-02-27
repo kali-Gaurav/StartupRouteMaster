@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from backend.services import PaymentService
+from services import PaymentService
 
 
 @pytest.fixture

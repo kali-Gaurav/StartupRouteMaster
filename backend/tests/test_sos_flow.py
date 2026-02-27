@@ -1,8 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import app
-from backend.api import websockets
+from app import app
+from api import websockets
 
 
 def test_sos_broadcast(monkeypatch):

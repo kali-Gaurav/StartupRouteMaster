@@ -6,12 +6,12 @@ from sqlalchemy.orm import Session
 import logging
 import time
 
-from backend.database import get_db
-from backend.database.models import Stop  # Use Stop instead of StationMaster
-from backend.services.cache_service import cache_service
-from backend.services.station_search_service import station_search_engine
-from backend.utils.limiter import limiter
-from backend.utils.metrics import STATION_SUGGEST_LATENCY_MS, STATION_SUGGEST_REQUESTS_TOTAL
+from database import get_db
+from database.models import Stop  # Use Stop instead of StationMaster
+from services.cache_service import cache_service
+from services.station_search_service import station_search_engine
+from utils.limiter import limiter
+from utils.metrics import STATION_SUGGEST_LATENCY_MS, STATION_SUGGEST_REQUESTS_TOTAL
 
 router = APIRouter(prefix="/api/stations", tags=["stations"])
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ async def legacy_station_search(q: str = Query(..., min_length=1), limit: int = 
         ]
         
         if not results:
-            from backend.database.models import StationMaster
+            from database.models import StationMaster
             try:
                 legacy_candidates = db.query(StationMaster).filter(
                     (StationMaster.station_name.ilike(f"%{query_lower}%")) |

@@ -13,9 +13,9 @@ from typing import Dict, Any
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from backend.config import Config
-from backend.services.event_producer import get_event_producer, KafkaEventProducer
-from backend.services.analytics_consumer import get_analytics_consumer
+from config import Config
+from services.event_producer import get_event_producer, KafkaEventProducer
+from services.analytics_consumer import get_analytics_consumer
 
 def audit_producer_config():
     """Audit producer configuration for minimal backbone requirements"""

@@ -26,8 +26,8 @@ try:
     from config import Config
     from domains.routing import RailwayRouteEngine, LegacyHybridSearchAdapter, get_legacy_adapter
 except ImportError:
-    from backend.config import Config
-    from backend.domains.routing import RailwayRouteEngine, LegacyHybridSearchAdapter, get_legacy_adapter
+    from config import Config
+    from domains.routing import RailwayRouteEngine, LegacyHybridSearchAdapter, get_legacy_adapter
 
 logger = logging.getLogger(__name__)
 

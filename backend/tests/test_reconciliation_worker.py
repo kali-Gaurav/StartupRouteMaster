@@ -2,10 +2,10 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
-from backend.worker import reconcile_payments
-from backend.models import Booking, Payment
-from backend.database import SessionLocal
-from backend.services.payment_service import PaymentService
+from worker import reconcile_payments
+from models import Booking, Payment
+from database import SessionLocal
+from services.payment_service import PaymentService
 
 
 @pytest.fixture

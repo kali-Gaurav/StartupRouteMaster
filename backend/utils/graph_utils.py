@@ -1,10 +1,5 @@
 import logging
 from math import radians, cos, sin, asin, sqrt
-from typing import Dict, List, Tuple, Optional
-from collections import defaultdict
-from datetime import datetime, timedelta
-
-from backend.utils.time_utils import is_operating_on_day, time_string_to_minutes
 
 logger = logging.getLogger(__name__)
 

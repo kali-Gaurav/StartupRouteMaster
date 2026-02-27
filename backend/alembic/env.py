@@ -18,11 +18,17 @@ if config.config_file_name is not None:
 
 # Add the backend directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Also add the project root to handle 'backend.database' style imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from backend.config import Config
-from backend.database import Base
-# import models so SQLAlchemy's MetaData is populated for autogenerate
-import backend.models  # noqa: F401
+try:
+    from database.config import Config
+    from database.session import Base
+    import database.models
+except ImportError:
+    from database.config import Config
+    from database.session import Base
+    import backend.database.models
 
 # add your model's MetaData object here
 # for 'autogenerate' support

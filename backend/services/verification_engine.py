@@ -11,15 +11,15 @@ from dataclasses import dataclass, asdict
 import json
 import logging
 
-from backend.config import Config
+from database.config import Config
 from sqlalchemy.orm import Session
-from backend.core.route_engine.data_provider import DataProvider
-from backend.core.segment_detail import SegmentDetail, JourneyOption
-from backend.database.models import Stop
-from backend.services.cache_service import cache_service
-from backend.services.live_status_service import LiveStatusService
-from backend.services.seat_availability_service import SeatAvailabilityService
-from backend.services.fare_service import FareService
+from core.route_engine.data_provider import DataProvider
+from core.segment_detail import SegmentDetail, JourneyOption
+from database.models import Stop
+from services.cache_service import cache_service
+from services.live_status_service import LiveStatusService
+from services.seat_availability_service import SeatAvailabilityService
+from services.fare_service import FareService
 
 
 class VerificationStatus(str, Enum):

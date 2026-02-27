@@ -7,11 +7,10 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from backend.database import SessionLocal
-from backend.database.models import TrainState
-from routemaster_agent.database.models import (
-    RealtimeData, TrainLiveUpdate, TrainMaster, TrainStation
-)
+from database import SessionLocal
+from database.models import TrainState, Disruption
+from database.models import RealtimeData, TrainLiveUpdate, StopTime, Trip
+
 
 if TYPE_CHECKING:
     from .route_engine.engine import RailwayRouteEngine
@@ -21,48 +20,49 @@ logger = logging.getLogger(__name__)
 
 class RealtimeEventProcessor:
     """
-    Processes real-time events from TrainLiveUpdate table (API data) and RealtimeData table.
+    Processes real-time events from TrainLiveUpdate table (API data), 
+    RealtimeData table, and Disruption table.
     Applies delays to the RailwayRouteEngine's overlay and propagates through route.
-    
-    Implements Phase 4: Realtime Overlay Integration
-    Pipeline:
-        1. Fetch latest TrainLiveUpdate records
-        2. Apply delay propagation logic
-        3. Update RealtimeOverlay (in-memory)
-        4. Update TrainState (persistent)
-        5. Pass updated delays to routing engine
     """
 
     def __init__(self, engine: 'RailwayRouteEngine', db_session_factory=SessionLocal):
         self.engine = engine
         self.db_session_factory = db_session_factory
-        self._processed_updates = set()  # Track processed updates to avoid duplicates
+        self._processed_updates = set()
 
     async def process_events(self):
         """
-        Fetches new events from both RealtimeData and TrainLiveUpdate tables,
+        Fetches new events from all source tables,
         applies delay propagation, and updates the routing engine overlay.
         """
         session = self.db_session_factory()
         try:
             logger.info("=" * 60)
-            logger.info("🔄 Processing real-time events and delays...")
+            logger.info("🔄 Processing real-time events, delays, and disruptions...")
             
-            # Process both event stream and live API data
+            # 1. Process Event Stream (RealtimeData)
             event_updates = self._process_realtime_data_events(session)
+            
+            # 2. Process Live API Snapshots (TrainLiveUpdate)
             api_updates = self._process_train_live_updates(session)
             
-            total_updates = len(event_updates) + len(api_updates)
+            # 3. Process High-level Disruptions (Disruption)
+            disruption_updates = self._process_disruptions(session)
+            
+            total_updates = len(event_updates) + len(api_updates) + len(disruption_updates)
             
             if total_updates == 0:
                 logger.debug("No new real-time events or updates")
                 return
             
-            logger.info(f"📊 Processing {total_updates} updates (events: {len(event_updates)}, API: {len(api_updates)})")
+            logger.info(f"📊 Processing {total_updates} updates (events: {len(event_updates)}, API: {len(api_updates)}, Disruptions: {len(disruption_updates)})")
+            
+            # Combine all updates
+            all_updates = event_updates + api_updates + disruption_updates
             
             # Apply to overlay and train state
-            await self._apply_updates_to_overlay(session, event_updates + api_updates)
-            self._update_train_state_table(session, event_updates + api_updates)
+            await self._apply_updates_to_overlay(session, all_updates)
+            self._update_train_state_table(session, all_updates)
             
             session.commit()
             logger.info(f"✓ Successfully processed {total_updates} real-time updates")
@@ -73,6 +73,42 @@ class RealtimeEventProcessor:
             logger.error(f"❌ Error processing real-time events: {e}", exc_info=True)
         finally:
             session.close()
+
+    def _process_disruptions(self, session: Session) -> List[Dict[str, Any]]:
+        """Fetch active disruptions from the disruptions table."""
+        try:
+            active_disruptions = session.query(Disruption).filter(
+                Disruption.status == 'active'
+            ).all()
+            
+            updates = []
+            for d in active_disruptions:
+                # Handle trip-level disruption
+                if d.trip_id:
+                    updates.append({
+                        'type': d.disruption_type,
+                        'trip_id': d.trip_id,
+                        'delay_minutes': 60 if d.disruption_type == 'delay' else 0, # Default if not specified
+                        'status': d.disruption_type,
+                        'source': 'disruption_table'
+                    })
+                # Handle stop-level disruption (Propagate to all trips at this stop)
+                elif d.stop_id:
+                    trips_at_stop = session.query(StopTime.trip_id).filter(
+                        StopTime.stop_id == d.stop_id
+                    ).distinct().all()
+                    for t in trips_at_stop:
+                        updates.append({
+                            'type': d.disruption_type,
+                            'trip_id': t.trip_id,
+                            'delay_minutes': 30, # Default station delay
+                            'status': d.disruption_type,
+                            'source': f'disruption_stop_{d.stop_id}'
+                        })
+            return updates
+        except Exception as e:
+            logger.error(f"Error fetching disruptions: {e}")
+            return []
 
     def _process_realtime_data_events(self, session: Session) -> List[Dict[str, Any]]:
         """
@@ -281,6 +317,6 @@ class RealtimeEventProcessor:
 
     def _get_propagation_manager(self, session: Session):
         """Lazy import to avoid circular dependencies."""
-        from backend.services.realtime_ingestion.delay_propagation import DelayPropagationManager
+        from services.realtime_ingestion.delay_propagation import DelayPropagationManager
         return DelayPropagationManager(session)
 

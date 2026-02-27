@@ -25,10 +25,9 @@ export function Footer() {
             <h4 className="font-semibold text-foreground mb-4">Product</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
               <li><a href={TELEGRAM_BOT_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 hover:text-foreground transition-colors text-primary font-medium"><MessageCircle className="w-4 h-4" /> Use in Telegram</a></li>
+              <li><a href="/safety" className="hover:text-foreground transition-colors text-emerald-600 font-semibold">Safety Guarantee</a></li>
               <li><a href="#" className="hover:text-foreground transition-colors">Features</a></li>
               <li><a href="#" className="hover:text-foreground transition-colors">Pricing</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">API</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Documentation</a></li>
             </ul>
           </div>
 
@@ -45,9 +44,9 @@ export function Footer() {
           <div>
             <h4 className="font-semibold text-foreground mb-4">Legal</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
-              <li><a href="#" className="hover:text-foreground transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Cookie Policy</a></li>
+              <li><a href="/privacy" className="hover:text-foreground transition-colors">Privacy Policy</a></li>
+              <li><a href="/terms" className="hover:text-foreground transition-colors">Terms of Service</a></li>
+              <li><a href="/safety" className="hover:text-foreground transition-colors">Safety Disclaimer</a></li>
             </ul>
           </div>
         </div>

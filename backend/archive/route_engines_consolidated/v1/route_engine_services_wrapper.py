@@ -1,5 +1,5 @@
 # Compatibility wrapper - actual implementation moved to backend.core
-from backend.core.route_engine import RouteEngine
+from core.route_engine import RouteEngine
 
 route_engine = RouteEngine()
 

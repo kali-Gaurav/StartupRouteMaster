@@ -9,8 +9,8 @@ import pytest
 from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
-from backend.database import SessionLocal, Base, engine_write
-from backend.models import User, Stop, Trip, Calendar, Route, StopTime, Agency
+from database import SessionLocal, Base, engine_write
+from models import User, Stop, Trip, Calendar, Route, StopTime, Agency
 
 
 @pytest.fixture(scope="session")
@@ -32,7 +32,7 @@ def test_db_setup():
 
     # override get_db for the entire test session
     from backend import app as _app_module
-    from backend.database import get_db, SessionLocal
+    from database import get_db, SessionLocal
     _app_module.app.dependency_overrides[get_db] = lambda: SessionLocal()
 
     yield
@@ -51,7 +51,7 @@ def db_session(test_db_setup):
     session = SessionLocal()
     # configure dependency override
     from backend import app as _app_module
-    from backend.database import get_db
+    from database import get_db
     _app_module.app.dependency_overrides[get_db] = lambda: session
     try:
         yield session

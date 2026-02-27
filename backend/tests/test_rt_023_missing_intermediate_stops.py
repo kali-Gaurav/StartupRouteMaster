@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from backend.core.route_engine import OptimizedRAPTOR, RouteSegment
+from core.route_engine import OptimizedRAPTOR, RouteSegment
 
 
 def test_rt_023_missing_intermediate_stops_rejected():

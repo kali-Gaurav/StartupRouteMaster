@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { StationSearch } from '@/components/StationSearch';
 import { test, expect } from 'vitest';

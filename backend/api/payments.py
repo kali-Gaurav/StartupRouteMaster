@@ -7,18 +7,18 @@ import redis
 import time
 import json
 
-from backend.database import get_db
-from backend.schemas import PaymentOrderSchema
-from backend.services.payment_service import PaymentService
-from backend.services.booking_service import BookingService
-from backend.services.unlock_service import UnlockService
-from backend.services.price_calculation_service import PriceCalculationService
-from backend.services.cache_service import cache_service
-from backend.services.route_verification_service import RouteVerificationService
-from backend.database.models import Route as RouteModel, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
-from backend.api.dependencies import get_current_user, verify_webhook_signature
-from backend.services.redirect_service import redirect_service
-from backend.utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
+from database import get_db
+from schemas import PaymentOrderSchema
+from services.payment_service import PaymentService
+from services.booking_service import BookingService
+from services.unlock_service import UnlockService
+from services.price_calculation_service import PriceCalculationService
+from services.cache_service import cache_service
+from services.route_verification_service import RouteVerificationService
+from database.models import Route as RouteModel, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
+from api.dependencies import get_current_user, verify_webhook_signature
+from services.redirect_service import redirect_service
+from utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 logger = logging.getLogger(__name__)
@@ -338,7 +338,7 @@ async def payment_webhook(
 
     dedup_id = event_id or f"{event_type or 'unknown'}:{fallback_identifier or 'unknown'}:{fallback_status or 'unknown'}"
 
-    from backend.database.models import WebhookEvent
+    from database.models import WebhookEvent
 
     existing = db.query(WebhookEvent).filter(WebhookEvent.id == dedup_id).first()
     if existing:
@@ -384,7 +384,7 @@ async def payment_webhook(
 
                 # propagate to booking/unlock if needed
                 if payment_record.booking_id and payment_record.status == "completed":
-                    from backend.services.booking_service import BookingService
+                    from services.booking_service import BookingService
                     booking_service = BookingService(db)
                     booking_service.confirm_booking(payment_record.booking_id)
                 else:
@@ -397,7 +397,7 @@ async def payment_webhook(
         r_refund_id = refund_entity.get("id")
         status = refund_entity.get("status")
         if r_refund_id:
-            from backend.database.models import Refund as RefundModel
+            from database.models import Refund as RefundModel
             refund_record = (
                 db.query(RefundModel)
                 .filter(RefundModel.razorpay_refund_id == r_refund_id)

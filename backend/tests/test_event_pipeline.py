@@ -25,20 +25,20 @@ logger = logging.getLogger(__name__)
 import importlib
 import backend.config
 importlib.reload(backend.config)
-from backend.config import Config
+from config import Config
 
 # Also reload the consumer module to pick up new config
 import backend.services.analytics_consumer
 importlib.reload(backend.services.analytics_consumer)
-from backend.services.analytics_consumer import get_analytics_consumer, start_analytics_consumer
+from services.analytics_consumer import get_analytics_consumer, start_analytics_consumer
 
-from backend.services.event_producer import (
+from services.event_producer import (
     get_event_producer,
     publish_route_searched,
     publish_booking_created,
     publish_train_delayed
 )
-from backend.services.delay_service import delay_service
+from services.delay_service import delay_service
 
 logger.info(f"KAFKA_ENABLE_EVENTS: {Config.KAFKA_ENABLE_EVENTS}")
 logger.info(f"KAFKA_BOOTSTRAP_SERVERS: {Config.KAFKA_BOOTSTRAP_SERVERS}")

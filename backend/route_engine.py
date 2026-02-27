@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from backend.core.route_engine import (
+from core.route_engine import (
     RouteEngine,
     RailwayRouteEngine,
     OptimizedRAPTOR,
@@ -17,8 +17,8 @@ from backend.core.route_engine import (
     UserContext,
     route_engine as _lazy_route_engine,
 )
-from backend.database import SessionLocal
-from backend.database.models import Stop
+from database import SessionLocal
+from database.models import Stop
 
 __all__ = [
     "RouteEngine",

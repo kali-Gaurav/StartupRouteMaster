@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from backend.utils.time_utils import (
+from utils.time_utils import (
     time_string_to_minutes,
     minutes_to_time_string,
     calculate_duration,
@@ -8,14 +8,14 @@ from backend.utils.time_utils import (
     get_day_of_week,
     is_operating_on_day,
 )
-from backend.utils.graph_utils import haversine_distance
-from backend.utils.validators import (
+from utils.graph_utils import haversine_distance
+from utils.validators import (
     validate_date,
     validate_phone,
     validate_budget,
     validate_operating_days,
 )
-from backend.config import Config
+from config import Config
 
 
 class TestTimeUtils:
@@ -119,7 +119,7 @@ class TestRouteEngine:
     """Unit tests for the RAPTOR MVP implementation in RouteEngine (updated to async/core API)."""
 
     def setup_routeengine(self):
-        from backend.services.route_engine import route_engine
+        from services.route_engine import route_engine
         # reset internal maps (legacy test harness)
         route_engine.stations_map = {}
         route_engine.segments_map = {}
@@ -271,7 +271,7 @@ class TestRouteEngine:
     def test_cache_invalidation_on_schema_mismatch(self, tmp_path):
         import pickle
         import importlib
-        from backend.services import route_engine as re_mod
+        from services import route_engine as re_mod
 
         # create a bogus cache file with wrong schema_version
         bogus = {"meta": {"schema_version": 999, "etl_timestamp": "now"}, "state": {}}
@@ -294,7 +294,7 @@ class TestParetoPruning:
     """Test Pareto-optimal route filtering."""
 
     def setup_routeengine(self):
-        from backend.services.route_engine import route_engine
+        from services.route_engine import route_engine
         # reset internal maps
         route_engine.stations_map = {}
         route_engine.segments_map = {}
@@ -425,7 +425,7 @@ class TestParetoPruning:
         }
 
         # Temporarily set PARETO_LIMIT to high value to see all Pareto-optimal
-        from backend.config import Config
+        from config import Config
         old_limit = Config.PARETO_LIMIT
         Config.PARETO_LIMIT = 10
         try:
@@ -480,7 +480,7 @@ class TestParetoPruning:
             re.segments_map[seg["id"]] = seg
             re.route_segments[f"route_v_{i}"] = [seg]
 
-        from backend.config import Config
+        from config import Config
         old_limit = Config.PARETO_LIMIT
         Config.PARETO_LIMIT = 3  # Limit to 3 results
         try:
@@ -503,7 +503,7 @@ class TestFeasibilityScoring:
     """Tests for feasibility scoring, safety and night-layover penalties."""
 
     def setup_routeengine(self):
-        from backend.services.route_engine import route_engine
+        from services.route_engine import route_engine
         route_engine.stations_map = {}
         route_engine.segments_map = {}
         route_engine.route_segments = {}

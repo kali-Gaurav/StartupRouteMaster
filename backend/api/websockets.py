@@ -4,12 +4,12 @@ import asyncio
 import json
 import logging
 from jose import JWTError
-from backend.database.config import Config
+from database.config import Config
 import redis.asyncio as aioredis
-from backend.core.monitoring import WS_CONNECTIONS, WS_TRAIN_SUBSCRIPTIONS, WS_BROADCAST_ERRORS
-from backend.utils.security import decode_access_token
-from backend.database import SessionLocal
-from backend.services.user_service import UserService
+from core.monitoring import WS_CONNECTIONS, WS_TRAIN_SUBSCRIPTIONS, WS_BROADCAST_ERRORS
+from utils.security import decode_access_token
+from database.session import SessionLocal
+from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,7 +47,8 @@ class ConnectionManager:
                 Config.REDIS_URL, 
                 decode_responses=True,
                 socket_timeout=5,
-                retry_on_timeout=True
+                retry_on_timeout=True,
+                ssl_cert_reqs=None
             )
             self.pubsub = self.redis.pubsub()
             
@@ -59,11 +60,11 @@ class ConnectionManager:
             if not self._pubsub_task or self._pubsub_task.done():
                 self._pubsub_task = asyncio.create_task(self._redis_listener())
             
-            from backend.core.monitoring import SYSTEM_DEGRADED_MODE
+            from core.monitoring import SYSTEM_DEGRADED_MODE
             SYSTEM_DEGRADED_MODE.labels(reason="redis_failure").set(0)
             logger.info("✅ Distributed WebSocket Manager (Redis Pub/Sub) Initialized")
         except Exception as e:
-            from backend.core.monitoring import REDIS_HEALTH_CHECKS, SYSTEM_DEGRADED_MODE
+            from core.monitoring import REDIS_HEALTH_CHECKS, SYSTEM_DEGRADED_MODE
             REDIS_HEALTH_CHECKS.labels(status="fail").inc()
             SYSTEM_DEGRADED_MODE.labels(reason="redis_failure").set(1)
             logger.error(f"❌ Redis PubSub Initialization Failed: {e}")
@@ -98,11 +99,11 @@ class ConnectionManager:
                         await self._local_broadcast_to_train(train_no, payload)
                 
                 await asyncio.sleep(0.1)
-                from backend.core.monitoring import REDIS_HEALTH_CHECKS
+                from core.monitoring import REDIS_HEALTH_CHECKS
                 REDIS_HEALTH_CHECKS.labels(status="ok").inc()
             except Exception as e:
                 logger.error(f"Redis Listener Error: {e}")
-                from backend.core.monitoring import REDIS_HEALTH_CHECKS
+                from core.monitoring import REDIS_HEALTH_CHECKS
                 REDIS_HEALTH_CHECKS.labels(status="fail").inc()
                 # If connection is lost, clear redis/pubsub so it re-initializes
                 self.redis = None

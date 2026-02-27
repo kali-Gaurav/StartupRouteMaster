@@ -10,9 +10,9 @@ import time
 from datetime import datetime
 from typing import Dict, Any
 
-from backend.database import SessionLocal
+from database import SessionLocal
 from .position_estimator import TrainPositionEstimator
-from backend.core.monitoring import BROADCASTER_TICK_DURATION
+from core.monitoring import BROADCASTER_TICK_DURATION
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class PositionBroadcaster:
 
     async def start(self):
         # Lazy import for manager to avoid circular deps
-        from backend.api.websockets import manager
+        from api.websockets import manager
         
         if self.is_running:
             return
@@ -52,7 +52,7 @@ class PositionBroadcaster:
                         if position:
                             # 2.1 Cache last known position in Redis (Distributed State)
                             history_key = f"pos:last:{train_no}"
-                            from backend.services.multi_layer_cache import multi_layer_cache
+                            from services.multi_layer_cache import multi_layer_cache
                             await multi_layer_cache.initialize()
                             if multi_layer_cache.redis:
                                 await multi_layer_cache.redis.setex(history_key, 60, json.dumps(position))

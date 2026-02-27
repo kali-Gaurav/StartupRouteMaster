@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from backend.database import SessionLocal
-from backend.models import Stop
-from backend.route_engine import (
+from database import SessionLocal
+from models import Stop
+from route_engine import (
     RouteEngine,
     OptimizedRAPTOR,
     TimeDependentGraph,

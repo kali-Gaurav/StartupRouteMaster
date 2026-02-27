@@ -7,8 +7,8 @@ Phase 4 - Step 1: Basic train delay reporting with event publishing
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from backend.config import Config
-from backend.services.event_producer import publish_train_delayed
+from config import Config
+from services.event_producer import publish_train_delayed
 
 logger = logging.getLogger(__name__)
 

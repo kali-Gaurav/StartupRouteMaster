@@ -5,13 +5,12 @@ from sqlalchemy import create_engine, text
 from collections import defaultdict
 from datetime import time
 
-from backend.config import Config
-from backend.database import Base
-from backend.models import (
+from database.config import Config
+from database import Base
+from database.models import (
     Agency, Stop, Route as GtfsRoute, Calendar, Trip, StopTime,
     User, Booking, Review, Payment, UnlockedRoute, CommissionTracking, Disruption,
     SeatInventory, PrecalculatedRoute,
-    Stop,
 )
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point

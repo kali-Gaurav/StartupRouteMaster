@@ -14,21 +14,18 @@ import { getAllTickets } from "@/lib/ticketStore";
 import { HistorySkeleton } from "@/components/skeletons";
 import { Ticket, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-
-interface Booking {
-  booking_id?: string;
-  id?: string;
-  origin: string;
-  destination: string;
-  travel_date?: string;
-  created_at?: string;
-  train_no?: string;
-}
+import { type Booking } from "@/api/booking";
 
 function BookingsContent() {
   const [page, setPage] = useState(0);
   const limit = 20;
-  const { data: bookings = [], isLoading: loading, error: queryError, refetch } = useBookings({ skip: page * limit, limit }) as { data: Booking[], isLoading: boolean, error: unknown, refetch: () => void };
+  const { data: bookingsData, isLoading: loading, error: queryError, refetch } = useBookings({ skip: page * limit, limit });
+  
+  // Handle various response shapes from useBookings hook
+  const bookings: Booking[] = Array.isArray(bookingsData) 
+    ? bookingsData 
+    : (bookingsData as any)?.bookings || [];
+
   const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load bookings") : null;
   const localTickets = getAllTickets();
 
@@ -103,7 +100,7 @@ function BookingsContent() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="font-medium">
-                          {b.booking_details?.origin || b.booking_details?.source || "Unknown"} → {b.booking_details?.destination || b.booking_details?.dest || "Unknown"}
+                          {(b.booking_details as any)?.origin || (b.booking_details as any)?.source || "Unknown"} → {(b.booking_details as any)?.destination || (b.booking_details as any)?.dest || "Unknown"}
                         </span>
                         {b.booking_status && (
                           <span className={`text-xs px-2 py-0.5 rounded ${

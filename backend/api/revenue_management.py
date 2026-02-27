@@ -21,11 +21,11 @@ from typing import Dict, List, Optional
 from datetime import datetime, date
 import logging
 
-from backend.database import get_db
-from backend.config import Config
-from backend.services.yield_management_engine import yield_management_engine, QuotaType
-from backend.services.advanced_seat_allocation_engine import advanced_seat_allocation_engine
-from backend.services.cancellation_predictor import cancellation_predictor
+from database import get_db
+from database.config import Config
+from services.yield_management_engine import yield_management_engine, QuotaType
+from services.advanced_seat_allocation_engine import advanced_seat_allocation_engine
+from services.cancellation_predictor import cancellation_predictor
 
 logger = logging.getLogger(__name__)
 

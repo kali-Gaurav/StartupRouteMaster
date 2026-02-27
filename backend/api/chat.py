@@ -10,19 +10,47 @@ import json
 from sqlalchemy.orm import Session
 import logging
 
-from backend.config import Config
-from backend.services.cache_service import cache_service
-from backend.services.booking_service import BookingService
-from backend.api import sos as sos_api
-from backend.database import get_db
-from backend.models import User, Route as RouteModel
-from backend.api.dependencies import get_current_user, get_optional_user
-from backend.utils.limiter import limiter  # import limiter from its source module
+from database.config import Config
+from services.cache_service import cache_service
+from services.booking_service import BookingService
+from api import sos as sos_api
+from database import get_db
+from database.models import User, Route as RouteModel
+from api.dependencies import get_current_user, get_optional_user
+from utils.limiter import limiter  # import limiter from its source module
 from pybreaker import CircuitBreaker, CircuitBreakerError # New: Import CircuitBreaker
+from core.monitoring import CHATBOT_MESSAGES_TOTAL, CHATBOT_ACTION_EXECUTED_TOTAL
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+class MemorySync(BaseModel):
+    memory: Dict[str, Any]
+
+@router.get("/memory")
+async def get_chat_memory(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.profile:
+        return {"memory": {}}
+    return {"memory": current_user.profile.ai_memory or {}}
+
+@router.post("/memory")
+async def update_chat_memory(
+    payload: MemorySync,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    
+    current_memory = current_user.profile.ai_memory or {}
+    updated_memory = {**current_memory, **payload.memory}
+    current_user.profile.ai_memory = updated_memory
+    db.commit()
+    return {"status": "success", "memory": updated_memory}
 
 # Initialize Redis client
 # Use Redis when available via CacheService; otherwise keep a local in-memory fallback
@@ -104,9 +132,9 @@ class GatewayValidator:
             
             # perform actual search using route engine + helpers
             try:
-                from backend.core.route_engine import route_engine
-                from backend.utils.station_utils import resolve_stations
-                from backend.utils.validation import validate_date_string
+                from core.route_engine import route_engine
+                from utils.station_utils import resolve_stations
+                from utils.validation import validate_date_string
                 from datetime import datetime
 
                 travel_dt = None
@@ -363,6 +391,23 @@ class ChatResponse(BaseModel):
     correlation_id: Optional[str] = None
     # when a route search is executed by the chat gateway, results are placed here
     search_results: Optional[List[Dict[str, Any]]] = None
+    intent: Optional[str] = None # Added for decision engine
+    confidence: Optional[float] = 1.0 # 0.0 to 1.0
+
+def calculate_confidence(intent: str, message: str) -> float:
+    """Heuristic confidence scoring for rule-based engine."""
+    base = 0.7
+    msg = message.lower()
+    
+    if intent == 'trigger_sos':
+        if any(w in msg for w in ['help', 'danger', 'save', 'panic']):
+            base += 0.2
+    
+    if intent == 'search':
+        if 'from' in msg and 'to' in msg:
+            base += 0.2
+            
+    return min(base, 0.99)
 
 
 @openrouter_breaker # New: Apply circuit breaker
@@ -607,12 +652,16 @@ def extract_date_from_message(message: str) -> Optional[str]:
 
 def get_intent_from_message(message: str) -> str:
     message_lower = message.lower()
+    if any(word in message_lower for word in ['sos', 'panic', 'save', 'emergency']):
+        return 'trigger_sos'
+    if any(word in message_lower for word in ['guardian', 'family', 'track', 'live', 'telemetry']):
+        return 'navigate_guardian'
+    if any(word in message_lower for word in ['safe', 'security', 'reliable', 'women']):
+        return 'safety_info'
     if any(word in message_lower for word in ['book', 'search', 'find', 'route', 'train', 'ticket', 'journey', 'travel']):
         return 'search'
     if any(word in message_lower for word in ['dashboard', 'home', 'main', 'analytics', 'stats']):
         return 'navigate_dashboard'
-    if any(word in message_lower for word in ['sos', 'emergency', 'help', 'emergency', 'assist']):
-        return 'navigate_sos'
     if any(word in message_lower for word in ['booking', 'my booking', 'history', 'past travels']):
         return 'navigate_bookings'
     if any(word in message_lower for word in ['admin', 'administrator', 'manage', 'management']):
@@ -680,6 +729,27 @@ Please try again!"""
                 ChatAction(label="Search Form", type="navigate", value="/"),
                 ChatAction(label="Help", type="intent", value="help")
             ]
+    elif intent == 'trigger_sos':
+        reply = "🚨 **EMERGENCY MODE**\n\nI can trigger an immediate SOS alert with your live location. Please confirm by tapping the button below."
+        actions = [
+            ChatAction(label="Open SOS Page", type="navigate", value="/sos"),
+            ChatAction(label="Emergency Help", type="intent", value="help")
+        ]
+
+    elif intent == 'navigate_guardian':
+        reply = "🛡️ **Journey Guardian**\n\nYou can enable live telemetry monitoring and family alerts using Guardian Mode. It's recommended for night journeys."
+        actions = [
+            ChatAction(label="Activate Guardian", type="navigate", value="/sos"),
+            ChatAction(label="Safety Info", type="navigate", value="/safety")
+        ]
+
+    elif intent == 'safety_info':
+        reply = "✅ **Route Safety**\n\nRouteMaster uses AI to calculate **Safety Scores** for every route based on historical data and live telemetry. Look for the 'Verified Safe' badge!"
+        actions = [
+            ChatAction(label="Safety Guarantee", type="navigate", value="/safety"),
+            ChatAction(label="Popular Routes", type="intent", value="popular_routes")
+        ]
+
     elif intent == 'navigate_dashboard':
         reply = "📊 Opening your dashboard..."
         actions = [
@@ -735,6 +805,8 @@ Please try again!"""
         collected=collected,
         session_id=session_data.get("session_id") if isinstance(session_data, dict) else None,
         correlation_id=correlation_id,
+        intent=intent,
+        confidence=calculate_confidence(intent, message)
     )
 
 # -- POST /chat (uses Redis-backed sessions) --
@@ -859,6 +931,9 @@ RESPONSE STYLE:
     })
 
     _save_session(session_id, session)
+
+    # Track Chatbot Engagement Telemetry
+    CHATBOT_MESSAGES_TOTAL.labels(intent=response_obj.state or "idle").inc()
 
     response_obj.session_id = session_id
     response_obj.state = response_obj.state if response_obj.state else "idle"

@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime, timedelta, time, date
 from collections import defaultdict
 from sqlalchemy.orm import Session
-from backend.models import Stop, Trip, StopTime, Route, Calendar # Import relevant GTFS models
+from models import Stop, Trip, StopTime, Route, Calendar # Import relevant GTFS models
 from .raptor_data import NetworkDataLoader # Import the data loader
 
 logger = logging.getLogger(__name__)

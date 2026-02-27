@@ -1,7 +1,7 @@
 """Minimal config used specifically by the tests package."""
 
 import os
-from backend.config import Config as BaseConfig
+from config import Config as BaseConfig
 
 
 class Config(BaseConfig):

@@ -11,22 +11,21 @@ This is the core abstraction that enables single-system offline/online/hybrid op
 """
 
 import logging
+import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time
 import asyncio
-import os
-
-from ...database import SessionLocal
-from ...database.models import Coach, Seat, Fare, SeatInventory, Trip, StopTime
-from ...services.cache_service import cache_service
-
+from database.models import Coach, Fare, Seat, SeatInventory, StopTime, Segment, Trip, TrainMaster
+from database.session import SessionLocal
+from services import cache_service
+from core.pricing.fare_calculator import calculate_fare
 logger = logging.getLogger(__name__)
 
 # Import RapidAPI client if available
 try:
-    from ...services.booking.rapid_api_client import RapidAPIClient
+    from services.booking.rapid_api_client import RapidAPIClient
     RAPIDAPI_AVAILABLE = True
-except ImportError:
+except (ImportError, ValueError):
     RAPIDAPI_AVAILABLE = False
     logger.warning("RapidAPIClient not available - verification will use database only")
 
@@ -88,8 +87,8 @@ class DataProvider:
         """
         if config is None:
             if self.config is None:
-                from ... import config as cfg
-                config = cfg.Config
+                from database.config import Config
+                config = Config
             else:
                 config = self.config
 
@@ -132,7 +131,7 @@ class DataProvider:
                 train_no = None
                 from_code = None
                 to_code = None
-                from ...database.models import Segment, Trip, StopTime, Stop
+                from database.models import Segment, Trip, StopTime, Stop
                 seg = self.session.query(Segment).filter(Segment.id == segment_id).first()
                 if seg and seg.trip_id:
                     trip = self.session.query(Trip).filter(Trip.id == seg.trip_id).first()
@@ -195,7 +194,7 @@ class DataProvider:
             from_code = None
             to_code = None
             try:
-                from ...database.models import Trip, StopTime, Stop
+                from database.models import Trip, StopTime, Stop
                 trip = self.session.query(Trip).filter(Trip.id == trip_id).first()
                 if trip:
                     train_no = getattr(trip.route, 'short_name', None) or trip.trip_id
@@ -221,9 +220,9 @@ class DataProvider:
                     if seat_result and seat_result.get("success"):
                         # external API succeeded
                         try:
-                            from ...utils import external_api_health, metrics as _metrics
+                            from utils import external_api_health, metrics as _metrics
                             external_api_health.record_success()
-                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(time.time())
                         except Exception:
                             pass
 
@@ -289,7 +288,7 @@ class DataProvider:
         if self.has_live_delays and self.live_status_service and self.live_status_service.enabled:
             try:
                 train_no = None
-                from ...database.models import Trip
+                from database.models import Trip
                 trip = self.session.query(Trip).filter(Trip.id == trip_id).first()
                 if trip:
                     train_no = getattr(trip.route, 'short_name', None) or trip.trip_id
@@ -298,9 +297,9 @@ class DataProvider:
                     if status and status.get("success"):
                         # record external API success
                         try:
-                            from ...utils import external_api_health, metrics as _metrics
+                            from utils import external_api_health, metrics as _metrics
                             external_api_health.record_success()
-                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                            _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(time.time())
                         except Exception:
                             pass
 
@@ -392,7 +391,7 @@ class DataProvider:
         """
         try:
             # import lazily to avoid circular dependencies during module load
-            from ...database.models import StationDeparture
+            from database.models import StationDeparture
 
             departures = self.session.query(StationDeparture).filter(
                 StationDeparture.station_id == station_id,
@@ -485,9 +484,9 @@ class DataProvider:
                 if result and result.get("status") != "error":
                     # record external API success and update gauge
                     try:
-                        from ...utils import external_api_health, metrics as _metrics
+                        from utils import external_api_health, metrics as _metrics
                         external_api_health.record_success()
-                        _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(_time.time())
+                        _metrics.EXTERNAL_API_LAST_SUCCESS_TIMESTAMP.set(time.time())
                     except Exception:
                         pass
 
@@ -618,16 +617,46 @@ class DataProvider:
 
         # Fallback to database verification
         fares = self._get_database_fares(segment_id)
-        base_fare = fares.get(coach_preference, 1500.0)
-        gst = base_fare * 0.05
         
-        logger.info(f"Using database fare verification: ₹{base_fare + gst}")
+        if coach_preference in fares:
+            total_fare = fares[coach_preference]
+            base_fare = total_fare / 1.05 if coach_preference in ["3A", "2A", "1A", "CC", "EC", "AC_THREE_TIER", "AC_TWO_TIER", "AC_FIRST_CLASS"] else total_fare
+            gst = total_fare - base_fare
+        else:
+            # Calculate on the fly if not in database
+            try:
+                segment = self.session.query(Segment).filter(Segment.id == segment_id).first()
+                if segment and segment.distance_km:
+                    is_sf = False
+                    if segment.trip_id:
+                        trip = self.session.query(Trip).filter(Trip.id == segment.trip_id).first()
+                        if trip:
+                            train_no = trip.trip_id.split('_')[0] if isinstance(trip.trip_id, str) else str(trip.trip_id)
+                            train = self.session.query(TrainMaster).filter(TrainMaster.train_number == train_no).first()
+                            if train and train.type:
+                                is_sf = any(x in train.type.upper() for x in ["SUPERFAST", "RAJ", "DUR", "SHATABDI"])
+                    
+                    calc_result = calculate_fare(segment.distance_km, coach_preference, is_superfast=is_sf)
+                    base_fare = calc_result["base_fare"]
+                    gst = calc_result["gst"]
+                    total_fare = calc_result["total_fare"]
+                else:
+                    base_fare = 1500.0
+                    gst = base_fare * 0.05
+                    total_fare = base_fare + gst
+            except Exception as e:
+                logger.error(f"On-the-fly fare calculation failed: {e}")
+                base_fare = 1500.0
+                gst = base_fare * 0.05
+                total_fare = base_fare + gst
+        
+        logger.info(f"Using database/calculated fare verification: ₹{total_fare}")
         return {
             "status": "verified",
             "base_fare": base_fare,
             "GST": gst,
-            "total_fare": base_fare + gst,
-            "message": "Fare verified via database",
+            "total_fare": total_fare,
+            "message": "Fare verified via database/calculation",
             "source": "database"
         }
 

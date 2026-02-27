@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { RailAssistantChatbot } from '@/components/RailAssistantChatbot';
 import { test, expect, vi } from 'vitest';
@@ -27,9 +26,13 @@ test('dispatches suggestion event when backend returns actions', async () => {
 
   render(<RailAssistantChatbot onSearchRequest={noop} onSortChange={noop} onNavigate={noop} />);
 
-  // Type into input and send
-  const input = screen.getByPlaceholderText(/Type or Ask Rail Assistant/i) as HTMLInputElement;
-  fireEvent.change(input, { target: { value: 'show me trains' } });
+  // Open the chatbot first (it starts minimized)
+  const toggleBtn = screen.getByRole('button');
+  fireEvent.click(toggleBtn);
+
+  // Type into input and send a phrase that BYPASSES local intent (which triggers search directly)
+  const input = await screen.findByPlaceholderText(/Type or Ask Rail Assistant/i);
+  fireEvent.change(input, { target: { value: 'tell me about the app' } });
   const sendBtn = screen.getByRole('button', { name: /send/i }) || screen.getAllByRole('button').find(b => b.querySelector('svg'));
   // Click send (use any available send button)
   fireEvent.click(sendBtn as Element);

@@ -9,8 +9,8 @@ import json
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from backend.database.models import Stop, Trip, StopTime, Route, Calendar
-from backend.services.seat_allocation import CoachType
+from database.models import Stop, Trip, StopTime, Route, Calendar
+from services.seat_allocation import CoachType
 
 
 @dataclass

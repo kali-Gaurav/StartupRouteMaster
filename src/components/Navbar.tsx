@@ -1,4 +1,4 @@
-import { Train, Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette } from "lucide-react";
+import { Train, Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -71,6 +71,19 @@ export function Navbar() {
               <MessageCircle className="w-4 h-4" />
               Use in Telegram
             </a>
+            {isAuthenticated && (
+              <button
+                onClick={() => {
+                  const { supabase } = (window as any);
+                  if (supabase) supabase.auth.signOut();
+                  else window.location.reload(); // Fallback
+                }}
+                className="flex items-center gap-1.5 p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
+                title="Sign Out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
             <div className="relative" ref={themeRef}>
               <button
                 type="button"
@@ -137,6 +150,18 @@ export function Navbar() {
             <a href={TELEGRAM_BOT_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 py-2 text-primary font-medium">
               <MessageCircle className="w-4 h-4" /> Use in Telegram
             </a>
+            {isAuthenticated && (
+              <button 
+                onClick={() => {
+                  const { supabase } = (window as any);
+                  if (supabase) supabase.auth.signOut();
+                  else window.location.reload();
+                }}
+                className="flex items-center gap-2 py-2 text-red-500 font-medium w-full text-left"
+              >
+                <LogOut className="w-4 h-4" /> Sign Out
+              </button>
+            )}
             <div className="pt-2 border-t border-border">
               <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Theme</div>
               <div className="flex flex-wrap gap-2">

@@ -35,7 +35,7 @@ from .config import Config
 
 # Microservice Integration
 try:
-    from backend.microservices.common.grpc_clients import grpc_clients
+    from microservices.common.grpc_clients import grpc_clients
     import inventory_pb2
     from google.protobuf.timestamp_pb2 import Timestamp
     MICROSERVICE_MODE = True

@@ -1,5 +1,5 @@
 # compatibility stub for legacy imports
-# Many modules used to import seat_inventory_models directly from backend.
+# Many modules used to import seat_inventory_models directly from 
 # The relevant models have since been consolidated into backend.database.models.
 # This file ensures those imports continue to work during tests and at runtime.
 

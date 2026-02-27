@@ -30,7 +30,7 @@
 # import uuid
 
 # # geographic fallback
-# from backend.utils.graph_utils import haversine_distance
+# from utils.graph_utils import haversine_distance
 
 # from sqlalchemy import and_, or_, func
 # from sqlalchemy.orm import joinedload
@@ -788,7 +788,7 @@
 
 #         # Load in-memory station/stop time-index (best-effort)
 #         try:
-#             from backend.station_time_index import StationTimeIndex
+#             from station_time_index import StationTimeIndex
 #             graph.station_time_index = StationTimeIndex(SessionLocal())
 #             logger.info("Loaded StationTimeIndex into graph.")
 #         except Exception as e:
@@ -830,7 +830,7 @@
 
 #             # Build stop_departures index only if the table is empty (best-effort, avoids rebuilding every query)
 #             try:
-#                 from backend.database.models import TimeIndexKey, StopDepartureBucket
+#                 from database.models import TimeIndexKey, StopDepartureBucket
 #                 # rebuild only if empty
 #                 existing = session.query(StopDepartureBucket).count()
 #                 build_stop_index = (existing == 0)
@@ -1041,7 +1041,7 @@
 #             # Persist stop-level buckets (best-effort; only when we built the in-memory bucket_map)
 #             try:
 #                 if build_stop_index and bucket_map:
-#                     from backend.database.models import StopDepartureBucket
+#                     from database.models import StopDepartureBucket
 #                     # clear any stale rows and insert fresh buckets
 #                     session.query(StopDepartureBucket).delete()
 #                     for (stop_id, bucket_start), keyset in bucket_map.items():
