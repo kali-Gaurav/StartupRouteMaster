@@ -15,6 +15,7 @@ import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { queryClient } from "@/infrastructure/queryClient";
 import { usePushNotifications } from "@/hooks/usePushNotifications"; // Added usePushNotifications
+import { Analytics } from "@vercel/analytics/react";
 
 // Lazy load pages for code splitting
 const Index = lazy(() => import("./pages/Index"));
@@ -113,6 +114,7 @@ const AppContent = () => {
         </Routes>
         <BottomNav />
       </BrowserRouter>
+      <Analytics />
     </TooltipProvider>
   );
 };
