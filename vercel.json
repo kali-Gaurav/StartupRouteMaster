@@ -1,28 +1,19 @@
 {
   "version": 2,
+  "rootDirectory": "frontend",
   "builds": [
     {
       "src": "package.json",
       "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
+      "config": {
+        "distDir": "dist"
+      }
     }
   ],
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://startup-route-master-production.up.railway.app/api/:path*"
-    },
-    {
-      "source": "/chat/:path*",
-      "destination": "https://startup-route-master-production.up.railway.app/chat/:path*"
-    },
-    {
-      "source": "/health",
-      "destination": "https://startup-route-master-production.up.railway.app/health"
-    },
-    {
-      "source": "/metrics",
-      "destination": "https://startup-route-master-production.up.railway.app/metrics"
+      "destination": "https://startuproutemaster-production.up.railway.app/api/:path*"
     },
     {
       "source": "/(.*)",
