@@ -1,10 +1,8 @@
-/// <reference types="vitest" />
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
-// image optimization: postbuild script runs `scripts/convert-images.cjs` to produce WebP versions
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [

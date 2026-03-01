@@ -357,12 +357,7 @@ const Index = () => {
           flowCorrelationIdRef.current = null;
         });
       }
-      logPerf("search_latency", {
-        ms: Math.round(performance.now() - searchStart),
-        origin: origCode,
-        destination: destCode,
-        count: allResults.length,
-      });
+      logPerf("search_latency", Math.round(performance.now() - searchStart));
 
       toast({
         title: "Routes Found!",
