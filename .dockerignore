@@ -1,0 +1,26 @@
+# Ignore Frontend
+src/
+node_modules/
+public/
+dist/
+*.local
+
+# Ignore Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+
+# Ignore Git
+.git/
+.github/
+
+# Ignore local files
+.env
+routemaster_agent.db
+backend_test_logs.txt
+integration_diagnostic.py
+master_feature_audit.py
+test_*.py
