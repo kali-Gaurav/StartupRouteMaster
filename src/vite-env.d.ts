@@ -99,6 +99,17 @@ interface TelegramWebApp {
   BackButton: { show: () => void; hide: () => void; onClick: (cb: () => void) => void };
 }
 
+interface ImportMetaEnv {
+  readonly RAILWAY_BACKEND_URL: string;
+  readonly VITE_SUPABASE_URL: string;
+  readonly VITE_SUPABASE_ANON_KEY: string;
+  readonly VITE_APP_BASE_URL: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 interface Window {
   Telegram?: {
     WebApp: TelegramWebApp;
