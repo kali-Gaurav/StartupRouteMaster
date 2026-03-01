@@ -1,9 +1,9 @@
 {
   "build": {
-    "builder": "RAILPACK"
+    "builder": "RAILPACK",
+    "rootDirectory": "backend"
   },
   "deploy": {
-    "rootDirectory": "backend",
     "runtime": "V2",
     "numReplicas": 1,
     "sleepApplication": false,
