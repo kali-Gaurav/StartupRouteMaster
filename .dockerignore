@@ -1,26 +1,23 @@
-# Ignore Frontend
+# FORCE DOCKER TO IGNORE FRONTEND
 src/
 node_modules/
 public/
 dist/
 *.local
+package.json
+package-lock.json
+tsconfig.json
+vite.config.ts
+tailwind.config.js
+postcss.config.js
+eslint.config.js
 
-# Ignore Python artifacts
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.venv/
-.pytest_cache/
-
-# Ignore Git
-.git/
-.github/
-
-# Ignore local files
+# Ignore local dev files
 .env
 routemaster_agent.db
 backend_test_logs.txt
 integration_diagnostic.py
 master_feature_audit.py
 test_*.py
+.git/
+.github/
