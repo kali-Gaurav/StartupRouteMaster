@@ -303,12 +303,18 @@ async def health_summary():
 
 if __name__ == "__main__":
     import uvicorn
-    # Production uvicorn config
+    # Get port from environment variable (Required for Railway)
+    port = int(os.getenv("PORT", 8000))
+    
+    logger.info(f"🚀 Starting RouteMaster Production API on port {port}...")
+    
     uvicorn.run(
         "app:app", 
         host="0.0.0.0", 
-        port=8000, 
+        port=port, 
         reload=False, 
-        workers=1, # Shared engine graph works best with 1 worker or sharded graph
+        workers=1,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
         log_level="info"
     )
