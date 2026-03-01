@@ -21,12 +21,16 @@ class StaticGraphSnapshot:
     transfer_graph: Dict[int, List[TransferConnection]] = field(default_factory=lambda: defaultdict(list))
     stop_cache: Dict[int, Stop] = field(default_factory=dict)
     
+    # Station-centric and Train-centric views (Phase 10 enhancements)
+    station_schedule: Dict[int, List[Dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    train_path: Dict[int, List[Dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+
     # Algorithmic indexes
     route_patterns: Dict[Tuple[int, ...], List[int]] = field(default_factory=lambda: defaultdict(list))
     transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = field(default_factory=dict)
     stop_index: Dict[str, int] = field(default_factory=dict)
     
-    version: str = "v2.0"
+    version: str = "v2.5"
     created_at: datetime = field(default_factory=datetime.utcnow)
     transfer_metrics: Dict[str, Any] = field(default_factory=dict)
     density_metrics: Dict[str, Any] = field(default_factory=dict)
@@ -114,6 +118,10 @@ class TimeDependentGraph:
         self.transfer_graph = snapshot.transfer_graph if snapshot else defaultdict(list)
         self.stop_cache = snapshot.stop_cache if snapshot else {}
 
+        # Station-centric and Train-centric views (Phase 10 enhancements)
+        self.station_schedule = snapshot.station_schedule if snapshot else defaultdict(list)
+        self.train_path = snapshot.train_path if snapshot else defaultdict(list)
+
         # New structures for algorithmic speedups
         self.stop_index = snapshot.stop_index if snapshot else {}
         self.stop_count = len(self.stop_index)
@@ -124,6 +132,15 @@ class TimeDependentGraph:
 
         # Optional in-memory index
         self.station_time_index = None
+
+    # ----------------------------- Phase 10 helpers ---------------------------
+    def get_station_schedule(self, stop_id: int) -> List[Dict[str, Any]]:
+        """Get O(1) station schedule (all trains serving this station)."""
+        return self.station_schedule.get(stop_id, [])
+
+    def get_train_path(self, trip_id: int) -> List[Dict[str, Any]]:
+        """Get O(1) train path (all stations served by this trip)."""
+        return self.train_path.get(trip_id, [])
 
     # ----------------------------- event helpers -----------------------------
     def add_departure(self, stop_id: int, departure_time: datetime, trip_id: int):
@@ -195,12 +212,25 @@ class TimeDependentGraph:
         feasible = []
 
         for transfer in transfers:
-            # Note: In a production overlay, we might also adjust transfer departure times
-            # based on the delays of the outgoing trains. We assume the TransferConnection
-            # object represents a window and we check feasibility against it.
-            if transfer.arrival_time <= arrival_time <= transfer.departure_time:
-                duration = (transfer.departure_time - arrival_time).seconds // 60
-                if min_transfer_time <= duration <= 8 * 60:
+            # We assume the TransferConnection object represents a window and we check feasibility against it.
+            # Use a safe check for the 'infinite' window (datetime.min to datetime.max)
+            is_in_window = False
+            if transfer.arrival_time == datetime.min and transfer.departure_time == datetime.max:
+                is_in_window = True
+            else:
+                is_in_window = (transfer.arrival_time <= arrival_time <= transfer.departure_time)
+
+            if is_in_window:
+                # Calculate duration in minutes correctly using total_seconds()
+                if transfer.departure_time == datetime.max:
+                    # For infinite windows (same-station), any duration is fine as long as it's >= min
+                    duration_min = min_transfer_time + 1
+                else:
+                    duration_min = int((transfer.departure_time - arrival_time).total_seconds() / 60)
+                
+                # Check if we have enough time to make the transfer
+                # Max transfer window: 24 hours (1440 mins) for production stability
+                if min_transfer_time <= duration_min <= 1440:
                     feasible.append(transfer)
 
         return feasible

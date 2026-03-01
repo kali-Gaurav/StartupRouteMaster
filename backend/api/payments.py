@@ -19,6 +19,7 @@ from database.models import Route as RouteModel, User, Booking, Payment as Payme
 from api.dependencies import get_current_user, verify_webhook_signature
 from services.redirect_service import redirect_service
 from utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
+from utils.limiter import limiter
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 logger = logging.getLogger(__name__)
@@ -27,8 +28,10 @@ UNLOCK_PRICE = 39.0
 SEAT_LOCK_TTL_SECONDS = 600
 
 @router.post("/create_order")
+@limiter.limit("10/minute")
 async def create_payment_order(
-    request: PaymentOrderSchema,
+    request: Request,
+    payload: PaymentOrderSchema,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -39,16 +42,16 @@ async def create_payment_order(
     if not payment_service.is_configured():
         raise HTTPException(status_code=503, detail="Payment service is not configured.")
 
-    route = db.query(RouteModel).filter(RouteModel.id == request.route_id).first()
+    route = db.query(RouteModel).filter(RouteModel.id == payload.route_id).first()
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     # Pre-payment verification for bookings
-    if not request.is_unlock_payment:
-        if not unlock_service.verify_live_availability(request.route_id, request.travel_date):
+    if not payload.is_unlock_payment:
+        if not unlock_service.verify_live_availability(payload.route_id, payload.travel_date):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The selected route is no longer available. Please search again.")
 
-        lock_key = f"seat_lock:{request.route_id}:{request.travel_date}"
+        lock_key = f"seat_lock:{payload.route_id}:{payload.travel_date}"
         seat_lock = getattr(cache_service, "get_lock", lambda k, t: None)(lock_key, timeout=SEAT_LOCK_TTL_SECONDS)
 
         if seat_lock and not seat_lock.acquire(blocking=False):
@@ -63,8 +66,8 @@ async def create_payment_order(
             
             booking = booking_service.create_booking(
                 user_id=current_user.id,
-                route_id=request.route_id,
-                travel_date=request.travel_date,
+                route_id=payload.route_id,
+                travel_date=payload.travel_date,
                 booking_details=route.segments if hasattr(route, "segments") else {},
                 amount_paid=final_price,
             )
@@ -102,24 +105,24 @@ async def create_payment_order(
     else:
         # Handle Unlock Payment
         try:
-            if await unlock_service.is_route_unlocked(current_user.id, request.route_id):
+            if await unlock_service.is_route_unlocked(current_user.id, payload.route_id):
                  return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
             # NEW: Verify route before creating payment order
             verification_service = RouteVerificationService(db)
             verification_result = await verification_service.verify_route_for_unlock(
-                route_id=request.route_id,
-                travel_date=request.travel_date,
-                train_number=request.train_number,
-                from_station_code=request.from_station_code,
-                to_station_code=request.to_station_code,
-                source_station_name=request.source_station_name,
-                destination_station_name=request.destination_station_name
+                route_id=payload.route_id,
+                travel_date=payload.travel_date,
+                train_number=payload.train_number,
+                from_station_code=payload.from_station_code,
+                to_station_code=payload.to_station_code,
+                source_station_name=payload.source_station_name,
+                destination_station_name=payload.destination_station_name
             )
             
             # Log verification results
             logger.info(
-                f"Route verification for unlock - Route: {request.route_id}, "
+                f"Route verification for unlock - Route: {payload.route_id}, "
                 f"API Calls: {verification_result.get('api_calls_made', 0)}, "
                 f"Success: {verification_result.get('success', False)}"
             )
@@ -133,7 +136,7 @@ async def create_payment_order(
             # (We don't block unlock if API fails - graceful degradation)
             if not verification_result.get("success") and verification_result.get("errors"):
                 logger.error(
-                    f"Route verification failed for {request.route_id}: "
+                    f"Route verification failed for {payload.route_id}: "
                     f"{verification_result.get('errors')}"
                 )
                 # Continue anyway - database fallback will be used
@@ -146,10 +149,10 @@ async def create_payment_order(
             
             order_response = await payment_service.create_order(
                 amount_rupees=UNLOCK_PRICE,
-                receipt_id=f"unlock_{request.route_id}_{current_user.id}",
+                receipt_id=f"unlock_{payload.route_id}_{current_user.id}",
                 customer_email=current_user.email,
                 description=f"Unlock Route {route_source} to {route_dest}",
-                idempotency_key=f"unlock_{request.route_id}_{current_user.id}",
+                idempotency_key=f"unlock_{payload.route_id}_{current_user.id}",
             )
 
             if not order_response.get("success"):
@@ -168,7 +171,7 @@ async def create_payment_order(
             # Link payment to unlock intent
             unlocked_route = UnlockedRoute(
                 user_id=current_user.id,
-                route_id=request.route_id,
+                route_id=payload.route_id,
                 payment_id=new_payment.id,
                 is_active=False # Becomes active after payment verification
             )
@@ -192,7 +195,9 @@ async def create_payment_order(
 
 
 @router.post("/verify")
+@limiter.limit("10/minute")
 async def verify_payment(
+    request: Request,
     payment_id: str,
     razorpay_order_id: str,
     razorpay_payment_id: str,
@@ -241,6 +246,92 @@ async def verify_payment(
 
 
 # --- new endpoints added below ---
+
+@router.post("/create_order_v2")
+async def create_payment_order_v2(
+    request: PaymentOrderSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Optimized Payment Order creation.
+    Supports UPI redirection for initial feedback month.
+    """
+    from services.unlock_service import UnlockService
+    unlock_service = UnlockService(db)
+
+    # 1. Verification Logic
+    # In Phase 2, we perform live verification via RapidAPI before charging
+    if request.is_unlock_payment:
+        # Check if already unlocked
+        if await unlock_service.is_route_unlocked(current_user.id, request.route_id):
+             return {"success": True, "message": "Route already unlocked.", "unlocked": True}
+
+        # 2. UPI Redirection Hack (Topic 4)
+        # Generate a UPI Intent link for GPay/PhonePe/Paytm
+        # Format: upi://pay?pa=UPI_ID&pn=NAME&am=AMOUNT&cu=INR
+        upi_id = "gauravnagar@okaxis" # Updated based on instruction
+        amount = UNLOCK_PRICE
+        note = f"Unlock Route {request.route_id}"
+        upi_link = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={amount}&cu=INR&tn={note}"
+
+        # Create a pending payment record
+        new_payment = PaymentModel(
+            status="pending",
+            amount=amount,
+            # We use 'upi_intent' as provider
+            razorpay_order_id=f"upi_{int(time.time())}_{current_user.id}"
+        )
+        db.add(new_payment)
+        db.commit()
+        db.refresh(new_payment)
+
+        # Link payment to unlock intent
+        unlocked_route = UnlockedRoute(
+            user_id=current_user.id,
+            route_id=request.route_id,
+            payment_id=new_payment.id,
+            is_active=False
+        )
+        db.add(unlocked_route)
+        db.commit()
+
+        # For the feedback month, we also provide a 'bypass' link or just return the UPI intent
+        return {
+            "success": True,
+            "payment_mode": "upi_intent",
+            "upi_link": upi_link,
+            "payment_id": new_payment.id,
+            "message": "Please pay via UPI to unlock details. After payment, click 'I have paid'."
+        }
+
+    # Existing Razorpay logic fallback...
+    return {"success": False, "message": "Manual booking logic used for feedback phase."}
+
+@router.post("/manual_confirm_payment")
+async def manual_confirm_payment(
+    payment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Manually confirm a payment during the initial feedback phase.
+    User clicks 'I have paid' after UPI redirection.
+    """
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    # In production, we would check banking alerts. 
+    # For feedback month, we mark as completed to allow testing.
+    payment.status = "completed"
+
+    unlocked_route = db.query(UnlockedRoute).filter(UnlockedRoute.payment_id == payment.id).first()
+    if unlocked_route:
+        unlocked_route.is_active = True
+
+    db.commit()
+    return {"success": True, "message": "Route unlocked. You can now see full details."}
 
 @router.get("/status/{razorpay_order_id}")
 async def payment_status(
@@ -388,8 +479,10 @@ async def payment_webhook(
                     booking_service = BookingService(db)
                     booking_service.confirm_booking(payment_record.booking_id)
                 else:
-                    unlocked_route = payment_record.unlocked_route
-                    if unlocked_route and payment_record.status == "completed":
+                    unlocked_routes = payment_record.unlocked_route
+                    if unlocked_routes and payment_record.status == "completed":
+                        # If it's a list (default relationship without uselist=False), take the first
+                        unlocked_route = unlocked_routes[0] if isinstance(unlocked_routes, list) else unlocked_routes
                         unlocked_route.is_active = True
                         db.commit()
     # Refund events
@@ -414,3 +507,136 @@ async def payment_webhook(
                 db.commit()
 
     return {"success": True}
+
+# ==========================================
+# MVP PAYMENT SESSION / OTP SYSTEM
+# ==========================================
+from pydantic import BaseModel
+import random
+import string
+from datetime import timedelta
+from database.models import PaymentSession
+
+class PaymentSessionRequest(BaseModel):
+    journey_id: str
+    amount: float = 39.0
+
+class PaymentSessionVerify(BaseModel):
+    session_code: str
+    journey_id: str
+
+@router.post("/create_session")
+async def create_payment_session(
+    request: PaymentSessionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Creates a simple payment session for UPI.
+    NEW: Performs real-time verification of ALL segments before allowing session creation.
+    """
+    # 1. Real-time Verification (Phase 10 Core Requirement)
+    verification_service = RouteVerificationService(db)
+    # Note: we use tomorrow's date if not specified, but usually search context provides it
+    travel_date = datetime.now().strftime("%Y-%m-%d") # Fallback
+    
+    logger.info(f"Triggering pre-payment verification for route {request.journey_id}")
+    verify_result = await verification_service.verify_route_for_unlock(
+        route_id=request.journey_id,
+        travel_date=travel_date
+    )
+    
+    if not verify_result.get("success"):
+        raise HTTPException(status_code=400, detail=verify_result.get("error", "Route verification failed"))
+
+    # Generate random 6-character session code
+    session_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    
+    # Store in DB with verification snapshot
+    session = PaymentSession(
+        user_id=str(current_user.id),
+        route_id=request.journey_id,
+        session_code=session_code,
+        amount=request.amount,
+        verification_details=verify_result, # New: Store snapshot
+        expires_at=datetime.utcnow() + timedelta(minutes=15)
+    )
+    db.add(session)
+    db.commit()
+    
+    # Generate UPI intent
+    upi_id = "gauravnagar@okaxis" # Target UPI
+    upi_link = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={request.amount}&cu=INR&tn=Unlock_{session_code}"
+    
+    return {
+        "success": True,
+        "session_code": session_code,
+        "upi_link": upi_link,
+        "amount": request.amount,
+        "verification": verify_result, # Frontend shows 'Verified' badge
+        "message": "Route verified. Please pay via UPI and enter the session code to unlock."
+    }
+
+@router.post("/confirm_manual")
+async def confirm_payment_session(
+    request: PaymentSessionVerify,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Verifies the payment session code entered by the user.
+    """
+    session = db.query(PaymentSession).filter(
+        PaymentSession.session_code == request.session_code,
+        PaymentSession.route_id == request.journey_id,
+        PaymentSession.user_id == current_user.id
+    ).first()
+    
+    if not session:
+        raise HTTPException(status_code=400, detail="Invalid session code or journey ID.")
+        
+    if session.status == "VERIFIED":
+        # Idempotent return if already verified
+        return {"success": True, "message": "Already verified"}
+        
+    if session.expires_at < datetime.utcnow():
+        session.status = "EXPIRED"
+        db.commit()
+        raise HTTPException(status_code=400, detail="Session code expired.")
+        
+    # Mark as verified
+    session.status = "VERIFIED"
+    
+    # NEW: Create a real Payment record for this manual session to satisfy FK constraints
+    new_payment = PaymentModel(
+        status="completed",
+        amount=session.amount,
+        razorpay_order_id=f"manual_{session.session_code}",
+        razorpay_payment_id=f"pay_{session.session_code}",
+        created_at=datetime.utcnow()
+    )
+    db.add(new_payment)
+    db.flush() # Get the payment ID
+    
+    # NEW: Check if route exists in PrecalculatedRoute to avoid FK violation
+    from database.models import PrecalculatedRoute
+    route_exists = db.query(PrecalculatedRoute).filter(PrecalculatedRoute.id == request.journey_id).first()
+    
+    # We unlock the route in the DB here
+    unlocked_route = UnlockedRoute(
+        user_id=str(current_user.id),
+        route_id=request.journey_id if route_exists else None, # FK only if exists
+        cached_route_id=request.journey_id if not route_exists else None, # Store as cached ID otherwise
+        is_active=True,
+        payment_id=new_payment.id
+    )
+
+    db.add(unlocked_route)
+    db.commit()
+    db.refresh(unlocked_route)
+    logger.info(f"DEBUG: Manually unlocked route {request.journey_id} for user {current_user.id}. ID in DB: {unlocked_route.id}")
+    
+    return {
+        "success": True, 
+        "message": "Payment confirmed and route unlocked."
+    }

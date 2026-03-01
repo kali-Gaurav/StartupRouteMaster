@@ -27,6 +27,7 @@ const NotFound = lazy(() => import("./pages/NotFound"));
 const Privacy = lazy(() => import("./pages/Privacy"));
 const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
+const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 
 // Lazy load Mini App pages
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
@@ -91,6 +92,7 @@ const AppContent = () => {
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/safety" element={<Safety />} />
+            <Route path="/track/:trainNumber" element={<TrainTracking />} />
 
             {/* Mini App Routes: gate runs Telegram initData → JWT auth then renders child */}
             <Route path="/mini-app" element={<MiniAppGate><Outlet /></MiniAppGate>}>

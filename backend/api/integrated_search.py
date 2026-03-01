@@ -3,16 +3,18 @@ Integrated Search and Booking Flow API Endpoints
 Complete end-to-end IRCTC-like flow for offline testing
 """
 from datetime import datetime, date, timedelta
-from typing import List, Dict, Optional
-from fastapi import APIRouter, HTTPException, Query
+from typing import List, Dict, Optional, Any
+import asyncio
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel, Field
-import json
+import orjson as json
 import logging
-
-logger = logging.getLogger(__name__)
+from sqlalchemy.orm import Session
+from fastapi.responses import ORJSONResponse
 
 from database import SessionLocal, get_db
 from database.models import Stop, Trip, Route
+from api.dependencies import get_optional_user
 from services.search_service import SearchService
 from services.booking_service import BookingService
 from schemas import (
@@ -22,230 +24,212 @@ from schemas import (
     BookingConfirmationRequest,
     PassengerInfo
 )
-from fastapi import APIRouter, HTTPException, Query, Depends
-from sqlalchemy.orm import Session
+from utils.limiter import limiter
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["integrated-search"])
 
 # store timestamp of search -> used by unlock to compute search_to_unlock_time_ms
 SEARCH_TIMESTAMP_CACHE: dict[str, float] = {}
 
-
-# ============================================================================
-# INTEGRATED SEARCH ENDPOINTS
-# ============================================================================
+# Request Coalescing Map
+_inflight_unified_searches: Dict[str, asyncio.Event] = {}
+_unified_search_results: Dict[str, Any] = {}
 
 @router.post("/search/unified", response_model=List[JourneyInfoResponse])
-async def unified_search(request: SearchRequest, db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+async def unified_search(request: Request, search_payload: SearchRequest, db: Session = Depends(get_db)):
     """
-    Complete integrated search returning multiple journey options
-    Consolidated into SearchService
+    Production-grade Unified Multi-Modal Search (V2).
+    Optimized with Single-Flight Coalescing, Pareto-Ranking, and Redis Caching.
     """
+    from core.unified_planner import UnifiedPlanner
+    from adapters.train_adapter import TrainAdapter
+    from schemas.unified_search import UnifiedSearchRequest
+    import time
+
+    start_time = time.perf_counter()
+    cache_key = f"unified_v3:{search_payload.source.upper()}:{search_payload.destination.upper()}:{search_payload.date}"
+
+    # 1. Request Coalescing
+    if cache_key in _inflight_unified_searches:
+        logger.info(f"⚡ COALESCE: Joining unified search for {cache_key}")
+        await _inflight_unified_searches[cache_key].wait()
+        return _unified_search_results.get(cache_key)
+
+    # 2. Check Cache
+    from core.redis import async_redis_client
     try:
-        service = SearchService(db)
-        result = await service.search_routes(
-            source=request.source,
-            destination=request.destination,
-            travel_date=request.date  # schema field is named 'date'
+        cached = await async_redis_client.get(cache_key)
+        if cached:
+            logger.info(f"✅ CACHE HIT (Hot Path): {cache_key}")
+            return ORJSONResponse(content=json.loads(cached))
+    except Exception as e:
+        logger.warning(f"Cache check failed: {e}")
+
+    # Register in-flight search after cache check fails
+    _inflight_unified_searches[cache_key] = asyncio.Event()
+
+    try:
+        # 3. Execute Engines via Orchestrator
+        unified_req = UnifiedSearchRequest(
+            source=search_payload.source,
+            destination=search_payload.destination,
+            date=search_payload.date,
+            preferences="balanced"
         )
         
-        if not result.get("journeys"):
-            raise HTTPException(
-                status_code=404,
-                detail={"message": "No trains available on this route"}
-            )
+        search_service = SearchService(db)
+        train_adapter = TrainAdapter(search_service)
+        planner = UnifiedPlanner(adapters=[train_adapter])
         
-        # record timestamp for each journey
-        import time
-        now = time.time()
-        for j in result["journeys"]:
-            SEARCH_TIMESTAMP_CACHE[j["journey_id"]] = now
+        results = await planner.plan(unified_req)
+        
+        # 4. Map results
+        response_data = []
+        from services.journey_cache import save_journey
+        
+        for opt in results:
+            legs = [{
+                "mode": s.mode, "from": s.from_station, "to": s.to_station,
+                "departure": s.departure, "arrival": s.arrival,
+                "duration_min": s.duration_minutes, "cost": s.price,
+                "train_number": s.train_number, "train_name": s.train_name
+            } for s in opt.segments]
+            
+            journey_dict = {
+                "journey_id": opt.journey_id, "total_cost": opt.total_price,
+                "total_duration": opt.total_duration, "safety_score": opt.safety_score,
+                "legs": legs, "segments": [s.dict() for s in opt.segments],
+                "is_locked": opt.is_locked
+            }
+            await save_journey(opt.journey_id, journey_dict)
+            response_data.append(journey_dict)
 
-        # Returns List[JourneyInfoResponse]
-        return result["journeys"]
+        # 5. Store in Cache
+        try:
+            await async_redis_client.setex(cache_key, 300, json.dumps(response_data))
+        except Exception:
+            pass
+
+        _unified_search_results[cache_key] = response_data
+        return response_data
         
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Unified Search Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Signal and Cleanup
+        event = _inflight_unified_searches.pop(cache_key, None)
+        if event:
+            event.set()
+        asyncio.create_task(_cleanup_unified_results(cache_key))
 
+async def _cleanup_unified_results(key: str):
+    await asyncio.sleep(5)
+    _unified_search_results.pop(key, None)
 
-@router.get("/journey/{journey_id}/unlock-details", response_model=DetailedJourneyResponse)
+@router.get("/journey/{journey_id}/unlock-details")
 async def unlock_journey_details(
     journey_id: str,
     travel_date: str = Query(..., description="YYYY-MM-DD"),
     coach_preference: str = "AC_THREE_TIER",
     passenger_age: int = 30,
     concession_type: Optional[str] = None,
-    db: Session = Depends(get_db)
-) -> DetailedJourneyResponse:
-    """
-    Unlock complete journey details with all verifications
-    Consolidated into SearchService
-    """
+    db: Session = Depends(get_db),
+    current_user = Depends(get_optional_user)
+):
     try:
-        service = SearchService(db)
-        # note: search-to-unlock latency metric is recorded inside SearchService
-        result = await service.unlock_journey_details(
-            journey_id=journey_id,
-            travel_date_str=travel_date,
-            coach_preference=coach_preference,
-            passenger_age=passenger_age,
-            concession_type=concession_type
-        )
+        from services.journey_cache import get_journey
+        from services.seat_verification import SeatVerificationService
+        from services.unlock_service import UnlockService
         
-        if not result.get("journey"):
-            raise HTTPException(
-                status_code=404,
-                detail={"message": result.get("message", "Journey not found")}
-            )
+        journey = await get_journey(journey_id)
+        if not journey:
+            raise HTTPException(status_code=404, detail="Journey expired. Please search again.")
+
+        # 1. Seat Verification
+        seat_service = SeatVerificationService()
+        seats_ok = await seat_service.verify_journey(journey)
+
+        if not seats_ok:
+            return {"success": False, "message": "Seats not available for this route."}
+
+        # 2. Payment/Unlock Check
+        is_unlocked = False
+        if current_user:
+            unlock_service = UnlockService(db)
+            # Check DB to see if they completed the Payment Session Code flow
+            is_unlocked = await unlock_service.is_route_unlocked(current_user.id, journey_id)
             
-        return result
-        
+        if not is_unlocked:
+            # If not paid, return the journey but keep it locked (frontend prompts payment)
+            journey["is_locked"] = True
+            return {"success": True, "message": "Payment required to view details.", "journey": journey, "requires_payment": True}
+
+        # 3. Unlock Success
+        journey["is_locked"] = False
+        return {"success": True, "journey": journey}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unlock Details Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to unlock journey details")
-    
-    finally:
-        db.close()
+        logger.error(f"Unlock Error: {e}")
+        raise HTTPException(status_code=500, detail="Unlock failed")
 
+# Rest of the integrated_search.py file...
+class PassengerDetail(BaseModel):
+    name: str
+    age: int
+    gender: str # M/F/O
+    preference: Optional[str] = "LB"
 
-@router.post("/station-autocomplete")
-async def station_autocomplete(
-    query: str = Query(..., min_length=2, max_length=100)
-) -> List[Dict]:
-    """
-    Get station suggestions while typing (autocomplete)
-    """
-    db = SessionLocal()
-    
+class ManualBookingRequest(BaseModel):
+    journey_id: str
+    travel_date: str
+    passengers: List[PassengerDetail]
+    contact_email: str
+    contact_phone: str
+
+@router.post("/booking/confirm_manual")
+async def confirm_manual_booking(
+    request: ManualBookingRequest, 
+    db: Session = Depends(get_db),
+    current_user = Depends(get_optional_user)
+):
     try:
-        from utils.station_utils import find_stations_by_partial_name
+        from services.booking_queue_service import BookingQueueService
+        from services.journey_cache import get_journey
         
-        stations = find_stations_by_partial_name(db, query, limit=10)
+        queue_service = BookingQueueService(db)
+        passenger_list = [p.dict() for p in request.passengers]
         
-        return [
-            {
-                "stop_id": s.id,
-                "name": s.name,
-                "code": s.code,
-                "city": s.city,
-                "state": s.state
+        # 1. Fetch Journey Data from Cache
+        journey_data = await get_journey(request.journey_id)
+        if not journey_data:
+            # Fallback for manual reconstruction if cache expired
+            journey_data = {
+                "source": "Unknown", 
+                "destination": "Unknown", 
+                "date": request.travel_date,
+                "legs": [{"train_number": "MANUAL"}]
             }
-            for s in stations
-        ]
-    
-    finally:
-        db.close()
-
-
-@router.get("/search-history")
-async def search_history() -> Dict:
-    """
-    Return recent searches (simulated for offline)
-    """
-    return {
-        "recent_searches": [
-            {
-                "source": "Mumbai Central",
-                "destination": "New Delhi",
-                "date": str(date.today() + timedelta(days=1)),
-                "timestamp": datetime.now().isoformat()
-            }
-        ]
-    }
-
-
-@router.post("/booking/confirm")
-async def confirm_booking(request: BookingConfirmationRequest, db: Session = Depends(get_db)) -> Dict:
-    """
-    Confirm booking after payment.  Legacy stub expanded to use BookingService
-    so that passenger details are persisted (fixes gap #2).
-    """
-    service = BookingService(db)
-    # create booking record using the journey_id as route_id placeholder
-    passenger_list = [p.dict() for p in request.passengers] if request.passengers else None
-    booking = service.create_booking(
-        user_id="guest",  # integrated search runs without real user
-        route_id=request.journey_id,
-        travel_date=datetime.utcnow().date().isoformat(),
-        booking_details={},
-        amount_paid=0.0,  # no amount tracked in this test API
-        passenger_details_list=passenger_list,
-    )
-    if not booking:
-        raise HTTPException(status_code=500, detail="Failed to persist booking")
-    # immediately confirm
-    service.confirm_booking(booking.id)
-
-    return {
-        "status": "success",
-        "pnr_number": booking.pnr_number,
-        "confirmation_number": str(booking.id),
-        "total_fare": booking.amount_paid,
-        "booking_date": booking.created_at.isoformat()
-    }
-
-
-@router.get("/travel-checklist")
-async def travel_checklist(
-    journey_id: str,
-    travel_date: str = Query(..., description="YYYY-MM-DD")
-) -> Dict:
-    """
-    Pre-travel checklist and important information
-    """
-    return {
-        "journey_id": journey_id,
-        "travel_date": travel_date,
-        "checklist": [
-            {
-                "item": "Carry valid ID proof (Aadhar/PAN/Passport)",
-                "status": "pending",
-                "priority": "high"
-            },
-            {
-                "item": "Reach station 30 minutes before departure",
-                "status": "pending",
-                "priority": "high"
-            },
-            {
-                "item": "Check train number from ticket",
-                "status": "pending",
-                "priority": "medium"
-            },
-            {
-                "item": "Review cancellation policy",
-                "status": "pending",
-                "priority": "medium"
-            }
-        ],
-        "important_info": {
-            "food_available_onboard": True,
-            "bedding_charges": 50.00,
-            "emergency_contact": "139",
-            "ladies_coach_available": True
+        
+        # 2. Create Request in Queue
+        user_id = current_user.id if current_user else "guest_user"
+        booking_req = await queue_service.create_request(
+            user_id=user_id,
+            journey_data=journey_data,
+            passengers=passenger_list,
+            phone=request.contact_phone,
+            email=request.contact_email
+        )
+            
+        return {
+            "success": True, 
+            "booking_request_id": str(booking_req.id), 
+            "status": "PENDING",
+            "message": "Your booking request is in the queue. You will receive a ticket on Telegram/Phone soon."
         }
-    }
-
-
-@router.get("/status")
-async def get_integrated_status() -> Dict:
-    """
-    Get status of integrated search system
-    """
-    return {
-        "status": "active",
-        "engine": "RailwayRouteEngine/v2",
-        "features": [
-            "GTFS-based search",
-            "Real-time verification",
-            "Seat allocation",
-            "Unified DataProvider"
-        ]
-    }
-
-
+    except Exception as e:
+        logger.error(f"Manual Booking Queue Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Booking request failed to queue")

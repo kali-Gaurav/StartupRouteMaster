@@ -81,9 +81,6 @@ class ConnectionManager:
                     
                 message = await self.pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if message and message['type'] in ['message', 'pmessage']:
-                    # ... (rest of logic)
-                    pass # Placeholder for brevity, I will match exact text in tool call
-                if message and message['type'] in ['message', 'pmessage']:
                     channel = message.get('channel')
                     data = message.get('data')
                     

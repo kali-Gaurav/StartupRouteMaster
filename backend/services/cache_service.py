@@ -4,11 +4,34 @@ import json
 import logging
 from typing import Optional, Any, Dict
 import time # New: Import time for duration calculation
+from collections import OrderedDict
 
 from config import Config
 from utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
 
 logger = logging.getLogger(__name__)
+
+class LocalLRU:
+    """Simple In-Memory LRU for Layer 0 caching."""
+    def __init__(self, capacity: int = 1000):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+
+    def get(self, key: str) -> Optional[Any]:
+        if key not in self.cache:
+            return None
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def put(self, key: str, value: Any):
+        if key in self.cache:
+            self.cache.move_to_end(key)
+        self.cache[key] = value
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last=False)
+
+    def delete(self, key: str):
+        self.cache.pop(key, None)
 
 class _DummyLock:
     """A dummy lock that does nothing, for use when Redis is not available."""
@@ -72,6 +95,7 @@ class CacheService:
 
     def __init__(self, redis_url: str = Config.REDIS_URL):
         self._in_memory: Dict[str, Any] = {}
+        self._lru = LocalLRU(capacity=500) # L0 Local Cache
         self.version_prefix = Config.REDIS_VERSION_PREFIX
         try:
             # Note: decode_responses=True is important for locks and general use
@@ -113,12 +137,21 @@ class CacheService:
     def get(self, key: str) -> Optional[Any]:
         """Get a value from the cache. Deserializes JSON."""
         versioned_key = self._get_versioned_key(key)
+        
+        # 1. Try L0 (Local LRU)
+        l0_val = self._lru.get(versioned_key)
+        if l0_val is not None:
+            return l0_val
+
+        # 2. Try L1 (Redis)
         if self.is_available():
             try:
                 value = self.redis.get(versioned_key)
                 if value:
                     logger.debug(f"CACHE HIT for key: {versioned_key}")
-                    return json.loads(value)
+                    data = json.loads(value)
+                    self._lru.put(versioned_key, data) # Promote to L0
+                    return data
                 else:
                     logger.debug(f"CACHE MISS for key: {versioned_key}")
                     return None
@@ -137,6 +170,10 @@ class CacheService:
     def set(self, key: str, value: Any, ttl_seconds: int = Config.CACHE_TTL_SECONDS):
         """Set a value in the cache. Serializes value to JSON when using Redis."""
         versioned_key = self._get_versioned_key(key)
+        
+        # Always update L0
+        self._lru.put(versioned_key, value)
+
         if self.is_available():
             try:
                 serialized_value = json.dumps(value)
@@ -153,6 +190,8 @@ class CacheService:
     def delete(self, key: str):
         """Delete a key from the cache."""
         versioned_key = self._get_versioned_key(key)
+        self._lru.delete(versioned_key)
+
         if self.is_available():
             try:
                 self.redis.delete(versioned_key)

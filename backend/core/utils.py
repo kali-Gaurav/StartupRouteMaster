@@ -44,7 +44,7 @@ class CacheKeyGenerator:
             Hashed cache key
         """
         key_data = ":".join(str(part) for part in parts)
-        return hashlib.md5(key_data.encode()).hexdigest()[:16]
+        return hashlib.sha256(key_data.encode()).hexdigest()[:16]
 
     @staticmethod
     def route_query_key(from_station: str, to_station: str, date: date, **kwargs) -> str:

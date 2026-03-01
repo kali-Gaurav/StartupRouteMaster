@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 @router.post("/")
 @limiter.limit("60/minute")
 @cache(expire=300) # 5 minute cache
-async def search_routes_endpoint(request: Request, search_request: SearchRequestSchema, db: Session = Depends(get_db)):
+async def search_routes_endpoint(
+    request: Request, 
+    search_request: SearchRequestSchema, 
+    db: Session = Depends(get_db),
+    dry_run: bool = Query(False, description="If true, only resolve stations and validate without running engine"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(15, ge=1, le=50)
+):
     """
     Search for routes using the unified Stop (GTFS) model.
     """
@@ -41,21 +48,49 @@ async def search_routes_endpoint(request: Request, search_request: SearchRequest
 
         # Unified SearchService handles the engine call
         service = SearchService(db)
+
+        # --- DRY RUN MODE (Topic 3) ---
+        if dry_run:
+            from utils.station_utils import resolve_stations
+            src_stop, dst_stop = resolve_stations(db, search_request.source, search_request.destination)
+            
+            return {
+                "dry_run": True,
+                "resolved": {
+                    "source": {"code": src_stop.code, "name": src_stop.name} if src_stop else None,
+                    "destination": {"code": dst_stop.code, "name": dst_stop.name} if dst_stop else None
+                },
+                "validation": {
+                    "source_resolved": src_stop is not None,
+                    "destination_resolved": dst_stop is not None,
+                    "date_valid": True
+                },
+                "status": "ready" if (src_stop and dst_stop) else "incomplete"
+            }
+
         result = await service.search_routes(
             source=search_request.source,
             destination=search_request.destination,
             travel_date=travel_date_str,
             budget_category=search_request.budget,
             multi_modal=search_request.multi_modal,
-            women_safety_mode=search_request.women_safety_mode
+            women_safety_mode=search_request.women_safety_mode,
+            offset=offset,
+            limit=limit
         )
 
         if not result or not result.get("journeys"):
-            if Config.ENVIRONMENT != "development":
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"No routes found for {search_request.source} -> {search_request.destination}"
-                )
+            # Return smart error with suggestions (Topic 7)
+            return {
+                "error": "NO_ROUTES_FOUND",
+                "message": f"No routes found for {search_request.source} -> {search_request.destination} on {travel_date_str}",
+                "suggestions": [
+                    "Try nearby stations",
+                    "Try a different travel date",
+                    "Check if direct trains are available on this day"
+                ],
+                "journeys": []
+            }
 
         status_label = "success"
         return result
@@ -83,10 +118,11 @@ async def autocomplete_stations(request: Request, q: str = Query(..., min_length
     """
     try:
         station_service = StationService(db)
-        return station_service.search_stations_by_name(q)
+        results = station_service.search_stations_by_name(q)
+        return {"stations": results}
     except Exception as e:
         logger.error(f"Autocomplete error: {e}")
-        return []
+        return {"stations": []}
 
 @router.get("/stations/near", response_model=List[Dict])
 # @cached(ttl=3600) # Cache nearby stations for 1 hour
@@ -121,49 +157,43 @@ async def quick_search_endpoint(
     destination: str = Query(..., description="Destination station code (e.g. BCT)"),
     departure_time: Optional[datetime] = Query(None, description="Preferred departure time (ISO format)"),
     women_safety_mode: bool = Query(False, description="Enable women safety constraints"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(15, ge=1, le=50),
     db: Session = Depends(get_db)
 ):
     """
     Blueprint-compliant quick search endpoint (Topic 1).
-    Returns direct and multi-hop routes as a simple list.
+    Now upgraded with SearchService features and Load More support.
     """
     start_time = time.time()
     try:
-        # Use current time if not provided
         search_dt = departure_time or datetime.now()
+        date_str = search_dt.strftime("%Y-%m-%d")
         
-        # We call the engine directly for maximum speed, bypassing service overhead
-        from core.route_engine import route_engine
-        from core.route_engine.constraints import RouteConstraints
-        
-        # Default production constraints
-        constraints = RouteConstraints(max_transfers=2, range_minutes=360) # 6h window
-        if women_safety_mode:
-            constraints.women_safety_priority = True
-            constraints.avoid_night_layovers = True
-            constraints.weights.safety = 1.0
-        
-        routes = await route_engine.search_routes(
-            source_code=source,
-            destination_code=destination,
-            departure_date=search_dt,
-            constraints=constraints
+        service = SearchService(db)
+        result = await service.search_routes(
+            source=source,
+            destination=destination,
+            travel_date=date_str,
+            women_safety_mode=women_safety_mode,
+            offset=offset,
+            limit=limit
         )
         
         return {
             "source": source,
             "destination": destination,
             "departure_date": search_dt.isoformat(),
-            "routes": [r.to_dict() for r in routes],
-            "count": len(routes),
+            "routes": result.get("journeys", []),
+            "count": len(result.get("journeys", [])),
+            "total_available": result.get("total_available", 0),
+            "offset": offset,
+            "limit": limit,
             "latency_ms": int((time.time() - start_time) * 1000)
         }
     except Exception as e:
         logger.error(f"Quick search error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

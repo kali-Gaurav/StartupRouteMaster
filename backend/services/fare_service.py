@@ -11,7 +11,7 @@ class FareService:
     """Calls the Rapid IRCTC fare enquiry endpoint."""
 
     def __init__(self, config: Config = Config):
-        self.url = "https://irctc1.p.rapidapi.com/api/v3/getFare"
+        self.url = "https://irctc1.p.rapidapi.com/api/v1/getFare"
         self.enabled = getattr(config, "ENABLE_FARE_VERIFICATION", False) and bool(config.RAPIDAPI_KEY)
         self.headers = {
             "x-rapidapi-key": getattr(config, "RAPIDAPI_KEY", ""),
@@ -24,7 +24,7 @@ class FareService:
         train_no: str,
         from_station: str,
         to_station: str,
-        class_code: str,
+        class_code: Optional[str] = None,
         quota: str = "GN",
         date: str = ""
     ) -> Optional[Dict]:
@@ -35,10 +35,7 @@ class FareService:
         params = {
             "trainNo": train_no,
             "fromStationCode": from_station,
-            "toStationCode": to_station,
-            "class": class_code,
-            "quota": quota,
-            "date": date
+            "toStationCode": to_station
         }
 
         try:

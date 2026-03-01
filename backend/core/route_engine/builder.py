@@ -10,11 +10,6 @@ from sqlalchemy import and_, or_, create_engine
 from sqlalchemy.orm import joinedload, sessionmaker
 import os
 
-# Create a dedicated local session for the route engine to bypass slow remote Postgres
-db_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "database", "transit_graph.db"))
-transit_engine = create_engine(f"sqlite:///{db_path}")
-TransitSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=transit_engine)
-
 from database.session import SessionLocal
 
 from database.models import (
@@ -44,7 +39,15 @@ def _to_time(val):
 
 class MockStop:
     """Mock object that matches the expected Stop model interface"""
-    pass
+    id: int
+    stop_id: str
+    code: str
+    name: str
+    city: str
+    state: str
+    latitude: float = 0.0
+    longitude: float = 0.0
+    is_major_junction: bool = False
 
 class GraphBuilder:
     def __init__(self, executor: ThreadPoolExecutor, snapshot_manager=None):
@@ -62,6 +65,8 @@ class GraphBuilder:
             trip_segments=data['trip_segments'],
             transfer_graph=data['transfer_graph'],
             stop_cache=data['stop_cache'],
+            station_schedule=data['station_schedule'],
+            train_path=data['train_path'],
             route_patterns=data['route_patterns'],
             stop_index=data['stop_index']
         )
@@ -93,7 +98,7 @@ class GraphBuilder:
             return [s[0] for s in regular_services]
 
     def _build_graph_sync(self, date: datetime) -> Dict:
-        session = TransitSessionLocal()
+        session = SessionLocal()
         try:
             from sqlalchemy import text
             
@@ -106,9 +111,11 @@ class GraphBuilder:
             transfer_graph = defaultdict(list)
             stop_cache = {}
             route_patterns = defaultdict(list)
+            station_schedule = defaultdict(list)
+            train_path = defaultdict(list)
 
             # 1. Load all stops (Raw SQL for speed)
-            stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state FROM stops")).fetchall()
+            stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state, is_major_junction, latitude, longitude FROM stops")).fetchall()
             for row in stops_raw:
                 s = MockStop()
                 s.id = row[0]
@@ -117,6 +124,9 @@ class GraphBuilder:
                 s.name = row[3]
                 s.city = row[4]
                 s.state = row[5]
+                s.is_major_junction = bool(row[6])
+                s.latitude = float(row[7] or 0.0)
+                s.longitude = float(row[8] or 0.0)
                 stop_cache[int(s.id)] = s
 
             # 2. Query Segments - Raw SQL for extreme performance
@@ -136,11 +146,16 @@ class GraphBuilder:
                     JOIN trips t ON s.trip_id = t.id
                     JOIN gtfs_routes r ON t.route_id = r.id
                     WHERE t.service_id IN ({placeholders})
-                    ORDER BY s.trip_id, s.departure_time
-                """
+                    ORDER BY s.trip_id, s.arrival_day_offset, s.departure_time
+                    """
+
                 segments_raw = session.execute(text(query)).fetchall()
             
             logger.info(f"Found {len(segments_raw)} segments (Raw SQL)")
+
+            # Track cumulative offset per trip to handle multi-day journeys correctly
+            trip_cumulative_offsets = defaultdict(int)
+            trip_last_arrival_time = {}
 
             for row in segments_raw:
                 tid = int(row[0])
@@ -154,9 +169,28 @@ class GraphBuilder:
                 dep_time = _to_time(row[3])
                 arr_time = _to_time(row[4])
                 
-                dep_dt = datetime.combine(date.date(), dep_time)
-                offset = int(row[5] or 0)
-                arr_dt = datetime.combine(date.date() + timedelta(days=offset), arr_time)
+                # Logic to handle day rollover within a trip
+                if tid in trip_last_arrival_time:
+                    # If this departure time is earlier than the last arrival time, 
+                    # it MUST be on a subsequent day.
+                    if dep_time < trip_last_arrival_time[tid]:
+                        trip_cumulative_offsets[tid] += 1
+                
+                current_offset = trip_cumulative_offsets[tid]
+                dep_dt = datetime.combine(date.date() + timedelta(days=current_offset), dep_time)
+                
+                # Segment-specific arrival offset (relative to its own departure)
+                seg_arrival_offset = int(row[5] or 0)
+                # If arrival time < departure time, it's at least +1 day automatically
+                if arr_time < dep_time and seg_arrival_offset == 0:
+                    seg_arrival_offset = 1
+                
+                # Update cumulative offset if segment spans midnight
+                trip_cumulative_offsets[tid] += seg_arrival_offset
+                arr_dt = datetime.combine(date.date() + timedelta(days=trip_cumulative_offsets[tid]), arr_time)
+                
+                # Remember this arrival for the next segment in the trip
+                trip_last_arrival_time[tid] = arr_time
                 
                 # Index departure/arrival
                 departures[sid_src].append((dep_dt, tid))
@@ -226,6 +260,28 @@ class GraphBuilder:
             except Exception as te:
                 logger.warning(f"Transfer generation failed: {te}")
 
+            # 5. Load station_schedule and train_path (Phase 10)
+            try:
+                day_of_week = date.strftime('%A')
+                query_schedule = f"SELECT station_id, trip_id, arrival, departure, stop_seq FROM station_schedule WHERE day_of_week = '{day_of_week}'"
+                schedule_rows = session.execute(text(query_schedule)).fetchall()
+                for row in schedule_rows:
+                    station_schedule[int(row[0])].append({
+                        'trip_id': int(row[1]),
+                        'arrival': row[2],
+                        'departure': row[3],
+                        'stop_seq': int(row[4])
+                    })
+                    train_path[int(row[1])].append({
+                        'station_id': int(row[0]),
+                        'arrival': row[2],
+                        'departure': row[3],
+                        'stop_seq': int(row[4])
+                    })
+                logger.info(f"Loaded {len(schedule_rows)} station_schedule entries.")
+            except Exception as e:
+                logger.warning(f"Failed to load station_schedule: {e}")
+
             all_stop_ids = sorted(stop_cache.keys())
             stop_index_map = {sid: idx for idx, sid in enumerate(all_stop_ids)}
 
@@ -243,6 +299,8 @@ class GraphBuilder:
                 'trip_segments': trip_segments,
                 'transfer_graph': transfer_graph,
                 'stop_cache': stop_cache,
+                'station_schedule': station_schedule,
+                'train_path': train_path,
                 'route_patterns': route_patterns,
                 'stop_index': stop_index_map
             }

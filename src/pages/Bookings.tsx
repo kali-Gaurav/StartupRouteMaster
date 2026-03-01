@@ -103,13 +103,15 @@ function BookingsContent() {
                           {(b.booking_details as any)?.origin || (b.booking_details as any)?.source || "Unknown"} → {(b.booking_details as any)?.destination || (b.booking_details as any)?.dest || "Unknown"}
                         </span>
                         {b.booking_status && (
-                          <span className={`text-xs px-2 py-0.5 rounded ${
+                          <span className={`text-xs px-2 py-0.5 rounded font-bold uppercase ${
                             b.booking_status === "confirmed" ? "bg-green-100 text-green-800" :
+                            b.booking_status === "ticket_sent" ? "bg-blue-100 text-blue-800 border border-blue-200" :
+                            b.booking_status === "pending_manual" ? "bg-purple-100 text-purple-800 animate-pulse" :
                             b.booking_status === "pending" ? "bg-yellow-100 text-yellow-800" :
                             b.booking_status === "cancelled" ? "bg-red-100 text-red-800" :
                             "bg-gray-100 text-gray-800"
                           }`}>
-                            {b.booking_status}
+                            {b.booking_status.replace('_', ' ')}
                           </span>
                         )}
                       </div>

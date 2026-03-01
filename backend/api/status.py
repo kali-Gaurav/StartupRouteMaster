@@ -9,8 +9,9 @@ from database import get_db
 from services.station_service import StationService
 from services.route_engine import route_engine # Assuming route_engine can provide stats
 from database.config import Config
+from core.redis import async_redis_client
 
-router = APIRouter(prefix="/api", tags=["status"])
+router = APIRouter(prefix="", tags=["status"])
 logger = logging.getLogger(__name__)
 
 @router.get("/health")
@@ -43,8 +44,7 @@ async def general_health_check(db: Session = Depends(get_db)):
 
     # redis
     try:
-        redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
-        await redis_client.ping()
+        await async_redis_client.ping()
         components["redis"] = "ok"
     except Exception as redis_err:
         logger.warning(f"Redis health check failed: {redis_err}")
@@ -100,8 +100,7 @@ async def readiness_probe(request: Request, db: Session = Depends(get_db)):
 
         # Redis is optional; warn but do not fail
         try:
-            redis_client = aioredis.from_url(Config.REDIS_URL, decode_responses=True)
-            await redis_client.ping()
+            await async_redis_client.ping()
             logger.debug("Readiness probe: Redis connectivity OK")
         except Exception as redis_err:
             logger.warning(f"Redis not available during readiness check: {redis_err}")
@@ -142,11 +141,14 @@ async def readiness_probe(request: Request, db: Session = Depends(get_db)):
 @router.get("/stats")
 async def get_application_stats(db: Session = Depends(get_db)):
     """Provides general statistics about the application."""
+    import asyncio
     station_service = StationService(db)
     
-    total_stations = station_service.get_total_stations_count() # Assuming this method exists
-    total_routes = route_engine.get_total_routes_count() # Assuming this method exists
-    total_trains = route_engine.get_total_trains_count() # Assuming this method exists
+    total_stations, total_routes, total_trains = await asyncio.gather(
+        asyncio.to_thread(station_service.get_total_stations_count),
+        asyncio.to_thread(route_engine.get_total_routes_count),
+        asyncio.to_thread(route_engine.get_total_trains_count)
+    )
 
     return {
         "total_stations": total_stations,

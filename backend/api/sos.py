@@ -4,6 +4,9 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
 import logging
+import json
+import os
+import httpx
 
 # create logger for this module
 logger = logging.getLogger(__name__)
@@ -13,10 +16,6 @@ from api.websockets import manager
 from services.emergency.alert_manager import EmergencyAlertManager
 # Usered limiter from its source module
 from utils.limiter import limiter
-
-# HTTP client for calling other internal services
-import os
-import httpx
 
 NOTIFICATION_URL = os.getenv("NOTIFICATION_URL")
 EMERGENCY_ADMIN_NUMBER = os.getenv("EMERGENCY_ADMIN_NUMBER")  # optional phone/email for admins
@@ -69,7 +68,6 @@ def _event_key(event_id: str) -> str:
 def _save_event(event: Dict[str, Any]):
     if _redis:
         try:
-            import json
             _redis.set(_event_key(event['id']), json.dumps(event))
             _redis.sadd(SOS_INDEX_KEY, event['id'])
             return
@@ -83,7 +81,6 @@ def _load_event(event_id: str) -> Optional[Dict[str, Any]]:
         try:
             raw = _redis.get(_event_key(event_id))
             if raw:
-                import json
                 return json.loads(raw)
         except Exception:
             pass
@@ -170,7 +167,8 @@ async def get_active_sos():
     ids = []
     if _redis:
         try:
-            ids = list(_redis.smembers(SOS_INDEX_KEY) or [])
+            raw_ids = _redis.smembers(SOS_INDEX_KEY) or []
+            ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
         except Exception:
             ids = [e['id'] for e in _local_events]
     else:
@@ -189,7 +187,8 @@ async def get_all_sos():
     events = []
     if _redis:
         try:
-            ids = list(_redis.smembers(SOS_INDEX_KEY) or [])
+            raw_ids = _redis.smembers(SOS_INDEX_KEY) or []
+            ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
             for eid in ids:
                 e = _load_event(eid)
                 if e:
@@ -210,8 +209,10 @@ async def resolve_sos(event_id: str):
     _save_event(event)
     
     # Broadcast to all SOS monitors
-    await manager.broadcast_sos(event)
-    return event
+    if hasattr(manager, 'broadcast_sos'):
+        await manager.broadcast_sos(event)
+    elif hasattr(manager, 'broadcast'):
+        await manager.broadcast(json.dumps(event))
     return event
 
 
@@ -224,7 +225,8 @@ async def send_location_update(event_id: str, lat: float, lng: float):
     event['lng'] = lng
     event['google_maps_url'] = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
     _save_event(event)
-    await manager.broadcast(event)
+    if hasattr(manager, 'broadcast'):
+        await manager.broadcast(json.dumps(event))
     return event
 
 
@@ -235,5 +237,6 @@ async def end_trip(event_id: str):
         raise HTTPException(status_code=404, detail='SOS event not found')
     event['status'] = 'trip_ended'
     _save_event(event)
-    await manager.broadcast(event)
+    if hasattr(manager, 'broadcast'):
+        await manager.broadcast(json.dumps(event))
     return event

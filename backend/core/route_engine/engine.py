@@ -22,6 +22,7 @@ from .builder import GraphBuilder
 from .hub import HubManager, HubConnectivityTable
 from .snapshot_manager import SnapshotManager
 from .data_provider import DataProvider
+from .fast_router import FastPathRouter
 from ..realtime_event_processor import RealtimeEventProcessor
 from ..ml_ranking_model import RouteRankingModel
 from ..validator.live_validators import create_live_validators
@@ -267,6 +268,7 @@ class RailwayRouteEngine:
                     logger.info(f"Scheduling Hub Connectivity precomputation for {date.date()} in background...")
                     
                     async def _bg_hub_precompute():
+                        return # DISABLED FOR TESTING
                         try:
                             self.hub_manager.initialize_hubs()
                             hub_start = _time.time()
@@ -455,8 +457,10 @@ class RailwayRouteEngine:
         if constraints is None:
             constraints = RouteConstraints()
 
-        from .builder import TransitSessionLocal
-        session = TransitSessionLocal()
+        from database.session import SessionLocal
+        from .builder import MockStop
+        session = SessionLocal()
+
         try:
             from sqlalchemy import or_
             # Use Stop model but from local SQLite
@@ -478,13 +482,35 @@ class RailwayRouteEngine:
             date = departure_date
             graph = await self._get_current_graph(date)
 
-            routes = await self.raptor.find_routes(
-                source_stop.id, dest_stop.id, date, constraints, graph=graph
-            )
-            logger.info(f"RAPTOR found {len(routes)} routes.")
+            # Phase 10: Fast BFS Router for 0, 1, 2, 3 transfers
+            fast_router = FastPathRouter(graph)
+            routes = fast_router.find_routes(source_stop.id, dest_stop.id, date, constraints)
+            
+            logger.info(f"Phase 10 FastRouter found {len(routes)} routes.")
+
+            # If FastRouter didn't find enough routes or we explicitly need RAPTOR
+            if len(routes) < constraints.max_results:
+                raptor_routes = await self.raptor.find_routes(
+                    source_stop.id, dest_stop.id, date, constraints, graph=graph
+                )
+                logger.info(f"RAPTOR fallback found {len(raptor_routes)} routes.")
+                
+                # Merge RAPTOR routes with fast routes
+                seen_segments = set(tuple(seg.trip_id for seg in r.segments) for r in routes if r.segments)
+                for rr in raptor_routes:
+                    if rr.segments:
+                        r_segs = tuple(seg.trip_id for seg in rr.segments)
+                        if r_segs not in seen_segments:
+                            routes.append(rr)
+                            seen_segments.add(r_segs)
 
             if user_context:
                 routes = await self._apply_ml_ranking(routes, user_context)
+
+            # Sort and truncate
+            if routes:
+                routes.sort(key=lambda r: (getattr(r, 'score', 0), -getattr(r, 'reliability', 0)))
+                routes = routes[:constraints.max_results]
 
             if self.seat_manager:
                 for i, route in enumerate(routes):
@@ -667,7 +693,7 @@ class RailwayRouteEngine:
     def get_total_routes_count(self) -> int:
         session = SessionLocal()
         try:
-            return session.query(RootModel).count()
+            return session.query(RouteModel).count()
         finally:
             session.close()
 

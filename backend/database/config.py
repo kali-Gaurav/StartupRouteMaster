@@ -21,6 +21,12 @@ class Config:
     DATABASE_URL = _db_url if not OFFLINE_MODE else os.getenv("DATABASE_URL", "")
     READ_DATABASE_URL = os.getenv("READ_DATABASE_URL", "")
     
+    # Connection Pool Settings (Topic 3)
+    DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "20"))
+    DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    
     # Redis Configuration
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_SESSION_EXPIRY_SECONDS = int(os.getenv("REDIS_SESSION_EXPIRY_SECONDS", "3600"))
@@ -75,10 +81,11 @@ class Config:
     FEASIBILITY_WEIGHT_DELAY = float(os.getenv("FEASIBILITY_WEIGHT_DELAY", "0.1"))
     ROUTE_RELIABILITY_WEIGHT = float(os.getenv("ROUTE_RELIABILITY_WEIGHT", "0.0"))
 
-    # ML Model paths
-    ROUTE_RANKING_MODEL_PATH = os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl")
-    DELAY_PREDICTOR_MODEL_PATH = os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl")
-    TATKAL_DEMAND_MODEL_PATH = os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl")
+    # ML Model paths (Resolved relative to project root)
+    _root = Path(__file__).resolve().parent.parent.parent
+    ROUTE_RANKING_MODEL_PATH = str(_root / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
+    DELAY_PREDICTOR_MODEL_PATH = str(_root / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
+    TATKAL_DEMAND_MODEL_PATH = str(_root / os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl"))
 
     # Kafka
     KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -105,8 +112,8 @@ class Config:
     GPS_API_ENDPOINT = os.getenv("GPS_API_ENDPOINT", "")
     
     # Timeouts & Retries
-    LIVE_API_TIMEOUT_MS = int(os.getenv("LIVE_API_TIMEOUT_MS", "500"))
-    LIVE_API_RETRY_COUNT = int(os.getenv("LIVE_API_RETRY_COUNT", "1"))
+    LIVE_API_TIMEOUT_MS = int(os.getenv("LIVE_API_TIMEOUT_MS", "5000"))
+    LIVE_API_RETRY_COUNT = int(os.getenv("LIVE_API_RETRY_COUNT", "2"))
     EXTERNAL_API_TIMEOUT_MS = int(os.getenv("EXTERNAL_API_TIMEOUT_MS", "500"))
     SIMULATE_AVAILABILITY_CHECK_FAILURE_RATE = float(os.getenv("SIMULATE_AVAILABILITY_CHECK_FAILURE_RATE", "0.1"))
 

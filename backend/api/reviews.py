@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from typing import List
 
 from database import get_db
 from schemas import ReviewCreate, ReviewRead
 from services.review_service import ReviewService
-from database.models import User
+from database.models import User, Review
 from api.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -27,3 +28,16 @@ def create_review(
     except Exception as e:
         # For other potential errors, like database integrity errors
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create review.")
+
+@router.get("/my", response_model=List[ReviewRead])
+async def get_user_reviews(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Get all reviews submitted by the current authenticated user.
+    """
+    reviews = db.query(Review).filter(Review.user_id == current_user.id).order_by(Review.created_at.desc()).offset(skip).limit(limit).all()
+    return reviews

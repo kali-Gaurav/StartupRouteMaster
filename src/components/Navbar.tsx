@@ -45,6 +45,10 @@ export function Navbar() {
             <a href="/" className="text-muted-foreground hover:text-foreground transition-colors">
               Trains
             </a>
+            <a href="/track/12002" className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
+              <Train className="w-4 h-4" />
+              Live Tracker
+            </a>
             <a href="/sos" className="flex items-center gap-1.5 text-red-600 hover:text-red-700 font-medium">
               <ShieldAlert className="w-4 h-4" />
               SOS

@@ -37,23 +37,48 @@ def get_current_user(
         resp = supabase.auth.get_user(token)
     except Exception as e:
         raise credentials_exception
-    if resp.get("error") or not resp.get("data"):
+        
+    sb_user = None
+    if hasattr(resp, "user"):
+        sb_user = resp.user
+    elif isinstance(resp, dict) and resp.get("data"):
+        sb_user = resp["data"]
+        
+    if not sb_user:
         raise credentials_exception
-    sb_user = resp["data"]
+
+    # Extract user ID and email cleanly
+    sb_id = getattr(sb_user, "id", sb_user.get("id") if isinstance(sb_user, dict) else None)
+    sb_email = getattr(sb_user, "email", sb_user.get("email") if isinstance(sb_user, dict) else None)
 
     user_service = UserService(db)
     # look up by supabase_id first, then email if necessary
     user = None
-    if sb_user.get("id"):
-        user = user_service.get_user_by_supabase_id(sb_user["id"])
-    if not user and sb_user.get("email"):
-        user = user_service.get_user_by_email(sb_user["email"])
+    if sb_id:
+        user = user_service.get_user_by_supabase_id(sb_id)
+    if not user and sb_email:
+        user = user_service.get_user_by_email(sb_email)
+        if user and sb_id:
+            # Sync supabase_id to existing email-only user
+            user.supabase_id = sb_id
+            db.commit()
+            db.refresh(user)
+            
     # if still missing create a record so that the rest of the service works
     if not user:
+        # Step 1: Ensure Profile exists (FK requirement)
+        from database.models import Profile
+        profile = db.query(Profile).filter(Profile.id == sb_id).first()
+        if not profile:
+            profile = Profile(id=sb_id, name=sb_email.split('@')[0] if sb_email else "User")
+            db.add(profile)
+            db.flush()
+
+        # Step 2: Create User linked to profile
         user = user_service.create_user_with_data({
-            "email": sb_user.get("email"),
-            "supabase_id": sb_user.get("id"),
-            "password_hash": "",  # placeholder, auth handled by Supabase
+            "email": sb_email,
+            "supabase_id": sb_id,
+            "password_hash": "supabase_managed",  # placeholder
         })
     return user
 
@@ -68,15 +93,25 @@ def get_optional_user(
         resp = supabase.auth.get_user(token)
     except Exception:
         return None
-    if resp.get("error") or not resp.get("data"):
+        
+    sb_user = None
+    if hasattr(resp, "user"):
+        sb_user = resp.user
+    elif isinstance(resp, dict) and resp.get("data"):
+        sb_user = resp["data"]
+        
+    if not sb_user:
         return None
-    sb_user = resp["data"]
+        
+    sb_id = getattr(sb_user, "id", sb_user.get("id") if isinstance(sb_user, dict) else None)
+    sb_email = getattr(sb_user, "email", sb_user.get("email") if isinstance(sb_user, dict) else None)
+
     user_service = UserService(db)
     user = None
-    if sb_user.get("id"):
-        user = user_service.get_user_by_supabase_id(sb_user["id"])
-    if not user and sb_user.get("email"):
-        user = user_service.get_user_by_email(sb_user["email"])
+    if sb_id:
+        user = user_service.get_user_by_supabase_id(sb_id)
+    if not user and sb_email:
+        user = user_service.get_user_by_email(sb_email)
     return user
 
 async def verify_webhook_signature(request: Request):

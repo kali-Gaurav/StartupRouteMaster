@@ -63,7 +63,7 @@ class RouteQuery:
 
     def cache_key(self) -> str:
         key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
-        return f"route:{hashlib.md5(key_data.encode()).hexdigest()[:16]}"
+        return f"route:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
 @dataclass
 class AvailabilityQuery:
@@ -72,10 +72,11 @@ class AvailabilityQuery:
     to_stop_id: int
     travel_date: date
     quota_type: str
+    class_type: str = "3A"
     passengers: int = 1
 
     def cache_key(self) -> str:
-        key_data = f"{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{self.travel_date.isoformat()}:{self.quota_type}"
+        key_data = f"{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{self.travel_date.isoformat()}:{self.quota_type}:{self.class_type}"
         return f"availability:{hashlib.md5(key_data.encode()).hexdigest()[:16]}"
 
 
@@ -205,6 +206,7 @@ class MultiLayerCache:
         """Invalidate route queries involving specific stations"""
         # Always clear local Layer 0 when invalidating
         self.lru = LRUCache(capacity=self.lru.capacity)
+        self.metrics['lru_cache'].deletes += 1
         
         if not self.redis:
             return

@@ -25,65 +25,40 @@ class SuggestionSchema(BaseModel):
 
 
 @router.get("/search", response_model=Dict)
-async def legacy_station_search(q: str = Query(..., min_length=1), limit: int = Query(10, gt=0, le=100), db: Session = Depends(get_db)):
-    """Unified station search endpoint.
-    Searches across GTFS Stop table for matches.
-    """
-    cache_key = f"stations_search_v3:{q.lower()}:{limit}"
-    
-    cached_results = cache_service.get(cache_key)
-    if cached_results is not None:
-        return {"success": True, "stations": cached_results, "cached": True}
-    
+@limiter.limit("120/minute")
+async def legacy_station_search(request: Request, q: str = Query(..., min_length=1), limit: int = Query(10, gt=0, le=100)):
+    """Unified station search endpoint - Redirected to In-Memory Engine."""
+    start_time = time.time()
     try:
-        query_lower = q.lower()
-        candidates = db.query(Stop).filter(
-            (Stop.name.ilike(f"%{query_lower}%")) |
-            (Stop.code.ilike(f"{query_lower}%")) |
-            (Stop.stop_id.ilike(f"{query_lower}%"))
-        ).limit(limit).all()
-
+        # Use the high-performance in-memory engine instead of DB
+        suggestions = await run_in_threadpool(station_search_engine.suggest, q, limit)
+        
         results = [
-            {"name": s.name, "code": s.code or s.stop_id, "city": s.city, "state": s.state}
-            for s in candidates
+            {"name": s.name, "code": s.code, "city": s.city, "state": s.state}
+            for s in suggestions
         ]
         
-        if not results:
-            from database.models import StationMaster
-            try:
-                legacy_candidates = db.query(StationMaster).filter(
-                    (StationMaster.station_name.ilike(f"%{query_lower}%")) |
-                    (StationMaster.station_code.ilike(f"{query_lower}%"))
-                ).limit(limit).all()
-                results = [
-                   {"name": s.station_name, "code": s.station_code, "city": s.city}
-                   for s in legacy_candidates
-                ]
-            except Exception:
-                pass
-
-        try:
-            cache_service.set(cache_key, results)
-        except Exception as cache_err:
-            logger.warning("Station search cache set failed: %s", cache_err)
-
-        return {"success": True, "stations": results, "cached": False}
+        return {
+            "success": True, 
+            "stations": results, 
+            "cached": True, # In-memory is effectively a hot cache
+            "latency_ms": (time.time() - start_time) * 1000
+        }
     except Exception as e:
-        logger.error(f"Legacy station search failed: {e}")
+        logger.error(f"Station search failed: {e}")
         raise HTTPException(status_code=500, detail="Station search failed")
 
 
 @router.get("/suggest", response_model=List[SuggestionSchema])
-@limiter.limit("20/second")
+@limiter.limit("120/minute")
 async def suggest_stations(request: Request, q: str = Query(..., min_length=2), limit: int = Query(10, gt=0, le=25)):
-    """High performance station autosuggest powered by railway_data.db."""
+    """Ultra-fast station autosuggest powered by In-Memory Trie Index."""
 
     start_time = time.time()
     status = "failure"
     try:
         suggestions = await run_in_threadpool(station_search_engine.suggest, q, limit)
         status = "success"
-        logger.debug("Autosuggest query '%s' returned %d candidates", q, len(suggestions))
         return [SuggestionSchema(code=s.code, name=s.name, city=s.city, state=s.state) for s in suggestions]
     except Exception as exc:
         logger.error("Station suggest failed for '%s': %s", q, exc)
@@ -95,10 +70,19 @@ async def suggest_stations(request: Request, q: str = Query(..., min_length=2), 
 
 
 @router.get("/resolve", response_model=SuggestionSchema)
-async def resolve_station(q: str = Query(..., min_length=2)):
+@limiter.limit("60/minute")
+async def resolve_station(request: Request, q: str = Query(..., min_length=2)):
     """Resolve the best station for a loose query."""
 
-    resolved = await run_in_threadpool(station_search_engine.resolve, q)
-    if not resolved:
-        raise HTTPException(status_code=404, detail="No station matched the query")
-    return SuggestionSchema(code=resolved.code, name=resolved.name, city=resolved.city, state=resolved.state)
+    start_time = time.time()
+    status = "failure"
+    try:
+        resolved = await run_in_threadpool(station_search_engine.resolve, q)
+        if not resolved:
+            raise HTTPException(status_code=404, detail="No station matched the query")
+        status = "success"
+        return SuggestionSchema(code=resolved.code, name=resolved.name, city=resolved.city, state=resolved.state)
+    finally:
+        duration_ms = (time.time() - start_time) * 1000
+        STATION_SUGGEST_LATENCY_MS.labels(endpoint="/api/stations/resolve").observe(duration_ms)
+        STATION_SUGGEST_REQUESTS_TOTAL.labels(endpoint="/api/stations/resolve", status=status).inc()

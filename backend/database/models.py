@@ -457,14 +457,17 @@ class UnlockedRoute(Base):
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     payment_id = Column(String(36), ForeignKey("payments.id"), nullable=True, index=True)
     unlocked_at = Column(DateTime, default=datetime.utcnow)
-    
-    # --- Deprecated / Transitional Fields ---
+    is_active = Column(Boolean, default=False)
+
+    # --- Transitional / Link Fields ---
     route_id = Column(String(36), ForeignKey("precalculated_routes.id"), nullable=True, index=True)
+
+    # NEW: Store modern cached IDs (rt_... or turbo_...) which are not in the PrecalculatedRoute table
+    cached_route_id = Column(String(100), nullable=True, index=True)
 
     user = relationship("User", back_populates="unlocked_routes")
     payment = relationship("Payment", back_populates="unlocked_route", uselist=False)
-    route = relationship("PrecalculatedRoute") # Points to deprecated table
-
+    route = relationship("PrecalculatedRoute") # Points to legacy table if available
 class Disruption(Base):
     __tablename__ = "disruptions"
 
@@ -559,6 +562,25 @@ class PaymentStatus(str, Enum):
     FAILED = "FAILED"
     REFUNDED = "REFUNDED"
     PARTIAL_REFUNDED = "PARTIAL_REFUNDED"
+
+
+class PaymentSession(Base):
+    """
+    Temporary session code for MVP payment flow without gateway webhook.
+    Allows user to confirm payment by entering a code.
+    """
+    __tablename__ = "payment_sessions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    route_id = Column(String(255), nullable=False)
+    session_code = Column(String(10), unique=True, nullable=False, index=True)
+    amount = Column(Float, nullable=False)
+    status = Column(String(50), default="PENDING", nullable=False) # PENDING, VERIFIED, EXPIRED
+    verification_details = Column(JSON, nullable=True) # New: Store verification snapshot
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
 
 
 class Payment(Base):
@@ -1244,6 +1266,32 @@ class SeatAvailability(Base):
     def __repr__(self):
         return f"<SeatAvailability(train={self.train_number}, date={self.travel_date}, status={self.availability_status})>"
 
+class TrainAvailabilityCache(Base):
+    """
+    Persistent cache for train seat availability and fares.
+    Reduces API costs and provides 'Last Seen' data for analytics.
+    """
+    __tablename__ = "train_availability_cache"
+    __table_args__ = (
+        UniqueConstraint('train_number', 'from_station_code', 'to_station_code', 'journey_date', 'class_type', 'quota', name='uq_train_availability'),
+        Index("idx_avail_lookup", "train_number", "from_station_code", "to_station_code"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    train_number = Column(String(20), nullable=False)
+    from_station_code = Column(String(10), nullable=False)
+    to_station_code = Column(String(10), nullable=False)
+    journey_date = Column(Date, nullable=False)
+    class_type = Column(String(10), nullable=False)
+    quota = Column(String(10), nullable=False)
+
+    status_text = Column(String(100)) # e.g., AVAILABLE-0197, GNWL46/WL29
+    seats_available = Column(Integer)
+    fare = Column(Integer)
+    
+    last_updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class APIUsage(Base):
     """Tracks daily request counts for external APIs to prevent budget overruns."""
     __tablename__ = "api_usage"
@@ -1260,6 +1308,50 @@ class APIUsage(Base):
 
     def __repr__(self):
         return f"<APIUsage(api={self.api_name}, date={self.date}, count={self.request_count})>"
+
+
+class StationSchedule(Base):
+    """
+    Station-centric view for fast lookup of trains serving a station.
+    """
+    __tablename__ = "station_schedule"
+    __table_args__ = (
+        Index("idx_station_schedule_station", "station_id", "day_of_week", "departure"),
+        Index("idx_station_schedule_train", "trip_id", "stop_seq"),
+    )
+
+    station_id = Column(Integer, ForeignKey("stops.id"), primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), primary_key=True)
+    arrival = Column(Time)
+    departure = Column(Time)
+    day_of_week = Column(String(9), primary_key=True)
+    stop_seq = Column(Integer, primary_key=True)
+
+    # Relationships
+    stop = relationship("Stop")
+    trip = relationship("Trip")
+
+
+class TrainPath(Base):
+    """
+    Train-centric view for fast reconstruction of a train's route.
+    """
+    __tablename__ = "train_path"
+    __table_args__ = (
+        Index("idx_train_path_station", "station_id"),
+    )
+
+    trip_id = Column(Integer, ForeignKey("trips.id"), primary_key=True)
+    station_id = Column(Integer, ForeignKey("stops.id"), nullable=False)
+    arrival = Column(Time)
+    departure = Column(Time)
+    stop_seq = Column(Integer, primary_key=True)
+    day_of_week = Column(String(9), primary_key=True)
+
+    # Relationships
+    trip = relationship("Trip")
+    stop = relationship("Stop")
+
 
 class TrainMaster(Base):
     """Minimal train metadata used for capacity baseline predictions."""

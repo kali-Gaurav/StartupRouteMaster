@@ -14,7 +14,7 @@ Author: RouteMaster Intelligence System
 Date: 2026-02-17
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
@@ -81,7 +81,7 @@ class RevenuePerformanceRequest(BaseModel):
 # PRICING ENDPOINTS
 # ============================================================================
 
-def verify_admin_token(x_admin_token: str = Query(...)) -> bool:
+def verify_admin_token(x_admin_token: str = Header(...)) -> bool:
     """Verify admin API token."""
     if x_admin_token != Config.ADMIN_API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")

@@ -329,6 +329,22 @@ def get_event_producer() -> EventProducer:
             _event_producer = InMemoryEventProducer()
     return _event_producer
 
+class GenericEvent(Event):
+    """Generic event for arbitrary data"""
+    def __init__(self, event_type: str, data: Dict[str, Any]):
+        super().__init__(event_type)
+        self.data = data
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = super().to_dict()
+        d.update(self.data)
+        return d
+
+async def publish_event(event_type: str, data: Dict[str, Any]) -> bool:
+    """Publish a generic event."""
+    event = GenericEvent(event_type, data)
+    return await get_event_producer().publish_event(event, f"{event_type}_events")
+
 # Convenience functions for publishing events
 async def publish_route_searched(user_id: Optional[str], source: str, destination: str,
                                travel_date: str, routes_shown: int, search_latency_ms: float,
