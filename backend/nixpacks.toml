@@ -5,4 +5,4 @@ nixPkgs = ["python311", "gcc"]
 cmds = ["python -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
 
 [start]
-cmd = "uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers"
+cmd = "./start.sh"
