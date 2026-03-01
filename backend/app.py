@@ -177,13 +177,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://www.routemaster.online",
-        "https://routemaster.online"
+        "https://routemaster.online",
+        "https://startuproutemaster-production.up.railway.app"
         
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Content-Type",
+        "Set-Cookie",
+        "Access-Control-Allow-Headers",
+        "Access-Control-Allow-Origin",
+        "Authorization",
+        "X-Requested-With",
+        "X-Admin-Token"
+    ],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # 3. Request/Response Logging
