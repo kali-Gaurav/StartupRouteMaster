@@ -44,12 +44,12 @@
 **Frontend Code:** `src/services/railwayBackApi.ts`
 ```typescript
 export function getRailwayApiUrl(): string {
-  return import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  return import.meta.env.RAILWAY_BACKEND_URL || 'http://localhost:8000';
 }
 ```
 
 **Environment Variables Needed:**
-- `VITE_API_URL` - Backend API URL
+- `RAILWAY_BACKEND_URL` - Backend API URL
 - **Current:** Defaults to `http://localhost:8000`
 - **Production:** Should be configurable
 
@@ -567,7 +567,7 @@ async def websocket_endpoint(websocket: WebSocket):
 - [ ] ✅ Database connected and queryable
 - [ ] ✅ Frontend builds (`npm run build`)
 - [ ] ✅ Frontend runs locally (`npm run dev`)
-- [ ] [ ] VITE_API_URL set to backend URL
+- [ ] [ ] RAILWAY_BACKEND_URL set to backend URL
 - [ ] [ ] CORS headers correct
 - [ ] [ ] Database has test data (stations, trains)
 

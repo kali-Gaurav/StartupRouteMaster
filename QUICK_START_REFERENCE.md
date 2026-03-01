@@ -11,7 +11,7 @@
 
 | # | Issue | Status | Fix |
 |---|-------|--------|-----|
-| 1 | Frontend can't reach API (VITE_API_URL) | 🔴 BROKEN | ✅ FIXED: Frontend service added to docker-compose |
+| 1 | Frontend can't reach API (RAILWAY_BACKEND_URL) | 🔴 BROKEN | ✅ FIXED: Frontend service added to docker-compose |
 | 2 | CORS blocks requests | 🔴 BROKEN | ✅ FIXED: CORS now uses ALLOWED_ORIGINS env var |
 | 3 | No health checks | 🟡 PARTIAL | ✅ FIXED: Health endpoints check Redis + DB |
 | 4 | Loose service coupling | 🟡 PARTIAL | ✅ FIXED: Created docker-compose.prod.yml override |
@@ -157,7 +157,7 @@ React App (Browser)
 > **Note:** Kafka/Zookeeper and multiple microservices have been removed. Redis Streams now handle event flows; the backend container aggregates all functionality.
 
 **Key Networking:**
-- Frontend reaches API via environment variable (VITE_API_URL)
+- Frontend reaches API via environment variable (RAILWAY_BACKEND_URL)
 - Backend connects to Postgres and Redis using Docker DNS (db, redis)
 - CORS is configured via ALLOWED_ORIGINS environment variable
 - Health checks on every service ensure proper ordering and restarts
@@ -226,7 +226,7 @@ docker-compose ps
 
 ## CRITICAL FIXES EXPLAINED
 
-### Fix #1: Frontend API URL (VITE_API_URL)
+### Fix #1: Frontend API URL (RAILWAY_BACKEND_URL)
 **Before:** Frontend hardcoded to `localhost:8000`  
 **After:** Frontend reads from env var → works in Docker  
 **File:** `Dockerfile.frontend` & `docker-compose.yml`

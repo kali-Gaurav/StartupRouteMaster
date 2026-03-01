@@ -8,7 +8,7 @@ To ensure security and prevent leaks, follow this separation strictly.
 
 | Variable | Description |
 |----------|-------------|
-| `VITE_API_URL` | The URL of your **Railway** backend (e.g. `https://xxx.up.railway.app`) |
+| `RAILWAY_BACKEND_URL` | The URL of your **Railway** backend (e.g. `https://xxx.up.railway.app`) |
 | `VITE_SUPABASE_URL` | Your Supabase Project URL |
 | `VITE_SUPABASE_ANON_KEY` | Your Supabase **Anon/Public** Key |
 | `VITE_VAPID_PUBLIC_KEY` | Public key for Push Notifications |

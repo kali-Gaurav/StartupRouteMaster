@@ -1,6 +1,6 @@
 /**
  * Payment & Booking API — pure API calls. No UI.
- * Uses apiClient (Bearer token). Base: VITE_API_URL + /api.
+ * Uses apiClient (Bearer token). Base: RAILWAY_BACKEND_URL + /api.
  */
 
 import { fetchWithAuth } from "@/lib/apiClient";

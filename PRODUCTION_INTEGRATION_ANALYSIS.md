@@ -119,7 +119,7 @@ Observability:
 **Current Status:** ⚠️ PARTIAL
 ```typescript
 // Frontend: src/lib/apiClient.ts
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.RAILWAY_BACKEND_URL || "http://localhost:8000";
 
 // Problem:
 // - Development: ✅ Works (localhost:5173 → localhost:8000)
@@ -140,7 +140,7 @@ frontend:
   ports:
     - "3000:3000"
   environment:
-    - VITE_API_URL=http://api_gateway:8000  # For Docker
+    - RAILWAY_BACKEND_URL=http://api_gateway:8000  # For Docker
     - NODE_ENV=production
   depends_on:
     - api_gateway
@@ -607,7 +607,7 @@ React App (Vite)
 │     └─ RailAssistantChatbot.tsx → Chat UI
 │
 └─ Build Config:
-   ├─ vite.config.ts         → Defines VITE_API_URL
+   ├─ vite.config.ts         → Defines RAILWAY_BACKEND_URL
    ├─ tsconfig.json          → Strict mode enabled
    ├─ tailwind.config.js     → CSS framework
    └─ package.json           → Dependencies
@@ -618,7 +618,7 @@ React App (Vite)
 **File:** `src/lib/apiClient.ts`
 
 ```typescript
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.RAILWAY_BACKEND_URL || "http://localhost:8000";
 
 // ❌ Problem:
 // Development: Works (localhost → localhost)
@@ -627,12 +627,12 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 // ✅ Solution:
 // For development (docker-compose):
-// Frontend env: VITE_API_URL=http://api_gateway:8000
+// Frontend env: RAILWAY_BACKEND_URL=http://api_gateway:8000
 // OR use relative paths: /api/* (if reverse proxy handles it)
 
 // For production:
-// Frontend env: VITE_API_URL=https://api.routemaster.com
-// Build with: VITE_API_URL=https://api.routemaster.com npm run build
+// Frontend env: RAILWAY_BACKEND_URL=https://api.routemaster.com
+// Build with: RAILWAY_BACKEND_URL=https://api.routemaster.com npm run build
 ```
 
 ### 3.3 Authentication Flow - Backend ↔ Frontend
@@ -753,7 +753,7 @@ frontend:
   ports:
     - "3000:3000"
   environment:
-    - VITE_API_URL=http://api_gateway:8000  # ← Key fix
+    - RAILWAY_BACKEND_URL=http://api_gateway:8000  # ← Key fix
     - NODE_ENV=production
   depends_on:
     - api_gateway
@@ -980,7 +980,7 @@ CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
    # Add to docker-compose.yml:
    frontend:
      environment:
-       - VITE_API_URL=http://api_gateway:8000
+       - RAILWAY_BACKEND_URL=http://api_gateway:8000
    ```
 
 2. **Fix CORS Configuration**
@@ -1097,7 +1097,7 @@ The system is **~70% deployment-ready**. Main blockers are:
   - ✅ API Gateway properly routes to all microservices
 
 **3. Fixed Frontend Integration**
-  - ✅ API URL configured via VITE_API_URL environment variable
+  - ✅ API URL configured via RAILWAY_BACKEND_URL environment variable
   - ✅ Frontend Dockerfile builds and serves React app
   - ✅ Frontend configured to reach API Gateway inside Docker network
 

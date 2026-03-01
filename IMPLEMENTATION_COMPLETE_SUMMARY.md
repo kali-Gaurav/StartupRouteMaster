@@ -25,7 +25,7 @@ The system can now be **safely deployed to production** without frontend-backend
 
 | Issue | Impact | Solution | Files |
 |-------|--------|----------|-------|
-| Frontend API URL | 🔴 BLOCKS DEPLOYMENT | Added VITE_API_URL env var | Dockerfile.frontend, docker-compose.yml |
+| Frontend API URL | 🔴 BLOCKS DEPLOYMENT | Added RAILWAY_BACKEND_URL env var | Dockerfile.frontend, docker-compose.yml |
 | CORS Configuration | 🔴 BLOCKS REQUESTS | Environment-based ALLOWED_ORIGINS | backend/app.py |
 | Missing Health Checks | 🟡 HIDES FAILURES | Added Redis/DB checks to /health | backend/api/status.py |
 | Service Coupling | 🟡 UNCLEAR CONFIG | Created production overrides | docker-compose.prod.yml |
@@ -87,7 +87,7 @@ Browser → Frontend (localhost:5173)
           
 AFTER (Fixed):
 Frontend Container (5173)
-    ↓ Reads VITE_API_URL=http://api_gateway:8000 from env
+    ↓ Reads RAILWAY_BACKEND_URL=http://api_gateway:8000 from env
     ↓ Routes through Docker DNS
     ↓ Reaches api_gateway:8000 container
     ↓ ✅ Works!
