@@ -1,4 +1,4 @@
-import { Toaster } from "@/components/ui/toaster";
+import { Toaster } from "@/components/ui/toaster-new";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -74,7 +74,6 @@ const AppContent = () => {
   usePushNotifications(); // Initial push setup
   return (
     <TooltipProvider>
-      <Toaster />
       <Toaster />
       <Sonner />
       <NetworkStatusBanner />
