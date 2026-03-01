@@ -31,6 +31,7 @@ export default defineConfig({
       }
     })
   ],
+  envPrefix: ['VITE_', 'RAILWAY_'],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

@@ -9,7 +9,7 @@
 
 ### Code & Configuration ✓
 - [x] All 5 Critical Fixes implemented:
-  - [x] Frontend API URL configured for Docker (VITE_API_URL=http://api_gateway:8000)
+  - [x] Frontend API URL configured for Docker (RAILWAY_BACKEND_URL=http://api_gateway:8000)
   - [x] CORS origins set to environment variables
   - [x] Health check endpoints enhanced with Redis checks
   - [x] Database connection pool tuned (pool_size=20)

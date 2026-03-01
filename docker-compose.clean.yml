@@ -75,7 +75,7 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: rmv2_frontend
     environment:
-      - VITE_API_URL=${FRONTEND_API_URL}
+      - RAILWAY_BACKEND_URL=${FRONTEND_API_URL}
       - NODE_ENV=production
     depends_on:
       - backend

@@ -165,7 +165,7 @@ cp .env.example .env
 # Edit .env:
 # DATABASE_URL=postgresql://postgres:postgres@localhost:55432/postgres
 # REDIS_URL=redis://localhost:6379
-# VITE_API_URL=http://localhost:8000
+# RAILWAY_BACKEND_URL=http://localhost:8000
 ```
 
 ### Start Services
@@ -207,7 +207,7 @@ npm run dev
 # http://localhost:5173
 
 # 3. Frontend is configured to call API at:
-# http://localhost:8000 (via VITE_API_URL)
+# http://localhost:8000 (via RAILWAY_BACKEND_URL)
 
 # 4. Hot reload works - edit code and see changes instantly
 ```
@@ -265,7 +265,7 @@ docker-compose exec api_gateway curl http://route_service:8002/health
 
 # 5. Verify frontend is configured correctly
 docker-compose exec frontend env | grep VITE
-# Should show: VITE_API_URL=http://api_gateway:8000
+# Should show: RAILWAY_BACKEND_URL=http://api_gateway:8000
 
 # 6. Check container logs for errors
 docker-compose logs --tail=50 api_gateway
@@ -508,7 +508,7 @@ CORS error or connection refused
 docker-compose ps api_gateway
 
 # 2. Check if frontend has correct API URL
-docker-compose logs frontend | grep VITE_API_URL
+docker-compose logs frontend | grep RAILWAY_BACKEND_URL
 
 # 3. Test API gateway directly
 curl http://localhost:8000/api/health

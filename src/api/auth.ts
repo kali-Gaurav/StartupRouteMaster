@@ -1,6 +1,6 @@
 /**
  * Auth API — pure API calls. No UI.
- * Uses apiClient (Bearer token, 401 → logout). Base: VITE_API_URL + /api.
+ * Uses apiClient (Bearer token, 401 → logout). Base: RAILWAY_BACKEND_URL + /api.
  */
 
 import { fetchWithAuth } from "@/lib/apiClient";

@@ -175,9 +175,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # 2. CORS (Production Grade)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In strict production, replace with specific domains
+    allow_origins=[
+        "https://www.routemaster.online",
+        "https://routemaster.online"
+        
+    ],
     allow_credentials=True,
     allow_methods=["*"],
+    
     allow_headers=["*"],
 )
 

@@ -61,7 +61,7 @@ The routing engine loads a graph snapshot into RAM.
 2. Click **Add New > Project** and select your repo.
 3. **Framework Preset**: Vite.
 4. **Environment Variables**:
-   - `VITE_API_URL`: Your Railway backend URL (e.g., `https://backend-production.up.railway.app`)
+   - `RAILWAY_BACKEND_URL`: Your Railway backend URL (e.g., `https://backend-production.up.railway.app`)
 5. Click **Deploy**.
 
 ---

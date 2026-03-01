@@ -1212,7 +1212,7 @@ async def telegram_auth(data: TelegramAuthRequest):
 
 **Frontend (.env):**
 ```
-VITE_API_URL=https://api.routemaster.com
+RAILWAY_BACKEND_URL=https://api.routemaster.com
 VITE_APP_BASE_URL=https://routemaster.com
 VITE_RAZORPAY_KEY_ID=key_live_xxxxx
 VITE_SENTRY_DSN=https://xxxxx@sentry.io/xxxxx

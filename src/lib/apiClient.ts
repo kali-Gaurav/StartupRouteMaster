@@ -14,7 +14,7 @@ import {
   RateLimitError,
 } from "./errors";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.RAILWAY_BACKEND_URL || "http://localhost:8000";
 
 type On401 = () => void;
 type On429 = () => void;

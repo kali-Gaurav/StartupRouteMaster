@@ -290,7 +290,7 @@ services:
     ports:
       - "5173:5173"
     environment:
-      - VITE_API_URL=http://api_gateway:8000
+      - RAILWAY_BACKEND_URL=http://api_gateway:8000
       - NODE_ENV=production
     depends_on:
       - api_gateway
