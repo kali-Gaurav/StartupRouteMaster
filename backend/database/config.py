@@ -81,11 +81,12 @@ class Config:
     FEASIBILITY_WEIGHT_DELAY = float(os.getenv("FEASIBILITY_WEIGHT_DELAY", "0.1"))
     ROUTE_RELIABILITY_WEIGHT = float(os.getenv("ROUTE_RELIABILITY_WEIGHT", "0.0"))
 
-    # ML Model paths (Resolved relative to project root)
-    _root = Path(__file__).resolve().parent.parent.parent
-    ROUTE_RANKING_MODEL_PATH = str(_root / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
-    DELAY_PREDICTOR_MODEL_PATH = str(_root / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
-    TATKAL_DEMAND_MODEL_PATH = str(_root / os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl"))
+    # ML Model paths (Resolved relative to backend root)
+    _base = Path(__file__).resolve().parent.parent
+    ROUTE_RANKING_MODEL_PATH = str(_base / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
+    DELAY_PREDICTOR_MODEL_PATH = str(_base / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
+    TATKAL_DEMAND_MODEL_PATH = str(_base / os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl"))
+
 
     # Kafka
     KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")

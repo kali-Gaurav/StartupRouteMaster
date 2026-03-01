@@ -1,0 +1,13 @@
+# Only keep what matters for Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.pytest_cache/
+.git/
+.github/
+tests/
+frontend/
+doc/
+.env
