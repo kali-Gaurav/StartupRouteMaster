@@ -29,7 +29,7 @@ export interface BackendRoutesResponse {
 
 export async function searchStations(q: string): Promise<Station[]> {
   if (!q || q.trim().length < 2) return [];
-  const url = getRailwayApiUrl("/search/stations?q=" + encodeURIComponent(q.trim())); // Updated path
+  const url = getRailwayApiUrl("/stations/search?q=" + encodeURIComponent(q.trim())); // Fixed path
   const res = await fetch(url);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -67,7 +67,7 @@ export async function searchRoutes(
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (params?.correlationId) headers["X-Correlation-Id"] = params.correlationId;
 
-  const res = await fetch(getRailwayApiUrl("/search"), { // Changed to POST to /api/search/
+  const res = await fetch(getRailwayApiUrl("/search/"), { // Fixed: added trailing slash
     method: "POST",
     headers,
     body: JSON.stringify(body),

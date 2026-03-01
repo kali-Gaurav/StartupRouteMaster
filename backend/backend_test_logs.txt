@@ -1,0 +1,41 @@
+INFO:     127.0.0.1:61820 - "GET /ping HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61820 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61820 - "GET /api/stations/search?q=KOTA HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61820 - "GET /api/stations/search?q=MUMBAI HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61820 - "GET /api/stations/search?q=DELHI HTTP/1.1" 200 OK
+OpenRouter API HTTP error: 402 - {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 1927. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402,"metadata":{"provider_name":null}},"user_id":"user_33Ifr1mETkgBI5zWrmZXzXJMN2J"}
+INFO:     127.0.0.1:61820 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61820 - "POST /api/search HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:54417 - "GET /ping HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54417 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54417 - "GET /api/stations/search?q=KOTA HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54417 - "GET /api/stations/search?q=MUMBAI HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54417 - "GET /api/stations/search?q=DELHI HTTP/1.1" 200 OK
+OpenRouter API HTTP error: 402 - {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 1927. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402,"metadata":{"provider_name":null}},"user_id":"user_33Ifr1mETkgBI5zWrmZXzXJMN2J"}
+INFO:     127.0.0.1:54417 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "GET /ping HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "GET /api/stations/search?q=KOTA HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "GET /api/stations/search?q=MUMBAI HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "GET /api/stations/search?q=DELHI HTTP/1.1" 200 OK
+OpenRouter API HTTP error: 402 - {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 1927. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402,"metadata":{"provider_name":null}},"user_id":"user_33Ifr1mETkgBI5zWrmZXzXJMN2J"}
+INFO:     127.0.0.1:61698 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61698 - "POST /api/search/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /ping HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /api/stations/search?q=KOTA HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /api/stations/search?q=MUMBAI HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /api/stations/search?q=DELHI HTTP/1.1" 200 OK
+OpenRouter API HTTP error: 402 - {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 1927. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402,"metadata":{"provider_name":null}},"user_id":"user_33Ifr1mETkgBI5zWrmZXzXJMN2J"}
+INFO:     127.0.0.1:63925 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "POST /api/search/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63925 - "GET /api/v1/booking/availability?train_no=16378&from_code=PGT&to_code=BNC&date=2026-03-04&class_type=2S HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57098 - "GET /ping HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "GET /api/stations/search?q=KOTA HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "GET /api/stations/search?q=MUMBAI HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "GET /api/stations/search?q=DELHI HTTP/1.1" 200 OK
+OpenRouter API HTTP error: 402 - {"error":{"message":"This request requires more credits, or fewer max_tokens. You requested up to 16384 tokens, but can only afford 1927. To increase, visit https://openrouter.ai/settings/credits and upgrade to a paid account","code":402,"metadata":{"provider_name":null}},"user_id":"user_33Ifr1mETkgBI5zWrmZXzXJMN2J"}
+INFO:     127.0.0.1:57098 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "POST /api/search/ HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57098 - "POST /api/v1/booking/availability HTTP/1.1" 422 Unprocessable Entity
