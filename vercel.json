@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://startup-route-master-production.up.railway.app/api/:path*"
+    },
+    {
+      "source": "/chat/:path*",
+      "destination": "https://startup-route-master-production.up.railway.app/chat/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://startup-route-master-production.up.railway.app/health"
+    },
+    {
+      "source": "/metrics",
+      "destination": "https://startup-route-master-production.up.railway.app/metrics"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
