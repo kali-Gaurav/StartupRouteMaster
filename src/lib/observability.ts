@@ -1,22 +1,43 @@
 /**
  * Observability & Error Logging Utility
- * Handles logging errors to the console in dev and can be extended 
- * for Sentry/LogRocket in production.
  */
 
-export const logError = (error: Error, info?: { componentStack?: string }) => {
+type ErrorReporter = (error: any, info?: { componentStack?: string }) => void;
+type EventLogger = (name: string, properties?: Record<string, any>, extra?: any) => void;
+
+let currentErrorReporter: ErrorReporter = (error, info) => {
   console.error("Caught error:", error);
   if (info?.componentStack) {
     console.error("Component stack:", info.componentStack);
   }
-  
-  // Production: Add Sentry.captureException(error) here if needed
 };
 
-export const logEvent = (name: string, properties?: Record<string, any>) => {
+let currentEventLogger: EventLogger = (name, properties, extra) => {
   if (import.meta.env.DEV) {
-    console.log(`[Event: ${name}]`, properties);
+    console.log(`[Event: ${name}]`, properties, extra || "");
   }
-  
-  // Production: Add Analytics (PostHog/Mixpanel) here
+};
+
+export const logError = (error: any, info?: { componentStack?: string }) => {
+  currentErrorReporter(error, info);
+};
+
+export const reportError = logError;
+
+export const logEvent = (name: string, properties?: Record<string, any>, extra?: any) => {
+  currentEventLogger(name, properties, extra);
+};
+
+export const logPerf = (metric: string, value: number, tags?: Record<string, string>) => {
+  if (import.meta.env.DEV) {
+    console.log(`[Perf: ${metric}] ${value}ms`, tags || "");
+  }
+};
+
+export const setErrorReporter = (reporter: ErrorReporter) => {
+  currentErrorReporter = reporter;
+};
+
+export const setEventLogger = (logger: EventLogger) => {
+  currentEventLogger = logger;
 };
