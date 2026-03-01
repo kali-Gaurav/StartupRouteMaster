@@ -12,7 +12,7 @@ class SeatAvailabilityService:
     """Calls the Rapid IRCTC seat availability endpoint."""
 
     def __init__(self, config: Config = Config):
-        self.url = "https://irctc1.p.rapidapi.com/api/v3/getSeatAvailability"
+        self.url = "https://irctc1.p.rapidapi.com/api/v1/checkSeatAvailability"
         self.enabled = getattr(config, "ENABLE_SEAT_VERIFICATION", False) and bool(config.RAPIDAPI_KEY)
         self.headers = {
             "x-rapidapi-key": getattr(config, "RAPIDAPI_KEY", ""),
@@ -38,7 +38,7 @@ class SeatAvailabilityService:
             "fromStationCode": from_station,
             "toStationCode": to_station,
             "date": date,
-            "class": class_code,
+            "classType": class_code,
             "quota": quota
         }
 

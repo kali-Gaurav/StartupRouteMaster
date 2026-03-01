@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import logging
 
 from database import get_db
+from utils.limiter import limiter
 from services.booking_service import BookingService
 from api.dependencies import get_current_user
 from database.models import User
@@ -35,8 +36,10 @@ router = APIRouter(prefix="/api/v1/booking", tags=["bookings"])
 logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=BookingResponseSchema)
+@limiter.limit("30/minute")
 async def create_booking(
-    request: BookingCreateSchema,
+    request: Request,
+    booking_request: BookingCreateSchema,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -47,11 +50,11 @@ async def create_booking(
     service = BookingService(db)
     booking = service.create_booking(
         user_id=str(current_user.id),
-        route_id=request.route_id,
-        travel_date=request.travel_date,
-        booking_details=request.booking_details,
-        amount_paid=request.amount_paid,
-        passenger_details_list=[f.dict() for f in request.passenger_details] if request.passenger_details else None
+        route_id=booking_request.route_id,
+        travel_date=booking_request.travel_date,
+        booking_details=booking_request.booking_details,
+        amount_paid=booking_request.amount_paid,
+        passenger_details_list=[f.dict() for f in booking_request.passenger_details] if booking_request.passenger_details else None
     )
     if not booking:
         raise HTTPException(status_code=400, detail="Booking creation failed")
@@ -98,7 +101,9 @@ async def create_booking(
 from schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
 
 @router.get("/", response_model=BookingListSchema)
+@limiter.limit("60/minute")
 async def list_bookings(
+    request: Request,
     skip: int = 0,
     limit: int = 20,
     current_user: User = Depends(get_current_user),
@@ -120,14 +125,16 @@ async def list_bookings(
         "so frontend can render the booking flow without needing to interpret raw data."
     )
 )
+@limiter.limit("60/minute")
 async def check_availability(
-    request: AvailabilityCheckRequestSchema,
+    request: Request,
+    payload: AvailabilityCheckRequestSchema,
     db: Session = Depends(get_db)
 ):
     # convert travel_date string to date object
     try:
         from datetime import datetime
-        travel_date_obj = datetime.strptime(request.travel_date, "%Y-%m-%d").date()
+        travel_date_obj = datetime.strptime(payload.travel_date, "%Y-%m-%d").date()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid date format; expected YYYY-MM-DD")
 
@@ -135,16 +142,16 @@ async def check_availability(
     from database.models import Trip
 
     numeric_trip_id = None
-    if isinstance(request.trip_id, str):
+    if isinstance(payload.trip_id, str):
         # try to match trip_id field first
-        trip = db.query(Trip).filter(Trip.trip_id == request.trip_id).first()
-        if not trip and request.trip_id.isdigit():
-            trip = db.query(Trip).filter(Trip.id == int(request.trip_id)).first()
+        trip = db.query(Trip).filter(Trip.trip_id == payload.trip_id).first()
+        if not trip and payload.trip_id.isdigit():
+            trip = db.query(Trip).filter(Trip.id == int(payload.trip_id)).first()
         if not trip:
-            raise HTTPException(status_code=404, detail=f"Trip/route {request.trip_id} not found")
+            raise HTTPException(status_code=404, detail=f"Trip/route {payload.trip_id} not found")
         numeric_trip_id = trip.id
     else:
-        numeric_trip_id = request.trip_id
+        numeric_trip_id = payload.trip_id
 
     # delegate to the availability service
     from availability_service import availability_service, AvailabilityRequest
@@ -152,22 +159,22 @@ async def check_availability(
 
     # Convert quota_type string to QuotaType enum
     # Handle both uppercase and lowercase inputs
-    quota_type_str = request.quota_type.lower()
+    quota_type_str = payload.quota_type.lower()
     try:
         quota_enum = QuotaType(quota_type_str)
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid quota type: {request.quota_type}. Valid options: {', '.join([qt.value for qt in QuotaType])}"
+            detail=f"Invalid quota type: {payload.quota_type}. Valid options: {', '.join([qt.value for qt in QuotaType])}"
         )
 
     avail_req = AvailabilityRequest(
         trip_id=numeric_trip_id,
-        from_stop_id=request.from_stop_id,
-        to_stop_id=request.to_stop_id,
+        from_stop_id=payload.from_stop_id,
+        to_stop_id=payload.to_stop_id,
         travel_date=travel_date_obj,
         quota_type=quota_enum,
-        passengers=request.passengers,
+        passengers=payload.passengers,
     )
     resp = await availability_service.check_availability(avail_req)
 
@@ -232,8 +239,10 @@ async def get_booking_by_pnr(
 # ==============================================================================
 
 @router.post("/request", response_model=BookingRequestResponseSchema)
+@limiter.limit("10/minute")
 async def create_booking_request(
-    request: BookingRequestCreateSchema,
+    request: Request,
+    payload: BookingRequestCreateSchema,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -250,13 +259,30 @@ async def create_booking_request(
     from database.models import BookingRequest, BookingRequestPassenger, BookingQueue, Payment, UnlockedRoute
     from datetime import datetime
     
+    # DEBUG: Check user_id
+    logger.info(f"DEBUG: current_user.id={current_user.id}, type={type(current_user.id)}")
+    
     # Verify user has unlocked this route (has paid ₹39)
-    # Find the most recent unlock payment for this user
+    # Use string comparison for user_id to avoid UUID vs String mismatches
+    user_id_str = str(current_user.id)
     unlocked_route = db.query(UnlockedRoute).filter(
-        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.user_id == user_id_str,
         UnlockedRoute.is_active == True
     ).order_by(UnlockedRoute.unlocked_at.desc()).first()
     
+    if not unlocked_route:
+        # Check total active unlocks for this user to debug
+        total_active = db.query(UnlockedRoute).filter(
+            UnlockedRoute.user_id == user_id_str,
+            UnlockedRoute.is_active == True
+        ).count()
+        logger.warning(f"DEBUG: No unlocked route found for user {user_id_str}. Total active in DB: {total_active}")
+        
+        # Check first 3 active unlocks in system to see user_id format
+        sample = db.query(UnlockedRoute).filter(UnlockedRoute.is_active == True).limit(3).all()
+        for s in sample:
+            logger.info(f"DEBUG: Sample active unlock: user_id={s.user_id}, route_id={s.route_id or s.cached_route_id}")
+
     if not unlocked_route or not unlocked_route.payment_id:
         raise HTTPException(
             status_code=400,
@@ -273,31 +299,66 @@ async def create_booking_request(
     
     # Parse journey date
     try:
-        journey_date = datetime.strptime(request.journey_date, "%Y-%m-%d").date()
+        journey_date = datetime.strptime(payload.journey_date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     
+    # NEW: Phase 10 - Mandatory Seat Availability Check before queuing
+    # This fulfills the goal of saving requests by only checking at the final step
+    from services.seat_verification import SeatVerificationService
+    seat_svc = SeatVerificationService()
+    
+    # Use provided station codes or fall back to names
+    from_stn = payload.from_station_code or payload.source_station
+    to_stn = payload.to_station_code or payload.destination_station
+    
+    logger.info(f"Final verification for booking request: {payload.train_number} from {from_stn} to {to_stn}")
+    
+    try:
+        is_available = await seat_svc.check_segment(
+            train_no=payload.train_number,
+            from_code=from_stn,
+            to_code=to_stn,
+            date_str=payload.journey_date,
+            quota=payload.quota,
+            class_type=payload.class_type
+        )
+        
+        if not is_available:
+            # We don't block the request creation but we mark it as NOT_AVAILABLE
+            # This allows the user to still queue it if they want to wait, 
+            # or the system to handle it later.
+            verification_status = "NOT_AVAILABLE"
+            logger.warning(f"Final verification: No seats available for {payload.train_number}")
+        else:
+            verification_status = "VERIFIED"
+            logger.info(f"Final verification: Seats available for {payload.train_number}")
+            
+    except Exception as e:
+        logger.error(f"Final seat verification failed: {e}")
+        verification_status = "VERIFICATION_FAILED"
+
     # Create booking request
     booking_request = BookingRequest(
         user_id=str(current_user.id),
-        source_station=request.source_station,
-        destination_station=request.destination_station,
+        source_station=payload.source_station,
+        destination_station=payload.destination_station,
         journey_date=journey_date,
-        train_number=request.train_number,
-        train_name=request.train_name,
-        class_type=request.class_type,
-        quota=request.quota,
+        train_number=payload.train_number,
+        train_name=payload.train_name,
+        class_type=payload.class_type,
+        quota=payload.quota,
         status="PENDING",
-        verification_status="VERIFIED",  # Assumed verified if user reached this point
+        verification_status=verification_status,
         payment_id=unlocked_route.payment_id,
-        route_details=request.route_details,
+        route_details=payload.route_details,
         verified_at=datetime.utcnow()
     )
     db.add(booking_request)
     db.flush()  # Get the ID
     
     # Add passengers
-    for passenger_data in request.passengers:
+    for passenger_data in payload.passengers:
         passenger = BookingRequestPassenger(
             booking_request_id=booking_request.id,
             name=passenger_data.name,
@@ -325,6 +386,22 @@ async def create_booking_request(
     db.refresh(booking_request)
     db.refresh(queue_entry)
     
+    # Topic 3: Trigger Telegram Notification for Admin (Topic 5 in todo001.md)
+    try:
+        from services.telegram_service import send_telegram_message, format_booking_alert
+        alert_msg = format_booking_alert(
+            booking_id=booking_request.id,
+            journey=payload.route_details if payload.route_details else {"source": payload.source_station, "destination": payload.destination_station, "date": payload.journey_date},
+            passengers=[p.dict() for p in payload.passengers],
+            phone=getattr(current_user, "phone", "N/A") or "N/A",
+            email=current_user.email
+        )
+        # Fire and forget (async)
+        import asyncio
+        asyncio.create_task(send_telegram_message(alert_msg))
+    except Exception as te:
+        logger.error(f"Failed to trigger Telegram alert: {te}")
+
     # Build response
     response_data = {
         "id": booking_request.id,
@@ -398,16 +475,17 @@ async def get_my_booking_requests(
 ):
     """Get all booking requests for current user."""
     from database.models import BookingRequest, BookingQueue
+    from sqlalchemy.orm import joinedload
     
-    requests = db.query(BookingRequest).filter(
+    requests = db.query(BookingRequest).options(
+        joinedload(BookingRequest.queue_entry)
+    ).filter(
         BookingRequest.user_id == str(current_user.id)
     ).order_by(BookingRequest.created_at.desc()).offset(skip).limit(limit).all()
     
     results = []
     for req in requests:
-        queue_entry = db.query(BookingQueue).filter(
-            BookingQueue.booking_request_id == req.id
-        ).first()
+        queue_entry = req.queue_entry
         
         results.append({
             "id": req.id,
@@ -435,7 +513,9 @@ async def get_my_booking_requests(
 # ==============================================================================
 
 @router.post("/request/{request_id}/refund", response_model=RefundResponseSchema)
+@limiter.limit("5/minute")
 async def create_refund(
+    request: Request,
     request_id: str,
     reason: Optional[str] = None,
     current_user: User = Depends(get_current_user),

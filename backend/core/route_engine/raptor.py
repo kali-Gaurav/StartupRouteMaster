@@ -250,12 +250,16 @@ class OptimizedRAPTOR:
                 logger.debug(f"Frequency-aware Range-RAPTOR window: {constraints.range_minutes} minutes")
 
             half = constraints.range_minutes // 2
-            step = max(5, constraints.range_step_minutes)
+            # If the window is massive, don't search every 5 minutes.
+            min_step = 60 if constraints.range_minutes > 720 else (30 if constraints.range_minutes > 180 else 5)
+            step = max(min_step, constraints.range_step_minutes)
             departure_times = [departure_date + timedelta(minutes=m) for m in range(-half, half + 1, step)]
 
             collected = []
             # Optimization 4 Revert: Run searches sequentially to keep event loop responsive
+            import asyncio
             for dt in departure_times:
+                await asyncio.sleep(0) # Yield event loop
                 gathered = await self._search_single_departure(graph, source_stop_id, dest_stop_id, dt, constraints)
                 collected.extend(gathered)
 
@@ -302,6 +306,11 @@ class OptimizedRAPTOR:
                     found_source_idx = idx
                     break
             
+            if trip_id == 567:
+                logger.debug(f"RAPTOR DEBUG: Trip 567 found in source departures. found_source_idx={found_source_idx}")
+                if found_source_idx != -1:
+                    logger.debug(f"RAPTOR DEBUG: Traversal starts at {segments[found_source_idx].departure_time}")
+            
             if found_source_idx == -1:
                 continue
                 
@@ -315,6 +324,9 @@ class OptimizedRAPTOR:
                 # Mark stop as visited
                 local_visited.add(seg.arrival_stop_id)
                 
+                if trip_id == 567:
+                    logger.debug(f"RAPTOR DEBUG: Trip 567 checking segment {seg.departure_stop_id} -> {seg.arrival_stop_id}")
+
                 # Check if this stop is the destination
                 if seg.arrival_stop_id == dest_stop_id:
                     # Found a direct route!
@@ -339,7 +351,8 @@ class OptimizedRAPTOR:
                             best_routes[key] = final_route
                 
                 # Also add this partial route to the next round search
-                if (len(current_route_segments) % 5 == 0 or 
+                # Optimization: Sample segments more sparsely to reduce combinatorial explosion
+                if (len(current_route_segments) % 25 == 0 or 
                     seg.arrival_stop_id == dest_stop_id or 
                     i == len(segments) - 1):
                     
@@ -359,9 +372,13 @@ class OptimizedRAPTOR:
         for round_num in range(1, self.max_transfers + 1):
             if not routes_by_round[round_num - 1]:
                 break
-            current_routes = routes_by_round[round_num - 1]
+            
+            # Optimization: Cap partial routes per round to top 50 to prevent explosion
+            current_routes = sorted(routes_by_round[round_num - 1], key=lambda r: r.total_duration)[:50]
+            
             batch_size = 10
             for i in range(0, len(current_routes), batch_size):
+                await asyncio.sleep(0) # Yield event loop frequently
                 batch = current_routes[i:i + batch_size]
                 transfer_routes = await asyncio.gather(*[
                     self._process_route_transfers(route, graph, dest_stop_id, constraints)
@@ -931,39 +948,40 @@ class HybridRAPTOR(OptimizedRAPTOR):
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
-        """Hybrid Search Flow (Step 3)"""
-        # RailwayRouteEngine should always provide the graph.
-        # If it's None here, it means this find_routes was called directly,
-        # so we build it.
+        """Hybrid Search Flow (Phase 10 Optimized)"""
         if graph is None:
              graph = await self._get_graph_for_internal_use(departure_date)
 
-        # 1. Standard RAPTOR logic for the whole path (local search)
+        # 1. NEW: Try FastPathRouter first (O(1) BFS)
+        from .fast_router import FastPathRouter
+        fast_router = FastPathRouter(graph)
+        fast_routes = fast_router.find_routes(source_stop_id, dest_stop_id, departure_date, constraints)
+        
+        # If we found enough high-quality direct or 1-transfer routes, return early
+        if len([r for r in fast_routes if len(r.transfers) <= 1]) >= constraints.max_results:
+            logger.info(f"HybridRAPTOR: Early exit with {len(fast_routes)} fast-path routes.")
+            return fast_routes[:constraints.max_results]
+
+        # 2. Standard RAPTOR logic for the whole path (local search)
         standard_routes = await super().find_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
-        # 2. Hybrid Hub Search logic (Phase 3)
+        # 3. Hybrid Hub Search logic (Phase 3 Backbone)
         source_hubs = self.hub_manager.get_nearest_hubs(source_stop_id, graph)
         dest_hubs = self.hub_manager.get_nearest_hubs(dest_stop_id, graph)
 
         hub_routes = []
-        if source_hubs and dest_hubs and self._hub_table: # Check if hub_table is set
-            # Step 3.1: Hub Search Flow - Identification (Source -> Hubs)
+        if source_hubs and dest_hubs and self._hub_table:
             for s_hub_id, s_travel_time in source_hubs:
                 for d_hub_id, d_travel_time in dest_hubs:
-                    # Step 3.2: Hub Search Flow - Fast Backbone (Hub -> Hub)
-                    hub_dist = self._hub_table.get_min_time(s_hub_id, d_hub_id) # Use _hub_table
-                    
+                    hub_dist = self._hub_table.get_min_time(s_hub_id, d_hub_id)
                     if hub_dist is not None:
-                        # Construct a skeleton route representing the Hub backbone
-                        # In production, we'd fetch the best trip segments here.
                         route = Route()
-                        # Add a dummy cost and duration representing the backbone
                         route.total_duration = s_travel_time + hub_dist + d_travel_time
-                        route.reliability = 0.95 # Generic backbone reliability
+                        route.reliability = 0.95
                         hub_routes.append(route)
 
-        # 3. Pareto Merge (Step 4)
-        return self._pareto_merge(standard_routes, hub_routes)
+        # 4. Pareto Merge (Step 4)
+        return self._pareto_merge(fast_routes + standard_routes, hub_routes)
 
     async def _get_graph_for_internal_use(self, date: datetime) -> TimeDependentGraph:
         """
@@ -1015,4 +1033,4 @@ class HybridRAPTOR(OptimizedRAPTOR):
                 else:
                     logger.debug(f"Discarding empty skeleton route with duration {r.total_duration}")
                     
-        return pareto_front[:10]
+        return pareto_front[:25]

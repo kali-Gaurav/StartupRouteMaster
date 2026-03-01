@@ -10,6 +10,7 @@ import {
 import { getAllSOS, resolveSOS, type SOSEvent } from "@/services/sosApi";
 import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { storageService } from "@/services/storageService";
+import { useBookings } from "@/api/hooks/useBookings";
 
 function StatCard({ title, value, icon: Icon, colorClass, subtitle }: { title: string; value: string | number; icon: any; colorClass: string; subtitle?: string }) {
   return (
@@ -112,6 +113,10 @@ export default function Dashboard() {
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
+  // Manual Booking Integration
+  const { data: bookingsData } = useBookings({ limit: 3 });
+  const manualBookings = Array.isArray(bookingsData) ? bookingsData : [];
+
   // Stats Logic
   const activeCount = events.filter(e => e.status === "active").length;
   const resolvedToday = events.filter(e => e.status === "resolved").length;
@@ -212,9 +217,138 @@ export default function Dashboard() {
           <StatCard title="Total Reach" value="12.4k" icon={User} colorClass="bg-emerald-500" subtitle="+18.2% monthly" />
         </div>
 
+        {/* Manual Booking Requests Section (Wizard-of-Oz MVP) */}
+        {manualBookings.length > 0 && (
+          <section className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-black flex items-center gap-2 uppercase tracking-tight">
+                <History className="w-6 h-6 text-purple-500" />
+                Your Booking Status
+              </h2>
+              <Link to="/bookings" className="text-xs font-bold text-primary hover:underline">VIEW ALL HISTORY →</Link>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {manualBookings.map((b, i) => (
+                <div key={i} className="bg-white dark:bg-card border-2 border-border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
+                  <div className="flex justify-between items-start mb-3">
+                    <span className="text-[10px] font-black bg-muted px-2 py-1 rounded-lg uppercase text-muted-foreground tracking-tighter">
+                      PNR: {b.pnr_number || "TBD"}
+                    </span>
+                    <span className={cn(
+                      "text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border",
+                      b.booking_status === "ticket_sent" ? "bg-blue-500/10 text-blue-600 border-blue-200" :
+                      b.booking_status === "confirmed" ? "bg-green-500/10 text-green-600 border-green-200" :
+                      "bg-purple-500/10 text-purple-600 border-purple-200 animate-pulse"
+                    )}>
+                      {b.booking_status?.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-black group-hover:text-primary transition-colors">
+                      {b.booking_details?.origin || "Route"} → {b.booking_details?.destination || "Manual"}
+                    </p>
+                    <p className="text-[10px] font-bold text-muted-foreground">
+                      {new Date(b.travel_date).toLocaleDateString("en-IN", { dateStyle: 'medium' })} • {b.booking_details?.passengers?.length || 1} PAX
+                    </p>
+                  </div>
+                  {b.booking_status === "pending_manual" && (
+                    <div className="mt-4 pt-4 border-t border-dashed border-border">
+                      <p className="text-[9px] font-medium text-muted-foreground leading-relaxed">
+                        Our team is manually processing your ticket. You will receive it via Telegram/Email shortly.
+                      </p>
+                    </div>
+                  )}
+                  {b.pnr_number && (
+                    <Link to={`/ticket/${b.pnr_number}`} className="mt-4 w-full py-2 bg-primary text-primary-foreground rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all">
+                      TRACK JOURNEY <Zap className="w-3 h-3 fill-current" />
+                    </Link>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Manual Booking Requests Section (Wizard-of-Oz MVP) */}
+        {manualBookings.length > 0 && (
+          <section className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-black flex items-center gap-2 uppercase tracking-tight">
+                <History className="w-6 h-6 text-purple-500" />
+                Your Booking Status
+              </h2>
+              <Link to="/bookings" className="text-xs font-bold text-primary hover:underline">VIEW ALL HISTORY →</Link>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {manualBookings.map((b, i) => (
+                <div key={i} className="bg-white dark:bg-card border-2 border-border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
+                  <div className="flex justify-between items-start mb-3">
+                    <span className="text-[10px] font-black bg-muted px-2 py-1 rounded-lg uppercase text-muted-foreground tracking-tighter">
+                      PNR: {b.pnr_number || "TBD"}
+                    </span>
+                    <span className={cn(
+                      "text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border",
+                      b.booking_status === "ticket_sent" ? "bg-blue-500/10 text-blue-600 border-blue-200" :
+                      b.booking_status === "confirmed" ? "bg-green-500/10 text-green-600 border-green-200" :
+                      "bg-purple-500/10 text-purple-600 border-purple-200 animate-pulse"
+                    )}>
+                      {b.booking_status?.replace('_', ' ')}
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-black group-hover:text-primary transition-colors">
+                      {b.booking_details?.origin || "Route"} → {b.booking_details?.destination || "Manual"}
+                    </p>
+                    <p className="text-[10px] font-bold text-muted-foreground">
+                      {new Date(b.travel_date).toLocaleDateString("en-IN", { dateStyle: 'medium' })} • {b.booking_details?.passengers?.length || 1} PAX
+                    </p>
+                  </div>
+                  {b.booking_status === "pending_manual" && (
+                    <div className="mt-4 pt-4 border-t border-dashed border-border">
+                      <p className="text-[9px] font-medium text-muted-foreground leading-relaxed">
+                        Our team is manually processing your ticket. You will receive it via Telegram/Email shortly.
+                      </p>
+                    </div>
+                  )}
+                  {b.pnr_number && (
+                    <Link to={`/track/${b.pnr_number.slice(0, 5)}`} className="mt-4 w-full py-2 bg-primary text-primary-foreground rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all">
+                      TRACK JOURNEY <Zap className="w-3 h-3 fill-current" />
+                    </Link>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Main Column: SOS Events */}
-          <div className="lg:col-span-8 space-y-6">
+          {/* Main Column: SOS Events + Live Tracker Quick Access */}
+          <div className="lg:col-span-8 space-y-8">
+            <section className="bg-indigo-600 rounded-3xl p-8 text-white relative overflow-hidden shadow-xl shadow-indigo-200">
+              <div className="relative z-10">
+                <h3 className="text-2xl font-black uppercase tracking-tighter mb-2">Live Train Tracker</h3>
+                <p className="text-indigo-100 text-sm mb-6 max-w-sm">Enter your train number to see real-time position and delay status instantly.</p>
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const num = (e.target as any).train_num.value;
+                    if (num) window.location.href = `/track/${num}`;
+                  }}
+                  className="flex gap-2 max-w-md"
+                >
+                  <input 
+                    name="train_num"
+                    type="text" 
+                    placeholder="e.g. 12002" 
+                    className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-sm font-bold placeholder:text-white/40 focus:outline-none focus:bg-white/20 transition-all"
+                  />
+                  <button type="submit" className="bg-white text-indigo-600 px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-50 active:scale-95 transition-all">
+                    TRACK
+                  </button>
+                </form>
+              </div>
+              <Train className="absolute right-[-20px] bottom-[-20px] w-48 h-48 text-white/10 -rotate-12" />
+            </section>
             <div className="flex items-center justify-between border-b-2 border-border pb-4">
               <h2 className="text-lg font-black flex items-center gap-2 uppercase tracking-tight">
                 <ShieldAlert className="w-6 h-6 text-red-500" />

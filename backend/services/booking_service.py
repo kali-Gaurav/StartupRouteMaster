@@ -57,76 +57,72 @@ class BookingService:
 
         for attempt in range(self.MAX_RETRIES):
             try:
-                with self.db.begin_nested() as transaction:
-                    # Set the transaction isolation level to SERIALIZABLE for race condition prevention
-                    # SQLite does not support changing isolation level via SQL and
-                    # sqlalchemy will complain about textual SQL.  Only attempt
-                    # to set it on databases that support it.
-                    from sqlalchemy import text
-                    if self.db.bind.dialect.name not in ("sqlite", "sqlite3"):
-                        self.db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
-                    
-                    # Generate unique PNR NEW
-                    pnr_number = None
-                    for retry in range(10):  # Try up to 10 times to generate unique PNR
-                        candidate_pnr = generate_pnr()
-                        existing = self.db.query(Booking).filter(
-                            Booking.pnr_number == candidate_pnr
-                        ).first()
-                        if not existing:
-                            pnr_number = candidate_pnr
-                            break
-                    
-                    if not pnr_number:
-                        logger.error("Failed to generate unique PNR after 10 attempts")
-                        return None
-                    
-                    # Check if booking already exists (to prevent duplicates)
-                    existing_booking = self.db.query(Booking).filter(
-                        Booking.user_id == user_id,
-                        Booking.travel_date == travel_date_obj,
-                        Booking.booking_status.in_(["pending", "confirmed"])  # Don't recheck cancelled
-                    ).first()
-                    if existing_booking:
-                        logger.warning(f"User {user_id} already has active booking for {travel_date}")
-                        return existing_booking
-
-                    # Create booking with new PNR NEW
-                    booking = Booking(
-                        pnr_number=pnr_number,  # NEW: Set PNR
-                        user_id=user_id,
-                        route_id=route_id,
-                        travel_date=travel_date_obj,
-                        booking_status="pending",  # NEW: Use booking_status instead of payment_status
-                        amount_paid=amount_paid,
-                        booking_details=booking_details,
-                    )
-                    self.db.add(booking)
-                    self.db.flush()  # Flush to get booking.id
-                    
-                    # Add passenger details NEW
-                    if passenger_details_list:
-                        for pax_detail in passenger_details_list:
-                            try:
-                                passenger = PassengerDetails(
-                                    booking_id=booking.id,
-                                    full_name=pax_detail.get("full_name", ""),
-                                    age=pax_detail.get("age", 0),
-                                    gender=pax_detail.get("gender", "M"),
-                                    phone_number=pax_detail.get("phone_number"),
-                                    email=pax_detail.get("email"),
-                                    document_type=pax_detail.get("document_type"),
-                                    document_number=pax_detail.get("document_number"),
-                                    concession_type=pax_detail.get("concession_type"),
-                                    concession_discount=pax_detail.get("concession_discount", 0.0),
-                                    meal_preference=pax_detail.get("meal_preference"),
-                                )
-                                self.db.add(passenger)
-                            except Exception as e:
-                                logger.warning(f"Failed to add passenger details: {e}")
-                    
-                    transaction.commit()
+                # Set the transaction isolation level to SERIALIZABLE for race condition prevention
+                from sqlalchemy import text
+                if self.db.bind.dialect.name not in ("sqlite", "sqlite3"):
+                    self.db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
                 
+                # Generate unique PNR NEW
+                pnr_number = None
+                for retry in range(10):  # Try up to 10 times to generate unique PNR
+                    candidate_pnr = generate_pnr()
+                    existing = self.db.query(Booking).filter(
+                        Booking.pnr_number == candidate_pnr
+                    ).first()
+                    if not existing:
+                        pnr_number = candidate_pnr
+                        break
+                
+                if not pnr_number:
+                    logger.error("Failed to generate unique PNR after 10 attempts")
+                    return None
+                
+                # Check if booking already exists (to prevent duplicates)
+                existing_booking = self.db.query(Booking).filter(
+                    Booking.user_id == user_id,
+                    Booking.travel_date == travel_date_obj,
+                    Booking.booking_status.in_(["pending", "confirmed"])  # Don't recheck cancelled
+                ).first()
+                if existing_booking:
+                    logger.warning(f"User {user_id} already has active booking for {travel_date}")
+                    self.db.rollback()
+                    return existing_booking
+
+                # Create booking with new PNR NEW
+                booking = Booking(
+                    pnr_number=pnr_number,  # NEW: Set PNR
+                    user_id=user_id,
+                    route_id=route_id,
+                    travel_date=travel_date_obj,
+                    booking_status="pending",  # NEW: Use booking_status instead of payment_status
+                    amount_paid=amount_paid,
+                    booking_details=booking_details,
+                )
+                self.db.add(booking)
+                self.db.flush()  # Flush to get booking.id
+                
+                # Add passenger details NEW
+                if passenger_details_list:
+                    for pax_detail in passenger_details_list:
+                        try:
+                            passenger = PassengerDetails(
+                                booking_id=booking.id,
+                                full_name=pax_detail.get("full_name", pax_detail.get("name", "")),
+                                age=pax_detail.get("age", 0),
+                                gender=pax_detail.get("gender", "M"),
+                                phone_number=pax_detail.get("phone_number"),
+                                email=pax_detail.get("email"),
+                                document_type=pax_detail.get("document_type"),
+                                document_number=pax_detail.get("document_number"),
+                                concession_type=pax_detail.get("concession_type"),
+                                concession_discount=pax_detail.get("concession_discount", 0.0),
+                                meal_preference=pax_detail.get("meal_preference"),
+                            )
+                            self.db.add(passenger)
+                        except Exception as e:
+                            logger.warning(f"Failed to add passenger details: {e}")
+                
+                self.db.commit()
                 self.db.refresh(booking)
                 logger.info(f"Booking created (pending): {booking.pnr_number} on attempt {attempt + 1}")
 

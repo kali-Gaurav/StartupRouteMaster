@@ -1,5 +1,6 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 import logging
 
@@ -30,9 +31,7 @@ async def get_all_bookings(
     """Get all booking requests (admin only)."""
     try:
         booking_service = BookingService(db)
-        # Query Booking model directly
-        from sqlalchemy.orm import joinedload
-        bookings = db.query(Booking).options(joinedload(Booking.user)).order_by(Booking.created_at.desc()).limit(limit).offset(offset).all()
+        bookings = db.query(Booking).options(joinedload(Booking.user), joinedload(Booking.payment)).order_by(Booking.created_at.desc()).limit(limit).offset(offset).all()
 
         return {
             "success": True,
@@ -74,9 +73,7 @@ async def filter_bookings(
 ):
     """Filter bookings by payment status (admin only)."""
     try:
-        from models import Booking, Payment
-
-        query = db.query(Booking).order_by(Booking.created_at.desc())
+        query = db.query(Booking).options(joinedload(Booking.user), joinedload(Booking.payment)).order_by(Booking.created_at.desc())
 
         if status:
             query = query.filter(Booking.payment_status == status)
@@ -86,7 +83,7 @@ async def filter_bookings(
         # build list of booking dicts including payment info
         booking_list = []
         for b in bookings:
-            payment = db.query(Payment).filter(Payment.booking_id == b.id).first()
+            payment = b.payment[0] if b.payment else None
             booking_list.append({
                 "id": str(b.id),
                 "user_email": b.user.email if b.user else "N/A",
@@ -114,7 +111,7 @@ async def filter_bookings(
 
 @router.post("/etl-sync")
 async def trigger_etl_sync(
-    token: str = Query(..., description="Admin API token"),
+    _: bool = Depends(verify_admin_token),
     db: Session = Depends(get_db),
 ):
     """
@@ -122,24 +119,17 @@ async def trigger_etl_sync(
     Only callable by admin.
     """
     try:
-        # Verify admin token
-        if token != Config.ADMIN_API_TOKEN:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        # Import ETL module
         from etl.sqlite_to_postgres import run_etl
 
-        # Run ETL (uses defaults when called without arguments)
-        results = run_etl()
+        # Run ETL without blocking the event loop
+        results = await asyncio.to_thread(run_etl)
 
-        # Log results
-        logger.info(f"ETL sync completed: {results}")
-
+        from datetime import datetime
         return {
             "status": "success",
             "results": results,
-            "timestamp": "2026-02-12T19:30:00Z",  # Would use datetime.utcnow() in real implementation
-            "message": f"Synced {results['stations_synced']} stations and {results['segments_created']} segments"
+            "timestamp": datetime.utcnow().isoformat(),
+            "message": f"Synced {results.get('stations_synced', 0)} stations and {results.get('segments_created', 0)} segments"
         }
     except Exception as e:
         logger.error(f"ETL sync failed: {e}")
@@ -148,20 +138,18 @@ async def trigger_etl_sync(
 
 @router.post("/reload-graph")
 async def reload_route_engine_graph(
-    token: str = Query(..., description="Admin API token"),
+    _: bool = Depends(verify_admin_token),
     db: Session = Depends(get_db),
 ):
     """Admin endpoint to reload the in-memory route-engine graph from DB/cache."""
-    if token != Config.ADMIN_API_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         from core.route_engine import route_engine
-        # Route engine is a singleton that handles its own graph management
-        logger.info("Route engine is ready to serve requests")
-        return {"status": "success", "message": "Route engine graph is loaded and ready."}
+        await route_engine.initialize()
+        logger.info("Route engine graph reloaded successfully")
+        return {"status": "success", "message": "Route engine graph is reloaded and ready."}
     except Exception as e:
-        logger.error(f"Failed to initialize route engine: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to initialize engine: {e}")
+        logger.error(f"Failed to reload route engine graph: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reload engine: {e}")
 
 
 @router.post("/perf-check", status_code=202)
@@ -173,18 +161,10 @@ async def trigger_performance_check(
     ml_enabled: bool = Query(True, description="Include ML ranking in the benchmark"),
     _: bool = Depends(verify_admin_token),
 ):
-    """Trigger an asynchronous performance check and push SLA metrics to Prometheus.
-
-    This schedules a short benchmark (uses `scripts/raptor_benchmark.py`) and
-    updates SLA metrics (RT-110). The check runs in background and returns
-    immediately with 202 Accepted.
-    """
+    """Trigger an asynchronous performance check and push SLA metrics to Prometheus."""
     try:
         from services.perf_check import run_perf_check
-
-        # schedule background execution
         background_tasks.add_task(run_perf_check, stations, route_length, queries, ml_enabled)
-
         return {"status": "accepted", "message": "Performance check scheduled"}
     except Exception as e:
         logger.error(f"Failed to schedule perf check: {e}")
@@ -196,7 +176,6 @@ async def get_performance_check_status(_: bool = Depends(verify_admin_token)):
     """Return last performance-check result (if any)."""
     try:
         from services.perf_check import get_last_result
-
         last = get_last_result()
         return {"status": "ok", "last": last}
     except Exception as e:
@@ -236,13 +215,20 @@ async def create_disruption(
     """Create a disruption override for real-time alerts."""
     try:
         from datetime import datetime
+        try:
+            d_date = datetime.fromisoformat(disruption_date).date()
+            s_time = datetime.fromisoformat(start_time) if start_time else None
+            e_time = datetime.fromisoformat(end_time) if end_time else None
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=f"Invalid date/time format: {ve}")
+
         disruption = Disruption(
             route_id=route_id,
             disruption_type=disruption_type,
             description=description,
-            disruption_date=datetime.fromisoformat(disruption_date).date(),
-            start_time=datetime.fromisoformat(start_time) if start_time else None,
-            end_time=datetime.fromisoformat(end_time) if end_time else None,
+            disruption_date=d_date,
+            start_time=s_time,
+            end_time=e_time,
             severity=severity,
             status="active"
         )
@@ -250,6 +236,8 @@ async def create_disruption(
         db.commit()
         db.refresh(disruption)
         return {"success": True, "disruption": disruption}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to create disruption: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create disruption: {e}")
@@ -287,6 +275,39 @@ async def resolve_disruption(
     except Exception as e:
         logger.error(f"Failed to resolve disruption: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to resolve disruption: {e}")
+
+
+@router.post("/bookings/{booking_id}/manual-update")
+async def update_booking_manual(
+    booking_id: str,
+    status: str = Query(..., pattern="^(confirmed|cancelled|ticket_sent|failed)$"),
+    pnr: str = Query(None),
+    notes: str = Query(None),
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """Manually update booking status and PNR (admin only)."""
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        booking.booking_status = status
+        if pnr:
+            booking.pnr_number = pnr
+        
+        # Update notes in booking_details if it's a dict
+        if notes:
+            details = dict(booking.booking_details or {})
+            details["admin_notes"] = notes
+            booking.booking_details = details
+            
+        db.commit()
+        return {"success": True, "message": f"Booking {booking_id} updated to {status}"}
+    except Exception as e:
+        logger.error(f"Failed to update booking: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update booking")
 
 
 @router.get("/commission/reconciliation")

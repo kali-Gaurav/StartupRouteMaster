@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import re
 import uuid
+import asyncio
 from datetime import datetime
 from difflib import SequenceMatcher
 import httpx # Import httpx for making async HTTP requests
@@ -23,7 +24,7 @@ from core.monitoring import CHATBOT_MESSAGES_TOTAL, CHATBOT_ACTION_EXECUTED_TOTA
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 class MemorySync(BaseModel):
     memory: Dict[str, Any]
@@ -133,6 +134,7 @@ class GatewayValidator:
             # perform actual search using route engine + helpers
             try:
                 from core.route_engine import route_engine
+                from core.route_engine.constraints import RouteConstraints
                 from utils.station_utils import resolve_stations
                 from utils.validation import validate_date_string
                 from datetime import datetime
@@ -145,7 +147,9 @@ class GatewayValidator:
 
                 src_stop, dst_stop = resolve_stations(self.db, source, destination)
                 if src_stop and dst_stop:
-                    routes = await route_engine.search_routes(src_stop.code, dst_stop.code, travel_dt)
+                    # Apply modern optimized constraints
+                    constraints = RouteConstraints(max_transfers=3, range_minutes=1440)
+                    routes = await route_engine.search_routes(src_stop.code, dst_stop.code, travel_dt, constraints=constraints)
                     # convert routes to dict form
                     routes_data = []
                     for route in routes:
@@ -160,7 +164,7 @@ class GatewayValidator:
                             ],
                             'total_duration': route.total_duration,
                             'total_distance': route.total_distance,
-                            'total_fare': route.total_fare,
+                            'total_cost': getattr(route, 'total_cost', 0), # FIXED: was total_fare
                             'score': getattr(route, 'score', None)
                         })
                     response_obj.search_results = routes_data
@@ -513,48 +517,46 @@ def resolve_city_to_station(city_name: str) -> Optional[Dict[str, str]]:
 
 
 def extract_stations_from_message(message: str) -> Dict[str, str]:
+    """
+    Extracts and resolves stations from user messages using the high-performance
+    StationSearchEngine. Handles 'from X to Y' patterns and standalone station names.
+    """
+    from services.station_search_service import station_search_engine
+    
     message_lower = message.lower()
-    temp_message = re.sub(r"\s+(?:on|at|in)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+monday|next\s+tuesday|next\s+wednesday|next\s+thursday|next\s+saturday|next\s+sunday|next\s+friday|tomorrow|today|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})","",message_lower)
+    # Remove common filler words to isolate potential station names
+    temp_message = re.sub(r"\s+(?:on|at|in|for|of|with|by)\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+monday|next\s+tuesday|next\s+wednesday|next\s+thursday|next\s+saturday|next\s+sunday|next\s+friday|tomorrow|today|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})","",message_lower)
+    
     patterns = [
         r'from\s+([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
         r'([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
         r'book\s+(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
         r'train\s+(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
         r'route\s+(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
-        r'journey\s+(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)',
-        r'travel\s+(?:from\s+)?([a-z\s]+?)\s+to\s+([a-z\s]+?)(?:\s|$)'
     ]
+    
     extracted = {}
     for pattern in patterns:
         match = re.search(pattern, temp_message)
         if match:
-            source = match.group(1).strip()
-            destination = match.group(2).strip()
-            cleanup_words = r'\b(from|book|train|route|ticket|search|journey|travel|via)\b'
-            source = re.sub(cleanup_words, '', source).strip()
-            destination = re.sub(cleanup_words, '', destination).strip()
-            source = ' '.join(source.split()[:3])
-            destination = ' '.join(destination.split()[:3])
-            if len(source) > 1 and len(destination) > 1:
-                extracted = {"source": source, "destination": destination}
-                break
-    result = {}
-    if extracted:
-        source_station = resolve_city_to_station(extracted['source'])
-        if source_station:
-            result['source'] = source_station['name']
-            result['source_city'] = source_station['city']
-            result['source_code'] = source_station['code']
-        else:
-            result['source'] = extracted['source'].title()
-        dest_station = resolve_city_to_station(extracted['destination'])
-        if dest_station:
-            result['destination'] = dest_station['name']
-            result['destination_city'] = dest_station['city']
-            result['destination_code'] = dest_station['code']
-        else:
-            result['destination'] = extracted['destination'].title()
-    return result
+            source_raw = match.group(1).strip()
+            dest_raw = match.group(2).strip()
+            
+            # Use the Ultra-Fast Engine to resolve these raw strings
+            src_res = station_search_engine.resolve(source_raw)
+            dst_res = station_search_engine.resolve(dest_raw)
+            
+            if src_res and dst_res:
+                return {
+                    "source": src_res.name,
+                    "source_city": src_res.city,
+                    "source_code": src_res.code,
+                    "destination": dst_res.name,
+                    "destination_city": dst_res.city,
+                    "destination_code": dst_res.code
+                }
+    
+    return {}
 
 
 def is_weekday(word: str) -> bool:
@@ -652,7 +654,8 @@ def extract_date_from_message(message: str) -> Optional[str]:
 
 def get_intent_from_message(message: str) -> str:
     message_lower = message.lower()
-    if any(word in message_lower for word in ['sos', 'panic', 'save', 'emergency']):
+    # High priority safety intelligence layer
+    if any(word in message_lower for word in ['sos', 'panic', 'save', 'emergency', 'unsafe', 'help me', 'danger', 'scared', 'creep']):
         return 'trigger_sos'
     if any(word in message_lower for word in ['guardian', 'family', 'track', 'live', 'telemetry']):
         return 'navigate_guardian'
@@ -810,7 +813,7 @@ Please try again!"""
     )
 
 # -- POST /chat (uses Redis-backed sessions) --
-@router.post("/", response_model=ChatResponse)
+@router.post("", response_model=ChatResponse)
 @limiter.limit("10/minute") # New: Add rate limiting to the chat endpoint
 async def chat_message(
     request: Request, # Add Request dependency
@@ -831,21 +834,24 @@ async def chat_message(
     response_obj: ChatResponse
     validator = GatewayValidator(current_user, db)
 
-    # If OpenRouter API key is not configured, fall back to a lightweight rule-based generator
-    if not Config.OPENROUTER_API_KEY:
-        intent = get_intent_from_message(chat_message_request.message)
-        # If intent is unknown but message contains 'X to Y' station pattern, treat as search
-        if intent == 'unknown':
-            stations_look = extract_stations_from_message(chat_message_request.message)
-            if stations_look.get('source') and stations_look.get('destination'):
-                intent = 'search'
+    # Upgrade 1: Deterministic Intent First (CRITICAL)
+    # Never send everything to LLM immediately. Fast-path known intents.
+    intent = await asyncio.to_thread(get_intent_from_message, chat_message_request.message)
+    
+    # If intent is unknown but message contains 'X to Y' station pattern, treat as search
+    if intent == 'unknown':
+        stations_look = await asyncio.to_thread(extract_stations_from_message, chat_message_request.message)
+        if stations_look.get('source') and stations_look.get('destination'):
+            intent = 'search'
 
-        response_obj = generate_response(intent, chat_message_request.message, session)
+    # Fast-Path Execution (Bypass LLM for known commands to guarantee speed/reliability)
+    if intent != 'unknown' or not Config.OPENROUTER_API_KEY:
+        response_obj = await asyncio.to_thread(generate_response, intent, chat_message_request.message, session)
         ai_reply_content = response_obj.reply
         tool_calls = []
     else:
+        # Upgrade 2: Structured Tool Calling for complex queries
         ai_messages = []
-        # Add system message to instruct the AI
         ai_messages.append({
             "role": "system",
             "content": """You are RouteMaster, an intelligent multi-modal travel planner. You help users find optimal combinations of trains, buses, and flights for their journeys.
@@ -874,6 +880,7 @@ RESPONSE STYLE:
 - Guide users toward commission-generating bookings"""
         })
         
+        # Upgrade 3: Conversation Memory Model
         # Token-budgeted context retention
         total_tokens = count_tokens(ai_messages[0]["content"])
         
@@ -891,14 +898,7 @@ RESPONSE STYLE:
         
         try:
             ai_response = await call_openrouter_api(ai_messages)
-        except HTTPException:
-            # If AI API fails, fall back to local generator
-            intent = get_intent_from_message(chat_message_request.message)
-            response_obj = generate_response(intent, chat_message_request.message, session)
-            ai_reply_content = response_obj.reply
-            tool_calls = []
-        else:
-            # Process AI response
+            
             tool_calls = []
             ai_reply_content = ""
             if ai_response and ai_response.get("choices"):
@@ -908,7 +908,16 @@ RESPONSE STYLE:
                 if message_from_ai.get("tool_calls"):
                     tool_calls = message_from_ai["tool_calls"]
 
-            response_obj = ChatResponse(reply=ai_reply_content or "I'm not sure how to respond to that.")
+            response_obj = ChatResponse(
+                reply=ai_reply_content or "I'm not sure how to respond to that.",
+                intent="llm_fallback",
+                confidence=0.5
+            )
+        except HTTPException as e:
+            logger.warning(f"OpenRouter API failed, falling back to local: {e}")
+            response_obj = await asyncio.to_thread(generate_response, 'unknown', chat_message_request.message, session)
+            ai_reply_content = response_obj.reply
+            tool_calls = []
 
     # If the response was produced by tools (AI or local generator returned tool-like intent), handle them below
     if 'tool_calls' not in locals():
@@ -937,6 +946,7 @@ RESPONSE STYLE:
 
     response_obj.session_id = session_id
     response_obj.state = response_obj.state if response_obj.state else "idle"
+    response_obj.message = response_obj.reply
     return response_obj
 
 

@@ -56,6 +56,7 @@ class MLReliabilityModel:
         self.model = None
         self.feature_names = None
         self.loaded = False
+        self._feature_cache = {} # Cache for stop/trip features
         self._load_model()
 
     def _load_model(self):
@@ -132,7 +133,12 @@ class MLReliabilityModel:
         transfer_duration_minutes: Optional[int] = None,
         distance_km: Optional[float] = None,
     ) -> Dict[str, float]:
-        """Extract features for ML model from database"""
+        """Extract features for ML model from database with local caching"""
+        # Feature Cache Key
+        feat_key = f"feat_{trip_id}_{origin_stop_id}_{destination_stop_id}"
+        if feat_key in self._feature_cache:
+            return self._feature_cache[feat_key]
+
         db = SessionLocal()
         try:
             features = {}
@@ -164,9 +170,6 @@ class MLReliabilityModel:
                 features["distance_km"] = 0.0
 
             # 6. Station safety score (0-1) - count on-time arrivals vs delays
-            origin_stop = db.query(Stop).filter(Stop.id == origin_stop_id).first()
-            dest_stop = db.query(Stop).filter(Stop.id == destination_stop_id).first()
-            
             origin_safety = await self._compute_station_safety(origin_stop_id, db)
             dest_safety = await self._compute_station_safety(destination_stop_id, db)
             features["origin_station_safety"] = origin_safety
@@ -181,6 +184,11 @@ class MLReliabilityModel:
                 TrainState.delay_minutes <= 5
             ).scalar() or 0
             features["trip_on_time_ratio"] = float(on_time_arrivals / max(total_arrivals, 1))
+
+            # Store in cache
+            if len(self._feature_cache) > 10000: # Primitive LRU
+                self._feature_cache.clear()
+            self._feature_cache[feat_key] = features
 
             return features
 

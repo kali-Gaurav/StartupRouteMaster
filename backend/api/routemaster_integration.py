@@ -21,6 +21,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, date
 from pydantic import BaseModel, Field
 
+import asyncio
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -29,9 +30,10 @@ from database.models import (
     Trip, Stop, Route, StopTime, TrainState, 
     Disruption, RLFeedbackLog
 )
-from graph_mutation_engine import GraphMutationEngine
+
 from services.cache_service import cache_service
 from services.event_producer import publish_event
+# from services.graph_mutation_engine import GraphMutationEngine
 from database.config import Config
 
 logger = logging.getLogger(__name__)
@@ -39,8 +41,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/admin/routemaster", tags=["routemaster-integration"])
 
 # Graph mutation engine for real-time updates
-graph_mutation_engine = GraphMutationEngine()
-
+# graph_mutation_engine = GraphMutationEngine()
+graph_mutation_engine = None  # TODO: Initialize when GraphMutationEngine is available
 
 # ============================================================================
 # PYDANTIC MODELS - REQUEST/RESPONSE SCHEMAS
@@ -66,6 +68,34 @@ class TripDataSchema(BaseModel):
     route_type: str = Field("TRAIN", pattern="^TRAIN$")
     service_dates: List[str] = Field(..., description="Dates in YYYY-MM-DD")
 
+def _process_bulk_insert_sync(trips: List[TripDataSchema], db: Session) -> tuple[int, int, List[Dict[str, str]]]:
+    inserted_count = 0
+    failed_count = 0
+    errors = []
+    
+    for trip_data in trips:
+        try:
+            # Validate and insert trip
+            inserted = _insert_trip_from_scrape(trip_data, db)
+            if inserted:
+                inserted_count += 1
+            else:
+                failed_count += 1
+                errors.append({
+                    "train": trip_data.train_number,
+                    "error": "Failed to insert trip"
+                })
+        except Exception as e:
+            failed_count += 1
+            errors.append({
+                "train": trip_data.train_number,
+                "error": str(e)
+            })
+            logger.error(f"Insert failed for train {trip_data.train_number}: {e}")
+    
+    # Commit all insertions
+    db.commit()
+    return inserted_count, failed_count, errors
 
 class BulkInsertTripsRequest(BaseModel):
     """Request to bulk insert trips."""
@@ -183,34 +213,10 @@ async def bulk_insert_trips(
     """
     logger.info(f"Bulk insert: {len(request.trips)} trips from {request.source_system}")
     
-    inserted_count = 0
-    failed_count = 0
-    errors = []
-    
     try:
-        for trip_data in request.trips:
-            try:
-                # Validate and insert trip
-                inserted = _insert_trip_from_scrape(trip_data, db)
-                if inserted:
-                    inserted_count += 1
-                else:
-                    failed_count += 1
-                    errors.append({
-                        "train": trip_data.train_number,
-                        "error": "Failed to insert trip"
-                    })
-            
-            except Exception as e:
-                failed_count += 1
-                errors.append({
-                    "train": trip_data.train_number,
-                    "error": str(e)
-                })
-                logger.error(f"Insert failed for train {trip_data.train_number}: {e}")
-        
-        # Commit all insertions
-        db.commit()
+        inserted_count, failed_count, errors = await asyncio.to_thread(
+            _process_bulk_insert_sync, request.trips, db
+        )
         
         # Invalidate route search cache
         cache_invalidated = False
@@ -318,7 +324,7 @@ async def update_train_state(
         graph_mutated = False
         try:
             # Apply graph mutations for significant delays (using config threshold)
-            if request.delay_minutes >= Config.GRAPH_MUTATION_DELAY_THRESHOLD_MINUTES:
+            if graph_mutation_engine and request.delay_minutes >= Config.GRAPH_MUTATION_DELAY_THRESHOLD_MINUTES:
                 for trip in trips:
                     graph_mutation_engine.apply_delay_mutation(
                         trip.id,
@@ -384,6 +390,7 @@ async def pricing_update(
     Accept pricing recommendations from RouteMaster Agent.
     
     RouteMaster analyzes demand and suggests price multipliers.
+    Stores in Redis so PriceCalculationService can fetch them.
     """
     logger.info(
         f"Pricing update: {request.source_code}-{request.destination_code} "
@@ -391,31 +398,22 @@ async def pricing_update(
     )
     
     try:
-        # Find route
-        route = db.query(Route).filter(
-            Route.source_code == request.source_code,
-            Route.destination_code == request.destination_code
-        ).first()
+        if not cache_service or not cache_service.is_available():
+            raise HTTPException(status_code=503, detail="Cache service unavailable. Cannot store pricing rules.")
+
+        cache_key = f"pricing_rule:{request.source_code}:{request.destination_code}"
         
-        if not route:
-            logger.warning(f"Route not found: {request.source_code}-{request.destination_code}")
-            return PricingUpdateResponse(
-                success=False,
-                rule_id=None,
-                previous_multiplier=None,
-                new_multiplier=request.recommended_multiplier,
-                message="Route not found"
-            )
+        # Get previous multiplier
+        import json
+        prev_data_str = cache_service.get(cache_key)
+        prev_data = json.loads(prev_data_str) if prev_data_str else None
+        previous_multiplier = prev_data.get('multiplier', 1.0) if prev_data else 1.0
         
-        # Get previous multiplier (if exists)
-        previous_multiplier = getattr(route, 'price_multiplier', 1.0)
-        
-        # Update pricing rule
-        route.price_multiplier = request.recommended_multiplier
-        route.pricing_updated_at = request.timestamp
-        
-        db.add(route)
-        db.commit()
+        # Update pricing rule in cache (24 hours TTL)
+        cache_service.set(cache_key, json.dumps({
+            "multiplier": request.recommended_multiplier,
+            "updated_at": request.timestamp.isoformat()
+        }), ttl_seconds=86400)
         
         # Estimate revenue impact (simplified)
         revenue_impact = (request.recommended_multiplier - previous_multiplier) * 0.1
@@ -436,7 +434,7 @@ async def pricing_update(
         
         return PricingUpdateResponse(
             success=True,
-            rule_id=str(route.id),
+            rule_id=cache_key,
             previous_multiplier=previous_multiplier,
             new_multiplier=request.recommended_multiplier,
             estimated_revenue_impact=revenue_impact,
@@ -444,7 +442,6 @@ async def pricing_update(
         )
     
     except Exception as e:
-        db.rollback()
         logger.error(f"Pricing update failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

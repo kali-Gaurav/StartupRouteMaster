@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RouteMaster - Admin Monitoring</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .status-pending { background-color: #FEF3C7; color: #92400E; }
+        .status-confirmed { background-color: #D1FAE5; color: #065F46; }
+        .status-ticket_sent { background-color: #DBEAFE; color: #1E40AF; }
+        .status-failed { background-color: #FEE2E2; color: #991B1B; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-indigo-600 text-white p-4 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold">RouteMaster Admin OPS</h1>
+            <div class="flex items-center gap-4">
+                <input type="password" id="adminToken" placeholder="Admin Token" class="text-black px-2 py-1 rounded text-sm" value="default_token_change_me">
+                <button onclick="loadBookings()" class="bg-white text-indigo-600 px-4 py-1 rounded font-medium hover:bg-gray-100">Refresh</button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="bg-white p-4 rounded-lg shadow border-l-4 border-yellow-400">
+                <p class="text-gray-500 text-sm uppercase">Pending Requests</p>
+                <h2 id="statsPending" class="text-3xl font-bold">0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border-l-4 border-green-400">
+                <p class="text-gray-500 text-sm uppercase">Confirmed</p>
+                <h2 id="statsConfirmed" class="text-3xl font-bold">0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border-l-4 border-blue-400">
+                <p class="text-gray-500 text-sm uppercase">Tickets Sent</p>
+                <h2 id="statsSent" class="text-3xl font-bold">0</h2>
+            </div>
+            <div class="bg-white p-4 rounded-lg shadow border-l-4 border-red-400">
+                <p class="text-gray-500 text-sm uppercase">Failed</p>
+                <h2 id="statsFailed" class="text-3xl font-bold">0</h2>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-100">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Route</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PNR</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="bookingTable" class="divide-y divide-gray-200">
+                    <!-- Rows injected here -->
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <!-- Update Modal -->
+    <div id="modal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 class="text-xl font-bold mb-4">Manual Execution</h3>
+            <div class="space-y-4">
+                <input type="hidden" id="modalBookingId">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Set PNR Number</label>
+                    <input type="text" id="modalPnr" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" placeholder="e.g. ABC12345">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Update Status</label>
+                    <select id="modalStatus" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                        <option value="pending">Pending</option>
+                        <option value="confirmed">Payment Confirmed</option>
+                        <option value="ticket_sent">Ticket Sent (Complete)</option>
+                        <option value="failed">Failed / Refunded</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Admin Notes</label>
+                    <textarea id="modalNotes" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2" rows="3"></textarea>
+                </div>
+                <div class="flex justify-end gap-2 pt-4">
+                    <button onclick="closeModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancel</button>
+                    <button onclick="submitUpdate()" class="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">Update & Notify</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://localhost:8000/api/admin";
+
+        async function loadBookings() {
+            const token = document.getElementById('adminToken').value;
+            try {
+                const res = await fetch(`${API_BASE}/bookings?limit=50`, {
+                    headers: { 'x-admin-token': token }
+                });
+                const data = await res.json();
+                if (data.success) {
+                    renderTable(data.bookings);
+                    updateStats(data.bookings);
+                }
+            } catch (err) {
+                console.error("Load failed", err);
+                alert("Failed to connect to backend. Make sure it's running on port 8000.");
+            }
+        }
+
+        function renderTable(bookings) {
+            const container = document.getElementById('bookingTable');
+            container.innerHTML = bookings.map(b => `
+                <tr class="hover:bg-gray-50">
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${new Date(b.created_at).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${b.user?.email || 'Guest'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${b.route_id}</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full status-${b.booking_status}">
+                            ${b.booking_status}
+                        </span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-600">${b.pnr_number || '-'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button onclick="openModal('${b.id}', '${b.pnr_number || ''}', '${b.booking_status}')" class="text-indigo-600 hover:text-indigo-900">Execute</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function updateStats(bookings) {
+            document.getElementById('statsPending').innerText = bookings.filter(b => b.booking_status === 'pending' || b.booking_status === 'pending_manual').length;
+            document.getElementById('statsConfirmed').innerText = bookings.filter(b => b.booking_status === 'confirmed').length;
+            document.getElementById('statsSent').innerText = bookings.filter(b => b.booking_status === 'ticket_sent').length;
+            document.getElementById('statsFailed').innerText = bookings.filter(b => b.booking_status === 'failed').length;
+        }
+
+        function openModal(id, pnr, status) {
+            document.getElementById('modalBookingId').value = id;
+            document.getElementById('modalPnr').value = pnr;
+            document.getElementById('modalStatus').value = status;
+            document.getElementById('modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.add('hidden');
+        }
+
+        async function submitUpdate() {
+            const id = document.getElementById('modalBookingId').value;
+            const pnr = document.getElementById('modalPnr').value;
+            const status = document.getElementById('modalStatus').value;
+            const notes = document.getElementById('modalNotes').value;
+            const token = document.getElementById('adminToken').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/bookings/${id}/manual-update?status=${status}&pnr=${pnr}&notes=${encodeURIComponent(notes)}`, {
+                    method: 'POST',
+                    headers: { 'x-admin-token': token }
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeModal();
+                    loadBookings();
+                } else {
+                    alert("Update failed: " + data.detail);
+                }
+            } catch (err) {
+                alert("Error submitting update");
+            }
+        }
+
+        // Initial load
+        window.onload = loadBookings;
+    </script>
+</body>
+</html>

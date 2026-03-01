@@ -28,8 +28,10 @@ def _create_primary_engine():
         return create_engine(
             url,
             poolclass=QueuePool,
-            pool_size=10,
-            max_overflow=20,
+            pool_size=Config.DB_POOL_SIZE,
+            max_overflow=Config.DB_MAX_OVERFLOW,
+            pool_timeout=Config.DB_POOL_TIMEOUT,
+            pool_recycle=Config.DB_POOL_RECYCLE,
             pool_pre_ping=True,
             echo=Config.ENVIRONMENT == "development",
         )

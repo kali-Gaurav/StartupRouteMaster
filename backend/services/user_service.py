@@ -49,6 +49,16 @@ class UserService:
         Helper to create a user from a generic data dictionary. This is useful
         for OTP flows where we may only have phone or email without a password.
         """
+        supabase_id = data.get("supabase_id")
+        if supabase_id:
+            from database.models import Profile
+            # Ensure profile exists to satisfy FK constraint
+            existing_profile = self.db.query(Profile).filter(Profile.id == supabase_id).first()
+            if not existing_profile:
+                profile = Profile(id=supabase_id, name=data.get("name"))
+                self.db.add(profile)
+                self.db.flush() # Ensure profile is in DB before user
+
         db_user = User(**data)
         self.db.add(db_user)
         self.db.commit()
@@ -88,15 +98,11 @@ class UserService:
         return user
 
     def update_user_location(self, user: User, latitude: float, longitude: float) -> User:
-        """Record the current location in LiveLocation table and optionally on
-        the user row itself for convenience.
+        """Record the current location in LiveLocation table.
         """
         from database.models import LiveLocation
         loc = LiveLocation(user_id=user.id, latitude=latitude, longitude=longitude)
         self.db.add(loc)
-        # optionally store last known coordinates on user
-        user.latitude = latitude
-        user.longitude = longitude
         self.db.commit()
         self.db.refresh(user)
         return user

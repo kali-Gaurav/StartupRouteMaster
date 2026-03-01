@@ -48,23 +48,23 @@ async def check_single_partner(client: httpx.AsyncClient, partner_name: str, url
         if response.status_code == 200:
             logger.info(f"Partner '{partner_name}' ({url}) is UP. Status: {response.status_code}")
             if cache_service.is_available():
-                cache_service.set(status_key, "UP", ttl=60 * 5) # Cache status for 5 minutes
+                cache_service.set(status_key, "UP", ttl_seconds=60 * 5) # Cache status for 5 minutes
         else:
             logger.warning(f"Partner '{partner_name}' ({url}) is DOWN/Degraded. Status: {response.status_code}")
             if cache_service.is_available():
-                cache_service.set(status_key, "DOWN", ttl=60 * 5) # Cache status for 5 minutes
+                cache_service.set(status_key, "DOWN", ttl_seconds=60 * 5) # Cache status for 5 minutes
     except CircuitBreakerError as exc:
         logger.error(f"Partner '{partner_name}' ({url}) circuit breaker open: {exc}")
         if cache_service.is_available():
-            cache_service.set(status_key, "CIRCUIT_OPEN", ttl=60 * 5)
+            cache_service.set(status_key, "CIRCUIT_OPEN", ttl_seconds=60 * 5)
     except httpx.RequestError as exc:
         logger.error(f"Partner '{partner_name}' ({url}) health check failed due to request error: {exc}")
         if cache_service.is_available():
-            cache_service.set(status_key, "DOWN", ttl=60 * 5) # Cache status for 5 minutes
+            cache_service.set(status_key, "DOWN", ttl_seconds=60 * 5) # Cache status for 5 minutes
     except Exception as exc:
         logger.error(f"Partner '{partner_name}' ({url}) health check failed due to unexpected error: {exc}")
         if cache_service.is_available():
-            cache_service.set(status_key, "DOWN", ttl=60 * 5) # Cache status for 5 minutes
+            cache_service.set(status_key, "DOWN", ttl_seconds=60 * 5) # Cache status for 5 minutes
 
 if __name__ == "__main__":
     # Example of how to run the task independently for testing

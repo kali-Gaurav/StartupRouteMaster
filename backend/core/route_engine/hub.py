@@ -48,32 +48,21 @@ class HubManager:
         self.hub_id_to_code: Dict[int, str] = {}
 
     def initialize_hubs(self):
-        """Load hub information from DB using the fastest available session."""
-        from .builder import TransitSessionLocal
-        session = TransitSessionLocal()
+        """Load hub information from DB using the provided session factory."""
+        session = self.session_factory()
         try:
-            try:
-                hubs = session.query(Stop).filter(
-                    or_(
-                        Stop.is_major_junction == True,
-                        Stop.code.in_(self.MAJOR_HUB_CODES)
-                    )
-                ).all()
-            except Exception as e:
-                # Fallback to Postgres if SQLite fails or is unprepared
-                logger.warning(f"SQLite hub query failed ({e}), falling back to Postgres")
-                session.close()
-                session = self.session_factory()
-                hubs = session.query(Stop).filter(
-                    or_(
-                        Stop.is_major_junction == True,
-                        Stop.code.in_(self.MAJOR_HUB_CODES)
-                    )
-                ).all()
+            hubs = session.query(Stop).filter(
+                or_(
+                    Stop.is_major_junction == True,
+                    Stop.code.in_(self.MAJOR_HUB_CODES)
+                )
+            ).all()
 
             self.hub_ids = {h.id for h in hubs}
             self.hub_id_to_code = {h.id: h.code for h in hubs}
             logger.info(f"Initialized {len(self.hub_ids)} hub stations.")
+        except Exception as e:
+            logger.error(f"Hub initialization failed: {e}")
         finally:
             session.close()
 
@@ -121,7 +110,8 @@ class HubManager:
         # Topic 2: Performance optimization - use a single departure time for hubs
         constraints = RouteConstraints(
             max_transfers=1,
-            range_minutes=0 # ONLY check the specific time
+            range_minutes=0, # ONLY check the specific time
+            adaptive_range=False # Must be False otherwise range_minutes=0 triggers adaptive expansion
         )
         
         hub_list = list(self.hub_ids)
@@ -129,10 +119,12 @@ class HubManager:
         
         logger.info(f"Precomputing connectivity for {len(hub_list)} hubs...")
         
+        import asyncio
         for i, src_hub in enumerate(hub_list):
             for j, dst_hub in enumerate(hub_list):
                 if i == j: continue
                 
+                await asyncio.sleep(0) # Yield event loop
                 # Run a limited RAPTOR between hubs
                 routes = await raptor._compute_routes(src_hub, dst_hub, date, constraints, graph=graph)
                 if routes:

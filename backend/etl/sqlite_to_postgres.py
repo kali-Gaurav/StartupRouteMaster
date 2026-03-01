@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database.session import SessionLocal
 from database.config import Config
-from database.models import Stop, Trip, Route, Agency, Calendar, StopTime, Segment, Vehicle
+from database.models import Stop, Trip, Route, Agency, Calendar, StopTime, Segment, Vehicle, StationSchedule, TrainPath
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("etl")
+
+DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 class SQLiteReader:
     def __init__(self, db_path: str):
@@ -143,6 +145,8 @@ def run_etl():
             
             stop_times_to_add = []
             segments_to_add = []
+            station_schedules_to_add = []
+            train_paths_to_add = []
 
             for i, curr in enumerate(route_rows):
                 code = curr['station_code']
@@ -151,14 +155,34 @@ def run_etl():
                     dep_time = parse_time(curr['departure_time'])
                     if arr_time > dep_time: arr_time = dep_time
 
+                    stop_id_int = station_mapping[code]
                     stop_times_to_add.append({
                         "trip_id": trip.id,
-                        "stop_id": station_mapping[code],
+                        "stop_id": stop_id_int,
                         "arrival_time": arr_time,
                         "departure_time": dep_time,
                         "stop_sequence": curr['seq_no'],
                         "cost": 0.0
                     })
+
+                    # Populate StationSchedule and TrainPath for all 7 days
+                    for day in DAYS_OF_WEEK:
+                        station_schedules_to_add.append({
+                            "station_id": stop_id_int,
+                            "trip_id": trip.id,
+                            "arrival": arr_time,
+                            "departure": dep_time,
+                            "day_of_week": day,
+                            "stop_seq": curr['seq_no']
+                        })
+                        train_paths_to_add.append({
+                            "trip_id": trip.id,
+                            "station_id": stop_id_int,
+                            "arrival": arr_time,
+                            "departure": dep_time,
+                            "stop_seq": curr['seq_no'],
+                            "day_of_week": day
+                        })
 
                 # Sync Segment (link current to next)
                 if i < len(route_rows) - 1:
@@ -188,6 +212,10 @@ def run_etl():
 
             if stop_times_to_add:
                 session.bulk_insert_mappings(StopTime, stop_times_to_add)
+            if station_schedules_to_add:
+                session.bulk_insert_mappings(StationSchedule, station_schedules_to_add)
+            if train_paths_to_add:
+                session.bulk_insert_mappings(TrainPath, train_paths_to_add)
             if segments_to_add:
                 session.bulk_insert_mappings(Segment, segments_to_add)
                 segment_count += len(segments_to_add)

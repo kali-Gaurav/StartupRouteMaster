@@ -9,7 +9,7 @@ from services.multi_layer_cache import multi_layer_cache
 
 logger = logging.getLogger(__name__)
 
-EXPECTED_SNAPSHOT_VERSION = "v2.1" # Bump this whenever graph structure or builder logic changes
+EXPECTED_SNAPSHOT_VERSION = "v2.5" # Bump this whenever graph structure or builder logic changes
 
 class SnapshotManager:
     """Enhanced SnapshotManager with Redis support."""

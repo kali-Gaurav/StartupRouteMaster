@@ -1,7 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+import json
 
 from services.cache_service import cache_service
 
@@ -35,7 +36,6 @@ def _load_flow(correlation_id: str) -> Dict[str, Any]:
         try:
             raw = _redis.get(_flow_key(correlation_id))
             if raw:
-                import json
                 return json.loads(raw)
         except Exception:
             pass
@@ -45,8 +45,7 @@ def _load_flow(correlation_id: str) -> Dict[str, Any]:
 def _save_flow(correlation_id: str, data: Dict[str, Any]):
     if _redis:
         try:
-            import json
-            _redis.set(_flow_key(correlation_id), json.dumps(data))
+            _redis.set(_flow_key(correlation_id), json.dumps(data), ex=86400) # Expire in 24h
             _redis.sadd(FLOW_INDEX_KEY, correlation_id)
             return
         except Exception:
@@ -80,15 +79,19 @@ async def ack_flow(payload: FlowAckPayload):
 
 
 @router.get("/status", response_model=FlowStatusResponse)
-async def get_flow_status():
+async def get_flow_status(limit: int = Query(1000, le=10000)):
     ids = []
     if _redis:
         try:
-            ids = list(_redis.smembers(FLOW_INDEX_KEY) or [])
+            raw_ids = _redis.smembers(FLOW_INDEX_KEY) or []
+            ids = [rid.decode('utf-8') if isinstance(rid, bytes) else rid for rid in raw_ids]
         except Exception:
             ids = list(_local_flow.keys())
     else:
         ids = list(_local_flow.keys())
+
+    # Limit the number of IDs processed to avoid huge delays
+    ids = ids[:limit]
 
     active = completed = failed = 0
     total_time = 0.0
@@ -123,6 +126,7 @@ async def get_flow_status():
         completed_flows=completed,
         failed_flows=failed,
         avg_completion_time_sec=avg,
-        active_correlation_ids=active_ids,
-        warnings=warnings,
+        active_correlation_ids=active_ids[:50], # Only return up to 50 active IDs
+        warnings=warnings[:50],
     )
+

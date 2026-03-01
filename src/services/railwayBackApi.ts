@@ -523,6 +523,18 @@ export function mapBackendRoutesToRoutes(
 }
 
 /**
+ * Get Real-time Train Status (GET /api/realtime/train/{trainNumber}/status)
+ */
+export async function getTrainStatusApi(trainNumber: string): Promise<any> {
+  const res = await fetch(getRailwayApiUrl(`/realtime/train/${trainNumber}/status`));
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to fetch train status');
+  }
+  return res.json();
+}
+
+/**
  * Health check backend GET /health
  */
 export async function healthCheckRailway(): Promise<boolean> {

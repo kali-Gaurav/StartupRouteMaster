@@ -65,8 +65,8 @@ class RouteSegmentSchema(BaseModel):
 
 
 class SearchRequestSchema(BaseModel):
-    source: str = Field(..., min_length=2, max_length=100)  # Relaxed pattern (fuzzy matching handles typos)
-    destination: str = Field(..., min_length=2, max_length=100)
+    source: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
+    destination: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}(T|\s)?.*$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
@@ -78,6 +78,12 @@ class SearchRequestSchema(BaseModel):
     cities: Optional[List[str]] = Field(None, description="List of cities for multi-city booking (max 3)")
     passenger_type: Optional[str] = Field("adult", pattern="^(adult|child|senior|student)$")
     concessions: Optional[List[str]] = Field(None, description="List of concessions")
+
+    @validator("destination")
+    def check_not_same(cls, v, values):
+        if "source" in values and v.strip().upper() == values["source"].strip().upper():
+            raise ValueError("Source and destination cannot be the same")
+        return v
 
     class Config:
         json_schema_extra = {
@@ -457,13 +463,16 @@ class BookingRequestPassengerSchema(BaseModel):
 
 class BookingRequestCreateSchema(BaseModel):
     """Schema for creating a booking request."""
+    route_id: str = Field(..., description="ID of the unlocked route")
     source_station: str = Field(..., min_length=2, max_length=20)
     destination_station: str = Field(..., min_length=2, max_length=20)
+    from_station_code: Optional[str] = None # Added for easier verification
+    to_station_code: Optional[str] = None   # Added for easier verification
     journey_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
     train_number: str = Field(..., min_length=1, max_length=20)
     train_name: Optional[str] = Field(None, max_length=100)
-    class_type: str = Field("AC_THREE_TIER", pattern="^(SL|AC3|AC2|AC1|CC|EC)$")
-    quota: str = Field("GENERAL", pattern="^(GENERAL|TATKAL|LADIES|SENIOR_CITIZEN|DEFENCE|FOREIGN_TOURIST)$")
+    class_type: str = Field("3A", pattern="^(SL|3A|2A|1A|CC|EC)$") # Use RapidAPI style codes
+    quota: str = Field("GN", pattern="^(GN|TQ|LD|SS|DF|FT)$")      # Use RapidAPI style codes
     route_details: Optional[Dict[str, Any]] = None  # Full route segments JSON
     passengers: List[BookingRequestPassengerSchema] = Field(..., min_items=1, max_items=6)
 

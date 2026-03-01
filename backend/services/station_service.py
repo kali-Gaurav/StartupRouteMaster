@@ -20,68 +20,23 @@ class StationService:
 
     def search_stations_by_name(self, query: str, limit: int = 10) -> List[Dict]:
         """
-        Unified search for stations by name using the GTFS 'stops' table.
-        Prioritizes prefix matches for better UX.
+        Unified search for stations by name or code using high-performance engine (transit_graph.db).
         """
         if not query or len(query) < 2:
             return []
             
-        cache_key = f"station_search_v2:{query.lower()}:{limit}"
-        try:
-            cached = redis_client.get(cache_key)
-            if cached:
-                return json.loads(cached)
-        except Exception:
-            pass
-
-        # 1. Exact matches on code or name
-        exact = self.db.query(Stop).filter(
-            or_(
-                Stop.stop_id == query.upper(),
-                Stop.name.ilike(query)
-            )
-        ).all()
-
-        # 2. Prefix matches on name or city
-        prefix = self.db.query(Stop).filter(
-            or_(
-                Stop.name.ilike(f"{query}%"),
-                Stop.city.ilike(f"{query}%")
-            )
-        ).filter(Stop.id.notin_([s.id for s in exact])).limit(limit).all()
-
-        # 3. Substring matches elsewhere
-        substring = []
-        if len(exact) + len(prefix) < limit:
-            remaining = limit - (len(exact) + len(prefix))
-            substring = self.db.query(Stop).filter(
-                or_(
-                    Stop.name.ilike(f"%{query}%"),
-                    Stop.city.ilike(f"%{query}%")
-                )
-            ).filter(
-                Stop.id.notin_([s.id for s in exact] + [s.id for s in prefix])
-            ).limit(remaining).all()
-
-        # Merge results maintaining priority
-        combined = exact + prefix + substring
-        results = [
+        from services.station_search_service import station_search_engine
+        
+        suggestions = station_search_engine.suggest(query, limit=limit)
+        return [
             {
-                "name": station.name,
-                "code": station.stop_id,
-                "city": station.city,
-                "id": station.id,
-                "state": station.state
+                "name": s.name,
+                "code": s.code,
+                "city": s.city,
+                "state": s.state
             }
-            for station in combined[:limit]
+            for s in suggestions
         ]
-
-        try:
-            redis_client.setex(cache_key, 3600, json.dumps(results))
-        except Exception:
-            pass
-
-        return results
 
     def get_stations_near_me(self, latitude: float, longitude: float, radius_km: float, limit: int = 10) -> List[Dict]:
         """

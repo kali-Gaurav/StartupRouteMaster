@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
+import logging
+from utils.limiter import limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 # All authentication is now handled by Supabase.  The backend no longer
 # maintains passwords or issues tokens.  Frontend clients should call the
@@ -11,7 +14,9 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 # or scripts hit the old endpoints.
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-async def deprecated(path: str):
+@limiter.limit("10/minute")
+async def deprecated(request: Request, path: str):
+    logger.warning(f"Deprecated auth endpoint hit: {request.method} /api/auth/{path} from {request.client.host if request.client else 'unknown'}")
     raise HTTPException(
         status_code=status.HTTP_410_GONE,
         detail="Authentication endpoints have been migrated to Supabase. "
