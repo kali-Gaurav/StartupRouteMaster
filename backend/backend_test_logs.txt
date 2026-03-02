@@ -114,3 +114,79 @@ INFO:     127.0.0.1:61976 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
 INFO:     127.0.0.1:64243 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
 INFO:     127.0.0.1:64243 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
 INFO:     127.0.0.1:56608 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:50073 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:62610 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:62610 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57627 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57627 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:64494 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58975 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58035 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61913 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61913 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:54228 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53411 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:62442 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61823 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61823 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61823 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59285 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:60067 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59285 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49352 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49352 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49352 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59245 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:51451 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59245 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49886 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49886 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49886 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:64327 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:51873 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:51201 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53108 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53108 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53643 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:53643 - "GET /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53643 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53643 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53643 - "GET /api/realtime/train/12002/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56976 - "GET /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59717 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:56976 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56976 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56976 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59717 - "GET /api/sos/all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59717 - "GET /api/sos/all HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52062 - "GET /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:52062 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:52062 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:52062 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:52062 - "GET /api/realtime/train/12002/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53707 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53707 - "GET /favicon.ico HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58695 - "GET /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:63766 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58695 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58695 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58695 - "GET /api/health/live HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:63766 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57527 - "GET /api/stats HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57527 - "GET /api/health/live HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:59235 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:51846 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58067 - "GET /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58067 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:58067 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58067 - "POST /api/chat/memory HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:58067 - "GET /api/health/live HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49791 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61967 - "GET /api/stats HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:61967 - "GET /api/health/live HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57515 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57515 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57566 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:57566 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49942 - "GET /api/health HTTP/1.1" 405 Method Not Allowed
+INFO:     127.0.0.1:49942 - "GET /api/health HTTP/1.1" 405 Method Not Allowed

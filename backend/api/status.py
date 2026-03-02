@@ -11,7 +11,7 @@ from services.route_engine import route_engine # Assuming route_engine can provi
 from database.config import Config
 from core.redis import async_redis_client
 
-router = APIRouter(prefix="", tags=["status"])
+router = APIRouter(prefix="/api", tags=["status"])
 logger = logging.getLogger(__name__)
 
 @router.get("/health")

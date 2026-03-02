@@ -31,21 +31,31 @@ class MemorySync(BaseModel):
 
 @router.get("/memory")
 async def get_chat_memory(
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.profile:
+    """Get chat memory (session preferences, history).
+    
+    Unauthenticated users get empty memory; authenticated users get their saved preferences.
+    """
+    if not current_user or not current_user.profile:
         return {"memory": {}}
     return {"memory": current_user.profile.ai_memory or {}}
 
 @router.post("/memory")
 async def update_chat_memory(
     payload: MemorySync,
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db)
 ):
-    if not current_user.profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    """Update chat memory (save preferences, search history, etc.).
+    
+    Unauthenticated users' data is stored locally in browser; authenticated users save to profile.
+    """
+    if not current_user or not current_user.profile:
+        # Anonymous user - return success but don't persist
+        # (Frontend will handle local storage)
+        return {"status": "success", "memory": payload.memory, "anonymous": True}
     
     current_memory = current_user.profile.ai_memory or {}
     updated_memory = {**current_memory, **payload.memory}
