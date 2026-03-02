@@ -117,13 +117,13 @@ def start_reconciliation_worker():
         name='Seat Inventory Reconciliation',
         replace_existing=True
     )
-    scheduler.add_job(
-        partner_health_check_wrapper, # New: Add partner health check job
-        IntervalTrigger(minutes=Config.PARTNER_HEALTH_CHECK_INTERVAL_MINUTES), # Run every X minutes from Config
-        id='partner_health_check_job',
-        name='Partner Redirect Health Check',
-        replace_existing=True
-    )
+    # scheduler.add_job(
+    #     partner_health_check_wrapper, # New: Add partner health check job
+    #     IntervalTrigger(minutes=Config.PARTNER_HEALTH_CHECK_INTERVAL_MINUTES), # Run every X minutes from Config
+    #     id='partner_health_check_job',
+    #     name='Partner Redirect Health Check',
+    #     replace_existing=True
+    # )
     # ML Retraining - Sunday 2 AM (Priority 3)
     scheduler.add_job(
         ml_retraining_job,
@@ -133,7 +133,7 @@ def start_reconciliation_worker():
         replace_existing=True
     )
     scheduler.start()
-    logger.info("Payment, inventory, and partner health check worker started.")
+    logger.info("Payment and inventory reconciliation worker started (Partner health check disabled).")
 
 def stop_reconciliation_worker():
     global scheduler

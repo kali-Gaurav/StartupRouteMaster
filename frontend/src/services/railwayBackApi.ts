@@ -138,6 +138,18 @@ export interface BackendThreeTransferRoute {
   };
 }
 
+export interface BackendJourneyLeg {
+  train_number: string;
+  train_name: string;
+  from_station_code: string;
+  to_station_code: string;
+  departure_time: string;
+  arrival_time: string;
+  duration_minutes?: number;
+  fare?: number;
+  mode?: string;
+}
+
 export interface BackendJourney {
   journey_id: string;
   train_no?: string;
@@ -145,9 +157,13 @@ export interface BackendJourney {
   departure_time?: string;
   arrival_time?: string;
   travel_time?: string;
+  total_duration?: number;
+  total_cost?: number;
   cheapest_fare?: number;
   availability_status?: string;
+  reliability_score?: number;
   num_transfers: number;
+  legs?: BackendJourneyLeg[];
 }
 
 export interface BackendRoutesResponse {
@@ -352,6 +368,52 @@ export function mapBackendRoutesToRoutes(
     const fromMap = Object.values(stationsMap).find(s => s.code === code);
     return fromMap ? fromMap.name : code;
   };
+
+  if (data.journeys && Array.isArray(data.journeys) && data.journeys.length > 0) {
+    data.journeys.forEach(j => {
+      routeId++;
+      const rid = j.journey_id || `route_${routeId}`;
+      const category = j.num_transfers === 0 ? 'DIRECT' : `${j.num_transfers} TRANSFER${j.num_transfers > 1 ? 'S' : ''}`;
+      
+      const segments: RouteSegment[] = [];
+      if (j.legs) {
+        j.legs.forEach((leg, index) => {
+          segments.push({
+            routeId: rid,
+            category,
+            segment: index,
+            trainNumber: leg.train_number || j.train_no || "N/A",
+            trainName: leg.train_name || j.train_name || `Train ${leg.train_number}`,
+            from: leg.from_station_code,
+            to: leg.to_station_code,
+            fromName: getStationName(undefined, leg.from_station_code),
+            toName: getStationName(undefined, leg.to_station_code),
+            departure: formatTime(leg.departure_time),
+            arrival: formatTime(leg.arrival_time),
+            distance: 0,
+            duration: leg.duration_minutes ?? 0,
+            waitBefore: 0,
+            liveSeatAvailability: j.availability_status ?? 'UNKNOWN',
+            liveFare: leg.fare ?? 0,
+            seatAvailable: (j.availability_status || '').toUpperCase().startsWith('AVAILABLE')
+          });
+        });
+      }
+
+      routes.push({
+        id: rid,
+        category,
+        segments,
+        totalTime: j.total_duration ?? 0,
+        totalCost: j.total_cost ?? j.cheapest_fare ?? 0,
+        totalTransfers: j.num_transfers ?? 0,
+        totalDistance: 0,
+        liveFareTotal: j.total_cost ?? j.cheapest_fare ?? 0,
+        seatProbability: j.reliability_score ?? 0.85,
+        safetyScore: 100,
+      });
+    });
+  }
 
   const makeSegment = (
     train: BackendDirectRoute,

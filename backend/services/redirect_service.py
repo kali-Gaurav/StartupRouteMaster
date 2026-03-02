@@ -16,6 +16,7 @@ class RedirectService:
     """
 
     def __init__(self):
+        self.enabled = False # Global kill switch for partner redirects
         self.cache_ttl = 3600  # 1 hour cache for redirect URLs
         
         # Strict whitelist of allowed domains for redirects
@@ -100,6 +101,10 @@ class RedirectService:
 
         Returns: (redirect_url, cache_key)
         """
+        if not self.enabled:
+            logger.info("Redirects are globally disabled.")
+            return None, None
+
         if partner not in self.partners:
             logger.error(f"Unknown partner: {partner}")
             return None, None
