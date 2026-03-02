@@ -129,6 +129,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
   const [input, setInput] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>(generateSessionId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -275,14 +276,25 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
   const sendToBackend = useCallback(
     async (text: string) => {
       try {
+        // ensure any previous request is aborted
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         const res = await fetch(getRailwayApiUrl("/chat"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: text, session_id: sessionIdRef.current, context: conversationState }),
+          signal: controller.signal
         });
         const data = await res.json().catch(() => ({}));
         const reply = data.reply || data.message || "";
         const actions = Array.isArray(data.actions) ? data.actions : [];
+
+        // clear controller after success
+        abortControllerRef.current = null;
 
         if (data.state) {
           setConversationState(prev => ({ ...prev, lastIntent: data.state }));
@@ -335,7 +347,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
           const triggered = await resolveAndTriggerSearch(data.collected, data.correlation_id);
           if (triggered) addMessage("assistant", "✓ Search done! Check the results above.", undefined);
         }
-      } catch {
+      } catch (err) {
+        // aborted requests are normal; just return without error message
+        if (err.name === 'AbortError') {
+          return;
+        }
         addMessage(
           "assistant",
           "⚠️ **Backend Connection Issue**\n\nI can still help you with cached routes for these major junctions:\n\n• **Delhi → Mumbai** (NDLS → BCT)\n• **Kolkata → Delhi** (HWH → NDLS)\n• **Chennai → Bangalore** (MAS → SBC)\n• **Pune → Delhi** (PUNE → NDLS)\n• **Lucknow → Mumbai** (LKO → BCT)\n\nYou can also access Dashboard, SOS, or open in Telegram!",
@@ -427,9 +443,20 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     [executeAction]
   );
 
+  const cancelRequest = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+  }, []);
+
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text) return;
+
+    // cancel any pending backend call before sending a new one
+    cancelRequest();
 
     setInput("");
     addMessage("user", text);
@@ -487,9 +514,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     } finally {
       setIsLoading(false);
     }
-  }, [input, addMessage, sendToBackend, resolveAndTriggerSearch]);
+  }, [input, addMessage, sendToBackend, resolveAndTriggerSearch, cancelRequest]);
 
   const handleQuickAction = (label: string) => {
+    // if user clicks while a request is inflight, cancel it immediately
+    cancelRequest();
     if (label === "Open in Telegram") {
       executeAction("open_url", TELEGRAM_BOT_URL, label);
       return;
@@ -504,6 +533,23 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     }
     if (label === "Safety Guarantee") {
       executeAction("navigate", "/safety", label);
+      return;
+    }
+    if (label === "Book Ticket") {
+      addMessage("user", "Book Ticket");
+      addMessage("assistant", "🎫 **Ready to book your ticket!**\n\nPlease tell me your journey details:\n\n📍 **From:** (e.g., Delhi Central, NDLS)\n📍 **To:** (e.g., Mumbai Central, BCT)\n📅 **When:** (Today, Tomorrow, or a specific date)\n\n**Example:** 'Book ticket from Delhi to Mumbai tomorrow'", [
+        { label: "Delhi to Mumbai", type: "default", value: "Book ticket from Delhi to Mumbai" },
+        { label: "Search Trains", type: "quick_action" }
+      ]);
+      return;
+    }
+    if (label === "Search Trains") {
+      addMessage("user", "Search Trains");
+      addMessage("assistant", "🔍 **Where would you like to go?**\n\nPlease tell me your journey details:\n\n📍 **From:** (e.g., Delhi, NDLS)\n📍 **To:** (e.g., Mumbai, BCT)\n📅 **When:** (Today, Tomorrow, or a date)\n\n**Example:** 'Delhi to Mumbai tomorrow'", [
+        { label: "Delhi to Mumbai", type: "default", value: "Delhi to Mumbai" },
+        { label: "Kolkata to Delhi", type: "default", value: "Kolkata to Delhi" },
+        { label: "Chennai to Bangalore", type: "default", value: "Chennai to Bangalore" }
+      ]);
       return;
     }
     if (label === "Help") {
@@ -651,13 +697,18 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
                 <div className="w-8 h-8 shrink-0 rounded-full bg-[#0f172a] flex items-center justify-center">
                   <Bot className="w-4 h-4 text-white" />
                 </div>
-                <div className="bg-white dark:bg-muted border border-border rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
+                <div className="bg-white dark:bg-muted border border-border rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm flex items-center justify-between">
                   <div className="flex gap-1.5 items-center">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "0ms" }} />
                     <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "150ms" }} />
                     <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "300ms" }} />
-                    <span className="ml-2 text-[10px] font-medium text-muted-foreground">Diksha is typing...</span>
                   </div>
+                  <button
+                    onClick={cancelRequest}
+                    className="text-xs text-red-500 hover:underline ml-4"
+                  >
+                    cancel
+                  </button>
                 </div>
               </div>
             )}

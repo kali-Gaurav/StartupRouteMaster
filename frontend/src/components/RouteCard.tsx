@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck } from "lucide-react"; // Added ShieldCheck, ShieldAlert, BadgeCheck
-import { Route, RouteSegment, formatDuration, formatCost, formatLiveFare, getAvailabilityBadgeClasses, summarizeAvailability, getSeatAvailabilityState, formatAvailabilityForDisplay } from "@/data/routes"; // Added RouteSegment
+import { Route, RouteSegment, formatDuration, formatCost, formatLiveFare, getAvailabilityBadgeClasses, getSeatAvailabilityState, formatAvailabilityForDisplay } from "@/data/routes";
 import { getStationByCode } from "@/data/stations";
 import { cn } from "@/lib/utils";
 
@@ -54,8 +54,6 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
 
   const firstSegment = route.segments[0];
   const lastSegment = route.segments[route.segments.length - 1];
-  const availabilitySummary = summarizeAvailability(route.segments);
-  const availabilityBadgeClasses = getAvailabilityBadgeClasses(availabilitySummary.state);
   
   // Safety Logic
   const isHighSafety = (route.safetyScore ?? 0) >= 90;
@@ -124,9 +122,6 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 {lastSegment.toName || getStationByCode(lastSegment.to)?.name || lastSegment.to}
               </span>
             </div>
-            <div className={cn("px-2 py-1 rounded-md text-xs font-semibold", availabilityBadgeClasses)} title={availabilitySummary.state === "unknown" ? "Fare and seat availability will be shown at booking" : undefined}>
-              {availabilitySummary.label}
-            </div>
           </div>
           
           <div className="flex items-center justify-between text-sm mb-3">
@@ -137,6 +132,13 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
               <span>{lastSegment.arrival}</span>
             </div>
             <span className="font-semibold">{formatDuration(route.totalTime)}</span>
+          </div>
+
+          <div className="flex items-center justify-between text-sm mb-3 text-muted-foreground">
+            <span>Distance: {route.totalDistance} km</span>
+            <span className="text-foreground font-semibold">
+              Total: {formatCost(route.totalCost)}
+            </span>
           </div>
 
           {route.totalTransfers > 0 && (

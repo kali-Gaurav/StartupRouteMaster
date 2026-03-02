@@ -117,6 +117,8 @@ class SearchService:
                 for idx, tr in enumerate(turbo_results):
                     journey_id = f"turbo_{int(time.time())}_{idx}"
                     legs = []
+                    total_distance = 0
+                    total_fare = 0
                     for l in tr['legs']:
                         legs.append({
                             "train_number": l['train_no'],
@@ -125,8 +127,12 @@ class SearchService:
                             "to_station_code": l['to'],
                             "departure_time": l['dep'],
                             "arrival_time": l['arr'],
+                            "distance_km": l.get('distance_km', 0),
+                            "fare": l.get('fare', 0),
                             "mode": "rail"
                         })
+                        total_distance += l.get('distance_km', 0)
+                        total_fare += l.get('fare', 0)
                     
                     raw_journeys.append({
                         "journey_id": journey_id,
@@ -134,7 +140,11 @@ class SearchService:
                         "source": source,
                         "destination": destination,
                         "date": travel_date,
-                        "total_duration": 0, 
+                        "total_duration": tr.get('total_duration', 0),
+                        "total_distance": total_distance,
+                        "total_cost": total_fare,
+                        "total_fare": total_fare,
+                        "cheapest_fare": total_fare,
                         "num_transfers": tr['transfers'],
                         "is_direct": tr['transfers'] == 0,
                         "legs": legs,
@@ -142,20 +152,12 @@ class SearchService:
                         "reliability_score": 1.0
                     })
                 
-                # ENRICH TURBO ROUTES
-                from services.seat_verification import SeatVerificationService
+                # SAVE TURBO ROUTES TO CACHE (Skip seat verification - defer until user interaction)
                 from services.journey_cache import save_journey
-                seat_svc = SeatVerificationService()
                 
                 enriched_turbo = []
                 for idx, j_data in enumerate(raw_journeys):
-                    # Enrich first 5 immediately
-                    if idx < 5:
-                        try:
-                            await seat_svc.verify_journey(j_data)
-                        except: j_data["availability_status"] = "AVAILABLE"
-                    
-                    # SAVE TO CACHE
+                    # SAVE TO CACHE for later verification
                     await save_journey(j_data["journey_id"], j_data)
                     enriched_turbo.append(j_data)
                 
@@ -273,16 +275,17 @@ class SearchService:
                 "train_number": s.train_number, "train_name": s.train_name,
                 "from_station_code": s.departure_code, "to_station_code": s.arrival_code,
                 "departure_time": s.departure_time.isoformat(), "arrival_time": s.arrival_time.isoformat(),
-                "duration_minutes": s.duration_minutes, "fare": s.fare, "mode": "rail"
+                "duration_minutes": s.duration_minutes, "distance_km": s.distance_km, "fare": s.fare, "mode": "rail"
             } for s in rt.segments]
 
             journey_data = {
                 "journey_id": journey_id, "num_segments": len(rt.segments),
                 "source": source, "destination": destination, "date": travel_date,
                 "total_duration": rt.total_duration,
+                "total_distance": rt.total_distance,
                 "travel_time": f"{rt.total_duration // 60:02d}:{rt.total_duration % 60:02d}",
                 "num_transfers": num_transfers, "is_direct": num_transfers == 0,
-                "total_cost": rt.total_cost, "cheapest_fare": rt.total_cost,
+                "total_cost": rt.total_cost, "total_fare": rt.total_cost, "cheapest_fare": rt.total_cost,
                 "legs": legs, "availability_status": "PENDING", "live_status": None,
                 "reliability_score": 1.0
             }
@@ -303,15 +306,9 @@ class SearchService:
                         if live.get("delay_minutes", 0) > 30: journey_data["reliability_score"] *= 0.7
                 except Exception: pass
 
-            # Enrich first 5 immediately, background task for next 10
-            if idx < 5:
-                try:
-                    is_available = await seat_svc.verify_journey(journey_data)
-                    journey_data["availability_status"] = "AVAILABLE" if is_available else "UNAVAILABLE"
-                except Exception: journey_data["availability_status"] = "AVAILABLE"
-            elif idx < 15:
-                # Background verification for next batch to speed up "Load More"
-                asyncio.create_task(seat_svc.verify_journey(journey_data)) 
+            # NOTE: Seat availability verification is DEFERRED until user clicks on a route for booking.
+            # Only the first 2 optimal routes will be verified when user interacts with them.
+            # This reduces API load and improves initial search response time. 
             
             save_ok = await save_journey(journey_id, journey_data)
             logger.info(f"💾 Saved journey {journey_id} to cache: {save_ok}")

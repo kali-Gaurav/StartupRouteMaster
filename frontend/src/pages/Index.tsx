@@ -177,15 +177,17 @@ const Index = () => {
       setDestination(toStation);
       const resolvedFromCode = fromStation.code.toUpperCase();
       const resolvedToCode = toStation.code.toUpperCase();
-      setTravelDate(date || "");
+      // Use provided date, or today's date if not specified
+      const finalDate = date || new Date().toISOString().slice(0, 10);
+      setTravelDate(finalDate);
       setSearchParams(
-        { from: resolvedFromCode, to: resolvedToCode, ...(date && { date }) },
+        { from: resolvedFromCode, to: resolvedToCode, ...(finalDate && { date: finalDate }) },
         { replace: true }
       );
       setPendingChatbotSearch({
         fromCode: resolvedFromCode,
         toCode: resolvedToCode,
-        date,
+        date: finalDate,
         correlationId,
       });
     },
@@ -441,8 +443,8 @@ const Index = () => {
     hasTriggeredChatbotSearch.current = true;
     flowCorrelationIdRef.current = pendingChatbotSearch.correlationId ?? null;
     setPendingChatbotSearch(null);
-    if (pendingChatbotSearch.date) setTravelDate(pendingChatbotSearch.date);
     handleSearchRef.current();
+    // Scroll to results section to show the user that search is happening
     setTimeout(() => document.getElementById("results")?.scrollIntoView({ behavior: "smooth" }), 400);
   }, [pendingChatbotSearch, origin, destination]);
 

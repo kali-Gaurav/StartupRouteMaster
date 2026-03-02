@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import DataError, SQLAlchemyError
@@ -134,3 +136,49 @@ async def get_route_details(
     except Exception as e:
         logger.error(f"Failed to get route details for {route_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to retrieve route details.")
+
+
+@router.post("/{route_id}/verify-seats")
+async def verify_journey_seats(
+    route_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Verify seat availability and get live fares for a journey using RapidAPI.
+    This is called when the user clicks on one of the first 2 optimal routes.
+    
+    Returns: Updated journey data with seat availability and live fares.
+    """
+    import asyncio
+    from services.seat_verification import SeatVerificationService
+    
+    try:
+        # Get journey from cache
+        cached_data = await async_redis_client.get(f"journey:{route_id}")
+        if not cached_data:
+            raise HTTPException(status_code=404, detail="Journey not found. Please search again.")
+        
+        journey = json.loads(cached_data)
+        
+        # Verify seats and get live fares
+        seat_svc = SeatVerificationService()
+        is_available = await seat_svc.verify_journey(journey)
+        
+        # Update cache with verification results
+        await async_redis_client.set(f"journey:{route_id}", json.dumps(journey), ex=3600)
+        
+        return {
+            "journey_id": route_id,
+            "availability_status": "AVAILABLE" if is_available else "UNAVAILABLE",
+            "total_cost": journey.get("total_cost"),
+            "legs": journey.get("legs"),
+            "live_status": journey.get("live_status"),
+            "message": "Seat availability verified using RapidAPI"
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Seat verification failed for {route_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to verify seat availability. Please try again.")
