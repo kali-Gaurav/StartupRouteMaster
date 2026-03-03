@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RouteMaster V2 | Developer Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --accent: #38bdf8;
+            --text: #f1f5f9;
+            --danger: #ef4444;
+            --success: #22c55e;
+        }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', system-ui, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 20px; color: var(--accent); }
+        h2 { font-size: 1.1rem; margin-top: 0; opacity: 0.8; }
+        .metric { font-size: 2rem; font-weight: bold; margin: 10px 0; }
+        .btn {
+            background: var(--accent);
+            color: var(--bg);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .btn-danger { background: var(--danger); color: white; }
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        .log-table th, .log-table td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid #334155;
+        }
+        .status-pill {
+            padding: 2px 8px;
+            border-radius: 99px;
+            font-size: 0.75rem;
+        }
+        .success { background: var(--success); }
+        .running { background: var(--accent); }
+    </style>
+</head>
+<body>
+    <h1>🛰️ RouteMaster V2 Control Center</h1>
+
+    <div class="grid">
+        <!-- System Health -->
+        <div class="card">
+            <h2>Live System Load</h2>
+            <div class="metric" id="cpu-load">--%</div>
+            <p>RAM: <span id="ram-usage">--%</span></p>
+            <p>p99 Latency: <span id="p99-latency" style="color: var(--accent)">--ms</span></p>
+        </div>
+
+        <!-- Cache Stats -->
+        <div class="card">
+            <h2>Cache & Storage</h2>
+            <div class="metric" id="db-size">--MB</div>
+            <p>Infrastructure L0: <span id="infra-hits">--</span> hits</p>
+            <p>Query L1: <span id="query-hits">--</span> hits</p>
+        </div>
+
+        <!-- Operations -->
+        <div class="card">
+            <h2>Operations</h2>
+            <div style="margin-top: 20px;">
+                <button class="btn" onclick="triggerAction('cache/clear')">Clear Redis</button>
+                <button class="btn" onclick="triggerAction('graph/rebuild')">Rebuild Graph</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2>Engine Distribution</h2>
+            <canvas id="engineChart" height="150"></canvas>
+        </div>
+
+        <div class="card">
+            <h2>Data Lineage (ETL)</h2>
+            <table class="log-table">
+                <thead>
+                    <tr>
+                        <th>Run ID</th>
+                        <th>Trips</th>
+                        <th>Status</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody id="etl-logs"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v2/admin';
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const WS_URL = `${protocol}//${window.location.host}/api/v2/admin/ws/metrics`;
+
+        // WebSocket for Real-time Metrics
+        function connectMetrics() {
+            const socket = new WebSocket(WS_URL);
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                document.getElementById('cpu-load').innerText = `${data.cpu}%`;
+                document.getElementById('ram-usage').innerText = `${data.mem}%`;
+                document.getElementById('p99-latency').innerText = `${data.p99}ms`;
+            };
+            socket.onclose = () => setTimeout(connectMetrics, 3000);
+        }
+
+        async function fetchStaticData() {
+            try {
+                const health = await fetch(`${API_BASE}/system/health`).then(r => r.json());
+                document.getElementById('db-size').innerText = `${(health.db_storage_bytes / 1024 / 1024).toFixed(1)}MB`;
+
+                const cache = await fetch(`${API_BASE}/cache/stats`).then(r => r.json());
+                document.getElementById('infra-hits').innerText = cache.infrastructure.hits;
+                document.getElementById('query-hits').innerText = cache.query.hits;
+
+                const etl = await fetch(`${API_BASE}/etl/status`).then(r => r.json());
+                document.getElementById('etl-logs').innerHTML = etl.map(run => `
+                    <tr>
+                        <td>${run.run_id}</td>
+                        <td>${run.trips_synced}</td>
+                        <td><span class="status-pill ${run.status}">${run.status}</span></td>
+                        <td>${new Date(run.updated_at).toLocaleTimeString()}</td>
+                    </tr>
+                `).join('');
+            } catch (e) { console.error("Static fetch failed", e); }
+        }
+
+        async function triggerAction(action) {
+            if(!confirm(`Trigger ${action}?`)) return;
+            const res = await fetch(`${API_BASE}/${action}`, { method: 'POST' });
+            alert(res.ok ? "Action successful" : "Action failed");
+        }
+
+        connectMetrics();
+        fetchStaticData();
+        setInterval(fetchStaticData, 10000);
+
+        // Chart.js init
+        const ctx = document.getElementById('engineChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Turbo', 'FastRouter', 'RAPTOR'],
+                datasets: [{
+                    data: [65, 25, 10],
+                    backgroundColor: ['#38bdf8', '#fbbf24', '#ef4444'],
+                    borderWidth: 0
+                }]
+            },
+            options: { plugins: { legend: { position: 'bottom', labels: { color: '#f1f5f9' } } } }
+        });
+    </script>
+</body>
+</html>

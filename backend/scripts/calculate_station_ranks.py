@@ -16,7 +16,7 @@ from collections import defaultdict
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
 
 from core.route_engine.snapshot_manager import SnapshotManager
-from database.session import SessionLocal
+from database.session import SessionTransit as SessionLocal
 from database.models import StationRank, Stop
 
 logging.basicConfig(level=logging.INFO)

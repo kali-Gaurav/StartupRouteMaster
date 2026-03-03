@@ -9,7 +9,7 @@ import sys
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
 
 from sqlalchemy import text, insert
-from database.session import SessionLocal, engine
+from database.session import SessionTransit as SessionLocal, engine_transit as engine
 from database.models import (
     Stop, Trip, Route, Agency, Calendar, StopTime, Segment, 
     Vehicle, StationSchedule, TrainPath, ETLMetadata

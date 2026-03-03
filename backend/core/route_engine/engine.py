@@ -6,729 +6,99 @@ from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 
-from pydantic import RootModel
+from sqlalchemy.orm import Session
+from database.session import SessionLocal, engine_transit as engine
+from database.models import (
+    Trip as TripModel,
+    Stop as StopModel,
+    StopTime as StopTimeModel,
+    Route as RouteModel,
+    Calendar as CalendarModel
+)
 
-from services import multi_layer_cache
-from database.config import Config
-from database.models import Stop, Route as RouteModel, Trip as TripModel
-from database.session import SessionLocal
-
-from ..validator.validation_manager import create_validation_manager_with_defaults, ValidationProfile, ValidationCategory
-
-from .data_structures import Route, UserContext
-from .constraints import RouteConstraints
-from .raptor import OptimizedRAPTOR, HybridRAPTOR
-from .graph import TimeDependentGraph, StaticGraphSnapshot, RealtimeOverlay
+from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .builder import GraphBuilder
-from .hub import HubManager, HubConnectivityTable
 from .snapshot_manager import SnapshotManager
-from .data_provider import DataProvider
+from .raptor import OptimizedRAPTOR, HybridRAPTOR
 from .fast_router import FastPathRouter
-from ..realtime_event_processor import RealtimeEventProcessor
-from ..ml_ranking_model import RouteRankingModel
-from ..validator.live_validators import create_live_validators
-# Point 5: Advanced Booking Layer
-from services.booking.manager import SeatAvailabilityManager
-from services.booking.rapid_api_client import RapidAPIClient
+from .hub import HubManager
+from .constraints import RouteConstraints
+from .data_structures import Route
+from services import multi_layer_cache
 
 logger = logging.getLogger(__name__)
 
 class RailwayRouteEngine:
-    """
-    The main coordinator for all route-finding operations.
-    Integrates Snapshots, Real-time Overlays, and Hybrid Hub-RAPTOR.
-    (Aliased as RouteEngine for backward compatibility)
-    """
+    _instance = None
+    _lock = asyncio.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(RailwayRouteEngine, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self):
-        self.hub_manager = HubManager(SessionLocal)
-        self.hub_manager.initialize_hubs()
-
-        # We use HybridRAPTOR as the default high-performance engine
-        self.raptor = HybridRAPTOR(self.hub_manager, max_transfers=3)
-        self.executor = ThreadPoolExecutor(max_workers=8)
+        if self._initialized: return
+        from database.session import SessionTransit
+        self.executor = ThreadPoolExecutor(max_workers=4)
         self.snapshot_manager = SnapshotManager()
-        self.graph_builder = GraphBuilder(self.executor, snapshot_manager=self.snapshot_manager)
-
-        # Persistent state for performance optimization
+        self.graph_builder = GraphBuilder(self.executor, self.snapshot_manager)
+        self.hub_manager = HubManager(SessionTransit)
         self.current_snapshot: Optional[StaticGraphSnapshot] = None
-        self.last_snapshot_time: Optional[datetime] = None
-        self.current_overlay: RealtimeOverlay = RealtimeOverlay()
-
-        self.validation_manager = create_validation_manager_with_defaults()
-
-        # Phase 5: Realtime Event Processor
-        self.realtime_event_processor = RealtimeEventProcessor(self)
-
-        # concurrency guard for snapshot rebuilds (Phase 2)
-        self._snapshot_lock = asyncio.Lock()
-        self._snapshot_build_task: Optional[asyncio.Task] = None
-        # Overlay sync state
-        self._last_synced_version: int = -1  # -1 means never synced
-        self._last_synced_at: datetime = datetime.min
-
-        # Phase 6: ML Ranking Model
-        self.route_ranking_model = RouteRankingModel()
-
-        # Phase 3: Unified Data Provider with auto-detection
-        self.data_provider = DataProvider()
-        self._detect_available_features()
-
-        # Advanced Booking Layer (Phase 7)
-        self._init_booking_manager()
-
-        # Phase 3: Conditional live validators (must be ready before logging)
-        self.live_validators = create_live_validators(self.data_provider)
-
-        self._log_startup_status()
-        self._loaded = False
-
-    async def initialize(self, date_override: Optional[datetime] = None):
-        """Production startup hook (Topic 1). Warm up the engine and cache."""
-        start_init = _time.time()
-        target_date = date_override or datetime.now().replace(hour=8, minute=0, second=0)
-        logger.info(f"Initializing RouteMaster Engine for {target_date.date()}...")
-        
-        # Trigger graph load/build
-        graph = await self._get_current_graph(target_date)
-        
-        # Perform major hub coverage validation (Topic 4)
-        major_stations = ["NDLS", "BCT", "CSMT", "MAS", "HWH", "ADI", "SBC", "SDAH", "PNBE"]
-        missing_hubs = []
-        for code in major_stations:
-            # Check if station exists in graph
-            found = False
-            for s in graph.snapshot.stop_cache.values():
-                if getattr(s, 'code', None) == code or getattr(s, 'stop_id', None) == code:
-                    found = True
-                    break
-            if not found:
-                missing_hubs.append(code)
-        
-        if missing_hubs:
-            logger.warning(f"Engine Warning: Major stations {missing_hubs} not found in current graph snapshot!")
-        else:
-            logger.info("Engine Success: All major hubs verified in memory graph.")
-            
-        self._loaded = True
-        duration = _time.time() - start_init
-        logger.info(f"🚀 RouteMaster Engine initialized in {duration:.2f} seconds.")
-        return True
-
-    def _init_booking_manager(self):
-        """Initialize seat availability manager with API keys from config."""
-        try:
-            # try both import paths in case PYTHONPATH differs
-            try:
-                from database.config import Config as config
-            except ImportError:
-                from database.config import Config as config
-
-            api_key = getattr(config, 'RAPIDAPI_KEY', "") 
-            if api_key:
-                client = RapidAPIClient(api_key)
-                self.seat_manager = SeatAvailabilityManager(client)
-                logger.info("✅ Seat Availability Manager initialized with RapidAPI (V1)")
-            else:
-                logger.warning("⚠️ RAPIDAPI_KEY not found in config. Booking layer disabled.")
-                self.seat_manager = None
-        except Exception as e:
-            logger.error(f"❌ Booking manager failed to initialize: {e}")
-            self.seat_manager = None
-
-    def _detect_available_features(self):
-        """
-        Auto-detect which live features are available.
-        Called during initialization to determine mode (offline/hybrid/online).
-        """
-        try:
-            try:
-                from database.config import Config as config
-            except ImportError:
-                from database.config import Config as config
-        except ImportError:
-            logger.warning("Config not available, assuming offline mode")
-            return
-
-        self.data_provider.detect_available_features(config)
-
-    def _log_startup_status(self):
-        """
-        Log startup status showing detected mode and available features.
-        """
-        logger.info("=" * 60)
-        logger.info("🚀 Railway Route Engine - Phase 3 Initialization")
-        logger.info("=" * 60)
-
-        mode = "OFFLINE"
-        if self.data_provider.has_live_fares or self.data_provider.has_live_delays or self.data_provider.has_live_seats:
-            mode = "ONLINE" if (self.data_provider.has_live_fares and self.data_provider.has_live_delays and self.data_provider.has_live_seats) else "HYBRID"
-
-        logger.info(f"🔄 Mode: {mode}")
-        logger.info(f"📊 Data Sources:")
-        logger.info(f"   • Fares: {'🌐 LIVE API' if self.data_provider.has_live_fares else '💾 DATABASE'}")
-        logger.info(f"   • Delays: {'🌐 LIVE API' if self.data_provider.has_live_delays else '⏱️  ASSUME 0'}")
-        logger.info(f"   • Seats: {'🌐 LIVE API' if self.data_provider.has_live_seats else '💾 DATABASE'}")
-        logger.info(f"✅ Core Features:")
-        logger.info(f"   • HybridRAPTOR: Enabled")
-        logger.info(f"   • Graph Snapshots: Enabled")
-        logger.info(f"   • Realtime Overlay: Enabled")
-        logger.info(f"   • Live Validators: {len(self.live_validators)} loaded")
-        logger.info("=" * 60)
-
-    async def sync_realtime_overlay(self):
-        """Phase 10: Sync distributed real-time state from Redis."""
-        try:
-            await multi_layer_cache.initialize()
-            remote_state = await multi_layer_cache.get_overlay_state("global_v2")
-            if remote_state:
-                remote_overlay = RealtimeOverlay.from_dict(remote_state)
-                needs_sync = (
-                    remote_overlay.version > self._last_synced_version or
-                    remote_overlay.last_updated > self._last_synced_at
-                )
-                if needs_sync:
-                    self.current_overlay = remote_overlay
-                    self._last_synced_at = remote_overlay.last_updated
-                    self._last_synced_version = remote_overlay.version
-                    try:
-                        from utils import metrics
-                        metrics.OVERLAY_VERSION.set(self._last_synced_version)
-                    except Exception:
-                        pass
-                    logger.info(
-                        f"Phase 10: Synced overlay version {self._last_synced_version} "
-                        f"({len(remote_overlay.delays)} delays) from Redis."
-                    )
-                else:
-                    logger.debug("Phase 10: Local overlay is already up to date.")
-            else:
-                logger.debug("Phase 10: No remote overlay state found in Redis.")
-        except Exception as e:
-            logger.warning(f"Overlay sync failed: {e}")
+        self.current_graph: Optional[TimeDependentGraph] = None
+        self._initialized = True
 
     async def _get_current_graph(self, date: datetime) -> TimeDependentGraph:
-        """
-        Get or rebuild the graph, ensuring snapshot is fresh (valid for 24h).
-        Implements Phase 2: Snapshot System & Phase 10: Redis Sync.
-        """
-        # Step 0: Sync overlay first
-        await self.sync_realtime_overlay()
-
-        # Step 1: Snapshot lifecycle (protected by lock to avoid races)
-        async with self._snapshot_lock:
-            needs_rebuild = (
-                not self.current_snapshot or
-                self.current_snapshot.date.date() != date.date() or
-                (self.last_snapshot_time is None) or
-                (datetime.utcnow() - self.last_snapshot_time).total_seconds() > 86400
-            )
+        async with self._lock:
+            if self.current_graph and self.current_snapshot.date.date() == date.date():
+                return self.current_graph
             
-            logger.info(f"Engine: needs_rebuild={needs_rebuild}, snapshot exists={self.current_snapshot is not None}")
-            if self.current_snapshot:
-                logger.info(f"Engine: snapshot stops={len(self.current_snapshot.stop_cache or {})}, departures={len(self.current_snapshot.departures_by_stop or {})}")
-
-            if needs_rebuild:
-                logger.info(f"Loading or rebuilding snapshot for {date.date()}")
-                self.current_snapshot = await self.snapshot_manager.load_snapshot(date)
-                if not self.current_snapshot or not self.current_snapshot.stop_cache:
-                    logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
-                    build_start = _time.time()
-                    temp_graph = await self.graph_builder.build_graph(date)
-                    build_ms = (_time.time() - build_start) * 1000.0
-                    try:
-                        from utils import metrics
-                        metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
-                    except Exception:
-                        pass
-                    self.current_snapshot = temp_graph.snapshot
-                    try:
-                        await self.snapshot_manager.save_snapshot(self.current_snapshot)
-                        # Phase 1: Log Snapshot Diffs (TODO #8 & #9)
-                        asyncio.create_task(self.snapshot_manager.compare_snapshots_and_log_diffs(self.current_snapshot))
-                    except Exception:
-                        logger.warning("Snapshot save failed during rebuild")
-                    logger.info(f"Built new snapshot with {len(self.current_snapshot.stop_cache)} stops and {len(self.current_snapshot.trip_segments)} trip segments.")
-                else:
-                    logger.info(f"Loaded snapshot with {len(self.current_snapshot.stop_cache)} stops and {len(self.current_snapshot.trip_segments)} trip segments.")
-                    try:
-                        from utils import metrics
-                        metrics.GRAPH_NODES.set(len(self.current_snapshot.stop_cache or {}))
-                        edges = sum(len(v) for v in self.current_snapshot.trip_segments.values())
-                        edges += sum(len(v) for v in self.current_snapshot.transfer_graph.values())
-                        metrics.GRAPH_EDGES.set(edges)
-                        if self.current_snapshot.stop_cache:
-                            metrics.TRANSFER_DENSITY.set(edges / len(self.current_snapshot.stop_cache))
-                    except Exception:
-                        pass
-            else:
-                logger.debug(f"Reusing snapshot for {date.date()} - no rebuild required")
-
-            if self.current_snapshot and not self.raptor._hub_table:
-                # Try loading from disk first
-                hub_table = await self.snapshot_manager.load_hub_table(date)
-                if not hub_table:
-                    logger.info(f"Scheduling Hub Connectivity precomputation for {date.date()} in background...")
-                    
-                    async def _bg_hub_precompute():
-                        return # DISABLED FOR TESTING
-                        try:
-                            self.hub_manager.initialize_hubs()
-                            hub_start = _time.time()
-                            ht = await self.hub_manager.precompute_hub_connectivity(
-                                TimeDependentGraph(self.current_snapshot),
-                                date
-                            )
-                            await self.snapshot_manager.save_hub_table(ht, date)
-                            logger.info(f"✅ Background Hub Connectivity built in {(_time.time() - hub_start):.2f}s")
-                        except Exception as e:
-                            logger.error(f"❌ Background hub precompute failed: {e}")
-                            
-                    asyncio.create_task(_bg_hub_precompute())
-                else:
-                    logger.info(f"Loaded Hub Connectivity Table from persistent storage.")
-                    hub_count = len(hub_table._table) if hasattr(hub_table, '_table') else 0
-                    logger.info(f"Validated persistent Hub table: {hub_count} entries.")
-                
-                self.raptor.set_hub_table(hub_table)
-
-            self.last_snapshot_time = datetime.utcnow()
-
-        # Step 2: Overlay Layer (Copy-on-Write)
-        graph = TimeDependentGraph(self.current_snapshot)
-        graph.overlay = self.current_overlay
-        return graph
-
-    async def _acquire_base_snapshot(self, date: datetime) -> StaticGraphSnapshot:
-        snapshot = self.current_snapshot
-        if snapshot and snapshot.date.date() != date.date():
-            snapshot = None
-        if not snapshot:
             snapshot = await self.snapshot_manager.load_snapshot(date)
-            if snapshot:
+            if not snapshot:
+                logger.info(f"Engine: Building fresh graph snapshot for {date.date()}")
+                self.current_graph = await self.graph_builder.build_graph(date)
+                self.current_snapshot = self.current_graph.snapshot
+                await self.snapshot_manager.save_snapshot(self.current_snapshot)
+            else:
+                logger.info(f"Engine: Loaded existing snapshot for {date.date()}")
                 self.current_snapshot = snapshot
-                self.last_snapshot_time = datetime.utcnow()
-        if snapshot and not self._validate_snapshot(snapshot):
-            logger.warning("Snapshot failed integrity validation, triggering rebuild")
-            snapshot = None
-            self.current_snapshot = None
-        needs_rebuild = (
-            snapshot is None or
-            self.last_snapshot_time is None or
-            (datetime.utcnow() - (self.last_snapshot_time or datetime.min)).total_seconds() > 86400
-        )
-        print(f"DEBUG: needs_rebuild={needs_rebuild}, snapshot_loaded={snapshot is not None}")
-        if needs_rebuild:
-            if snapshot:
-                self._launch_background_snapshot_build(date)
-            else:
-                logger.info(f"Building fresh static graph snapshot for {date.date()} (Phase 2)...")
-                base_snapshot = await self._build_snapshot(date)
-                self.current_snapshot = base_snapshot
-                self.last_snapshot_time = datetime.utcnow()
-                return base_snapshot
-        if not snapshot:
-            raise RuntimeError("Snapshot generation failed and no previous state exists")
-        return snapshot
-
-    def _launch_background_snapshot_build(self, date: datetime) -> None:
-        if self._snapshot_build_task and not self._snapshot_build_task.done():
-            return
-        self._snapshot_build_task = asyncio.create_task(self._build_snapshot(date))
-        self._snapshot_build_task.add_done_callback(self._snapshot_build_callback)
-
-    async def _build_snapshot(self, date: datetime) -> StaticGraphSnapshot:
-        build_start = _time.time()
-        temp_graph = await self.graph_builder.build_graph(date)
-        snapshot = temp_graph.snapshot
-        try:
-            await self.snapshot_manager.save_snapshot(snapshot)
-        except Exception:
-            logger.warning("Snapshot save failed during rebuild")
-        build_ms = (_time.time() - build_start) * 1000.0
-        try:
-            from utils import metrics
-            metrics.SNAPSHOT_BUILD_TIME_MS.observe(build_ms)
-        except Exception:
-            pass
-        return snapshot
-
-    def _snapshot_build_callback(self, task: asyncio.Task):
-        self._snapshot_build_task = None
-        if task.cancelled():
-            return
-        try:
-            snapshot = task.result()
-        except Exception as exc:
-            logger.error(f"Background snapshot build failed: {exc}")
-            return
-        asyncio.create_task(self._publish_snapshot(snapshot))
-
-    async def _publish_snapshot(self, snapshot: StaticGraphSnapshot) -> None:
-        async with self._snapshot_lock:
-            self.current_snapshot = snapshot
-            self.last_snapshot_time = datetime.utcnow()
-
-    def _record_graph_metrics(self, snapshot: StaticGraphSnapshot) -> None:
-        try:
-            from utils import metrics
-            metrics.GRAPH_NODES.set(len(snapshot.stop_cache or {}))
-            edges = sum(len(v) for v in snapshot.trip_segments.values())
-            edges += sum(len(v) for v in snapshot.transfer_graph.values())
-            metrics.GRAPH_EDGES.set(edges)
-            if snapshot.stop_cache:
-                metrics.TRANSFER_DENSITY.set(edges / len(snapshot.stop_cache))
-        except Exception:
-            pass
-
-    def _validate_snapshot(self, snapshot: Optional[StaticGraphSnapshot]) -> bool:
-        if not snapshot:
-            return False
-        stop_count = len(snapshot.stop_cache or {})
-        trip_count = len(snapshot.trip_segments or {})
-        if stop_count < 200:
-            logger.warning(f"Snapshot appears too small ({stop_count} stops)")
-            return False
-        if trip_count < 300:
-            logger.warning(f"Snapshot appears too small ({trip_count} trips)")
-            return False
-        transfer_edges = sum(len(v) for v in snapshot.transfer_graph.values())
-        if transfer_edges == 0:
-            logger.warning("Snapshot has no transfer edges")
-            return False
-        if not snapshot.date:
-            logger.warning("Snapshot missing date")
-            return False
-        if snapshot.date < datetime.utcnow() - timedelta(days=5):
-            logger.warning("Snapshot appears stale")
-            return False
-        if snapshot.date > datetime.utcnow() + timedelta(days=2):
-            logger.warning("Snapshot date in future")
-            return False
-        return True
-
-    async def _finalize_graph(self, base_snapshot: StaticGraphSnapshot, date: datetime) -> TimeDependentGraph:
-        delta = await self.snapshot_manager.load_delta_snapshot(date, date.hour)
-        static_snapshot = self._merge_static_snapshots(base_snapshot, delta) if delta else base_snapshot
-        graph = TimeDependentGraph(static_snapshot)
-        graph.overlay = self.current_overlay
-        return graph
-
-    def _merge_static_snapshots(self, base: StaticGraphSnapshot, delta: Optional[StaticGraphSnapshot]) -> StaticGraphSnapshot:
-        if not delta:
-            return base
-        merged = StaticGraphSnapshot(date=base.date)
-        merged.departures_by_stop = defaultdict(list)
-        for stop, values in base.departures_by_stop.items():
-            merged.departures_by_stop[stop].extend(values)
-        for stop, values in delta.departures_by_stop.items():
-            merged.departures_by_stop[stop].extend(values)
-        merged.arrivals_by_stop = defaultdict(list)
-        for stop, values in base.arrivals_by_stop.items():
-            merged.arrivals_by_stop[stop].extend(values)
-        for stop, values in delta.arrivals_by_stop.items():
-            merged.arrivals_by_stop[stop].extend(values)
-        merged.trip_segments = defaultdict(list)
-        for trip, segments in base.trip_segments.items():
-            merged.trip_segments[trip].extend(segments)
-        for trip, segments in delta.trip_segments.items():
-            merged.trip_segments[trip].extend(segments)
-        merged.transfer_graph = defaultdict(list)
-        for station, transfers in base.transfer_graph.items():
-            merged.transfer_graph[station].extend(transfers)
-        for station, transfers in delta.transfer_graph.items():
-            merged.transfer_graph[station].extend(transfers)
-        merged.stop_cache = {**base.stop_cache, **delta.stop_cache}
-        merged.route_patterns = {**base.route_patterns, **delta.route_patterns}
-        merged.transfer_cache = {**base.transfer_cache, **delta.transfer_cache}
-        merged.stop_index = {**base.stop_index, **delta.stop_index}
-        merged.transfer_metrics = {**base.transfer_metrics, **delta.transfer_metrics}
-        merged.density_metrics = {**base.density_metrics, **delta.density_metrics}
-        merged.version = delta.version or base.version
-        merged.created_at = base.created_at
-        return merged
-
-    async def search_routes(self, source_code: str, destination_code: str,
-                           departure_date: datetime,
-                           constraints: Optional[RouteConstraints] = None,
-                           user_context: Optional[UserContext] = None) -> List[Route]:
-        """
-        Search for routes between source and destination using the configured engine workflow.
-        Default workflow: FastRouter first, then HybridRAPTOR as fallback when needed.
-        Uses TransitSessionLocal (SQLite) for identifier resolution consistency.
-        """
-        logger.info(
-            "Searching routes from %s to %s on %s (engine_order=FastRouter->HybridRAPTOR, "
-            "fast_enabled=%s, raptor_fallback_enabled=%s)",
-            source_code,
-            destination_code,
-            departure_date,
-            Config.ROUTE_ENGINE_ENABLE_FAST_ROUTER,
-            Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK,
-        )
-        if constraints is None:
-            constraints = RouteConstraints()
-
-        from database.session import SessionLocal
-        from .builder import MockStop
-        session = SessionLocal()
-
-        try:
-            from sqlalchemy import or_
-            # Use Stop model but from local SQLite
-            source_stop = session.query(Stop).filter(
-                or_(Stop.code == source_code.upper(), Stop.stop_id == source_code.upper())
-            ).first()
-            dest_stop = session.query(Stop).filter(
-                or_(Stop.code == destination_code.upper(), Stop.stop_id == destination_code.upper())
-            ).first()
-
-            if not source_stop or not dest_stop:
-                logger.warning(f"Stop not found: source_code='{source_code}', destination_code='{destination_code}'. source_stop found: {source_stop is not None}, dest_stop found: {dest_stop is not None}")
-                return []
-
-            if source_stop.id == dest_stop.id:
-                logger.warning("Source and destination stops are the same.")
-                return []
-
-            date = departure_date
-            graph = await self._get_current_graph(date)
-
-            routes: List[Route] = []
-
-            # Phase 10: Fast BFS Router for 0, 1, 2, 3 transfers (if enabled)
-            if Config.ROUTE_ENGINE_ENABLE_FAST_ROUTER:
-                fast_router = FastPathRouter(graph)
-                routes = fast_router.find_routes(source_stop.id, dest_stop.id, date, constraints)
-                for r in routes: r.metadata["engine"] = "FastRouter"
-                logger.info("FastRouter found %d routes.", len(routes))
-            else:
-                logger.info("FastRouter is disabled via configuration.")
-
-            # If FastRouter didn't find enough routes and RAPTOR fallback is enabled
-            fallback_threshold = getattr(Config, "ROUTE_ENGINE_RAPTOR_FALLBACK_THRESHOLD", constraints.max_results)
-            if Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK and len(routes) < fallback_threshold:
-                raptor_routes = await self.raptor.find_routes(
-                    source_stop.id, dest_stop.id, date, constraints, graph=graph
-                )
-                for rr in raptor_routes: rr.metadata["engine"] = "HybridRAPTOR"
-                logger.info(
-                    "RAPTOR fallback found %d routes (fast_routes=%d, threshold=%d).",
-                    len(raptor_routes),
-                    len(routes),
-                    fallback_threshold,
-                )
-                
-                # Merge RAPTOR routes with fast routes
-                seen_segments = set(tuple(seg.trip_id for seg in r.segments) for r in routes if r.segments)
-                for rr in raptor_routes:
-                    if rr.segments:
-                        r_segs = tuple(seg.trip_id for seg in rr.segments)
-                        if r_segs not in seen_segments:
-                            routes.append(rr)
-                            seen_segments.add(r_segs)
-            elif not Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK:
-                logger.info(
-                    "HybridRAPTOR fallback disabled via configuration; returning %d FastRouter routes.",
-                    len(routes),
-                )
-
-            if user_context:
-                routes = await self._apply_ml_ranking(routes, user_context)
-
-            # Sort and truncate
-            if routes:
-                routes.sort(key=lambda r: (getattr(r, 'score', 0), -getattr(r, 'reliability', 0)))
-                routes = routes[:constraints.max_results]
-
-            if self.seat_manager:
-                for i, route in enumerate(routes):
-                    route.is_locked = i >= 3
-                asyncio.create_task(self._prefetch_availability(routes[:2], date))
-
-            return routes
-        except Exception as e:
-            logger.error(f"Error during RAPTOR search: {e}", exc_info=True)
-            return []
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
-
-    async def _prefetch_availability(self, top_routes: List[Route], date: datetime):
-        """Background task to prefetch seat availability for top routes."""
-        if not self.seat_manager:
-            return
-
-        date_str = date.strftime("%Y-%m-%d")
-        prefetch_items = []
-        for route in top_routes:
-            if not route.segments:
-                continue
-            seg = route.segments[0]
-            if seg.train_number:
-                prefetch_items.append({
-                    "train_number": seg.train_number,
-                    "from_station": getattr(seg, 'from_code', ''),
-                    "to_station": getattr(seg, 'to_code', ''),
-                    "date": date_str,
-                })
-        if prefetch_items:
-            await self.seat_manager.prefetch_top_routes(prefetch_items)
-
-    async def _apply_ml_ranking(self, routes: List[Route], user_context: UserContext) -> List[Route]:
-        """Apply ML-based ranking and personalization (Phase 6)"""
-        if self.route_ranking_model.loaded:
-            # Pass constraints to the ranking model for feature engineering
-            # Note: A real ML model would be trained on these features.
-            # For heuristic, we can use them directly.
-            constraints = RouteConstraints() # Assuming default constraints if not passed
-            ranked_routes = await self.route_ranking_model.predict(routes, user_context, constraints)
-            return ranked_routes
-        else:
-            logger.warning("Route ranking model not loaded, falling back to reliability sort.")
-            routes.sort(key=lambda r: (-r.ml_score if r.ml_score else -r.reliability))
-            return routes
-
-    async def start_realtime_event_processor(self, interval_seconds: int = 60):
-        """
-        Starts a background task to periodically process real-time events.
-        (Simulates continuous event stream consumption).
-        """
-        logger.info(f"Starting real-time event processor to run every {interval_seconds} seconds.")
-        while True:
-            await self.realtime_event_processor.process_events()
-            await asyncio.sleep(interval_seconds)
-
-    # ==============================================================================
-    # REAL-TIME MUTATION (Phase 5)
-    # ==============================================================================
-
-    async def apply_realtime_updates(self, updates: List[Dict[str, Any]]):
-        """
-        Apply real-time updates (delays, cancellations) to the global overlay.
-        Implements Phase 5: Real-Time Mutation Engine.
-        """
-        for update in updates:
-            update_type = update.get('type')
-            trip_id = update.get('trip_id')
-            if not trip_id: continue # Must have trip_id
+                self.current_graph = TimeDependentGraph(snapshot)
             
-            if update_type == 'cancellation':
-                self.current_overlay.cancel_trip(trip_id)
-                logger.info(f"Applied cancellation to trip {trip_id}")
-            elif update_type == 'delay':
-                delay_minutes = update.get('delay_minutes')
-                if delay_minutes is not None:
-                    self.current_overlay.apply_delay(trip_id, delay_minutes)
-                    logger.info(f"Applied {delay_minutes}min delay to trip {trip_id}")
-            elif update_type == 'occupancy':
-                # Occupancy is generally handled by ML scoring, not graph mutation
-                logger.debug(f"Occupancy update for trip {trip_id} received, but not directly applied to graph overlay.")
-            else:
-                logger.warning(f"Unknown real-time update type: {update_type}")
-                
-        # Invalidate cache for affected routes if necessary (Phase 5)
-        # This is a future step, as it requires knowing which cache entries
-        # are tied to specific trips or stations.
-        # await self._invalidate_affected_routes(affected_trip_ids)
-                
-        logger.info(f"Applied {len(updates)} realtime updates to global overlay")
+            return self.current_graph
 
-    # ==============================================================================
-    # VALIDATION FACADES
-    # ==============================================================================
-
-    def validate_multimodal_route(self, multimodal_route, validation_config: dict = None) -> bool:
-        """Validate multi-modal route using ValidationManager."""
-        if validation_config is None:
-            validation_config = {}
-        config = {'route': multimodal_route}
-        config.update(validation_config)
-        report = self.validation_manager.validate(
-            config, profile=ValidationProfile.STANDARD,
-            specific_categories={ValidationCategory.MULTIMODAL}
-        )
-        return report.all_passed
-
-    def validate_fare_and_availability(self, route: Route, travel_class: str = "SL") -> bool:
-        """Validate fare and availability using ValidationManager."""
-        config = {'route': route, 'travel_class': travel_class}
-        report = self.validation_manager.validate(
-            config, profile=ValidationProfile.STANDARD,
-            specific_categories={ValidationCategory.FARE_AVAILABILITY}
-        )
-        return report.all_passed
-
-    def validate_api_and_security(self, request_data: dict, auth_token: str) -> bool:
-        """Validate API security using ValidationManager."""
-        report = self.validation_manager.validate_api_request(
-            request_data, auth_token, profile=ValidationProfile.STANDARD
-        )
-        return report.all_passed
-
-    def validate_data_integrity(self, graph_data: dict) -> bool:
-        """Validate data integrity using ValidationManager."""
-        config = {'graph_data': graph_data}
-        report = self.validation_manager.validate(
-            config, profile=ValidationProfile.FULL,
-            specific_categories={ValidationCategory.DATA_INTEGRITY}
-        )
-        return report.all_passed
-
-    def validate_ai_ranking(self, ranked_routes: list, user_context: dict) -> bool:
-        """Validate AI ranking using ValidationManager."""
-        config = {'ranked_routes': ranked_routes, 'user_context': user_context}
-        report = self.validation_manager.validate(
-            config, profile=ValidationProfile.STANDARD,
-            specific_categories={ValidationCategory.AI_RANKING}
-        )
-        return report.all_passed
-
-    def validate_resilience(self, validation_config: dict = None) -> bool:
-        """Run chaos / failure-recovery validations (RT-171 — RT-200)."""
-        if validation_config is None:
-            validation_config = {}
-        report = self.validation_manager.validate(
-            validation_config,
-            profile=ValidationProfile.FULL,
-            specific_categories={ValidationCategory.RESILIENCE}
-        )
-        return report.all_passed
-
-    def validate_production_excellence(self, validation_config: dict = None) -> bool:
-        """Run production-excellence validations (RT-201 — RT-220)."""
-        if validation_config is None:
-            validation_config = {}
-        report = self.validation_manager.validate(
-            validation_config,
-            profile=ValidationProfile.STANDARD,
-            specific_categories={ValidationCategory.PRODUCTION_EXCELLENCE}
-        )
-        return report.all_passed
-
-    def is_loaded(self) -> bool:
-        """Return whether the route engine has been marked as loaded."""
-        return getattr(self, "_loaded", False)
-
-    def load_graph_from_db(self, db_session) -> bool:
-        """Stubbed hook used by readiness checks to mark the engine as loaded."""
-        if not self.is_loaded():
-            logger.info("Readiness probe requested graph load; marking engine as loaded")
-            self._loaded = True
-        return True
-
-    def get_total_routes_count(self) -> int:
-        session = SessionLocal()
+    async def search_routes(
+        self,
+        source_code: str,
+        destination_code: str,
+        departure_date: datetime,
+        constraints: RouteConstraints,
+        db: Optional[Session] = None
+    ) -> List[Route]:
+        from utils.station_utils import resolve_stations
+        
+        # Use provided transit_db or fallback
+        res_db = db if db else SessionLocal()
         try:
-            return session.query(RouteModel).count()
+            source_stop, dest_stop = resolve_stations(res_db, source_code, destination_code)
         finally:
-            session.close()
+            if not db: res_db.close()
 
-    def get_total_trains_count(self) -> int:
-        session = SessionLocal()
-        try:
-            return session.query(TripModel).count()
-        finally:
-            session.close()
+        if not source_stop or not dest_stop:
+            return []
+
+        graph = await self._get_current_graph(departure_date)
+        
+        # 1. RAPTOR Search
+        raptor = OptimizedRAPTOR(max_transfers=constraints.max_transfers)
+        routes = await raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
+        
+        return routes
+
+    async def rebuild_snapshot(self, date: datetime):
+        """Force a rebuild of the graph snapshot."""
+        async with self._lock:
+            logger.info(f"Engine: Forcing rebuild for {date.date()}")
+            self.current_graph = await self.graph_builder.build_graph(date)
+            self.current_snapshot = self.current_graph.snapshot
+            await self.snapshot_manager.save_snapshot(self.current_snapshot)

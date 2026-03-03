@@ -5,7 +5,6 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Optimization for SQLite
 def _enable_sqlite_optimizations(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -23,13 +22,14 @@ engine_transit = create_engine(transit_db_path, connect_args={"check_same_thread
 event.listen(engine_user, "connect", _enable_sqlite_optimizations)
 event.listen(engine_transit, "connect", _enable_sqlite_optimizations)
 
+# Specific naming for internal use
+engine_write = engine_user
+engine_read = engine_transit
+
 # --- Metadata & Bases ---
-# We use two separate bases so tables don't leak into the wrong database
 UserBase = declarative_base()
 TransitBase = declarative_base()
-
-# Legacy compatibility
-Base = UserBase 
+Base = UserBase
 
 # --- Session Factories ---
 SessionUser = sessionmaker(autocommit=False, autoflush=False, bind=engine_user)
@@ -51,11 +51,11 @@ def get_transit_db():
 
 async def init_db():
     """Create tables in their respective physical databases."""
-    # This will only create tables inheriting from UserBase in user_store.db
+    from .models import User, Stop 
+    # Force TransitBase to use engine_transit
     UserBase.metadata.create_all(bind=engine_user)
-    # This will only create tables inheriting from TransitBase in transit_graph.db
     TransitBase.metadata.create_all(bind=engine_transit)
-    logger.info("🚀 Dual-Database Physical Split Complete.")
+    logger.info("Dual-Database physical tables verified.")
 
 def get_source_connection():
     import sqlite3

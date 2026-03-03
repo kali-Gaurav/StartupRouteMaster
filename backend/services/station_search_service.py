@@ -18,215 +18,153 @@ class StationSuggestion:
     city: str
     state: Optional[str] = None
     score: float = 100.0
-    popularity: int = 0
+    popularity: float = 0.0
 
 class StationTrieNode:
     def __init__(self):
         self.children: Dict[str, StationTrieNode] = {}
-        self.station_indices: List[int] = [] # Indices in the flat station list
+        self.station_indices: List[int] = [] 
 
 class StationSearchEngine:
-    """Ultra-fast In-Memory Station Search Engine with Trie Index."""
+    """Ultra-fast In-Memory Station Search Engine with Trie Index and Popularity Ranking."""
 
     TABLE_NAME = "stops"
-    PREFIX_CACHE_TTL = 3600 # 1 hour for local RAM cache
+    PREFIX_CACHE_TTL = 3600 
     
-    # Common aliases for major stations
     ALIASES = {
-        "delhi": "NDLS",
-        "bombay": "BCT",
-        "mumbai": "BCT",
-        "mumbai central": "BCT",
-        "banglore": "SBC",
-        "bangalore": "SBC",
-        "madras": "MAS",
-        "calcutta": "HWH",
-        "howrah": "HWH",
-        "pune": "PA",
-        "secunderabad": "SC",
-        "hyderabad": "HYB",
-        "chennai": "MAS"
+        "delhi": "NDLS", "bombay": "BCT", "mumbai": "BCT", "mumbai central": "BCT",
+        "banglore": "SBC", "bangalore": "SBC", "madras": "MAS", "calcutta": "HWH",
+        "howrah": "HWH", "pune": "PA", "secunderabad": "SC", "hyderabad": "HYB", "chennai": "MAS"
     }
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = db_path or Path(__file__).resolve().parents[1] / "database" / "transit_graph.db"
         self.lock = Lock()
-        
-        # In-Memory Storage
         self._stations: List[StationSuggestion] = []
-        self._station_map: Dict[str, StationSuggestion] = {} # code -> suggestion
+        self._station_map: Dict[str, StationSuggestion] = {} 
         self._name_to_code: Dict[str, str] = {}
-        
-        # Trie Indices
         self._code_trie = StationTrieNode()
         self._name_trie = StationTrieNode()
-        
-        # Local RAM Query Cache (Debounce Cache - Upgrade 4)
         self._query_cache: Dict[str, Tuple[float, List[StationSuggestion]]] = {}
-        
         self._initialized = False
 
     def _ensure_initialized(self) -> None:
-        if self._initialized:
-            return
+        if self._initialized: return
         with self.lock:
-            if self._initialized:
-                return
-            logger.info("🚀 Loading Station Index into RAM...")
-            start_time = time.perf_counter()
-            try:
-                self._load_from_db()
-                self._initialized = True
-                duration = (time.perf_counter() - start_time) * 1000
-                logger.info(f"✅ Station Index Loaded: {len(self._stations)} stations in {duration:.2f}ms")
-            except Exception as e:
-                logger.error(f"❌ Failed to load Station Index: {e}", exc_info=True)
+            if self._initialized: return
+            self._load_from_db()
+            self._initialized = True
 
     def _load_from_db(self) -> None:
-        """Loads all stations from transit_graph.db into RAM-based Trie."""
+        """Loads all stations with connectivity-based popularity ranking (Task 2 upgrade)."""
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         try:
-            # Check if table exists
-            res = conn.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{self.TABLE_NAME}';").fetchone()
-            if not res:
-                logger.warning(f"Station table {self.TABLE_NAME} not found. Trie will be empty.")
-                return
-
-            # Note: We assume popularity can be derived from number of trips or static list
-            # For now, major hubs get higher popularity
-            cursor = conn.execute(f"SELECT code, name, city, state FROM {self.TABLE_NAME}")
+            query = f"""
+                SELECT s.id, s.code, s.name, s.city, s.state, COALESCE(r.connectivity_score, 0) as connectivity
+                FROM {self.TABLE_NAME} s
+                LEFT JOIN station_rank r ON s.id = r.station_id
+            """
+            cursor = conn.execute(query)
             rows = cursor.fetchall()
             
             for i, row in enumerate(rows):
                 code = row['code'].upper()
                 name = row['name']
                 city = row['city'] or ""
-                state = row['state']
                 
-                # Basic popularity heuristic (Major junctions / capitals)
-                pop = 0
-                if any(x in name.upper() for x in ['JN', 'CENTRAL', 'TERMINUS', 'CST', 'CANTT']):
-                    pop = 10
+                pop = row['connectivity']
+                if any(x in name.upper() for x in ['JN', 'CENTRAL', 'TERMINUS']): pop += 50
                 
-                s = StationSuggestion(code=code, name=name, city=city, state=state, popularity=pop)
-                self._stations.append(s)
+                s = StationSuggestion(code=code, name=name, city=city, state=row['state'], popularity=float(pop))
+                # Store by internal ID for FTS mapping
+                self._station_map[str(row['id'])] = s
+                # Store by code for suggestions
                 self._station_map[code] = s
+                
+                self._stations.append(s)
                 self._name_to_code[name.lower()] = code
                 
-                # Index in Tries
                 self._insert_trie(self._code_trie, code.lower(), i)
-                
-                # Index name words
-                name_parts = name.lower().split()
-                for part in name_parts:
-                    if len(part) >= 2:
-                        self._insert_trie(self._name_trie, part, i)
-                
-                # Also index city
-                if city:
-                    city_parts = city.lower().split()
-                    for part in city_parts:
-                        if len(part) >= 2:
-                            self._insert_trie(self._name_trie, part, i)
-
+                for part in name.lower().split():
+                    if len(part) >= 2: self._insert_trie(self._name_trie, part, i)
         finally:
             conn.close()
 
     def _insert_trie(self, root: StationTrieNode, key: str, index: int) -> None:
         node = root
         for char in key:
-            if char not in node.children:
-                node.children[char] = StationTrieNode()
+            if char not in node.children: node.children[char] = StationTrieNode()
             node = node.children[char]
-            if index not in node.station_indices:
-                node.station_indices.append(index)
+            if index not in node.station_indices: node.station_indices.append(index)
 
     def _search_trie(self, root: StationTrieNode, prefix: str) -> List[int]:
         node = root
         for char in prefix.lower():
-            if char not in node.children:
-                return []
+            if char not in node.children: return []
             node = node.children[char]
         return node.station_indices
 
     def suggest(self, query: str, limit: int = 10) -> List[StationSuggestion]:
-        """Ultra-fast station suggestion using In-Memory Tries."""
         self._ensure_initialized()
-        
         q = query.strip().lower()
         if not q: return []
         
-        # 1. Check Query Cache (Upgrade 4)
         now = time.time()
+        # 1. Check RAM Cache
         if q in self._query_cache:
             ts, results = self._query_cache[q]
-            if now - ts < self.PREFIX_CACHE_TTL:
-                return results[:limit]
+            if now - ts < self.PREFIX_CACHE_TTL: return results[:limit]
 
-        # 2. Check Aliases (Upgrade 2)
+        # 2. Check Aliases (Suggestion #3)
         if q in self.ALIASES:
             alias_code = self.ALIASES[q]
-            if alias_code in self._station_map:
+            if alias_code in self._station_map: 
                 return [self._station_map[alias_code]]
 
-        # 3. Trie Lookups
-        # Find matches where code starts with query
-        code_matches = self._search_trie(self._code_trie, q)
-        
-        # Find matches where name words start with query
-        name_matches = self._search_trie(self._name_trie, q)
-        
-        # Combine and Deduplicate
-        all_indices = list(set(code_matches + name_matches))
-        
-        # 4. Result Ranking (Upgrade 3)
-        # We score based on:
-        # - Exact code match (100 pts)
-        # - Code prefix match (80 pts)
-        # - Name exact match (90 pts)
-        # - Name word prefix match (60 pts)
-        # - Popularity (+0 to 10 pts)
-        
-        candidates: List[Tuple[float, StationSuggestion]] = []
-        for idx in all_indices:
-            s = self._stations[idx]
-            score = 0.0
-            
-            s_code_low = s.code.lower()
-            s_name_low = s.name.lower()
-            
-            if s_code_low == q: score = 100
-            elif s_code_low.startswith(q): score = 80
-            elif s_name_low == q: score = 90
-            elif any(part.startswith(q) for part in s_name_low.split()): score = 60
-            else: score = 40 # Substring or fuzzy
-            
-            # Add popularity boost
-            score += (s.popularity * 0.5)
-            
-            candidates.append((score, s))
-        
-        # Sort by score descending
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        results = [c[1] for c in candidates[:limit*2]] # Get a few more for fuzzy fallback
-        
-        # 5. Fuzzy Fallback if needed (Top 1)
-        if len(results) < 3 and len(q) > 3:
-            # Use a pre-filtered list of names for speed
-            names = [s.name for s in self._stations[:2000]] # Limit fuzzy scope for performance
-            fuzzy_results = process.extract(query, names, scorer=fuzz.WRatio, limit=3)
-            for name, f_score, _ in fuzzy_results:
-                if f_score > 80:
-                    code = self._name_to_code.get(name.lower())
-                    if code and code not in [r.code for r in results]:
-                        results.append(self._station_map[code])
+        # 3. Candidate Selection (FTS5 + Trie Fallback)
+        candidates_list: List[StationSuggestion] = []
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            # FTS rowid matches our stops.id
+            cursor = conn.execute("SELECT rowid FROM stops_fts WHERE stops_fts MATCH ?", (f"{q}*",))
+            ids = [str(r[0]) for r in cursor.fetchall()]
+            for sid in ids:
+                if sid in self._station_map: candidates_list.append(self._station_map[sid])
+            conn.close()
+        except:
+            # Fallback to Tries
+            idx_list = list(set(self._search_trie(self._code_trie, q) + self._search_trie(self._name_trie, q)))
+            for idx in idx_list: candidates_list.append(self._stations[idx])
 
-        final_results = results[:limit]
+        # 4. Scoring & Ranking (Suggestion #4)
+        scored: List[Tuple[float, StationSuggestion]] = []
+        for s in candidates_list:
+            score = 0.0
+            scode, sname = s.code.lower(), s.name.lower()
+            
+            if scode == q: score = 1000
+            elif scode.startswith(q): score = 800
+            elif sname == q: score = 900
+            elif any(p.startswith(q) for p in sname.split()): score = 600
+            else: score = 100
+            
+            # Popularity boost (Connectivity Score)
+            score += min(200, s.popularity)
+            scored.append((score, s))
+            
+        scored.sort(key=lambda x: x[0], reverse=True)
         
-        # Update Cache
+        # Deduplicate and limit
+        seen_codes = set()
+        final_results = []
+        for _, s in scored:
+            if s.code not in seen_codes:
+                final_results.append(s)
+                seen_codes.add(s.code)
+            if len(final_results) >= limit: break
+            
         self._query_cache[q] = (now, final_results)
-        
         return final_results
 
     def resolve(self, query: str) -> Optional[StationSuggestion]:

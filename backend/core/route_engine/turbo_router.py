@@ -3,7 +3,7 @@ import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import text
-from database.session import SessionLocal
+from database.session import SessionTransit as SessionLocal
 from database.config import Config
 
 logger = logging.getLogger(__name__)

@@ -15,7 +15,8 @@ from collections import defaultdict
 # Ensure backend package is importable
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
 
-from database.session import engine, text
+from sqlalchemy import text
+from database.session import engine_transit as engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("index-builder")
