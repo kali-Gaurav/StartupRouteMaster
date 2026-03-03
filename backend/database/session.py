@@ -4,13 +4,23 @@ import logging
 import os
 
 logger = logging.getLogger(__name__)
-
+# Optimization for SQLite
 def _enable_sqlite_optimizations(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
+    # Suggestion #21: Query Only for Transit in Production
+    db_name = str(dbapi_connection)
+    if "transit_graph.db" in db_name:
+        # Suggestion #22: Memory Mapping (2GB)
+        cursor.execute("PRAGMA mmap_size = 2147483648")
+        cursor.execute("PRAGMA journal_mode=DELETE")
+        cursor.execute("PRAGMA synchronous=OFF")
+    else:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
+
 
 # --- Engines ---
 user_db_path = "sqlite:///backend/database/user_store.db"

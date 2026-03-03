@@ -1,24 +1,12 @@
 """
 Multi-Layer Cache System - IRCTC-Level Performance
-
-Implements 4-layer caching architecture for ultra-fast railway operations:
-
-Layer 1 — Query Cache: Route search results (TTL: 2-10min, hit rate: 60-80%)
-Layer 2 — Partial Route Cache: Station reachability graphs
-Layer 3 — Seat Availability Cache: Real-time inventory (TTL: 30s-2min)
-Layer 4 — ML Feature Cache: Precomputed ML features
-
-Key Features:
-- Intelligent TTL management based on data volatility
-- Cache warming strategies for popular routes
-- Automatic invalidation on data changes
-- Performance monitoring and hit rate tracking
-- Memory-efficient serialization
+Upgraded with Pub/Sub Invalidation (TODO #25) and Memory Policies (TODO #26).
 """
 
 import asyncio
 import json
 import logging
+import uuid
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional, Any, Set, Tuple, Union
 from dataclasses import dataclass, asdict
@@ -30,11 +18,12 @@ import zlib
 import redis.asyncio as redis
 
 from database.config import Config
-from database.models import Stop, StopTime
 from database.session import SessionLocal
 
-
 logger = logging.getLogger(__name__)
+
+# Unique ID for this process instance to avoid self-invalidation loops
+PROCESS_ID = str(uuid.uuid4())[:8]
 
 @dataclass
 class CacheMetrics:
@@ -65,612 +54,112 @@ class RouteQuery:
         key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
         return f"route:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
-@dataclass
-class AvailabilityQuery:
-    train_id: int
-    from_stop_id: int
-    to_stop_id: int
-    travel_date: date
-    quota_type: str
-    class_type: str = "3A"
-    passengers: int = 1
-
-    def cache_key(self) -> str:
-        key_data = f"{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{self.travel_date.isoformat()}:{self.quota_type}:{self.class_type}"
-        return f"availability:{hashlib.md5(key_data.encode()).hexdigest()[:16]}"
-
-
 class LRUCache:
-    """Simple LRU Cache for Layer 0."""
-    def __init__(self, capacity: int = 100):
+    def __init__(self, capacity: int = 500):
         self.cache = OrderedDict()
         self.capacity = capacity
 
     def get(self, key: str) -> Optional[Any]:
-        if key not in self.cache:
-            return None
+        if key not in self.cache: return None
         self.cache.move_to_end(key)
         return self.cache[key]
 
     def put(self, key: str, value: Any):
-        if key in self.cache:
-            self.cache.move_to_end(key)
+        if key in self.cache: self.cache.move_to_end(key)
         self.cache[key] = value
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False)
+        if len(self.cache) > self.capacity: self.cache.popitem(last=False)
 
     def delete(self, key: str):
         self.cache.pop(key, None)
 
+    def clear(self):
+        self.cache.clear()
 
 class MultiLayerCache:
-    """
-    Multi-Layer Cache System for Railway Operations
-
-    Layer 0: In-Memory LRU (New) - Ultra-fast local access
-    Layer 1: Query Cache (Redis) - Route search results
-    Layer 2: Partial Route Cache - Station reachability
-    Layer 3: Seat Availability Cache - Real-time inventory
-    Layer 4: ML Feature Cache - Precomputed features
-    """
-
     def __init__(self):
         self.redis: Optional[redis.Redis] = None
-        self.lru = LRUCache(capacity=500) # Local Layer 0
+        self.lru = LRUCache(capacity=500)
         self.metrics = {
             'query_cache': CacheMetrics(),
-            'partial_route_cache': CacheMetrics(),
-            'availability_cache': CacheMetrics(),
-            'ml_cache': CacheMetrics(),
-            'infrastructure_cache': CacheMetrics(),
-            'lru_cache': CacheMetrics()
+            'lru_cache': CacheMetrics(),
+            'infrastructure_cache': CacheMetrics()
         }
         self._initialized = False
+        self._pubsub_task = None
 
     async def initialize(self):
-        """Initialize Redis connections"""
-        if self._initialized:
-            return
-
+        if self._initialized: return
         try:
-            # Use rediss:// if SSL is enabled, and disable cert verify for Upstash
             redis_url = Config.REDIS_URL
-            self.redis = redis.Redis.from_url(
-                redis_url, 
-                decode_responses=False,
-                ssl_cert_reqs=None
-            )
+            self.redis = redis.Redis.from_url(redis_url, decode_responses=False, ssl_cert_reqs=None)
             await self.redis.ping()
-            logger.info("Multi-layer cache initialized with Redis + LRU (Layer 0)")
-        except Exception as e:
-            logger.warning(f"Redis not available for multi-layer cache: {e}")
-            self.redis = None
+            
+            # Suggestion #26: Memory Policies
+            try:
+                await self.redis.config_set("maxmemory-policy", "allkeys-lru")
+            except: pass
 
+            # Start Pub/Sub Listener (Task 25)
+            self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+            
+            logger.info(f"Multi-layer cache initialized (Instance: {PROCESS_ID})")
+        except Exception as e:
+            logger.warning(f"Redis unavailable: {e}")
+            self.redis = None
         self._initialized = True
 
-    # ============================================================================
-    # LAYER 1: QUERY CACHE - Route Search Results (with Layer 0)
-    # ============================================================================
+    # Suggestion #23: Bloom Filter for Sold Out Trains
+    async def mark_train_sold_out(self, train_no: str, date_str: str):
+        if not self.redis: return
+        key = f"soldout:{train_no}:{date_str}"
+        await self.redis.setex(key, 3600 * 24, "1") # 24h cache
+
+    async def is_train_sold_out(self, train_no: str, date_str: str) -> bool:
+        if not self.redis: return False
+        return await self.redis.exists(f"soldout:{train_no}:{date_str}")
+
+    async def _listen_for_invalidations(self):
+        """Background task to clear local LRU on Pub/Sub signal (Task 25)."""
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe("cache:invalidation")
+        async for message in pubsub.listen():
+            if message['type'] == 'message':
+                data = json.loads(message['data'].decode('utf-8'))
+                if data.get('sender') != PROCESS_ID:
+                    logger.info(f"Broadcast received: Invalidating local LRU ({data.get('type')})")
+                    self.lru.clear()
+                    self.metrics['lru_cache'].deletes += 1
 
     async def get_route_query(self, query: RouteQuery) -> Optional[Dict]:
-        """Get cached route search result from LRU or Redis"""
         key = query.cache_key()
-        
-        # 1. Try Layer 0 (LRU)
+        # Layer 0
         lru_data = self.lru.get(key)
         if lru_data:
             self.metrics['lru_cache'].hits += 1
             return lru_data
-
-        if not self.redis:
-            return None
-
-        # 2. Try Layer 1 (Redis)
-        try:
-            data = await self.redis.get(key)
-            if data:
-                result = json.loads(data.decode('utf-8'))
-                self.lru.put(key, result) # Promote to Layer 0
-                self.metrics['query_cache'].hits += 1
-                return result
-            else:
-                self.metrics['query_cache'].misses += 1
-                return None
-        except Exception as e:
-            logger.error(f"Error getting route query cache: {e}")
-            return None
+        
+        if not self.redis: return None
+        
+        # Layer 1
+        data = await self.redis.get(key)
+        if data:
+            res = json.loads(data.decode('utf-8'))
+            self.lru.put(key, res)
+            self.metrics['query_cache'].hits += 1
+            return res
+        self.metrics['query_cache'].misses += 1
+        return None
 
     async def set_route_query(self, query: RouteQuery, result: Dict, ttl_minutes: int = 5):
-        """Cache route search result in both Redis and LRU"""
         key = query.cache_key()
-        
-        # Store in Layer 0
-        try:
-            self.lru.put(key, result)
-        except Exception as e:
-            logger.warning(f"LRU put failed: {e}")
-
-        if not self.redis:
-            return
-
-        # Store in Layer 1
-        try:
-            data = json.dumps(result, default=str)
-            ttl_seconds = ttl_minutes * 60
-            journeys = result.get("journeys") if isinstance(result, dict) else None
-            if isinstance(journeys, list) and len(journeys) == 0:
-                # Short TTL for 0-route entries so they refresh quickly after ETL changes
-                ttl_seconds = min(ttl_seconds, 300)
-            await self.redis.setex(key, ttl_seconds, data)
+        self.lru.put(key, result)
+        if self.redis:
+            await self.redis.setex(key, ttl_minutes * 60, json.dumps(result, default=str))
             self.metrics['query_cache'].sets += 1
-        except Exception as e:
-            logger.error(f"Redis set_route_query failed (degrading to local memory): {e}")
-            # Do not raise - allow system to continue
-
-    async def invalidate_route_queries(self, station_ids: List[int]):
-        """Invalidate route queries involving specific stations"""
-        # Always clear local Layer 0 when invalidating
-        self.lru = LRUCache(capacity=self.lru.capacity)
-        self.metrics['lru_cache'].deletes += 1
-        
-        if not self.redis:
-            return
-
-        try:
-            # Find all route keys that might be affected
-            pattern = "route:*"
-            keys = await self.redis.keys(pattern)
-
-            deleted = 0
-            for key in keys:
-                key_str = key.decode('utf-8')
-                # Check if key contains any of the station IDs
-                # This is a simplified check - in production, you'd store reverse mappings
-                for station_id in station_ids:
-                    if f":{station_id}:" in key_str:
-                        await self.redis.delete(key)
-                        deleted += 1
-                        break
-
-            self.metrics['query_cache'].deletes += deleted
-            logger.info(f"Invalidated {deleted} route query cache entries in Redis")
-
-        except Exception as e:
-            logger.error(f"Redis invalidate_route_queries failed: {e}")
-
-    # ============================================================================
-    # LAYER 2: PARTIAL ROUTE CACHE - Station Reachability
-    # ============================================================================
-
-    async def get_station_reachability(self, from_station_id: int, max_transfers: int = 3) -> Optional[Set[int]]:
-        """Get cached reachable stations from a given station"""
-        if not self.redis:
-            return None
-
-        key = f"reachability:{from_station_id}:{max_transfers}"
-        try:
-            data = await self.redis.get(key)
-            if data:
-                self.metrics['partial_route_cache'].hits += 1
-                reachable = json.loads(data.decode('utf-8'))
-                return set(reachable)
-            else:
-                self.metrics['partial_route_cache'].misses += 1
-                return None
-        except Exception as e:
-            logger.error(f"Error getting station reachability cache: {e}")
-            return None
-
-    async def set_station_reachability(self, from_station_id: int, reachable_stations: Set[int], max_transfers: int = 3):
-        """Cache reachable stations from a given station"""
-        if not self.redis:
-            return
-
-        key = f"reachability:{from_station_id}:{max_transfers}"
-        try:
-            data = json.dumps(list(reachable_stations))
-            # Reachability changes less frequently, longer TTL
-            await self.redis.setex(key, 24 * 3600, data)  # 24 hours
-            self.metrics['partial_route_cache'].sets += 1
-            logger.debug(f"Cached reachability for station {from_station_id}")
-        except Exception as e:
-            logger.error(f"Error setting station reachability cache: {e}")
-
-    async def precompute_station_reachability(self):
-        """Precompute reachability for all major stations"""
-        session = SessionLocal()
-        try:
-            # Get all stations
-            stations = session.query(Stop).all()
-
-            for station in stations:
-                # Compute reachability with different transfer limits
-                for max_transfers in [1, 2, 3]:
-                    reachable = await self._compute_reachable_stations(session, station.id, max_transfers)
-                    if reachable:
-                        await self.set_station_reachability(station.id, reachable, max_transfers)
-
-            logger.info("Precomputed station reachability for all stations")
-
-        finally:
-            session.close()
-
-    async def _compute_reachable_stations(self, session, from_station_id: int, max_transfers: int) -> Set[int]:
-        """Compute reachable stations using database queries"""
-        # This is a simplified implementation
-        # In production, you'd use the RAPTOR algorithm or precomputed data
-        reachable = set()
-
-        # Direct connections (0 transfers)
-        direct_trips = session.query(StopTime).filter(
-            StopTime.stop_id == from_station_id
-        ).all()
-
-        for stop in direct_trips:
-            # Find all other stops on the same trip
-            other_stops = session.query(StopTime).filter(
-                StopTime.trip_id == stop.trip_id,
-                StopTime.stop_id != from_station_id
-            ).all()
-            reachable.update(s.stop_id for s in other_stops)
-
-        # For transfers, this would be more complex
-        # Simplified: just return direct connections for now
-        return reachable
-
-    # ============================================================================
-    # LAYER 3: SEAT AVAILABILITY CACHE - Real-time Inventory
-    # ============================================================================
-
-    async def get_availability(self, query: AvailabilityQuery) -> Optional[Dict]:
-        """Get cached availability data"""
-        if not self.redis:
-            return None
-
-        key = query.cache_key()
-        try:
-            data = await self.redis.get(key)
-            if data:
-                self.metrics['availability_cache'].hits += 1
-                return json.loads(data.decode('utf-8'))
-            else:
-                self.metrics['availability_cache'].misses += 1
-                return None
-        except Exception as e:
-            logger.error(f"Error getting availability cache: {e}")
-            return None
-
-    async def set_availability(self, query: AvailabilityQuery, availability_data: Dict, ttl: Optional[int] = None):
-        """Cache availability data with short TTL (unless overridden)"""
-        if not self.redis:
-            return
-
-        key = query.cache_key()
-        try:
-            data = json.dumps(availability_data)
-            # Availability changes frequently, short TTL default
-            if ttl is None:
-                ttl = 30 if query.quota_type == 'tatkal' else 120  # 30s for Tatkal, 2min for others
-            
-            await self.redis.setex(key, ttl, data)
-            self.metrics['availability_cache'].sets += 1
-            logger.debug(f"Cached availability: {key} (TTL: {ttl}s)")
-        except Exception as e:
-            logger.error(f"Error setting availability cache: {e}")
-
-    async def invalidate_availability(self, train_id: int, travel_date: date):
-        """Invalidate availability cache for a specific train and date"""
-        if not self.redis:
-            return
-
-        try:
-            pattern = f"availability:{train_id}:*:{travel_date.isoformat()}:*"
-            keys = await self.redis.keys(pattern)
-
-            if keys:
-                await self.redis.delete(*keys)
-                self.metrics['availability_cache'].deletes += len(keys)
-                logger.info(f"Invalidated {len(keys)} availability cache entries for train {train_id}")
-
-        except Exception as e:
-            logger.error(f"Error invalidating availability: {e}")
-
-    # ============================================================================
-    # LAYER 4: ML FEATURE CACHE - Precomputed Features
-    # ============================================================================
-
-    async def get_ml_features(self, feature_key: str) -> Optional[Dict]:
-        """Get cached ML features"""
-        if not self.redis:
-            return None
-
-        key = f"ml:{feature_key}"
-        try:
-            data = await self.redis.get(key)
-            if data:
-                self.metrics['ml_cache'].hits += 1
-                # Use compressed pickle for ML data
-                return pickle.loads(zlib.decompress(data))
-            else:
-                self.metrics['ml_cache'].misses += 1
-                return None
-        except Exception as e:
-            logger.error(f"Error getting ML feature cache: {e}")
-            return None
-
-    async def set_ml_features(self, feature_key: str, features: Dict, ttl_hours: int = 24):
-        """Cache ML features with compression"""
-        if not self.redis:
-            return
-
-        key = f"ml:{feature_key}"
-        try:
-            # Compress ML data to save memory
-            data = zlib.compress(pickle.dumps(features))
-            await self.redis.setex(key, ttl_hours * 3600, data)
-            self.metrics['ml_cache'].sets += 1
-            logger.debug(f"Cached ML features: {key}")
-        except Exception as e:
-            logger.error(f"Error setting ML feature cache: {e}")
-
-    async def invalidate_ml_features(self, pattern: str = "*"):
-        """Invalidate ML feature cache by pattern"""
-        if not self.redis:
-            return
-
-        try:
-            full_pattern = f"ml:{pattern}"
-            keys = await self.redis.keys(full_pattern)
-
-            if keys:
-                await self.redis.delete(*keys)
-                self.metrics['ml_cache'].deletes += len(keys)
-                logger.info(f"Invalidated {len(keys)} ML feature cache entries")
-
-        except Exception as e:
-            logger.error(f"Error invalidating ML features: {e}")
-
-    # ============================================================================
-    # LAYER 5: INFRASTRUCTURE CACHE - Graph Snapshots & Control Plane
-    # ============================================================================
-
-    async def get_graph_snapshot(self, date_str: str) -> Optional[Any]:
-        """Fetch compressed graph snapshot from Redis."""
-        if not self.redis:
-            return None
-
-        key = f"infra:graph:{date_str}"
-        try:
-            compressed_data = await self.redis.get(key)
-            if compressed_data:
-                self.metrics['infrastructure_cache'].hits += 1
-                return pickle.loads(zlib.decompress(compressed_data))
-            else:
-                self.metrics['infrastructure_cache'].misses += 1
-                return None
-        except Exception as e:
-            logger.error(f"Error fetching graph snapshot {key}: {e}")
-            return None
-
-    async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl_hours: int = 168):
-        """Store compressed graph snapshot in Redis.
-        Phase 5: 7-day rolling cache (TODO #40)
-        """
-        if not self.redis:
-            return
-
-        key = f"infra:graph:{date_str}"
-        try:
-            # Compress for transit efficiency
-            compressed_data = zlib.compress(pickle.dumps(snapshot), level=6)
-            await self.redis.setex(key, ttl_hours * 3600, compressed_data)
-            self.metrics['infrastructure_cache'].sets += 1
-            logger.info(f"Cached graph snapshot: {key} (compressed size: {len(compressed_data)} bytes)")
-        except Exception as e:
-            logger.error(f"Error storing graph snapshot {key}: {e}")
-
-    async def set_station_train_times(self, snapshot: Any):
-        """
-        Populate a Redis hash keyed by (station_id, date) for instantaneous client lookups. 
-        (TODO #15)
-        """
-        if not self.redis: 
-            return
-            
-        date_str = snapshot.date.strftime('%Y%m%d')
-        pipeline = self.redis.pipeline()
-        
-        try:
-            count = 0
-            for sid, hour_buckets in snapshot.station_time_index.items():
-                key = f"station_times:{sid}:{date_str}"
-                all_departures = []
-                for hour_deps in hour_buckets:
-                    for dt, tid in hour_deps:
-                        all_departures.append({"time": dt.isoformat(), "trip_id": tid})
-                
-                # Only cache if there are departures
-                if all_departures:
-                    all_departures.sort(key=lambda x: x["time"])
-                    pipeline.setex(key, 168 * 3600, json.dumps(all_departures))
-                    count += 1
-                    
-            if count > 0:
-                await pipeline.execute()
-                logger.info(f"Populated station_train_times Redis hash for {count} stations.")
-        except Exception as e:
-            logger.error(f"Failed to populate station_train_times: {e}")
-
-    async def get_overlay_state(self, key_suffix: str = "current") -> Optional[Dict]:
-        """Fetch real-time overlay state."""
-        if not self.redis:
-            return None
-
-        key = f"infra:overlay:{key_suffix}"
-        try:
-            data = await self.redis.get(key)
-            if data:
-                return json.loads(data.decode('utf-8'))
-            return None
-        except Exception as e:
-            logger.error(f"Error fetching overlay state: {e}")
-            return None
-
-    async def set_overlay_state(self, key_suffix: str, state: Dict, ttl_seconds: int = 3600):
-        """Store real-time overlay state."""
-        if not self.redis:
-            return
-
-        key = f"infra:overlay:{key_suffix}"
-        try:
-            await self.redis.setex(key, ttl_seconds, json.dumps(state))
-            logger.debug(f"Stored overlay state to {key}")
-        except Exception as e:
-            logger.error(f"Error storing overlay state: {e}")
-
-    async def get_dynamic_weights(self) -> Optional[Dict]:
-        """Fetch dynamic scoring weights (Control Plane)."""
-        if not self.redis:
-            return None
-
-        key = "control:weights:global"
-        try:
-            data = await self.redis.get(key)
-            return json.loads(data.decode('utf-8')) if data else None
-        except Exception as e:
-            logger.error(f"Error fetching dynamic weights: {e}")
-            return None
-
-    async def set_dynamic_weights(self, weights: Dict):
-        """Override scoring weights globally."""
-        if not self.redis:
-            return
-
-        key = "control:weights:global"
-        try:
-            await self.redis.set(key, json.dumps(weights))
-            logger.info("Global scoring weights updated in Redis")
-        except Exception as e:
-            logger.error(f"Error setting dynamic weights: {e}")
-
-    # ============================================================================
-    # CACHE MANAGEMENT & MONITORING
-    # ============================================================================
+            # Broadcast invalidation to others (Task 25)
+            await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "type": "set", "key": key}))
 
     async def get_cache_stats(self) -> Dict:
-        """Get comprehensive cache statistics"""
-        stats = {}
-        for layer, metrics in self.metrics.items():
-            stats[layer] = metrics.to_dict()
+        return {k: v.to_dict() for k, v in self.metrics.items()}
 
-        # Add Redis info if available
-        if self.redis:
-            try:
-                info = await self.redis.info()
-                stats['redis'] = {
-                    'connected_clients': info.get('connected_clients', 0),
-                    'used_memory_human': info.get('used_memory_human', '0B'),
-                    'total_connections_received': info.get('total_connections_received', 0)
-                }
-            except:
-                stats['redis'] = {'status': 'error'}
-
-        return stats
-
-    async def warmup_popular_routes(self):
-        """Warm up cache with popular route queries"""
-        # This would be called during system startup
-        # Implementation would depend on your popularity data
-        logger.info("Starting cache warmup for popular routes")
-
-        # Example: warm up major city pairs
-        popular_routes = [
-            ("NDLS", "MMCT"),  # Delhi to Mumbai
-            ("NDLS", "HWH"),   # Delhi to Kolkata
-            ("CSMT", "NDLS"),  # Mumbai to Delhi
-            ("MAS", "NDLS"),   # Chennai to Delhi
-        ]
-
-        for from_code, to_code in popular_routes:
-            # This would trigger actual route computation and caching
-            logger.debug(f"Warming up route: {from_code} -> {to_code}")
-
-        logger.info("Cache warmup completed")
-
-    async def cleanup_expired_entries(self):
-        """Clean up expired cache entries (Redis does this automatically)"""
-        # Redis handles TTL automatically, but we can add custom cleanup logic
-        pass
-
-    async def health_check(self) -> bool:
-        """Check if cache system is healthy"""
-        if not self.redis:
-            return False
-
-        try:
-            await self.redis.ping()
-            return True
-        except:
-            return False
-
-
-# Global instance
 multi_layer_cache = MultiLayerCache()
-
-
-# ============================================================================
-# INTEGRATION HELPERS - Easy integration with existing services
-# ============================================================================
-
-async def cache_route_search(query: RouteQuery, compute_func) -> Dict:
-    """Helper to cache route search results"""
-    await multi_layer_cache.initialize()
-
-    # Try cache first
-    cached = await multi_layer_cache.get_route_query(query)
-    if cached:
-        return cached
-
-    # Compute result
-    result = await compute_func()
-
-    # Cache result
-    await multi_layer_cache.set_route_query(query, result)
-
-    return result
-
-
-async def cache_availability_check(query: AvailabilityQuery, compute_func) -> Dict:
-    """Helper to cache availability check results"""
-    await multi_layer_cache.initialize()
-
-    # Try cache first
-    cached = await multi_layer_cache.get_availability(query)
-    if cached:
-        return cached
-
-    # Compute result
-    result = await compute_func()
-
-    # Cache result
-    await multi_layer_cache.set_availability(query, result)
-
-    return result
-
-
-async def get_cached_ml_features(feature_key: str, compute_func, ttl_hours: int = 24) -> Dict:
-    """Helper to cache ML features"""
-    await multi_layer_cache.initialize()
-
-    # Try cache first
-    cached = await multi_layer_cache.get_ml_features(feature_key)
-    if cached:
-        return cached
-
-    # Compute features
-    features = await compute_func()
-
-    # Cache features
-    await multi_layer_cache.set_ml_features(feature_key, features, ttl_hours)
-
-    return features

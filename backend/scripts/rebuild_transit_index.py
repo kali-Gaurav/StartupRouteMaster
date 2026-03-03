@@ -1,8 +1,6 @@
 """
 [Turbo Optimization] rebuild_transit_index.py
-
-Populates the station_transit_index table in SQLite for high-speed
-direct and 1-transfer lookups.
+Upgraded with Incremental Support (Suggestion #24).
 """
 
 import sqlite3
@@ -10,60 +8,91 @@ import json
 import logging
 import sys
 import os
-from collections import defaultdict
+from typing import Optional, List
 
 # Ensure backend package is importable
-sys.path.append(os.path.join(os.getcwd(), 'backend'))
+sys.path.append(os.getcwd())
 
 from sqlalchemy import text
 from database.session import engine_transit as engine
+from database.config import Config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("index-builder")
 
-def rebuild():
-    conn = engine.raw_connection()
+def rebuild(dirty_trains: Optional[List[str]] = None):
+    db_path = 'backend/database/transit_graph.db'
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    
     try:
-        # 1. Create table
-        logger.info("Initializing station_transit_index table...")
-        conn.execute("DROP TABLE IF EXISTS station_transit_index")
-        conn.execute("""
-            CREATE TABLE station_transit_index (
-                station_code TEXT PRIMARY KEY,
-                station_name TEXT,
-                trains_map TEXT -- JSON string: {train_no: [arr, dep, mask, seq, distance, fare]}
-            )
-        """)
-        
-        # 2. Extract and Aggregate data
-        logger.info("Extracting data from stop_times, trips and segments...")
-        # We need distance and fare from segments table
+        if not dirty_trains:
+            logger.info("Initializing station_transit_index (Full Rebuild)...")
+            conn.execute("DROP TABLE IF EXISTS station_transit_index")
+            conn.execute("CREATE TABLE station_transit_index (station_code TEXT PRIMARY KEY, station_name TEXT, trains_map TEXT)")
+        else:
+            logger.info(f"Incremental Rebuild for {len(dirty_trains)} trains...")
+
+        # 1. Extract data
+        # We need: station -> {train_no: [dep, arr, day_mask, seq, dist, fare]}
         query = """
-            SELECT t.trip_id, s.code, st.arrival_time, st.departure_time, st.stop_sequence, t.service_id,
-                   COALESCE(seg.distance_km, 0) as distance, COALESCE(seg.cost, 0) as fare
-            FROM trips t
-            JOIN stop_times st ON t.id = st.trip_id
-            JOIN stops s ON st.stop_id = s.id
-            LEFT JOIN segments seg ON (seg.trip_id = t.id AND seg.source_station_id = st.stop_id)
+            SELECT s.code, s.name, t.trip_id as train_no, st.departure_time, st.arrival_time, 
+                   st.stop_sequence, seg.distance_km, seg.cost,
+                   c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday
+            FROM stops s
+            JOIN stop_times st ON s.id = st.stop_id
+            JOIN trips t ON st.trip_id = t.id
+            JOIN calendar c ON t.service_id = c.service_id
+            LEFT JOIN segments seg ON t.id = seg.trip_id AND s.id = seg.source_station_id
         """
-        rows = conn.execute(query).fetchall()
         
-        # station_code -> {train_no: [arr, dep, mask, seq, dist, fare]}
-        index_data = defaultdict(dict)
+        if dirty_trains:
+            # Only fetch rows for specific trains
+            query += f" WHERE t.trip_id IN ({','.join([f'?' for _ in dirty_trains])})"
+            rows = conn.execute(query, dirty_trains).fetchall()
+        else:
+            rows = conn.execute(query).fetchall()
+
+        from collections import defaultdict
+        station_maps = defaultdict(dict)
+        station_names = {}
+
         for r in rows:
-            tno, scode, arr, dep, seq, sid, dist, fare = r[0], r[1], str(r[2]), str(r[3]), r[4], r[5], r[6], r[7]
-            mask = 127 if "DAILY" in sid else 127 # Simple mapping
-            index_data[scode][tno] = [arr, dep, mask, seq, dist, fare]
+            code = r['code']
+            station_names[code] = r['name']
             
-        # 3. Insert into index
-        logger.info(f"Inserting indexed data for {len(index_data)} stations...")
+            # Calculate day mask
+            mask = 0
+            days = [r['monday'], r['tuesday'], r['wednesday'], r['thursday'], r['friday'], r['saturday'], r['sunday']]
+            for i, val in enumerate(days):
+                if val: mask |= (1 << i)
+            
+            station_maps[code][r['train_no']] = [
+                str(r['departure_time']),
+                str(r['arrival_time']),
+                mask,
+                r['stop_sequence'],
+                float(r['distance_km'] or 0),
+                float(r['cost'] or 0)
+            ]
+
+        # 2. Insert/Update
         insert_data = []
-        for scode, tmap in index_data.items():
-            insert_data.append((scode, scode, json.dumps(tmap)))
+        for code, t_map in station_maps.items():
+            if dirty_trains:
+                # Incremental: Fetch existing, merge, then update
+                existing = conn.execute("SELECT trains_map FROM station_transit_index WHERE station_code = ?", (code,)).fetchone()
+                if existing:
+                    merged = json.loads(existing[0])
+                    merged.update(t_map)
+                    t_map = merged
             
-        conn.executemany("INSERT INTO station_transit_index VALUES (?, ?, ?)", insert_data)
+            insert_data.append((code, station_names[code], json.dumps(t_map)))
+
+        print(f"  Updating {len(insert_data)} stations...")
+        conn.executemany("INSERT OR REPLACE INTO station_transit_index VALUES (?, ?, ?)", insert_data)
         conn.commit()
-        logger.info("🚀 Transit Index rebuilt with distance/fare support.")
+        logger.info("🚀 Transit Index update successful.")
         
     finally:
         conn.close()

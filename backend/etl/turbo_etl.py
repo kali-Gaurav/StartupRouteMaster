@@ -55,6 +55,16 @@ def run_turbo_etl():
         trains = [dict(r) for r in conn.execute("SELECT * FROM trains_master").fetchall()]
         running_days_map = {r['train_no']: dict(r) for r in conn.execute("SELECT * FROM train_running_days").fetchall()}
         
+        # Suggestion #21: Sync TrainMaster for FTS5
+        logger.info(f"Syncing {len(trains)} trains to TrainMaster...")
+        from database.models import TrainMaster
+        for t in trains:
+            # Check if exists
+            exists = session.query(TrainMaster).filter(TrainMaster.train_number == str(t['train_no'])).first()
+            if not exists:
+                session.add(TrainMaster(train_number=str(t['train_no']), train_name=t['train_name']))
+        session.flush()
+        
         new_trains = [t for t in trains if str(t['train_no']) not in existing_trips]
         logger.info(f"Found {len(new_trains)} new trains to sync.")
         

@@ -15,17 +15,15 @@ sys.path.append(os.path.join(os.getcwd(), 'backend'))
 from database.session import transit_db_path
 
 def setup_fts():
-    # Convert sqlite:/// path to raw path
     raw_path = transit_db_path.replace("sqlite:///", "")
-    print(f"Initializing FTS5 on {raw_path}...")
+    print(f"Initializing Production-Grade FTS5 on {raw_path}...")
     
     conn = sqlite3.connect(raw_path)
     try:
-        # 1. Create FTS5 Virtual Table for Stations
+        # --- 1. STATIONS FTS5 (External Content) ---
         conn.execute("DROP TABLE IF EXISTS stops_fts")
         conn.execute("""
             CREATE VIRTUAL TABLE stops_fts USING fts5(
-                stop_id UNINDEXED,
                 code,
                 name,
                 city,
@@ -33,23 +31,20 @@ def setup_fts():
                 content_rowid='id'
             )
         """)
-        
-        # 2. Populate FTS5 table
+        conn.execute("INSERT INTO stops_fts(rowid, code, name, city) SELECT id, code, name, city FROM stops")
+
+        # --- 2. TRAINS FTS5 (Self-Contained to avoid rowid mismatch with string PK) ---
+        conn.execute("DROP TABLE IF EXISTS trains_fts")
         conn.execute("""
-            INSERT INTO stops_fts(rowid, code, name, city)
-            SELECT id, code, name, city FROM stops
+            CREATE VIRTUAL TABLE trains_fts USING fts5(
+                train_number,
+                train_name
+            )
         """)
-        
-        # 3. Create Triggers to keep FTS in sync
-        conn.execute("DROP TRIGGER IF EXISTS stops_ai")
-        conn.execute("""
-            CREATE TRIGGER stops_ai AFTER INSERT ON stops BEGIN
-                INSERT INTO stops_fts(rowid, code, name, city) VALUES (new.id, new.code, new.name, new.city);
-            END
-        """)
+        conn.execute("INSERT INTO trains_fts(train_number, train_name) SELECT train_number, train_name FROM trains_master")
         
         conn.commit()
-        print("🚀 SQLite FTS5 Setup Complete for Stations.")
+        print("🚀 Production FTS5 Setup Complete (Stations + Trains).")
         
     except Exception as e:
         print(f"FTS Setup Failed: {e}")
