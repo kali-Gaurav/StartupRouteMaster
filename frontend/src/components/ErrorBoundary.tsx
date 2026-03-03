@@ -1,48 +1,53 @@
 /**
- * Error Boundary - Catches React render errors and shows fallback UI.
- * Prevents full app crash in production; reports to observability layer.
+ * Enhanced Error Boundary (Suggestion #25)
+ * Catches component-level failures and provides a resilient fallback UI.
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { reportError } from "@/lib/observability";
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import { Button } from "./ui/button";
 
 interface Props {
   children: ReactNode;
-  fallback?: ReactNode;
+  name?: string; // Component name for logging
 }
 
 interface State {
   hasError: boolean;
-  error?: Error;
 }
 
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { hasError: false };
 
-  static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+  static getDerivedStateFromError(): State {
+    return { hasError: true };
   }
 
-  componentCatch(error: Error, errorInfo: ErrorInfo) {
-    reportError(error, { componentStack: errorInfo.componentStack || undefined });
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    reportError(error, { 
+      component: this.props.name || "Unknown",
+      stack: errorInfo.componentStack || undefined 
+    });
   }
 
   render() {
     if (this.state.hasError) {
-      if (this.props.fallback) return this.props.fallback;
       return (
-        <div className="min-h-screen flex items-center justify-center bg-background p-6">
-          <div className="max-w-md text-center space-y-4">
-            <h1 className="text-2xl font-bold text-destructive">Something went wrong</h1>
-            <p className="text-muted-foreground">
-              We're sorry. Please refresh the page or try again later.
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              Refresh Page
-            </button>
+        <div className="p-6 border-2 border-dashed border-red-200 rounded-2xl bg-red-50 text-center space-y-4">
+          <AlertTriangle className="h-10 w-10 text-red-500 mx-auto" />
+          <div>
+            <h3 className="font-bold text-red-900">Component Failure</h3>
+            <p className="text-sm text-red-700">This part of the app failed to load.</p>
           </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => this.setState({ hasError: false })}
+            className="border-red-300 text-red-700 hover:bg-red-100"
+          >
+            <RefreshCw className="h-3 w-3 mr-2" />
+            Try Again
+          </Button>
         </div>
       );
     }

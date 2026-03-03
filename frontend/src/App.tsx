@@ -7,16 +7,18 @@ import { lazy, Suspense } from "react";
 import { MiniAppGate } from "@/components/MiniAppGate";
 import { RailAssistantChatbot } from "@/components/RailAssistantChatbot";
 import { NetworkStatusBanner } from "@/components/NetworkStatusBanner";
-import { BottomNav } from "@/components/BottomNav"; // Added BottomNav
+import { BottomNav } from "@/components/BottomNav";
 import { DevBootstrap } from "@/components/DevBootstrap";
 import { DevDebugPanel } from "@/components/DevDebugPanel";
 import { AuthProvider } from "@/context/AuthContext";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { queryClient } from "@/infrastructure/queryClient";
-import { usePushNotifications } from "@/hooks/usePushNotifications"; // Added usePushNotifications
+import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { IconSprite } from "@/components/ui/IconSprite";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-// Lazy load pages for code splitting
+// Lazy load pages
 const Index = lazy(() => import("./pages/Index"));
 const SOS = lazy(() => import("./pages/SOS"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -29,7 +31,6 @@ const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 
-// Lazy load Mini App pages
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
 const MiniAppBooking = lazy(() => import("./pages/mini-app/Booking"));
@@ -38,12 +39,11 @@ const MiniAppTrack = lazy(() => import("./pages/mini-app/Track"));
 const MiniAppSaved = lazy(() => import("./pages/mini-app/Saved"));
 const MiniAppProfile = lazy(() => import("./pages/mini-app/Profile"));
 
-// Loading fallback component
 const PageLoader = () => (
   <div className="flex items-center justify-center min-h-screen bg-background">
     <div className="flex flex-col items-center gap-4">
-      <div className="w-8 h-8 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
-      <p className="text-sm text-muted-foreground">Loading page...</p>
+      <div className="w-12 h-12 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+      <p className="text-sm text-muted-foreground animate-pulse">Initializing Interface...</p>
     </div>
   </div>
 );
@@ -71,41 +71,41 @@ function ChatbotWrapper() {
 }
 
 const AppContent = () => {
-  usePushNotifications(); // Initial push setup
+  usePushNotifications();
   return (
     <TooltipProvider>
+      <IconSprite />
       <Toaster />
       <Sonner />
       <NetworkStatusBanner />
       <DevBootstrap />
       <DevDebugPanel />
-      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <BrowserRouter>
         <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route path="/" element={<Index />} />
-            <Route path="/sos" element={<SOS />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/bookings" element={<Bookings />} />
-            <Route path="/ticket/:bookingId" element={<Ticket />} />
+            <Route path="/" element={<ErrorBoundary name="Landing"><Index /></ErrorBoundary>} />
+            <Route path="/sos" element={<ErrorBoundary name="SOS"><SOS /></ErrorBoundary>} />
+            <Route path="/dashboard" element={<ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>} />
+            <Route path="/bookings" element={<ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>} />
+            <Route path="/ticket/:bookingId" element={<ErrorBoundary name="Ticket"><Ticket /></ErrorBoundary>} />
             <Route path="/responder" element={<Responder />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/safety" element={<Safety />} />
-            <Route path="/track/:trainNumber" element={<TrainTracking />} />
+            <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
 
-            {/* Mini App Routes: gate runs Telegram initData → JWT auth then renders child */}
-            <Route path="/mini-app" element={<MiniAppGate><Outlet /></MiniAppGate>}>
+            {/* Mini App with Granular Resilience (Suggestion #25) */}
+            <Route path="/mini-app" element={<MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>}>
               <Route index element={<Navigate to="home" replace />} />
-              <Route path="home" element={<MiniAppHome />} />
-              <Route path="search" element={<MiniAppSearch />} />
-              <Route path="booking" element={<MiniAppBooking />} />
+              <Route path="home" element={<ErrorBoundary name="MiniHome"><MiniAppHome /></ErrorBoundary>} />
+              <Route path="search" element={<ErrorBoundary name="MiniSearch"><MiniAppSearch /></ErrorBoundary>} />
+              <Route path="booking" element={<ErrorBoundary name="MiniBooking"><MiniAppBooking /></ErrorBoundary>} />
               <Route path="sos" element={<MiniAppSOS />} />
               <Route path="track" element={<MiniAppTrack />} />
               <Route path="saved" element={<MiniAppSaved />} />
               <Route path="profile" element={<MiniAppProfile />} />
             </Route>
             
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>
