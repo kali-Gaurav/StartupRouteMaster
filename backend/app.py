@@ -92,7 +92,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Route engine failed to start: {e}")
 
-    # E. Background Worker
+    # E. Pre-warm RapidAPI version detection (silent probe)
+    try:
+        from services.seat_verification import SeatVerificationService
+        svc = SeatVerificationService()
+        # schedule detection immediately
+        asyncio.create_task(svc._detect_working_version())
+        logger.info("✅ Scheduled RapidAPI version pre-warm")
+    except Exception as e:
+        logger.error(f"❌ RapidAPI pre-warm failed: {e}")
+
+    # F. Background Worker
     try:
         from worker import start_reconciliation_worker
         start_reconciliation_worker()

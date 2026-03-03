@@ -96,6 +96,11 @@ class Config:
     # Phase 7: External APIs (RapidAPI / IRCTC)
     RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
     RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "irctc1.p.rapidapi.com")
+    # optional override: force the RapidAPI version to use ("v1", "v2", "v3").
+    # if unset or empty the system will auto-detect the first working endpoint and
+    # cache that value at runtime (and in Redis if enabled) to avoid wasting
+    # quota on dead endpoints.
+    RAPIDAPI_PREFERRED_VERSION = os.getenv("RAPIDAPI_PREFERRED_VERSION", "")
     LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", None)
     LIVE_FARES_API = os.getenv("LIVE_FARES_API", None)
     LIVE_DELAY_API = os.getenv("LIVE_DELAY_API", None)

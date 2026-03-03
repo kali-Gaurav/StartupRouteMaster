@@ -1288,7 +1288,16 @@ class TrainAvailabilityCache(Base):
     status_text = Column(String(100)) # e.g., AVAILABLE-0197, GNWL46/WL29
     seats_available = Column(Integer)
     fare = Column(Integer)
-    
+    # raw JSON from the API for auditing or future schema changes.
+    raw_payload = Column(Text, nullable=True)
+    # some extra helpful fields extracted from payload;
+    # these can be queried without parsing JSON.
+    ticket_fare = Column(Integer, nullable=True)
+    catering_charge = Column(Integer, nullable=True)
+    alt_cnf_seat = Column(Boolean, nullable=True)
+    alt_seat_status = Column(String(100), nullable=True)
+    alt_seat_fare = Column(Integer, nullable=True)
+
     last_updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 

@@ -37,11 +37,30 @@ export class AppDatabase extends Dexie {
 
   constructor() {
     super('RailAssistantDB');
+    // version 2 existed previously; bump to 3 to add count index on favorites
     this.version(2).stores({
       cachedRoutes: '++id, [source+destination], timestamp',
       userStats: 'id',
       recentSearches: '++id, timestamp, [source+destination]',
       favorites: '[source+destination]'
+    });
+
+    // upgrade path for schema change to version 3
+    this.version(3).stores({
+      cachedRoutes: '++id, [source+destination], timestamp',
+      userStats: 'id',
+      recentSearches: '++id, timestamp, [source+destination]',
+      // now index count so we can orderBy('count') without SchemaError
+      favorites: '[source+destination], count'
+    }).upgrade(async (trans) => {
+      // during upgrade, ensure existing objects have count property (should already)
+      const favs = await trans.table('favorites').toArray();
+      for (const f of favs) {
+        if (typeof f.count !== 'number') {
+          f.count = 0;
+          await trans.table('favorites').put(f);
+        }
+      }
     });
   }
 }
@@ -103,7 +122,16 @@ export const storageService = {
   },
 
   async getFavorites(limit = 5) {
-    return db.favorites.orderBy('count').reverse().limit(limit).toArray();
+    // safe fallback if count index isn't yet available (during upgrade)
+    const hasCountIndex = db.favorites.schema.indexes.some(idx => idx.name === 'count');
+    if (hasCountIndex) {
+      return db.favorites.orderBy('count').reverse().limit(limit).toArray();
+    } else {
+      // fetch everything then sort in JS
+      const all = await db.favorites.toArray();
+      all.sort((a, b) => (b.count || 0) - (a.count || 0));
+      return all.slice(0, limit);
+    }
   }
 };
 

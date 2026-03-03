@@ -4,12 +4,17 @@ import json
 import io
 import time
 import os
+import sys
+
+# Add backend to path to import Config
+sys.path.append(os.path.join(os.getcwd(), 'backend'))
+from database.config import Config
 
 # Connection Strings
 SQLITE_PATH = 'backend/database/railway_data.db'
-POSTGRES_URL = os.getenv("DATABASE_URL")
+POSTGRES_URL = Config.DATABASE_URL
 if not POSTGRES_URL:
-    raise ValueError("DATABASE_URL environment variable is not set")
+    raise ValueError("DATABASE_URL is not set in Config")
 
 def get_day_mask(row):
     mask = 0

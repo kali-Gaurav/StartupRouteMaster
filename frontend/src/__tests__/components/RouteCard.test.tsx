@@ -69,4 +69,19 @@ describe('RouteCard component', () => {
     // Safety score should still be present
     expect(screen.getByText(/Safety 85\/100/i)).toBeInTheDocument();
   });
+
+  it('shows total distance and fare in the summary header', () => {
+    render(
+      <RouteCard 
+        route={mockRoute} 
+        index={1} 
+        isUnlocked={true} 
+        onUnlock={vi.fn()} 
+      />
+    );
+    // Distance is displayed
+    expect(screen.getByText(/Distance: 100 km/i)).toBeInTheDocument();
+    // Total fare is displayed using formatCost, should include ₹ symbol
+    expect(screen.getByText(/₹500\.00/i)).toBeInTheDocument();
+  });
 });

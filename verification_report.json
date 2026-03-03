@@ -1,0 +1,139 @@
+[
+    {
+        "route_index": 1,
+        "trains": [
+            {
+                "train_no": "16525",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484170499
+                }
+            }
+        ],
+        "overall_status": "Invalid or No Confirmation from API"
+    },
+    {
+        "route_index": 2,
+        "trains": [
+            {
+                "train_no": "16382",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "success": false,
+                    "error": ""
+                }
+            },
+            {
+                "train_no": "11301",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484193744
+                }
+            }
+        ],
+        "overall_status": "Invalid or No Confirmation from API"
+    },
+    {
+        "route_index": 3,
+        "trains": [
+            {
+                "train_no": "16382",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484197768
+                }
+            },
+            {
+                "train_no": "11301",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484201761
+                }
+            }
+        ],
+        "overall_status": "Invalid or No Confirmation from API"
+    },
+    {
+        "route_index": 4,
+        "trains": [
+            {
+                "train_no": "16382",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484205174
+                }
+            },
+            {
+                "train_no": "11301",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484208670
+                }
+            }
+        ],
+        "overall_status": "Invalid or No Confirmation from API"
+    },
+    {
+        "route_index": 5,
+        "trains": [
+            {
+                "train_no": "16382",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484212329
+                }
+            },
+            {
+                "train_no": "11301",
+                "leg_valid": false,
+                "availability": "Unknown",
+                "live_status": "In Transit",
+                "delay": 0,
+                "raw_avail": {
+                    "status": false,
+                    "message": "Something went wrong.",
+                    "timestamp": 1772484225519
+                }
+            }
+        ],
+        "overall_status": "Invalid or No Confirmation from API"
+    }
+]

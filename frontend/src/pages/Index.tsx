@@ -691,10 +691,12 @@ const Index = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-muted-foreground mb-2">Travel date *</label>
+                  <label htmlFor="travelDate" className="block text-sm font-medium text-muted-foreground mb-2">Travel date *</label>
                   <div className="relative">
                     <CalendarDays className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                     <input
+                      id="travelDate"
+                      name="travelDate"
                       type="date"
                       value={travelDate}
                       onChange={(e) => setTravelDate(e.target.value)}

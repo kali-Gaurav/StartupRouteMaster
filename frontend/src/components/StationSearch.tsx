@@ -25,6 +25,8 @@ export function StationSearch({
   icon = "origin",
   recentStations = [],
 }: StationSearchProps) {
+  // generate a stable id for the input so the label can be associated
+  const id = React.useId();
   const [query, setQuery] = useState(value ? `${value?.name ?? ""} (${value?.code ?? ""})` : "");
   const [isOpen, setIsOpen] = useState(false);
   const [results, setResults] = useState<StationType[]>([]);
@@ -244,7 +246,7 @@ export function StationSearch({
 
   return (
     <div ref={containerRef} className="relative flex-1">
-      <label className="block text-sm font-medium text-muted-foreground mb-2">
+      <label htmlFor={id} className="block text-sm font-medium text-muted-foreground mb-2">
         {label}
       </label>
       <div className="relative">
@@ -256,6 +258,8 @@ export function StationSearch({
           )}
         </div>
         <input
+          id={id}
+          name={id}
           ref={inputRef}
           type="text"
           value={query}

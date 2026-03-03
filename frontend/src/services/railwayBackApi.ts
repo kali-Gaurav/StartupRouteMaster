@@ -390,7 +390,7 @@ export function mapBackendRoutesToRoutes(
             toName: getStationName(undefined, leg.to_station_code),
             departure: formatTime(leg.departure_time),
             arrival: formatTime(leg.arrival_time),
-            distance: 0,
+            distance: leg.distance ?? 0,
             duration: leg.duration_minutes ?? 0,
             waitBefore: 0,
             liveSeatAvailability: j.availability_status ?? 'UNKNOWN',
@@ -400,15 +400,17 @@ export function mapBackendRoutesToRoutes(
         });
       }
 
+      const computedDistance = j.total_distance ?? segments.reduce((acc, seg) => acc + (seg.distance || 0), 0);
+      const computedCost = j.total_cost ?? j.cheapest_fare ?? segments.reduce((acc, seg) => acc + (seg.liveFare || 0), 0);
       routes.push({
         id: rid,
         category,
         segments,
         totalTime: j.total_duration ?? 0,
-        totalCost: j.total_cost ?? j.cheapest_fare ?? 0,
+        totalCost: computedCost,
         totalTransfers: j.num_transfers ?? 0,
-        totalDistance: 0,
-        liveFareTotal: j.total_cost ?? j.cheapest_fare ?? 0,
+        totalDistance: computedDistance,
+        liveFareTotal: computedCost,
         seatProbability: j.reliability_score ?? 0.85,
         safetyScore: 100,
       });

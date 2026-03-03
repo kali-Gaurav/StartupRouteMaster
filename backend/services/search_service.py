@@ -152,14 +152,45 @@ class SearchService:
                         "reliability_score": 1.0
                     })
                 
-                # SAVE TURBO ROUTES TO CACHE (Skip seat verification - defer until user interaction)
+                # SAVE TURBO ROUTES TO CACHE
                 from services.journey_cache import save_journey
+                from services.seat_verification import SeatVerificationService
                 
+                seat_svc = SeatVerificationService()
                 enriched_turbo = []
+                
                 for idx, j_data in enumerate(raw_journeys):
+                    # Intelligent Enrichment: Check if we ALREADY have availability in DB/Redis
+                    # This saves quota by using what we fetched in bulk previously
+                    all_legs_verified = True
+                    total_live_fare = 0
+                    
+                    for leg in j_data["legs"]:
+                        # check_segment handles Redis + Postgres lookup internally
+                        avail = await seat_svc.check_segment(
+                            leg["train_number"], leg["from_station_code"], leg["to_station_code"], 
+                            j_data["date"]
+                        )
+                        if avail.get("success") and avail.get("status") != "UNKNOWN":
+                            leg["availability_status"] = avail["status"]
+                            leg["seats_available"] = avail["seats"]
+                            leg["fare"] = avail["fare"]
+                            total_live_fare += avail["fare"]
+                        else:
+                            all_legs_verified = False
+                            total_live_fare += leg.get("fare", 0)
+
+                    if all_legs_verified:
+                        j_data["availability_status"] = "AVAILABLE"
+                        j_data["total_fare"] = total_live_fare
+                        j_data["total_cost"] = total_live_fare
+                    
                     # SAVE TO CACHE for later verification
                     await save_journey(j_data["journey_id"], j_data)
                     enriched_turbo.append(j_data)
+                
+                # Sort: Verified available routes first
+                enriched_turbo.sort(key=lambda j: (0 if j["availability_status"] == "AVAILABLE" else 1, j["total_duration"]))
                 
                 result = {"source": source, "destination": destination, "journeys": enriched_turbo}
             else:

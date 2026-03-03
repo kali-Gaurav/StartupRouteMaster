@@ -144,10 +144,14 @@ export default function Dashboard() {
       }
 
       // 2. Local Storage Data
-      const [history, favs] = await Promise.all([
-        storageService.getRecentSearches(5),
-        storageService.getFavorites()
-      ]);
+      const history = await storageService.getRecentSearches(5);
+      let favs: any[] = [];
+      try {
+        favs = await storageService.getFavorites();
+      } catch (e) {
+        console.warn("Failed to load favorites", e);
+        favs = [];
+      }
       setRecentSearches(history || []);
       setFavorites(favs || []);
 
@@ -336,7 +340,9 @@ export default function Dashboard() {
                   }}
                   className="flex gap-2 max-w-md"
                 >
+                  <label htmlFor="train_num" className="sr-only">Train number</label>
                   <input 
+                    id="train_num"
                     name="train_num"
                     type="text" 
                     placeholder="e.g. 12002" 

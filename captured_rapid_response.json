@@ -1,0 +1,85 @@
+{
+    "status": true,
+    "message": "Success",
+    "timestamp": 1772519610407,
+    "data": [
+        {
+            "availablity_date": "4-3-2026",
+            "availablity_status": "AVAILABLE-0125",
+            "seat_avl_text": "AVAILABLE",
+            "seat_avl": 125,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "4-3-2026",
+            "current_status": "AVAILABLE-0125"
+        },
+        {
+            "availablity_date": "5-3-2026",
+            "availablity_status": "AVAILABLE-0198",
+            "seat_avl_text": "AVAILABLE",
+            "seat_avl": 198,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "5-3-2026",
+            "current_status": "AVAILABLE-0198"
+        },
+        {
+            "availablity_date": "6-3-2026",
+            "availablity_status": "AVAILABLE-0221",
+            "seat_avl_text": "AVAILABLE",
+            "seat_avl": 221,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "6-3-2026",
+            "current_status": "AVAILABLE-0221"
+        },
+        {
+            "availablity_date": "7-3-2026",
+            "availablity_status": "AVAILABLE-0178",
+            "seat_avl_text": "AVAILABLE",
+            "seat_avl": 178,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "7-3-2026",
+            "current_status": "AVAILABLE-0178"
+        },
+        {
+            "availablity_date": "8-3-2026",
+            "availablity_status": "GNWL28/WL21",
+            "seat_avl_text": "WAITLIST",
+            "seat_avl": 21,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "8-3-2026",
+            "current_status": "GNWL28/WL21"
+        },
+        {
+            "availablity_date": "9-3-2026",
+            "availablity_status": "AVAILABLE-0244",
+            "seat_avl_text": "AVAILABLE",
+            "seat_avl": 244,
+            "ticket_fare": 175,
+            "catering_charge": 0,
+            "total_fare": 175,
+            "last_updated_at": "2026-03-03T12:03:29+05:30",
+            "alt_cnf_seat": false,
+            "date": "9-3-2026",
+            "current_status": "AVAILABLE-0244"
+        }
+    ]
+}

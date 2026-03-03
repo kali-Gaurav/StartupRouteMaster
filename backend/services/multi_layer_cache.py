@@ -335,19 +335,21 @@ class MultiLayerCache:
             logger.error(f"Error getting availability cache: {e}")
             return None
 
-    async def set_availability(self, query: AvailabilityQuery, availability_data: Dict):
-        """Cache availability data with short TTL"""
+    async def set_availability(self, query: AvailabilityQuery, availability_data: Dict, ttl: Optional[int] = None):
+        """Cache availability data with short TTL (unless overridden)"""
         if not self.redis:
             return
 
         key = query.cache_key()
         try:
             data = json.dumps(availability_data)
-            # Availability changes frequently, short TTL
-            ttl_seconds = 30 if query.quota_type == 'tatkal' else 120  # 30s for Tatkal, 2min for others
-            await self.redis.setex(key, ttl_seconds, data)
+            # Availability changes frequently, short TTL default
+            if ttl is None:
+                ttl = 30 if query.quota_type == 'tatkal' else 120  # 30s for Tatkal, 2min for others
+            
+            await self.redis.setex(key, ttl, data)
             self.metrics['availability_cache'].sets += 1
-            logger.debug(f"Cached availability: {key}")
+            logger.debug(f"Cached availability: {key} (TTL: {ttl}s)")
         except Exception as e:
             logger.error(f"Error setting availability cache: {e}")
 

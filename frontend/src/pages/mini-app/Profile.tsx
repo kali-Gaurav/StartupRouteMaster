@@ -349,7 +349,10 @@ const MiniAppProfile = () => {
                   2. Enter the 6-digit code below.
                 </p>
                 <div className="flex gap-2">
+                  <label htmlFor="telegram-code" className="sr-only">Telegram link code</label>
                   <input
+                    id="telegram-code"
+                    name="telegram-code"
                     type="text"
                     inputMode="numeric"
                     maxLength={6}

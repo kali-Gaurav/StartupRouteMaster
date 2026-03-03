@@ -94,6 +94,9 @@ User clicks on route → Frontend calls /api/routes/{route_id}/verify-seats
 
 ### RapidAPI Caching (SeatVerificationService)
 - Multi-layer caching: L0 (Redis) → L1 (Postgres) → L2 (RapidAPI)
+- Service auto-detects the first working API version (v1/v2/v3) and
+  remembers it, avoiding repeated 404s against deprecated endpoints.  You
+  can also force a version using the `RAPIDAPI_PREFERRED_VERSION` env var.
 - Dynamic TTL based on proximity to travel date:
   - >7 days: 6 hours
   - >2 days: 2 hours

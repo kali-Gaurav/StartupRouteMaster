@@ -564,10 +564,12 @@ const MiniAppSearch = () => {
 
             {/* Date */}
             <div className="space-y-2">
-              <Label className="text-sm font-semibold text-gray-700">Travel Date</Label>
+              <Label htmlFor="mini-date" className="text-sm font-semibold text-gray-700">Travel Date</Label>
               <div className="relative">
                 <Calendar className="absolute left-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
                 <input
+                  id="mini-date"
+                  name="mini-date"
                   type="date"
                   value={formData.date}
                   onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
@@ -580,10 +582,12 @@ const MiniAppSearch = () => {
 
             {/* Time */}
             <div className="space-y-2">
-              <Label className="text-sm font-semibold text-gray-700">Preferred Time (Optional)</Label>
+              <Label htmlFor="mini-time" className="text-sm font-semibold text-gray-700">Preferred Time (Optional)</Label>
               <div className="relative">
                 <Clock className="absolute left-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
                 <input
+                  id="mini-time"
+                  name="mini-time"
                   type="time"
                   value={formData.time}
                   onChange={(e) => setFormData(prev => ({ ...prev, time: e.target.value }))}
