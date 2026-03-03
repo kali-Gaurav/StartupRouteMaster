@@ -66,7 +66,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     
     try {
       const { error: sbError } = await (authMethod === 'email' 
-        ? supabase.auth.verifyOtp({ email: contact, token: otp, type: 'magiclink' })
+        ? supabase.auth.verifyOtp({ email: contact, token: otp, type: 'email' })
         : supabase.auth.verifyOtp({ phone: contact, token: otp, type: 'sms' })
       );
 

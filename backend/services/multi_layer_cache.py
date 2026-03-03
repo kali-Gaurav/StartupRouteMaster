@@ -30,7 +30,7 @@ import zlib
 import redis.asyncio as redis
 
 from database.config import Config
-from database.models import Station, StopTime
+from database.models import Stop, StopTime
 from database.session import SessionLocal
 
 
@@ -196,7 +196,12 @@ class MultiLayerCache:
         # Store in Layer 1
         try:
             data = json.dumps(result, default=str)
-            await self.redis.setex(key, ttl_minutes * 60, data)
+            ttl_seconds = ttl_minutes * 60
+            journeys = result.get("journeys") if isinstance(result, dict) else None
+            if isinstance(journeys, list) and len(journeys) == 0:
+                # Short TTL for 0-route entries so they refresh quickly after ETL changes
+                ttl_seconds = min(ttl_seconds, 300)
+            await self.redis.setex(key, ttl_seconds, data)
             self.metrics['query_cache'].sets += 1
         except Exception as e:
             logger.error(f"Redis set_route_query failed (degrading to local memory): {e}")
@@ -276,7 +281,7 @@ class MultiLayerCache:
         session = SessionLocal()
         try:
             # Get all stations
-            stations = session.query(Station).all()
+            stations = session.query(Stop).all()
 
             for station in stations:
                 # Compute reachability with different transfer limits
@@ -447,8 +452,10 @@ class MultiLayerCache:
             logger.error(f"Error fetching graph snapshot {key}: {e}")
             return None
 
-    async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl_hours: int = 24):
-        """Store compressed graph snapshot in Redis."""
+    async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl_hours: int = 168):
+        """Store compressed graph snapshot in Redis.
+        Phase 5: 7-day rolling cache (TODO #40)
+        """
         if not self.redis:
             return
 
@@ -461,6 +468,38 @@ class MultiLayerCache:
             logger.info(f"Cached graph snapshot: {key} (compressed size: {len(compressed_data)} bytes)")
         except Exception as e:
             logger.error(f"Error storing graph snapshot {key}: {e}")
+
+    async def set_station_train_times(self, snapshot: Any):
+        """
+        Populate a Redis hash keyed by (station_id, date) for instantaneous client lookups. 
+        (TODO #15)
+        """
+        if not self.redis: 
+            return
+            
+        date_str = snapshot.date.strftime('%Y%m%d')
+        pipeline = self.redis.pipeline()
+        
+        try:
+            count = 0
+            for sid, hour_buckets in snapshot.station_time_index.items():
+                key = f"station_times:{sid}:{date_str}"
+                all_departures = []
+                for hour_deps in hour_buckets:
+                    for dt, tid in hour_deps:
+                        all_departures.append({"time": dt.isoformat(), "trip_id": tid})
+                
+                # Only cache if there are departures
+                if all_departures:
+                    all_departures.sort(key=lambda x: x["time"])
+                    pipeline.setex(key, 168 * 3600, json.dumps(all_departures))
+                    count += 1
+                    
+            if count > 0:
+                await pipeline.execute()
+                logger.info(f"Populated station_train_times Redis hash for {count} stations.")
+        except Exception as e:
+            logger.error(f"Failed to populate station_train_times: {e}")
 
     async def get_overlay_state(self, key_suffix: str = "current") -> Optional[Dict]:
         """Fetch real-time overlay state."""

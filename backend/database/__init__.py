@@ -1,35 +1,6 @@
-"""
-Database configuration, models, and session management.
-"""
+from .session import SessionLocal, engine, get_db, init_db, Base, get_source_connection
 
-from .config import Config
-from .session import SessionLocal, engine_write, get_db, init_db, close_db, Base
-
-# Backwards-compatible alias expected by some modules/tests
-engine = engine_write
-from .models import (
-    Stop, Trip, Route, StopTime, Transfer, Calendar,
-    CalendarDate, Agency, User, Booking, Payment
-)
-
-__all__ = [
-    "Config",
-    "SessionLocal",
-    "engine_write",
-    "engine",
-    "get_db",
-    "init_db",
-    "close_db",
-    "Base",
-    "Stop",
-    "Trip",
-    "Route",
-    "StopTime",
-    "Transfer",
-    "Calendar",
-    "CalendarDate",
-    "Agency",
-    "User",
-    "Booking",
-    "Payment",
-]
+# Backward compatibility aliases
+engine_write = engine
+engine_read = engine # In SQLite local mode, read/write use the same engine
+close_db = lambda: None # Placeholder if needed

@@ -149,6 +149,60 @@ class SeatVerificationService:
             logger.error(f"RapidAPI {version} request failed for {train_no}: {e}")
         return None
 
+    async def get_7day_summary(self, train_no: str, from_code: str, to_code: str) -> Dict[str, Any]:
+        """
+        Analyze the last 7 days of availability for a train to detect patterns.
+        Useful for identifying 'dead' or chronically cancelled trains.
+        """
+        from database.session import SessionLocal
+        from database.models import TrainAvailabilityCache
+        from sqlalchemy import and_, desc
+        
+        db = SessionLocal()
+        try:
+            # Get latest 7 records for this O-D pair
+            records = db.query(TrainAvailabilityCache).filter(and_(
+                TrainAvailabilityCache.train_number == train_no,
+                TrainAvailabilityCache.from_station_code == from_code,
+                TrainAvailabilityCache.to_station_code == to_code
+            )).order_by(desc(TrainAvailabilityCache.journey_date)).limit(14).all()
+            
+            if not records:
+                return {"status": "UNKNOWN", "cancelled_count": 0, "total": 0}
+
+            # Filter unique dates
+            seen_dates = set()
+            unique_records = []
+            for r in records:
+                if r.journey_date not in seen_dates:
+                    unique_records.append(r)
+                    seen_dates.add(r.journey_date)
+                if len(unique_records) >= 7: break
+
+            cancelled_terms = ["CANCELLED", "CANCLD", "NOT AVAILABLE", "NOT AVBL", "TRAIN CANCELLED"]
+            cancelled_count = 0
+            for r in unique_records:
+                status = str(r.status_text).upper()
+                if any(term in status for term in cancelled_terms):
+                    cancelled_count += 1
+            
+            return {
+                "status": "SUSPICIOUS" if cancelled_count >= 5 else "STABLE",
+                "cancelled_count": cancelled_count,
+                "total": len(unique_records),
+                "last_seen_status": unique_records[0].status_text if unique_records else "UNKNOWN"
+            }
+        except Exception as e:
+            logger.error(f"Error getting 7-day summary for {train_no}: {e}")
+            return {"status": "ERROR", "error": str(e)}
+        finally:
+            db.close()
+
+    async def is_train_suspicious(self, train_no: str, from_code: str, to_code: str) -> bool:
+        """Helper to quickly check if a train is likely not running."""
+        summary = await self.get_7day_summary(train_no, from_code, to_code)
+        return summary.get("status") == "SUSPICIOUS"
+
     async def check_segment(self, train_no: str, from_code: str, to_code: str, date_str: str, quota: str = "GN", class_type: str = "2S") -> Dict[str, Any]:
         """
         Quota-Safe Seat Check:
@@ -355,6 +409,7 @@ class SeatVerificationService:
 
     def _get_dynamic_ttl(self, journey_date) -> int:
         days_left = (journey_date - datetime.utcnow().date()).days
+        if days_left > 30: return 86400 * 3 # 3 days TTL for far future
         if days_left > 7: return 21600 # 6 hours
         if days_left > 2: return 7200  # 2 hours
         return 1800 # 30 min

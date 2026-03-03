@@ -21,6 +21,7 @@ from sqlalchemy import func
 
 from database.models import Calendar, CalendarDate, StopTime
 from database.session import SessionLocal
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ class FrequencyAwareWindowSizer:
     Computes trip frequency on corridors and sizes Range-RAPTOR window adaptively.
     """
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.redis_url = redis_url
+    def __init__(self, redis_url: Optional[str] = None):
+        self.redis_url = redis_url or Config.REDIS_URL
         self.redis_client = None
 
     async def _ensure_redis(self):

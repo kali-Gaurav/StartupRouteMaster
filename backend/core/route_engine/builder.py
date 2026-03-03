@@ -6,15 +6,16 @@ from typing import Dict, List, Optional, Any, Set, Tuple
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import and_, or_, create_engine
+from sqlalchemy import and_, or_, create_engine, text, func
 from sqlalchemy.orm import joinedload, sessionmaker
 import os
 
 from database.session import SessionLocal
 
 from database.models import (
-    Stop, Trip, StopTime, Calendar, Route as RouteModel,
-    Segment as SegmentModel, Transfer as TransferModel
+    Stop, Trip, StopTime, Calendar, CalendarDate, Route as RouteModel,
+    Segment as SegmentModel, Transfer as TransferModel,
+    StationHealthIndex
 )
 from .data_structures import RouteSegment, TransferConnection
 from .graph import TimeDependentGraph, StaticGraphSnapshot
@@ -28,7 +29,6 @@ def _to_time(val):
         return val.time()
     if isinstance(val, str):
         try:
-            # Handle HH:MM:SS.ffffff
             if '.' in val:
                 val = val.split('.')[0]
             parts = [int(p) for p in val.split(':')]
@@ -49,6 +49,9 @@ class MockStop:
     longitude: float = 0.0
     is_major_junction: bool = False
 
+def _get_hour_buckets():
+    return [[] for _ in range(24)]
+
 class GraphBuilder:
     def __init__(self, executor: ThreadPoolExecutor, snapshot_manager=None):
         self.executor = executor
@@ -68,40 +71,39 @@ class GraphBuilder:
             station_schedule=data['station_schedule'],
             train_path=data['train_path'],
             route_patterns=data['route_patterns'],
-            stop_index=data['stop_index']
+            stop_index=data['stop_index'],
+            station_time_index=data.get('station_time_index', {}),
+            reliability_scores=data.get('reliability_scores', {}),
+            station_ids_by_trip=data.get('station_ids_by_trip', {})
         )
         return TimeDependentGraph(snapshot)
 
     def _get_active_service_ids(self, session, date: datetime) -> List[str]:
         target_date = date.date()
         weekday = date.strftime('%A').lower()
-        try:
-            # Use only True for boolean comparison to satisfy Postgres
-            regular_services = session.query(Calendar.service_id).filter(
-                and_(
-                    getattr(Calendar, weekday) == True,
-                    Calendar.start_date <= target_date,
-                    Calendar.end_date >= target_date
-                )
-            ).all()
-            return [s[0] for s in regular_services]
-        except Exception as e:
-            logger.debug(f"First service ID query failed: {e}, trying string fallback")
-            target_date_str = target_date.isoformat()
-            regular_services = session.query(Calendar.service_id).filter(
-                and_(
-                    getattr(Calendar, weekday) == True,
-                    Calendar.start_date <= target_date_str,
-                    Calendar.end_date >= target_date_str
-                )
-            ).all()
-            return [s[0] for s in regular_services]
+        
+        regular_services = session.query(Calendar.service_id).filter(
+            and_(
+                getattr(Calendar, weekday) == True,
+                Calendar.start_date <= target_date,
+                Calendar.end_date >= target_date
+            )
+        ).all()
+        active_set = {s[0] for s in regular_services}
+        
+        exceptions = session.query(CalendarDate.service_id, CalendarDate.exception_type).filter(
+            CalendarDate.date == target_date
+        ).all()
+        
+        for service_id, exc_type in exceptions:
+            if exc_type == 1: active_set.add(service_id)
+            elif exc_type == 2: active_set.discard(service_id)
+                
+        return list(active_set)
 
     def _build_graph_sync(self, date: datetime) -> Dict:
         session = SessionLocal()
         try:
-            from sqlalchemy import text
-            
             service_ids = self._get_active_service_ids(session, date)
             logger.info(f"Building graph for {date.date()} with {len(service_ids)} active services")
 
@@ -113,28 +115,28 @@ class GraphBuilder:
             route_patterns = defaultdict(list)
             station_schedule = defaultdict(list)
             train_path = defaultdict(list)
+            
+            # Phase 2: station_time_index (TODO #11)
+            station_time_index = defaultdict(_get_hour_buckets)
+            
+            # Phase 4: Reliability (TODO #32)
+            reliability_scores = self._get_reliability_scores(session)
+            
+            # Phase 5: Routing Optimizations (O(1) destination checks)
+            station_ids_by_trip = defaultdict(set)
 
-            # 1. Load all stops (Raw SQL for speed)
+            # 1. Load all stops
             stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state, is_major_junction, latitude, longitude FROM stops")).fetchall()
             for row in stops_raw:
                 s = MockStop()
-                s.id = row[0]
-                s.stop_id = row[1]
-                s.code = row[2]
-                s.name = row[3]
-                s.city = row[4]
-                s.state = row[5]
-                s.is_major_junction = bool(row[6])
-                s.latitude = float(row[7] or 0.0)
-                s.longitude = float(row[8] or 0.0)
+                s.id, s.stop_id, s.code, s.name, s.city, s.state = row[0], row[1], row[2], row[3], row[4], row[5]
+                s.is_major_junction, s.latitude, s.longitude = bool(row[6]), float(row[7] or 0.0), float(row[8] or 0.0)
                 stop_cache[int(s.id)] = s
 
-            # 2. Query Segments - Raw SQL for extreme performance
+            # 2. Query Segments
             if not service_ids:
-                logger.warning("No active services found for this date.")
                 segments_raw = []
             else:
-                # Format IN clause
                 placeholders = ','.join([f"'{sid}'" for sid in service_ids])
                 query = f"""
                     SELECT 
@@ -143,166 +145,168 @@ class GraphBuilder:
                         s.duration_minutes, s.distance_km, s.cost,
                         t.trip_id as train_number, r.long_name as train_name
                     FROM segments s
-                    JOIN trips t ON s.trip_id = t.id
+                    JOIN trips t ON CAST(s.trip_id AS INTEGER) = t.id
                     JOIN gtfs_routes r ON t.route_id = r.id
                     WHERE t.service_id IN ({placeholders})
                     ORDER BY s.trip_id, s.arrival_day_offset, s.departure_time
                     """
-
                 segments_raw = session.execute(text(query)).fetchall()
             
-            logger.info(f"Found {len(segments_raw)} segments (Raw SQL)")
+            logger.info(f"Found {len(segments_raw)} segments.")
+            self._pre_build_audit(session, service_ids, len(segments_raw))
 
-            # Track cumulative offset per trip to handle multi-day journeys correctly
             trip_cumulative_offsets = defaultdict(int)
             trip_last_arrival_time = {}
 
             for row in segments_raw:
                 tid = int(row[0])
                 try:
-                    sid_src = int(row[1])
-                    sid_dst = int(row[2])
-                except (ValueError, TypeError):
-                    continue
+                    sid_src, sid_dst = int(row[1]), int(row[2])
+                except: continue
                 
-                # Raw SQLite returns times as strings 'HH:MM:SS'
-                dep_time = _to_time(row[3])
-                arr_time = _to_time(row[4])
+                dep_time, arr_time = _to_time(row[3]), _to_time(row[4])
                 
-                # Logic to handle day rollover within a trip
                 if tid in trip_last_arrival_time:
-                    # If this departure time is earlier than the last arrival time, 
-                    # it MUST be on a subsequent day.
-                    if dep_time < trip_last_arrival_time[tid]:
-                        trip_cumulative_offsets[tid] += 1
+                    if dep_time < trip_last_arrival_time[tid]: trip_cumulative_offsets[tid] += 1
                 
                 current_offset = trip_cumulative_offsets[tid]
                 dep_dt = datetime.combine(date.date() + timedelta(days=current_offset), dep_time)
                 
-                # Segment-specific arrival offset (relative to its own departure)
                 seg_arrival_offset = int(row[5] or 0)
-                # If arrival time < departure time, it's at least +1 day automatically
-                if arr_time < dep_time and seg_arrival_offset == 0:
-                    seg_arrival_offset = 1
+                if arr_time < dep_time and seg_arrival_offset == 0: seg_arrival_offset = 1
                 
-                # Update cumulative offset if segment spans midnight
                 trip_cumulative_offsets[tid] += seg_arrival_offset
                 arr_dt = datetime.combine(date.date() + timedelta(days=trip_cumulative_offsets[tid]), arr_time)
-                
-                # Remember this arrival for the next segment in the trip
                 trip_last_arrival_time[tid] = arr_time
                 
-                # Index departure/arrival
                 departures[sid_src].append((dep_dt, tid))
                 arrivals[sid_dst].append((arr_dt, tid))
                 
+                # Phase 2: Bucketize
+                station_time_index[sid_src][dep_dt.hour].append((dep_dt, tid))
+                
+                # Phase 5: Fast destination lookup
+                station_ids_by_trip[tid].add(sid_src)
+                station_ids_by_trip[tid].add(sid_dst)
+                
                 seg = RouteSegment(
-                    trip_id=tid,
-                    departure_stop_id=sid_src,
-                    arrival_stop_id=sid_dst,
-                    departure_time=dep_dt,
-                    arrival_time=arr_dt,
-                    duration_minutes=int(row[6] or 0),
-                    distance_km=float(row[7] or 0),
+                    trip_id=tid, departure_stop_id=sid_src, arrival_stop_id=sid_dst,
+                    departure_time=dep_dt, arrival_time=arr_dt,
+                    duration_minutes=int(row[6] or 0), distance_km=float(row[7] or 0),
                     departure_code=stop_cache[sid_src].code if sid_src in stop_cache else str(sid_src),
                     arrival_code=stop_cache[sid_dst].code if sid_dst in stop_cache else str(sid_dst),
-                    fare=float(row[8] or 0.0),
-                    train_number=str(row[9] or ""),
-                    train_name=str(row[10] or "")
+                    fare=float(row[8] or 0.0), train_number=str(row[9] or ""), train_name=str(row[10] or "")
                 )
                 if seg.duration_minutes <= 0:
                     seg.duration_minutes = max(1, int((arr_dt - dep_dt).total_seconds() / 60))
-                
                 trip_segments[tid].append(seg)
 
             # 3. Build Route Patterns
+            invalid_trips = [tid for tid, segs in trip_segments.items() if not segs or len(segs) < 1]
             for tid, segs in trip_segments.items():
-                if segs:
+                if tid not in invalid_trips:
                     pattern = [segs[0].departure_stop_id] + [s.arrival_stop_id for s in segs]
                     route_patterns[tuple(pattern)].append(tid)
+            
+            if invalid_trips:
+                logger.warning(f"TODO #10: Removing {len(invalid_trips)} unroutable trips.")
+                for tid in invalid_trips:
+                    if tid in trip_segments: del trip_segments[tid]
+                    if tid in station_ids_by_trip: del station_ids_by_trip[tid]
 
-            # 4. Transfers (Phase 4: Automatic Same-Station Transfers)
+            # 4. Transfers
             try:
-                # First, load existing transfers from DB
+                from .station_quality import StationQualityManager
+                from database.config import Config
                 transfers = session.query(TransferModel).all()
                 for t in transfers:
-                    from_sid = int(t.from_stop_id)
-                    to_sid = int(t.to_stop_id)
-                    if from_sid in stop_cache and to_sid in stop_cache:
-                        tc = TransferConnection(
-                            station_id=to_sid,
-                            arrival_time=datetime.min,
-                            departure_time=datetime.max,
-                            duration_minutes=int(t.min_transfer_time or 15),
-                            station_name=stop_cache[to_sid].name,
-                            facilities_score=0.0,
-                            safety_score=0.0
-                        )
-                        transfer_graph[from_sid].append(tc)
+                    f_sid, t_sid = int(t.from_stop_id), int(t.to_stop_id)
+                    if f_sid in stop_cache and t_sid in stop_cache:
+                        target = stop_cache[t_sid]
+                        transfer_graph[f_sid].append(TransferConnection(
+                            station_id=t_sid, arrival_time=datetime.min, departure_time=datetime.max,
+                            duration_minutes=int(t.min_transfer_time or 15), station_name=target.name,
+                            facilities_score=StationQualityManager.calculate_facility_score(getattr(target, 'facilities_json', {})),
+                            safety_score=StationQualityManager.normalize_safety_score(getattr(target, 'safety_score', 50.0))
+                        ))
                 
-                # Second, automatically generate same-station transfers for all active stops
-                # This ensures RAPTOR can always "transfer" between different trips at the same stop.
+                buf = Config.TRANSFER_WINDOW_MIN + Config.DELAY_BUFFER_MINUTES
                 for sid in stop_cache:
-                    # Only add if not already present to avoid duplicates
                     if not any(tc.station_id == sid for tc in transfer_graph[sid]):
-                        tc = TransferConnection(
-                            station_id=sid,
-                            arrival_time=datetime.min,
-                            departure_time=datetime.max,
-                            duration_minutes=15, # Default 15 mins for same-station transfer
-                            station_name=stop_cache[sid].name,
-                            facilities_score=5.0, # Neutral/Standard
-                            safety_score=5.0
-                        )
-                        transfer_graph[sid].append(tc)
-                logger.info(f"Generated {len(stop_cache)} same-station transfers.")
+                        target = stop_cache[sid]
+                        
+                        # Phase 3: Real walking-time estimate based on platform count (TODO #25 & #26)
+                        platform_count = getattr(target, 'platform_count', None) or 1
+                        walking_time_minutes = min(15, max(5, int(platform_count * 1.5)))
+                        total_transfer_time = buf + walking_time_minutes
 
-            except Exception as te:
-                logger.warning(f"Transfer generation failed: {te}")
+                        transfer_graph[sid].append(TransferConnection(
+                            station_id=sid, arrival_time=datetime.min, departure_time=datetime.max,
+                            duration_minutes=total_transfer_time, station_name=target.name,
+                            facilities_score=StationQualityManager.calculate_facility_score(getattr(target, 'facilities_json', {})),
+                            safety_score=StationQualityManager.normalize_safety_score(getattr(target, 'safety_score', 50.0))
+                        ))
 
-            # 5. Load station_schedule and train_path (Phase 10)
+            except Exception as te: logger.warning(f"Transfer error: {te}")
+
+            # 5. Load station_schedule
             try:
-                day_of_week = date.strftime('%A')
-                query_schedule = f"SELECT station_id, trip_id, arrival, departure, stop_seq FROM station_schedule WHERE day_of_week = '{day_of_week}'"
-                schedule_rows = session.execute(text(query_schedule)).fetchall()
-                for row in schedule_rows:
-                    station_schedule[int(row[0])].append({
-                        'trip_id': int(row[1]),
-                        'arrival': row[2],
-                        'departure': row[3],
-                        'stop_seq': int(row[4])
-                    })
-                    train_path[int(row[1])].append({
-                        'station_id': int(row[0]),
-                        'arrival': row[2],
-                        'departure': row[3],
-                        'stop_seq': int(row[4])
-                    })
-                logger.info(f"Loaded {len(schedule_rows)} station_schedule entries.")
-            except Exception as e:
-                logger.warning(f"Failed to load station_schedule: {e}")
+                day = date.strftime('%A')
+                p = ','.join([f"'{sid}'" for sid in service_ids])
+                q = f"SELECT ss.station_id, ss.trip_id, ss.arrival, ss.departure, ss.stop_seq FROM station_schedule ss JOIN trips t ON ss.trip_id = t.id WHERE ss.day_of_week = '{day}' AND t.service_id IN ({p})"
+                rows = session.execute(text(q)).fetchall()
+                for r in rows:
+                    si, ti = int(r[0]), int(r[1])
+                    item = {'trip_id': ti, 'arrival': r[2], 'departure': r[3], 'stop_seq': int(r[4])}
+                    station_schedule[si].append(item)
+                    train_path[ti].append({'station_id': si, 'arrival': r[2], 'departure': r[3], 'stop_seq': int(r[4])})
+            except Exception as e: logger.warning(f"Schedule error: {e}")
 
-            all_stop_ids = sorted(stop_cache.keys())
-            stop_index_map = {sid: idx for idx, sid in enumerate(all_stop_ids)}
+            # Optimization: Sort
+            for sid in departures: departures[sid].sort(key=lambda x: x[0])
+            for sid in arrivals: arrivals[sid].sort(key=lambda x: x[0])
+            for sid in station_time_index:
+                for h in range(24): station_time_index[sid][h].sort(key=lambda x: x[0])
 
-            # Optimization 1: Sort departures and arrivals by time for efficient binary search
-            for sid in departures:
-                departures[sid].sort(key=lambda x: x[0])
-            for sid in arrivals:
-                arrivals[sid].sort(key=lambda x: x[0])
-
-            logger.info(f"Graph build complete: {len(stop_cache)} stops, {len(trip_segments)} trips indexed")
+            stop_index_map = {sid: idx for idx, sid in enumerate(sorted(stop_cache.keys()))}
+            self._record_station_health(session, date, stop_cache, departures, arrivals)
 
             return {
-                'departures_by_stop': departures,
-                'arrivals_by_stop': arrivals,
-                'trip_segments': trip_segments,
-                'transfer_graph': transfer_graph,
-                'stop_cache': stop_cache,
-                'station_schedule': station_schedule,
-                'train_path': train_path,
-                'route_patterns': route_patterns,
-                'stop_index': stop_index_map
+                'departures_by_stop': departures, 'arrivals_by_stop': arrivals, 'trip_segments': trip_segments,
+                'transfer_graph': transfer_graph, 'stop_cache': stop_cache, 'station_schedule': station_schedule,
+                'train_path': train_path, 'route_patterns': route_patterns, 'stop_index': stop_index_map,
+                'station_time_index': station_time_index, 'reliability_scores': reliability_scores,
+                'station_ids_by_trip': station_ids_by_trip
             }
-        finally:
-            session.close()
+        finally: session.close()
+
+    def _get_reliability_scores(self, session) -> Dict[Tuple[int, int], float]:
+        from database.models import StationTrainHistory
+        try:
+            res = session.query(StationTrainHistory.trip_id, StationTrainHistory.station_id, func.count(StationTrainHistory.id), func.sum(func.case([(StationTrainHistory.delay_minutes <= 15, 1)], else_=0))).group_by(StationTrainHistory.trip_id, StationTrainHistory.station_id).all()
+            return {(tid, sid): (on / total if total > 0 else 1.0) for tid, sid, total, on in res}
+        except: return {}
+
+    def _pre_build_audit(self, session, service_ids: List[str], count: int):
+        if not service_ids: return
+        try:
+            p = ','.join([f"'{sid}'" for sid in service_ids])
+            exp = session.execute(text(f"SELECT count(*) FROM trips WHERE service_id IN ({p})")).scalar()
+            actual = session.execute(text(f"SELECT count(DISTINCT trip_id) FROM stop_times WHERE trip_id IN (SELECT id FROM trips WHERE service_id IN ({p}))")).scalar()
+            logger.info(f"Audit: Expected {exp}, Found {actual} with stops.")
+        except: pass
+
+    def _record_station_health(self, session, dt: datetime, cache: Dict, deps: Dict, arrs: Dict):
+        from sqlalchemy import delete
+        target = dt.date()
+        recs, zero = [], []
+        for sid, stop in cache.items():
+            dc, ac = len(deps.get(sid, [])), len(arrs.get(sid, []))
+            if dc == 0: zero.append(getattr(stop, 'code', str(sid)))
+            recs.append(StationHealthIndex(station_id=sid, date=target, dep_count=dc, arr_count=ac, health_score=(100.0 if dc > 0 else 0.0)))
+        try:
+            session.execute(delete(StationHealthIndex).where(StationHealthIndex.date == target))
+            session.add_all(recs)
+            session.commit()
+            if zero: logger.warning(f"CRITICAL: {len(zero)} stations have 0 departures.")
+        except: pass

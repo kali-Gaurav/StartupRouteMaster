@@ -9,6 +9,7 @@ from collections import defaultdict
 from pydantic import RootModel
 
 from services import multi_layer_cache
+from database.config import Config
 from database.models import Stop, Route as RouteModel, Trip as TripModel
 from database.session import SessionLocal
 
@@ -243,6 +244,8 @@ class RailwayRouteEngine:
                     self.current_snapshot = temp_graph.snapshot
                     try:
                         await self.snapshot_manager.save_snapshot(self.current_snapshot)
+                        # Phase 1: Log Snapshot Diffs (TODO #8 & #9)
+                        asyncio.create_task(self.snapshot_manager.compare_snapshots_and_log_diffs(self.current_snapshot))
                     except Exception:
                         logger.warning("Snapshot save failed during rebuild")
                     logger.info(f"Built new snapshot with {len(self.current_snapshot.stop_cache)} stops and {len(self.current_snapshot.trip_segments)} trip segments.")
@@ -450,10 +453,19 @@ class RailwayRouteEngine:
                            constraints: Optional[RouteConstraints] = None,
                            user_context: Optional[UserContext] = None) -> List[Route]:
         """
-        Search for routes between source and destination using Hybrid Hub-RAPTOR.
+        Search for routes between source and destination using the configured engine workflow.
+        Default workflow: FastRouter first, then HybridRAPTOR as fallback when needed.
         Uses TransitSessionLocal (SQLite) for identifier resolution consistency.
         """
-        logger.info(f"Searching routes from {source_code} to {destination_code} on {departure_date}")
+        logger.info(
+            "Searching routes from %s to %s on %s (engine_order=FastRouter->HybridRAPTOR, "
+            "fast_enabled=%s, raptor_fallback_enabled=%s)",
+            source_code,
+            destination_code,
+            departure_date,
+            Config.ROUTE_ENGINE_ENABLE_FAST_ROUTER,
+            Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK,
+        )
         if constraints is None:
             constraints = RouteConstraints()
 
@@ -482,18 +494,30 @@ class RailwayRouteEngine:
             date = departure_date
             graph = await self._get_current_graph(date)
 
-            # Phase 10: Fast BFS Router for 0, 1, 2, 3 transfers
-            fast_router = FastPathRouter(graph)
-            routes = fast_router.find_routes(source_stop.id, dest_stop.id, date, constraints)
-            
-            logger.info(f"Phase 10 FastRouter found {len(routes)} routes.")
+            routes: List[Route] = []
 
-            # If FastRouter didn't find enough routes or we explicitly need RAPTOR
-            if len(routes) < constraints.max_results:
+            # Phase 10: Fast BFS Router for 0, 1, 2, 3 transfers (if enabled)
+            if Config.ROUTE_ENGINE_ENABLE_FAST_ROUTER:
+                fast_router = FastPathRouter(graph)
+                routes = fast_router.find_routes(source_stop.id, dest_stop.id, date, constraints)
+                for r in routes: r.metadata["engine"] = "FastRouter"
+                logger.info("FastRouter found %d routes.", len(routes))
+            else:
+                logger.info("FastRouter is disabled via configuration.")
+
+            # If FastRouter didn't find enough routes and RAPTOR fallback is enabled
+            fallback_threshold = getattr(Config, "ROUTE_ENGINE_RAPTOR_FALLBACK_THRESHOLD", constraints.max_results)
+            if Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK and len(routes) < fallback_threshold:
                 raptor_routes = await self.raptor.find_routes(
                     source_stop.id, dest_stop.id, date, constraints, graph=graph
                 )
-                logger.info(f"RAPTOR fallback found {len(raptor_routes)} routes.")
+                for rr in raptor_routes: rr.metadata["engine"] = "HybridRAPTOR"
+                logger.info(
+                    "RAPTOR fallback found %d routes (fast_routes=%d, threshold=%d).",
+                    len(raptor_routes),
+                    len(routes),
+                    fallback_threshold,
+                )
                 
                 # Merge RAPTOR routes with fast routes
                 seen_segments = set(tuple(seg.trip_id for seg in r.segments) for r in routes if r.segments)
@@ -503,6 +527,11 @@ class RailwayRouteEngine:
                         if r_segs not in seen_segments:
                             routes.append(rr)
                             seen_segments.add(r_segs)
+            elif not Config.ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK:
+                logger.info(
+                    "HybridRAPTOR fallback disabled via configuration; returning %d FastRouter routes.",
+                    len(routes),
+                )
 
             if user_context:
                 routes = await self._apply_ml_ranking(routes, user_context)

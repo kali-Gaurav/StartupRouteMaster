@@ -26,6 +26,9 @@ class RouteConstraints:
     preferred_class: Optional[str] = None
     include_wait_time: bool = False
 
+    # Debug/diagnostics
+    debug: bool = False
+
     @dataclass
     class Weights:
         time: float = 1.0

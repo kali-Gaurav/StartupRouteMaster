@@ -104,6 +104,7 @@ class Route:
     reliability: float = 1.0
     availability_probability: float = 1.0 # Phase 8: P(booking success)
     is_locked: bool = True  # Added for booking intelligence unlock flow
+    metadata: Dict[str, Any] = field(default_factory=dict) # Added for engine tracking
     cost_diagnostics: Dict[str, float] = field(default_factory=dict)
     visited_stations: Set[int] = field(default_factory=set) # Optimization for RAPTOR cycle detection
 

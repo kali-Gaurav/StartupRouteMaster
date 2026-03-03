@@ -47,39 +47,54 @@ def get_current_user(
     if not sb_user:
         raise credentials_exception
 
-    # Extract user ID and email cleanly
+    # Extract user metadata cleanly
     sb_id = getattr(sb_user, "id", sb_user.get("id") if isinstance(sb_user, dict) else None)
     sb_email = getattr(sb_user, "email", sb_user.get("email") if isinstance(sb_user, dict) else None)
+    
+    # NEW: Extract metadata fields
+    sb_metadata = getattr(sb_user, "user_metadata", sb_user.get("user_metadata", {}) if isinstance(sb_user, dict) else {})
+    sb_name = sb_metadata.get("full_name") or sb_metadata.get("name") or (sb_email.split('@')[0] if sb_email else "User")
+    sb_avatar = sb_metadata.get("avatar_url")
+    sb_phone = sb_metadata.get("phone") or getattr(sb_user, "phone", None)
 
     user_service = UserService(db)
-    # look up by supabase_id first, then email if necessary
     user = None
     if sb_id:
         user = user_service.get_user_by_supabase_id(sb_id)
+    
     if not user and sb_email:
         user = user_service.get_user_by_email(sb_email)
         if user and sb_id:
-            # Sync supabase_id to existing email-only user
             user.supabase_id = sb_id
             db.commit()
-            db.refresh(user)
-            
-    # if still missing create a record so that the rest of the service works
-    if not user:
-        # Step 1: Ensure Profile exists (FK requirement)
-        from database.models import Profile
-        profile = db.query(Profile).filter(Profile.id == sb_id).first()
-        if not profile:
-            profile = Profile(id=sb_id, name=sb_email.split('@')[0] if sb_email else "User")
-            db.add(profile)
-            db.flush()
 
-        # Step 2: Create User linked to profile
+    from database.models import Profile
+    if not user:
+        # Create everything
+        profile = Profile(
+            id=sb_id, 
+            name=sb_name, 
+            avatar_url=sb_avatar, 
+            phone=sb_phone
+        )
+        db.add(profile)
+        db.flush()
+        
         user = user_service.create_user_with_data({
             "email": sb_email,
             "supabase_id": sb_id,
-            "password_hash": "supabase_managed",  # placeholder
+            "password_hash": "supabase_managed",
         })
+    else:
+        # SYNC: Update profile with latest metadata from Supabase
+        profile = db.query(Profile).filter(Profile.id == sb_id).first()
+        if profile:
+            profile.name = sb_name
+            profile.avatar_url = sb_avatar
+            if sb_phone and not profile.phone:
+                profile.phone = sb_phone
+            db.commit()
+            
     return user
 
 

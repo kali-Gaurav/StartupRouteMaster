@@ -16,19 +16,18 @@ class Config:
     SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
     SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
     
-    # Database Configuration
-    _db_url = os.getenv("DATABASE_URL", "")
-    DATABASE_URL = _db_url if not OFFLINE_MODE else os.getenv("DATABASE_URL", "")
+    # Database Configuration (Railway / Supabase Postgres)
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
     READ_DATABASE_URL = os.getenv("READ_DATABASE_URL", "")
     
-    # Connection Pool Settings (Topic 3)
+    # Connection Pool Settings
     DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "20"))
     DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "1800"))
     DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     
-    # Redis Configuration
-    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    # Redis Configuration (Upstash / Cloud Redis)
+    REDIS_URL = os.getenv("REDIS_URL", "")
     REDIS_SESSION_EXPIRY_SECONDS = int(os.getenv("REDIS_SESSION_EXPIRY_SECONDS", "3600"))
     REDIS_VERSION_PREFIX = os.getenv("REDIS_VERSION_PREFIX", "v1")
     REDIS_SNAPSHOT_ENABLED = os.getenv("REDIS_SNAPSHOT_ENABLED", "true").lower() in ("1", "true", "yes")
@@ -57,6 +56,10 @@ class Config:
     TRANSFER_WINDOW_MIN = int(os.getenv("TRANSFER_WINDOW_MIN", "15"))
     TRANSFER_WINDOW_MAX = int(os.getenv("TRANSFER_WINDOW_MAX", "720"))
     
+    # Phase 3: Transfer Intelligence (TODO #19)
+    # Additional buffer added to minimum transfer times to handle typical delays.
+    DELAY_BUFFER_MINUTES = int(os.getenv("DELAY_BUFFER_MINUTES", "15"))
+    
     # Transfer graph enrichment
     NEARBY_TRANSFER_RADIUS_KM = float(os.getenv("NEARBY_TRANSFER_RADIUS_KM", "1.25"))
     KEY_HUB_TRANSFER_PAIRS = os.getenv("KEY_HUB_TRANSFER_PAIRS", "NDLS:NZM,BCT:SBC,CSMT:KYN")
@@ -72,6 +75,15 @@ class Config:
     RAPTOR_MAX_STOP_SAMPLING_INTERVAL = int(os.getenv("RAPTOR_MAX_STOP_SAMPLING_INTERVAL", "30"))
     DISABLE_DOMINANCE_PRUNING = os.getenv("DISABLE_DOMINANCE_PRUNING", "false").lower() in ("1", "true", "yes")
 
+    # Turbo / FastRouter tuning
+    TURBO_TIME_WINDOW_MINUTES = int(os.getenv("TURBO_TIME_WINDOW_MINUTES", "720"))
+
+    # RAPTOR diagnostics
+    RAPTOR_DEBUG = os.getenv("RAPTOR_DEBUG", "false").lower() in ("1", "true", "yes")
+
+    # Fallback tuning
+    ROUTE_ENGINE_RAPTOR_FALLBACK_MIN_FAST_ROUTES = int(os.getenv("ROUTE_ENGINE_RAPTOR_FALLBACK_MIN_FAST_ROUTES", "-1"))
+
     # Route Scoring Weights
     FEASIBILITY_WEIGHT_TIME = float(os.getenv("FEASIBILITY_WEIGHT_TIME", "1.0"))
     FEASIBILITY_WEIGHT_COST = float(os.getenv("FEASIBILITY_WEIGHT_COST", "0.01"))
@@ -83,23 +95,19 @@ class Config:
 
     # ML Model paths (Resolved relative to backend root)
     _base = Path(__file__).resolve().parent.parent
-    ROUTE_RANKING_MODEL_PATH = str(_base / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
-    DELAY_PREDICTOR_MODEL_PATH = str(_base / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
-    TATKAL_DEMAND_MODEL_PATH = str(_base / os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl"))
+    _ml_base = _base / "core" / "ml_models"
+    ROUTE_RANKING_MODEL_PATH = str(_ml_base / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
+    DELAY_PREDICTOR_MODEL_PATH = str(_ml_base / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
+    TATKAL_DEMAND_MODEL_PATH = str(_ml_base / os.getenv("TATKAL_DEMAND_MODEL_PATH", "tatkal_demand_model.pkl"))
 
-
-    # Kafka
-    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    # Kafka Configuration
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "")
     KAFKA_ENABLE_EVENTS = os.getenv("KAFKA_ENABLE_EVENTS", "false").lower() in ("1", "true", "yes")
     KAFKA_REQUEST_TIMEOUT_MS = int(os.getenv("KAFKA_REQUEST_TIMEOUT_MS", "5000"))
 
-    # Phase 7: External APIs (RapidAPI / IRCTC)
+    # External APIs
     RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
     RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "irctc1.p.rapidapi.com")
-    # optional override: force the RapidAPI version to use ("v1", "v2", "v3").
-    # if unset or empty the system will auto-detect the first working endpoint and
-    # cache that value at runtime (and in Redis if enabled) to avoid wasting
-    # quota on dead endpoints.
     RAPIDAPI_PREFERRED_VERSION = os.getenv("RAPIDAPI_PREFERRED_VERSION", "")
     LIVE_SEAT_API = os.getenv("LIVE_SEAT_API", None)
     LIVE_FARES_API = os.getenv("LIVE_FARES_API", None)
@@ -129,6 +137,11 @@ class Config:
     USE_NEW_ROUTING_ENGINE = os.getenv("USE_NEW_ROUTING_ENGINE", "true").lower() in ("1", "true", "yes")
     ROUTE_ENGINE_LOG_BOTH = os.getenv("ROUTE_ENGINE_LOG_BOTH", "false").lower() in ("1", "true", "yes")
 
+    # Engine workflow toggles
+    ROUTE_ENGINE_ENABLE_TURBO = os.getenv("ROUTE_ENGINE_ENABLE_TURBO", "true").lower() in ("1", "true", "yes")
+    ROUTE_ENGINE_ENABLE_FAST_ROUTER = os.getenv("ROUTE_ENGINE_ENABLE_FAST_ROUTER", "true").lower() in ("1", "true", "yes")
+    ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK = os.getenv("ROUTE_ENGINE_ENABLE_HYBRID_RAPTOR_FALLBACK", "true").lower() in ("1", "true", "yes")
+
     # Reconciliation & Health
     INVENTORY_RECONCILIATION_INTERVAL_SECONDS = int(os.getenv("INVENTORY_RECONCILIATION_INTERVAL_SECONDS", "900"))
     PAYMENT_RECONCILIATION_INTERVAL_MINUTES = int(os.getenv("PAYMENT_RECONCILIATION_INTERVAL_MINUTES", "15"))
@@ -138,8 +151,8 @@ class Config:
     BOOKING_ENABLED = os.getenv("BOOKING_ENABLED", "true").lower() in ("1", "true", "yes")
     
     # Environment
-    ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG")
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     # RouteMaster Agent
     RMA_URL = os.getenv("RMA_URL", "http://routemaster_agent:8008")
@@ -154,16 +167,13 @@ class Config:
     RAZORPAY_CIRCUIT_BREAKER_RECOVERY_TIMEOUT = int(os.getenv("RAZORPAY_CIRCUIT_BREAKER_RECOVERY_TIMEOUT", "30"))
     RAZORPAY_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS = tuple(os.getenv("RAZORPAY_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS", "httpx.RequestError,httpx.HTTPStatusError").split(','))
 
-    PARTNER_CIRCUIT_BREAKER_FAILURE_THRESHOLD = int(os.getenv("PARTNER_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
+    PARTNER_CIRAKER_FAILURE_THRESHOLD = int(os.getenv("PARTNER_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "3"))
     PARTNER_CIRCUIT_BREAKER_RECOVERY_TIMEOUT = int(os.getenv("PARTNER_CIRCUIT_BREAKER_RECOVERY_TIMEOUT", "60"))
     PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS = tuple(os.getenv("PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS", "httpx.RequestError,httpx.HTTPStatusError,httpx.TimeoutException").split(','))
 
     @classmethod
     def get_mode(cls) -> str:
-        """
-        Get current system mode.
-        Returns: "OFFLINE", "HYBRID", or "ONLINE"
-        """
+        """Get current system mode: OFFLINE, HYBRID, or ONLINE"""
         if cls.OFFLINE_MODE:
             return "OFFLINE"
 
@@ -182,17 +192,18 @@ class Config:
     def validate(cls):
         """Validate critical configuration presence."""
         if not cls.SUPABASE_URL or not cls.SUPABASE_KEY:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set (for Auth)")
         
         if not cls.DATABASE_URL:
             if cls.OFFLINE_MODE:
                 logger = logging.getLogger(__name__)
-                logger.warning(
-                    "DATABASE_URL not set but OFFLINE_MODE enabled; operations will use in-memory SQLite."
-                )
+                logger.warning("DATABASE_URL not set but OFFLINE_MODE enabled.")
             else:
-                raise ValueError("DATABASE_URL must be set (use Supabase Postgres connection string)")
+                raise ValueError("DATABASE_URL must be set (Railway Postgres)")
+
+        if not cls.REDIS_URL and not cls.OFFLINE_MODE:
+            raise ValueError("REDIS_URL must be set (Upstash Redis)")
         
         if not cls.SUPABASE_SERVICE_KEY:
             logger = logging.getLogger(__name__)
-            logger.warning("SUPABASE_SERVICE_KEY not provided; backend will use anon key.")
+            logger.warning("SUPABASE_SERVICE_KEY not provided; using anon key.")

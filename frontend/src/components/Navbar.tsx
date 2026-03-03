@@ -11,7 +11,7 @@ export function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
   const themeRef = useRef<HTMLDivElement>(null);
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, logout } = useAuth();
   const { theme, setTheme, rotationDisabled, setRotationDisabled } = useTheme();
 
   useEffect(() => {
@@ -78,9 +78,7 @@ export function Navbar() {
             {isAuthenticated && (
               <button
                 onClick={() => {
-                  const { supabase } = (window as any);
-                  if (supabase) supabase.auth.signOut();
-                  else window.location.reload(); // Fallback
+                  logout().catch(() => window.location.reload());
                 }}
                 className="flex items-center gap-1.5 p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
                 title="Sign Out"
@@ -157,9 +155,7 @@ export function Navbar() {
             {isAuthenticated && (
               <button 
                 onClick={() => {
-                  const { supabase } = (window as any);
-                  if (supabase) supabase.auth.signOut();
-                  else window.location.reload();
+                  logout().catch(() => window.location.reload());
                 }}
                 className="flex items-center gap-2 py-2 text-red-500 font-medium w-full text-left"
               >

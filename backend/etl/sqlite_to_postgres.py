@@ -73,7 +73,17 @@ def run_etl():
             agency = Agency(agency_id="IR", name="Indian Railways", url="https://enquiry.indianrail.gov.in", timezone="Asia/Kolkata")
             session.add(agency)
             session.flush()
-            
+
+        # pull running days map from SQLite; used later when creating per-train service entries
+        def _get_running_days(train_no: str):
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM train_running_days WHERE train_no = ?", (train_no,))
+            row = cur.fetchone()
+            conn.close()
+            return row
+
         calendar = session.query(Calendar).filter(Calendar.service_id == "DAILY").first()
         if not calendar:
             calendar = Calendar(
@@ -132,8 +142,32 @@ def run_etl():
             gtfs_route = Route(route_id=train_no, agency_id=agency.id, short_name=train_no, long_name=t['train_name'], route_type=2)
             session.add(gtfs_route)
             session.flush()
-            
-            trip = Trip(trip_id=train_no, route_id=gtfs_route.id, service_id=calendar.service_id)
+
+            # determine service id based on running days
+            running = _get_running_days(train_no)
+            if running:
+                svc = f"S_{train_no}"
+                # upsert calendar record with those booleans
+                exists = session.query(Calendar).filter(Calendar.service_id == svc).first()
+                if not exists:
+                    exists = Calendar(
+                        service_id=svc,
+                        monday=bool(running['mon']),
+                        tuesday=bool(running['tue']),
+                        wednesday=bool(running['wed']),
+                        thursday=bool(running['thu']),
+                        friday=bool(running['fri']),
+                        saturday=bool(running['sat']),
+                        sunday=bool(running['sun']),
+                        start_date=date(2020, 1, 1), end_date=date(2030, 12, 31)
+                    )
+                    session.add(exists)
+                    session.flush()
+                service_id_used = svc
+            else:
+                service_id_used = calendar.service_id
+
+            trip = Trip(trip_id=train_no, route_id=gtfs_route.id, service_id=service_id_used)
             session.add(trip)
             session.flush()
             

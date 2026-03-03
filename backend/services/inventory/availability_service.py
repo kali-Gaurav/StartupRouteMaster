@@ -23,14 +23,13 @@ from sqlalchemy import and_, or_, func, update, select
 from sqlalchemy.orm import Session, joinedload
 import redis.asyncio as redis
 
-from .database import SessionLocal
-from .seat_inventory_models import (
+from database.session import SessionLocal
+from database.models import (
     SeatInventory, QuotaInventory, WaitlistQueue, Coach, Seat,
-    QuotaType, BookingStatus, CoachClass
+    QuotaType, BookingStatus, CoachClass, StopTime
 )
-from .models import StopTime
-from .config import Config
-from .services.multi_layer_cache import multi_layer_cache, AvailabilityQuery, cache_availability_check
+from database.config import Config
+from services.multi_layer_cache import multi_layer_cache, AvailabilityQuery, cache_availability_check
 
 logger = logging.getLogger(__name__)
 

@@ -25,6 +25,17 @@ class SearchService:
         self.db = db
         self.route_engine = route_engine_instance or route_engine
 
+    async def _log_engine_usage(self, engine_name: str):
+        """Track usage of different routing engines in Redis (TODO #48)."""
+        try:
+            from services.multi_layer_cache import multi_layer_cache
+            await multi_layer_cache.initialize()
+            if multi_layer_cache.redis:
+                key = f"metrics:engine_usage:{datetime.utcnow().date().isoformat()}"
+                await multi_layer_cache.redis.hincrby(key, engine_name, 1)
+        except:
+            pass
+
     async def search_routes(
         self,
         source: str,
@@ -96,106 +107,120 @@ class SearchService:
         _inflight_searches[cache_key] = asyncio.Event()
         
         try:
-            # TRY TURBO ROUTER FIRST (Phase 11: Station-Centric Optimization)
-            from core.route_engine.turbo_router import TurboRouter
-            turbo = TurboRouter()
-            
-            # Convert str to datetime for turbo
-            try:
-                dt_input = datetime.strptime(travel_date, "%Y-%m-%d")
-            except:
-                dt_input = datetime.now()
+            # TRY TURBO ROUTER FIRST (Phase 11: Station-Centric Optimization), if enabled
+            result: Dict[str, Any]
+            turbo_used = False
+            if Config.ROUTE_ENGINE_ENABLE_TURBO:
+                from core.route_engine.turbo_router import TurboRouter
+                turbo = TurboRouter()
+                
+                # Convert str to datetime for turbo
+                try:
+                    dt_input = datetime.strptime(travel_date, "%Y-%m-%d")
+                except Exception:
+                    dt_input = datetime.now()
 
-            # Increase search internal limit to handle offset/limit slicing
-            internal_limit = max(40, offset + limit)
-            turbo_results = turbo.find_routes(source, destination, dt_input, limit=internal_limit)
-            
-            if turbo_results:
-                logger.info(f"⚡ TURBO ROUTE HIT: Found {len(turbo_results)} routes in <500ms")
-                # Format turbo results to match the expected journey schema
-                raw_journeys = []
-                for idx, tr in enumerate(turbo_results):
-                    journey_id = f"turbo_{int(time.time())}_{idx}"
-                    legs = []
-                    total_distance = 0
-                    total_fare = 0
-                    for l in tr['legs']:
-                        legs.append({
-                            "train_number": l['train_no'],
-                            "train_name": f"Train {l['train_no']}",
-                            "from_station_code": l['from'],
-                            "to_station_code": l['to'],
-                            "departure_time": l['dep'],
-                            "arrival_time": l['arr'],
-                            "distance_km": l.get('distance_km', 0),
-                            "fare": l.get('fare', 0),
-                            "mode": "rail"
+                # Increase search internal limit to handle offset/limit slicing
+                internal_limit = max(40, offset + limit)
+                turbo_results = turbo.find_routes(source, destination, dt_input, limit=internal_limit)
+                
+                if turbo_results:
+                    turbo_used = True
+                    await self._log_engine_usage("turbo") # TODO #48
+                    logger.info(
+                        "⚡ TURBO ROUTE HIT: Found %d routes (engine_order=Turbo->FastRouter->HybridRAPTOR)",
+                        len(turbo_results),
+                    )
+                    # Format turbo results to match the expected journey schema
+                    raw_journeys = []
+                    for idx, tr in enumerate(turbo_results):
+                        journey_id = f"turbo_{int(time.time())}_{idx}"
+                        legs = []
+                        total_distance = 0
+                        total_fare = 0
+                        for l in tr['legs']:
+                            legs.append({
+                                "train_number": l['train_no'],
+                                "train_name": f"Train {l['train_no']}",
+                                "from_station_code": l['from'],
+                                "to_station_code": l['to'],
+                                "departure_time": l['dep'],
+                                "arrival_time": l['arr'],
+                                "distance_km": l.get('distance_km', 0),
+                                "fare": l.get('fare', 0),
+                                "mode": "rail"
+                            })
+                            total_distance += l.get('distance_km', 0)
+                            total_fare += l.get('fare', 0)
+                        
+                        raw_journeys.append({
+                            "journey_id": journey_id,
+                            "num_segments": len(legs),
+                            "source": source,
+                            "destination": destination,
+                            "date": travel_date,
+                            "total_duration": tr.get('total_duration', 0),
+                            "total_distance": total_distance,
+                            "total_cost": total_fare,
+                            "total_fare": total_fare,
+                            "cheapest_fare": total_fare,
+                            "num_transfers": tr['transfers'],
+                            "is_direct": tr['transfers'] == 0,
+                            "legs": legs,
+                            "availability_status": "PENDING",
+                            "reliability_score": 1.0
                         })
-                        total_distance += l.get('distance_km', 0)
-                        total_fare += l.get('fare', 0)
                     
-                    raw_journeys.append({
-                        "journey_id": journey_id,
-                        "num_segments": len(legs),
-                        "source": source,
-                        "destination": destination,
-                        "date": travel_date,
-                        "total_duration": tr.get('total_duration', 0),
-                        "total_distance": total_distance,
-                        "total_cost": total_fare,
-                        "total_fare": total_fare,
-                        "cheapest_fare": total_fare,
-                        "num_transfers": tr['transfers'],
-                        "is_direct": tr['transfers'] == 0,
-                        "legs": legs,
-                        "availability_status": "PENDING",
-                        "reliability_score": 1.0
-                    })
-                
-                # SAVE TURBO ROUTES TO CACHE
-                from services.journey_cache import save_journey
-                from services.seat_verification import SeatVerificationService
-                
-                seat_svc = SeatVerificationService()
-                enriched_turbo = []
-                
-                for idx, j_data in enumerate(raw_journeys):
-                    # Intelligent Enrichment: Check if we ALREADY have availability in DB/Redis
-                    # This saves quota by using what we fetched in bulk previously
-                    all_legs_verified = True
-                    total_live_fare = 0
+                    # SAVE TURBO ROUTES TO CACHE
+                    from services.journey_cache import save_journey
+                    from services.seat_verification import SeatVerificationService
                     
-                    for leg in j_data["legs"]:
-                        # check_segment handles Redis + Postgres lookup internally
-                        avail = await seat_svc.check_segment(
-                            leg["train_number"], leg["from_station_code"], leg["to_station_code"], 
-                            j_data["date"]
-                        )
-                        if avail.get("success") and avail.get("status") != "UNKNOWN":
-                            leg["availability_status"] = avail["status"]
-                            leg["seats_available"] = avail["seats"]
-                            leg["fare"] = avail["fare"]
-                            total_live_fare += avail["fare"]
-                        else:
-                            all_legs_verified = False
-                            total_live_fare += leg.get("fare", 0)
+                    seat_svc = SeatVerificationService()
+                    enriched_turbo = []
+                    
+                    for idx, j_data in enumerate(raw_journeys):
+                        # Intelligent Enrichment: Check if we ALREADY have availability in DB/Redis
+                        # This saves quota by using what we fetched in bulk previously
+                        all_legs_verified = True
+                        total_live_fare = 0
+                        
+                        for leg in j_data["legs"]:
+                            # check_segment handles Redis + Postgres lookup internally
+                            avail = await seat_svc.check_segment(
+                                leg["train_number"], leg["from_station_code"], leg["to_station_code"], 
+                                j_data["date"]
+                            )
+                            if avail.get("success") and avail.get("status") != "UNKNOWN":
+                                leg["availability_status"] = avail["status"]
+                                leg["seats_available"] = avail["seats"]
+                                leg["fare"] = avail["fare"]
+                                total_live_fare += avail["fare"]
+                            else:
+                                all_legs_verified = False
+                                total_live_fare += leg.get("fare", 0)
 
-                    if all_legs_verified:
-                        j_data["availability_status"] = "AVAILABLE"
-                        j_data["total_fare"] = total_live_fare
-                        j_data["total_cost"] = total_live_fare
+                        if all_legs_verified:
+                            j_data["availability_status"] = "AVAILABLE"
+                            j_data["total_fare"] = total_live_fare
+                            j_data["total_cost"] = total_live_fare
+                        
+                        # SAVE TO CACHE for later verification
+                        await save_journey(j_data["journey_id"], j_data)
+                        enriched_turbo.append(j_data)
                     
-                    # SAVE TO CACHE for later verification
-                    await save_journey(j_data["journey_id"], j_data)
-                    enriched_turbo.append(j_data)
-                
-                # Sort: Verified available routes first
-                enriched_turbo.sort(key=lambda j: (0 if j["availability_status"] == "AVAILABLE" else 1, j["total_duration"]))
-                
-                result = {"source": source, "destination": destination, "journeys": enriched_turbo}
-            else:
-                # 4b. Fallback to Legacy Engine if Turbo finds nothing
-                logger.info("🐢 Turbo found nothing, falling back to Legacy HybridRAPTOR")
+                    # Sort: Verified available routes first
+                    enriched_turbo.sort(key=lambda j: (0 if j["availability_status"] == "AVAILABLE" else 1, j["total_duration"]))
+                    
+                    result = {"source": source, "destination": destination, "journeys": enriched_turbo}
+                else:
+                    logger.info("🐢 Turbo found nothing for %s -> %s on %s", source, destination, travel_date)
+
+            # If Turbo is disabled or found nothing, fall back to graph engines
+            if not turbo_used:
+                logger.info(
+                    "ENGINE_WORKFLOW: Falling back to graph engine (FastRouter -> HybridRAPTOR); turbo_enabled=%s",
+                    Config.ROUTE_ENGINE_ENABLE_TURBO,
+                )
                 result = await self._execute_search_logic(
                     source, destination, travel_date, budget_category, multi_modal, women_safety_mode,
                     max_internal_results=40
@@ -259,7 +284,7 @@ class SearchService:
         from core.route_engine.constraints import RouteConstraints
         
         # --- MULTI-TIER EXECUTION WITH EARLY TERMINATION ---
-        # We increase max_results in constraints to get more routes for Load More
+        # Tier 1: stricter constraints
         tiers = [
             RouteConstraints(max_transfers=0, range_minutes=1440, max_results=max_internal_results), # Direct
             RouteConstraints(max_transfers=1, range_minutes=1440, max_results=max_internal_results), # 1 transfer
@@ -269,6 +294,7 @@ class SearchService:
         
         internal_routes = []
         for i, c in enumerate(tiers):
+            await self._log_engine_usage("raptor") # TODO #48
             tier_routes = await self.route_engine.search_routes(
                 source_code=source,
                 destination_code=destination,
@@ -288,7 +314,64 @@ class SearchService:
                 logger.info(f"Phase 10: Found sufficient routes ({len(internal_routes)}). Terminating search tiers.")
                 break
 
+        # Tier 2: lenient fallback if still no routes
+        if not internal_routes:
+            logger.info("ENGINE_CONSTRAINTS: Tier 1 produced 0 routes, applying lenient Tier 2 constraints.")
+            lenient_constraints = RouteConstraints(
+                max_transfers=4,
+                range_minutes=1440,
+                max_results=max_internal_results,
+                min_transfer_time=10,
+                max_layover_time=12 * 60,
+            )
+            await self._log_engine_usage("raptor_lenient") # TODO #48
+            tier2_routes = await self.route_engine.search_routes(
+                source_code=source,
+                destination_code=destination,
+                departure_date=dt,
+                constraints=lenient_constraints,
+            )
+            # mark these as lenient tier for downstream consumers
+            for r in tier2_routes:
+                setattr(r, "constraint_tier", "tier2")
+            internal_routes.extend(tier2_routes)
+
+        # Phase 6: Zero-Route Diagnostics (TODO #44, #45, #46, #47)
+        if not internal_routes:
+            logger.warning(f"ZERO ROUTES FOUND for {source} -> {destination} on {dt.date()}. Running diagnostics...")
+            try:
+                graph = await self.route_engine._get_current_graph(dt)
+                if graph:
+                    src_sched = graph.get_station_schedule(source_id)
+                    dst_sched = graph.get_station_schedule(dest_id)
+                    
+                    src_trips = {s['trip_id'] for s in src_sched}
+                    dst_trips = {s['trip_id'] for s in dst_sched}
+                    intersecting = src_trips.intersection(dst_trips)
+                    
+                    # Log diagnostics (TODO #44, #45, #46)
+                    logger.info(f"Diagnostics: Source Departures: {len(src_sched)}")
+                    logger.info(f"Diagnostics: Destination Arrivals: {len(dst_sched)}")
+                    logger.info(f"Diagnostics: Intersecting Trips: {len(intersecting)}")
+                    
+                    # Save to DB (TODO #47)
+                    from database.models import ZeroRouteDiagnostic
+                    diagnostic = ZeroRouteDiagnostic(
+                        source_station=source,
+                        dest_station=destination,
+                        search_date=dt.date(),
+                        source_departures=len(src_sched),
+                        dest_arrivals=len(dst_sched),
+                        intersecting_trips=len(intersecting)
+                    )
+                    self.db.add(diagnostic)
+                    self.db.commit()
+            except Exception as e:
+                logger.error(f"Failed to record zero route diagnostic: {e}")
+                self.db.rollback()
+
         from services.seat_verification import SeatVerificationService
+
         from services.journey_cache import save_journey
         from services.realtime_ingestion.live_status_service import LiveStatusService
         
@@ -318,7 +401,8 @@ class SearchService:
                 "num_transfers": num_transfers, "is_direct": num_transfers == 0,
                 "total_cost": rt.total_cost, "total_fare": rt.total_cost, "cheapest_fare": rt.total_cost,
                 "legs": legs, "availability_status": "PENDING", "live_status": None,
-                "reliability_score": 1.0
+                "reliability_score": getattr(rt, 'reliability', 1.0),
+                "break_probability": rt.metadata.get("break_probability", 0.0) if hasattr(rt, 'metadata') and rt.metadata else 0.0
             }
 
             # 1. Transfer Risk (Idea 2)
@@ -331,6 +415,16 @@ class SearchService:
             # 2. Live Status (Topic 8) - Only for top candidates initially to save API hits
             if idx < 15:
                 try:
+                    # 7-Day Reliability Check (NEW Task 26)
+                    first_leg = rt.segments[0]
+                    suspicious = await seat_svc.is_train_suspicious(
+                        first_leg.train_number, first_leg.departure_code, first_leg.arrival_code
+                    )
+                    if suspicious:
+                        journey_data["is_suspicious"] = True
+                        journey_data["reliability_score"] *= 0.3 # Heavy penalty
+                        logger.warning(f"🚩 Flagged suspicious train: {first_leg.train_number}")
+
                     live = await live_svc.get_live_status(rt.segments[0].train_number)
                     if live:
                         journey_data["live_status"] = {"delay": live.get("delay_minutes", 0), "status": live.get("status_message", "Running")}

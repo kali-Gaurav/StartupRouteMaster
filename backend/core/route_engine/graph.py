@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 import logging
@@ -29,6 +29,18 @@ class StaticGraphSnapshot:
     route_patterns: Dict[Tuple[int, ...], List[int]] = field(default_factory=lambda: defaultdict(list))
     transfer_cache: Dict[Tuple[int, int], List[TransferConnection]] = field(default_factory=dict)
     stop_index: Dict[str, int] = field(default_factory=dict)
+    
+    # Phase 2: Core Station Time-Series Index (TODO #11)
+    # station_id -> hour_bucket (0-23) -> sorted list of (departure_time, trip_id)
+    station_time_index: Dict[int, List[List[Tuple[datetime, int]]]] = field(default_factory=lambda: defaultdict(lambda: [[] for _ in range(24)]))
+    
+    # Phase 4: Reliability Scores (TODO #32)
+    # (trip_id, station_id) -> float (0.0 to 1.0)
+    reliability_scores: Dict[Tuple[int, int], float] = field(default_factory=dict)
+    
+    # Phase 5: Routing Optimizations
+    # trip_id -> set of station_ids visited by this trip
+    station_ids_by_trip: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     
     version: str = "v2.5"
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -163,13 +175,45 @@ class TimeDependentGraph:
         self.transfer_cache.setdefault(key, []).append(transfer)
 
     # ----------------------------- lookup helpers -----------------------------
-    def get_departures_from_stop(self, stop_id: int, after_time: datetime, lookahead_minutes: int = 1440) -> List[Tuple[datetime, int]]:
-        """Get departures from stop after given time, considering real-time delays and cancellations.
-        Uses binary search for O(log N) lookup efficiency.
+    def get_departures_from_stop(self, stop_id: int, after_time: datetime, lookahead_minutes: int = 1440, target_date: Optional[date] = None) -> List[Tuple[datetime, int]]:
         """
-        if after_time >= datetime(3000, 1, 1): # Safety check for datetime.max
+        Get departures from stop after given time, considering real-time delays and cancellations.
+        Phase 2: Uses station_time_index for O(1) hour-bucket lookups (TODO #14).
+        """
+        if after_time >= datetime(2100, 1, 1): # Safety check
             return []
             
+        # Apply overflow protection for limit_time
+        try:
+            limit_time = after_time + timedelta(minutes=lookahead_minutes)
+        except OverflowError:
+            limit_time = datetime(2100, 1, 1)
+
+        # 1. Use station_time_index if available (from snapshot)
+        if self.snapshot and self.snapshot.station_time_index:
+            buckets = self.snapshot.station_time_index.get(stop_id)
+            if buckets:
+                adjusted = []
+                
+                # Determine which hour buckets to check
+                total_hours = (lookahead_minutes // 60) + 2
+                start_hour = after_time.hour
+                
+                for h_offset in range(total_hours):
+                    hour = (start_hour + h_offset) % 24
+                    for dt, trip_id in buckets[hour]:
+                        if self.overlay.is_cancelled(trip_id):
+                            continue
+                        
+                        delay = self.overlay.get_trip_delay(trip_id)
+                        effective_time = dt + timedelta(minutes=delay)
+                        
+                        if after_time <= effective_time <= limit_time:
+                            adjusted.append((effective_time, trip_id))
+                
+                return sorted(list(set(adjusted)), key=lambda x: x[0])
+
+        # 2. Fallback to binary search on departures_by_stop (Legacy / Phase 1)
         base_departures = self.departures_by_stop.get(stop_id, [])
         if not base_departures:
             return []
@@ -178,28 +222,16 @@ class TimeDependentGraph:
         idx = bisect_left(base_departures, (after_time, -1))
         candidates = base_departures[idx:]
 
-        # Apply Real-time Overlay (Phase 2: COW Layer)
         adjusted = []
-        try:
-            limit_time = after_time + timedelta(minutes=lookahead_minutes)
-        except OverflowError:
-            limit_time = datetime.max
+        limit_time = after_time + timedelta(minutes=lookahead_minutes)
         
         for dt, trip_id in candidates:
-            # Since base_departures is sorted by time, we can break once dt exceeds limit
             if dt > limit_time:
                 break
-                
             if self.overlay.is_cancelled(trip_id):
                 continue
-            
             delay = self.overlay.get_trip_delay(trip_id)
-            try:
-                effective_time = dt + timedelta(minutes=delay)
-            except OverflowError:
-                effective_time = datetime.max
-            
-            # Check after delay adjustment (might have shifted earlier or later)
+            effective_time = dt + timedelta(minutes=delay)
             if after_time <= effective_time <= limit_time:
                 adjusted.append((effective_time, trip_id))
 

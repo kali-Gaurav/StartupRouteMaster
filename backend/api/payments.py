@@ -17,7 +17,6 @@ from services.cache_service import cache_service
 from services.route_verification_service import RouteVerificationService
 from database.models import Route as RouteModel, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
 from api.dependencies import get_current_user, verify_webhook_signature
-from services.redirect_service import redirect_service
 from utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
 from utils.limiter import limiter
 

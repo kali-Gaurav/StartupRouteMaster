@@ -39,15 +39,11 @@ async def prebuild_system():
         hub_duration = time.time() - hub_start
         logger.info(f"✅ Hub Table Ready: {len(hub_table.reachable_hubs)} entries in {hub_duration:.2f}s")
         
-        # 3. Warm up Station Cache in Redis
+        # 3. Warm up Station Cache
         logger.info("Warming up station metadata cache...")
-        from services.station_service import StationService
-        db = SessionLocal()
-        station_service = StationService(db)
-        # Simply calling a broad search will trigger the Redis caching logic we implemented
-        station_service.search_stations_by_name("A") 
-        station_service.search_stations_by_name("B")
-        db.close()
+        from services.station_search_service import station_search_engine
+        # Ensure the in-memory Trie is fully loaded from SQLite
+        station_search_engine._ensure_initialized()
 
     logger.info("="*60)
     logger.info("🏁 PRE-BUILD COMPLETE: System is now optimized for instant search.")
