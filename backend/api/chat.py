@@ -848,8 +848,16 @@ async def chat_message(
 
     # Upgrade 1: Deterministic Intent First (CRITICAL)
     # Never send everything to LLM immediately. Fast-path known intents.
-    intent = await asyncio.to_thread(get_intent_from_message, chat_message_request.message)
+    from backend.utils.nlp_router import get_local_intent
+    local_intent_data = await asyncio.to_thread(get_local_intent, chat_message_request.message)
     
+    intent = "unknown"
+    if local_intent_data:
+        intent = local_intent_data["intent"]
+        # If we have entities, we can pre-populate session or response
+        if "entities" in local_intent_data:
+            session.setdefault("extracted_entities", {}).update(local_intent_data["entities"])
+
     # If intent is unknown but message contains 'X to Y' station pattern, treat as search
     if intent == 'unknown':
         stations_look = await asyncio.to_thread(extract_stations_from_message, chat_message_request.message)

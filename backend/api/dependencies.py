@@ -11,7 +11,7 @@ from utils.security import decode_access_token, credentials_exception
 from services.cache_service import cache_service
 
 # supabase client used for token validation
-from supabase_client import supabase
+from core.auth.supabase_client import supabase
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/users/token")
 # Optional OAuth2 scheme for endpoints that may accept anonymous requests

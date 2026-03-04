@@ -55,6 +55,65 @@ class User(UserBase):
     commission_tracks = relationship("CommissionTracking", back_populates="user")
     unlocked_routes = relationship("UnlockedRoute", back_populates="user")
     subscription = relationship("Subscription", back_populates="user", uselist=False)
+    route_search_logs = relationship("RouteSearchLog", back_populates="user")
+    ai_preferences = relationship("UserAIPreference", back_populates="user", uselist=False)
+
+class TrainLiveUpdate(TransitBase):
+    __tablename__ = "train_live_updates"
+    id = Column(Integer, primary_key=True)
+    train_number = Column(String(20), index=True)
+    current_station = Column(String(100))
+    delay_minutes = Column(Integer, default=0)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+class TrainStation(TransitBase):
+    __tablename__ = "train_stations"
+    id = Column(Integer, primary_key=True)
+    train_number = Column(String(20), index=True)
+    stop_id = Column(String(50), index=True)
+    arrival_time = Column(String(20))
+    departure_time = Column(String(20))
+    stop_sequence = Column(Integer)
+
+class UserAIPreference(UserBase):
+    __tablename__ = "user_ai_preferences"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), unique=True)
+    preferred_language = Column(String(20), default="en")
+    persona_bias = Column(Float, default=0.5)
+    user = relationship("User", back_populates="ai_preferences")
+
+class RLFeedbackLog(UserBase):
+    __tablename__ = "rl_feedback_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    prompt = Column(Text)
+    response = Column(Text)
+    rating = Column(Integer) # 1 or -1
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+class Transfer(TransitBase):
+    """
+    GTFS-standard transfers between stops.
+    """
+    __tablename__ = "transfers"
+    id = Column(Integer, primary_key=True)
+    from_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    to_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    transfer_type = Column(Integer, default=0) # 0: recommended, 1: timed, 2: min_time, 3: no_transfer
+    min_transfer_time = Column(Integer, nullable=True) # seconds
+
+class StationHealthIndex(TransitBase):
+    """
+    Qualitative metrics for station safety and facilities.
+    """
+    __tablename__ = "station_health_index"
+    id = Column(Integer, primary_key=True)
+    stop_id = Column(Integer, ForeignKey("stops.id"), unique=True)
+    infrastructure_score = Column(Float, default=0.0)
+    safety_score = Column(Float, default=0.0)
+    cleanliness_score = Column(Float, default=0.0)
+    last_audited = Column(DateTime, default=datetime.utcnow)
 
 class Profile(UserBase):
     __tablename__ = "profiles"
@@ -189,6 +248,13 @@ class Calendar(TransitBase):
     start_date = Column(Date)
     end_date = Column(Date)
 
+class CalendarDate(TransitBase):
+    __tablename__ = "calendar_dates"
+    id = Column(Integer, primary_key=True)
+    service_id = Column(String(100), ForeignKey("calendar.service_id"), index=True)
+    date = Column(Date, nullable=False, index=True)
+    exception_type = Column(Integer, default=1) # 1: added, 2: removed
+
 class Trip(TransitBase):
     __tablename__ = "trips"
     id = Column(Integer, primary_key=True)
@@ -196,6 +262,25 @@ class Trip(TransitBase):
     route_id = Column(Integer, ForeignKey("gtfs_routes.id"))
     service_id = Column(String(100), ForeignKey("calendar.service_id"))
     stop_times = relationship("StopTime", back_populates="trip")
+
+class Segment(TransitBase):
+    """
+    Pre-computed or cached route segments for high-performance routing.
+    """
+    __tablename__ = "segments"
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), index=True)
+    source_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    destination_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    departure_time = Column(Time, nullable=False)
+    arrival_time = Column(Time, nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    distance_km = Column(Float, nullable=True)
+    fare = Column(Float, nullable=True)
+    
+    # Redundant but useful for fast indexing
+    train_number = Column(String(50), index=True)
+    train_name = Column(String(255))
 
 class StopTime(TransitBase):
     __tablename__ = "stop_times"

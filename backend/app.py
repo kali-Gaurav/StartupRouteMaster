@@ -12,6 +12,7 @@ from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
 from api.v2 import search, debug, admin, live, user, booking
+from api import chat, chat_ws
 
 # Configure Logging
 logging.basicConfig(
@@ -70,6 +71,8 @@ app.include_router(user.router, prefix="/api/v2")
 app.include_router(booking.router, prefix="/api/v2")
 app.include_router(debug.router, prefix="/api/v2")
 app.include_router(admin.router, prefix="/api/v2")
+app.include_router(chat.router)
+app.include_router(chat_ws.router)
 
 @app.get("/admin/dashboard", tags=["Internal"])
 async def serve_dashboard():
