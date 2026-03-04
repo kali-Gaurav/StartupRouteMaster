@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, useNavigate, Outlet, Navigate } from "rea
 import { lazy, Suspense } from "react";
 import { MiniAppGate } from "@/components/MiniAppGate";
 import { RailAssistantChatbot } from "@/components/RailAssistantChatbot";
+import { SOSWidget } from "@/components/SOSWidget";
 import { NetworkStatusBanner } from "@/components/NetworkStatusBanner";
 import { BottomNav } from "@/components/BottomNav";
 import { DevBootstrap } from "@/components/DevBootstrap";
@@ -30,6 +31,7 @@ const Privacy = lazy(() => import("./pages/Privacy"));
 const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
+const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
 
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
@@ -78,6 +80,7 @@ const AppContent = () => {
       <Toaster />
       <Sonner />
       <NetworkStatusBanner />
+      <SOSWidget />
       <DevBootstrap />
       <DevDebugPanel />
       <BrowserRouter>
@@ -93,6 +96,7 @@ const AppContent = () => {
             <Route path="/terms" element={<Terms />} />
             <Route path="/safety" element={<Safety />} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
+            <Route path="/ops/sos" element={<SOSDashboard />} />
 
             {/* Mini App with Granular Resilience (Suggestion #25) */}
             <Route path="/mini-app" element={<MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>}>

@@ -35,6 +35,14 @@ async def get_train_tracking(
         "source": "Railway Graph Overlay"
     }
 
+@router.get("/dead-zone")
+async def check_dead_zone(lat: float, lng: float, speed: float = 60.0):
+    """
+    Predicts upcoming dead zones and returns an emergency directory for offline use.
+    """
+    from services.emergency.safety_service import safety_service
+    return await safety_service.predict_dead_zone(lat, lng, speed)
+
 @router.get("/station/{station_code}")
 async def get_station_board(
     station_code: str,

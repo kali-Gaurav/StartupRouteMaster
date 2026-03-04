@@ -125,6 +125,11 @@ class Config:
     NTES_BASE_URL = os.getenv("NTES_BASE_URL", "")
     GPS_API_ENDPOINT = os.getenv("GPS_API_ENDPOINT", "")
     
+    # Telegram Bot Configuration
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+    EMERGENCY_ADMIN_NUMBER = os.getenv("EMERGENCY_ADMIN_NUMBER", "+91-ADMIN-DEFAULT")
+    
     # Timeouts & Retries
     LIVE_API_TIMEOUT_MS = int(os.getenv("LIVE_API_TIMEOUT_MS", "5000"))
     LIVE_API_RETRY_COUNT = int(os.getenv("LIVE_API_RETRY_COUNT", "2"))
@@ -152,6 +157,7 @@ class Config:
     
     # Environment
     ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+    DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes") or ENVIRONMENT == "development"
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     # RouteMaster Agent

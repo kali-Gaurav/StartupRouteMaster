@@ -61,10 +61,22 @@ class User(UserBase):
 class TrainLiveUpdate(TransitBase):
     __tablename__ = "train_live_updates"
     id = Column(Integer, primary_key=True)
-    train_number = Column(String(20), index=True)
-    current_station = Column(String(100))
+    train_number = Column(String(50), index=True)
+    station_code = Column(String(100))
+    station_name = Column(String(255))
+    sequence = Column(Integer)
+    distance_km = Column(Float)
+    scheduled_arrival = Column(DateTime)
+    scheduled_departure = Column(DateTime)
+    actual_arrival = Column(DateTime)
+    actual_departure = Column(DateTime)
     delay_minutes = Column(Integer, default=0)
-    last_updated = Column(DateTime, default=datetime.utcnow)
+    platform = Column(String(20))
+    halt_minutes = Column(Integer)
+    status = Column(String(100))
+    is_current_station = Column(Boolean, default=False)
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+    source = Column(String(100))
 
 class TrainStation(TransitBase):
     __tablename__ = "train_stations"
@@ -122,6 +134,12 @@ class Profile(UserBase):
     name = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
     avatar_url = Column(String(1024), nullable=True)
+    
+    # Medical & Safety (Task 16)
+    blood_group = Column(String(5), nullable=True)
+    medical_conditions = Column(Text, nullable=True)
+    is_high_risk_passenger = Column(Boolean, default=False)
+    
     ai_memory = Column(JSON, default={}, nullable=False)
     user = relationship("User", back_populates="profile")
 
@@ -134,8 +152,8 @@ class Booking(UserBase):
     booking_status = Column(String(50), default="pending")
     amount_paid = Column(Float, default=0.0)
     
-    # Suggestion #19: Compact Binary Storage for large details
-    booking_details_blob = Column(LargeBinary, nullable=True)
+    # Matches actual DB column 'booking_details'
+    booking_details = Column(JSON, nullable=True)
     
     route_id = Column(String(36), nullable=True)
     trip_id = Column(Integer, nullable=True)

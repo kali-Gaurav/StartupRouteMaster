@@ -23,8 +23,9 @@ def _enable_sqlite_optimizations(dbapi_connection, connection_record):
 
 
 # --- Engines ---
-user_db_path = "sqlite:///backend/database/user_store.db"
-transit_db_path = "sqlite:///backend/database/transit_graph.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+user_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'user_store.db')}"
+transit_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'transit_graph.db')}"
 
 engine_user = create_engine(user_db_path, connect_args={"check_same_thread": False})
 engine_transit = create_engine(transit_db_path, connect_args={"check_same_thread": False})
@@ -69,7 +70,7 @@ async def init_db():
 
 def get_source_connection():
     import sqlite3
-    db_path = os.path.join(os.getcwd(), 'backend', 'database', 'railway_data.db')
+    db_path = os.path.join(BASE_DIR, 'railway_data.db')
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn

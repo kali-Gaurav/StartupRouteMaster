@@ -12,6 +12,15 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         correlation_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
         request.state.correlation_id = correlation_id
         
+        # Subtask 20.1: SOS Traffic Marking
+        path = request.url.path
+        is_sos = "/api/sos" in path or request.headers.get("X-SOS-Priority") == "true"
+        if is_sos:
+            logger.info(f"🚨 [PRIORITY] High-urgency SOS traffic detected: {path}")
+            request.state.is_priority = True
+        else:
+            request.state.is_priority = False
+        
         # Suggestion #4: Middleware Overhead tracking
         middleware_start = time.perf_counter()
         

@@ -102,6 +102,20 @@ class SOSAlertTool(BaseModel):
     location: str
     message: Optional[str] = None
 
+class RailwayDatabaseTool(BaseModel):
+    """Query the railway database for train schedules, station info, or platform details.
+    Use this to answer factual questions about train timings and station data.
+    """
+    query_type: str # 'train_schedule', 'station_info', 'platform_details'
+    train_number: Optional[str] = None
+    station_code: Optional[str] = None
+
+class FareCalculationTool(BaseModel):
+    """Calculate the approximate fare between two stations for a given class."""
+    source: str
+    destination: str
+    travel_class: str # 'SL', '3A', '2A', '1A', 'CC'
+
 class GatewayValidator:
     """
     Inspects AI-generated tool calls against user permissions before execution.
@@ -126,63 +140,139 @@ class GatewayValidator:
             return response_obj
 
         if function_name == "RouteSearchTool":
-            source = arguments.get("source")
-            destination = arguments.get("destination")
-            date = arguments.get("date")
-            reply_text = f"AI requested a route search from {source} to {destination}"
-            if date:
-                reply_text += f" on {date}"
-            response_obj.reply = reply_text + ". I would now perform the search."
-            response_obj.trigger_search = True
-            response_obj.collected = {"source": source, "destination": destination, "date": date}
-            response_obj.actions = [
-                ChatAction(label="View Results", type="intent", value="view_search"),
-                ChatAction(label="Modify Search", type="intent", value="modify_search")
-            ]
-            response_obj.state = "search"
-            
-            # perform actual search using route engine + helpers
+            from database.session import SessionTransit
+            transit_db = SessionTransit()
             try:
-                from core.route_engine import route_engine
-                from core.route_engine.constraints import RouteConstraints
-                from utils.station_utils import resolve_stations
-                from utils.validation import validate_date_string
-                from datetime import datetime
-
-                travel_dt = None
+                source = arguments.get("source")
+                destination = arguments.get("destination")
+                date = arguments.get("date")
+                reply_text = f"AI requested a route search from {source} to {destination}"
                 if date:
-                    travel_dt = validate_date_string(date, allow_past=False)
-                if not travel_dt:
-                    travel_dt = datetime.utcnow()
+                    reply_text += f" on {date}"
+                response_obj.reply = reply_text + ". I would now perform the search."
+                response_obj.trigger_search = True
+                response_obj.collected = {"source": source, "destination": destination, "date": date}
+                response_obj.actions = [
+                    ChatAction(label="View Results", type="intent", value="view_search"),
+                    ChatAction(label="Modify Search", type="intent", value="modify_search")
+                ]
+                response_obj.state = "search"
+                
+                # perform actual search using route engine + helpers
+                try:
+                    from core.route_engine import route_engine
+                    from core.route_engine.constraints import RouteConstraints
+                    from utils.station_utils import resolve_stations
+                    from utils.validation import validate_date_string
+                    from datetime import datetime
 
-                src_stop, dst_stop = resolve_stations(self.db, source, destination)
+                    travel_dt = None
+                    if date:
+                        travel_dt = validate_date_string(date, allow_past=False)
+                    if not travel_dt:
+                        travel_dt = datetime.utcnow()
+
+                    src_stop, dst_stop = resolve_stations(transit_db, source, destination)
+                    if src_stop and dst_stop:
+                        # Apply modern optimized constraints
+                        constraints = RouteConstraints(max_transfers=3, range_minutes=1440)
+                        routes = await route_engine.search_routes(src_stop.code, dst_stop.code, travel_dt, constraints=constraints)
+                        # convert routes to dict form
+                        routes_data = []
+                        for route in routes:
+                            routes_data.append({
+                                'segments': [
+                                    {k: getattr(seg, k) for k in ['trip_id','departure_stop_id','arrival_stop_id','departure_time','arrival_time','duration_minutes','distance_km','fare','train_name','train_number']}
+                                    for seg in route.segments
+                                ],
+                                'transfers': [
+                                    {k: getattr(t, k) for k in ['station_id','arrival_time','departure_time','duration_minutes','station_name','facilities_score','safety_score']}
+                                    for t in route.transfers
+                                ],
+                                'total_duration': route.total_duration,
+                                'total_distance': route.total_distance,
+                                'total_cost': getattr(route, 'total_cost', 0), # FIXED: was total_fare
+                                'score': getattr(route, 'score', None)
+                            })
+                        response_obj.search_results = routes_data
+                    else:
+                        response_obj.reply += " However I could not resolve the station names for the search."
+                except Exception as e:
+                    logger.error(f"RouteSearchTool execution failed: {e}")
+                return response_obj
+            finally:
+                transit_db.close()
+
+        elif function_name == "RailwayDatabaseTool":
+            from database.session import SessionTransit
+            transit_db = SessionTransit()
+            try:
+                query_type = arguments.get("query_type")
+                train_number = arguments.get("train_number")
+                station_code = arguments.get("station_code")
+                
+                if query_type == "train_schedule" and train_number:
+                    from database.models import StopTime, Stop, Trip, Route
+                    results = transit_db.query(StopTime, Stop.name, Stop.code)\
+                        .join(Stop, StopTime.stop_id == Stop.id)\
+                        .join(Trip, StopTime.trip_id == Trip.id)\
+                        .join(Route, Trip.route_id == Route.id)\
+                        .filter(Route.route_id == train_number)\
+                        .order_by(StopTime.stop_sequence).all()
+                    
+                    if not results:
+                        response_obj.reply = f"I couldn't find any schedule information for train {train_number}."
+                    else:
+                        sched_list = [f"{r[2]} ({r[1]}): {r[0].arrival_time}" for r in results]
+                        response_obj.reply = f"Schedule for {train_number}:\n" + "\n".join(sched_list[:10]) + ("\n..." if len(sched_list) > 10 else "")
+                    return response_obj
+
+                elif query_type == "station_info" and station_code:
+                    from database.models import Stop
+                    stop = transit_db.query(Stop).filter(Stop.code == station_code.upper()).first()
+                    if stop:
+                        response_obj.reply = f"Station: {stop.name} ({stop.code})\nLocation: {stop.latitude}, {stop.longitude}\nPlatforms: {stop.platform_count or 'Unknown'}"
+                    else:
+                        response_obj.reply = f"I couldn't find details for station {station_code}."
+                    return response_obj
+            finally:
+                transit_db.close()
+
+        elif function_name == "FareCalculationTool":
+            from database.session import SessionTransit
+            from utils.fare_calculator import FareCalculator
+            from utils.station_utils import resolve_stations
+            import math
+            
+            transit_db = SessionTransit()
+            try:
+                source = arguments.get("source")
+                destination = arguments.get("destination")
+                travel_class = arguments.get("travel_class", "SL")
+                
+                src_stop, dst_stop = resolve_stations(transit_db, source, destination)
                 if src_stop and dst_stop:
-                    # Apply modern optimized constraints
-                    constraints = RouteConstraints(max_transfers=3, range_minutes=1440)
-                    routes = await route_engine.search_routes(src_stop.code, dst_stop.code, travel_dt, constraints=constraints)
-                    # convert routes to dict form
-                    routes_data = []
-                    for route in routes:
-                        routes_data.append({
-                            'segments': [
-                                {k: getattr(seg, k) for k in ['trip_id','departure_stop_id','arrival_stop_id','departure_time','arrival_time','duration_minutes','distance_km','fare','train_name','train_number']}
-                                for seg in route.segments
-                            ],
-                            'transfers': [
-                                {k: getattr(t, k) for k in ['station_id','arrival_time','departure_time','duration_minutes','station_name','facilities_score','safety_score']}
-                                for t in route.transfers
-                            ],
-                            'total_duration': route.total_duration,
-                            'total_distance': route.total_distance,
-                            'total_cost': getattr(route, 'total_cost', 0), # FIXED: was total_fare
-                            'score': getattr(route, 'score', None)
-                        })
-                    response_obj.search_results = routes_data
+                    # Calculate Haversine Distance (approximate)
+                    def haversine(lat1, lon1, lat2, lon2):
+                        R = 6371 # Earth radius in km
+                        dlat = math.radians(lat2 - lat1)
+                        dlon = math.radians(lon2 - lon1)
+                        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+                        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                        return R * c
+
+                    dist = haversine(src_stop.latitude, src_stop.longitude, dst_stop.latitude, dst_stop.longitude)
+                    # Train tracks are longer than birds-eye distance (~20% more)
+                    dist = dist * 1.2 
+                    
+                    fare = FareCalculator.calculate(dist, travel_class)
+                    response_obj.reply = f"The estimated fare for **{travel_class}** from **{src_stop.name}** to **{dst_stop.name}** is **₹{fare}**."
+                    response_obj.actions = [ChatAction(label="Book Now", type="navigate", value=f"/?from={src_stop.code}&to={dst_stop.code}", icon="Ticket")]
                 else:
-                    response_obj.reply += " However I could not resolve the station names for the search."
-            except Exception as e:
-                logger.error(f"RouteSearchTool execution failed: {e}")
-            return response_obj
+                    response_obj.reply = f"I couldn't calculate the fare because I couldn't find the stations {source} or {destination}."
+                return response_obj
+            finally:
+                transit_db.close()
 
         elif function_name == "MultiModalPlanTool":
             source = arguments.get("source")
@@ -275,55 +365,67 @@ def _session_key(session_id: str) -> str:
     return f"{SESSION_KEY_PREFIX}{session_id}"
 
 
-def _load_session(session_id: str) -> Dict[str, Any]:
+def _load_session(session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    session_data = {
+        "created_at": datetime.utcnow().isoformat(), 
+        "messages": [], 
+        "context": {},
+        "extracted_entities": {}
+    }
+
+    # 1. Try Redis First
     if _redis:
         try:
             raw = _redis.get(_session_key(session_id))
             if raw:
-                return json.loads(raw)
+                session_data = json.loads(raw)
         except Exception:
             pass
-    return _local_sessions.get(session_id, {"created_at": datetime.utcnow().isoformat(), "messages": [], "context": {}})
+    elif session_id in _local_sessions:
+        session_data = _local_sessions[session_id]
+
+    # 2. Layer in Persistent AI Memory from Database
+    if user_id:
+        from database.session import SessionLocal
+        from database.models import Profile
+        db = SessionLocal()
+        try:
+            profile = db.query(Profile).filter(Profile.user_id == user_id).first()
+            if profile and profile.ai_memory:
+                # Merge persistent preferences/facts into current context
+                session_data.setdefault("context", {}).update(profile.ai_memory)
+        finally:
+            db.close()
+
+    return session_data
 
 
 def _save_session(session_id: str, data: Dict[str, Any]) -> None:
     """
-    Saves a compact conversation summary to Redis.
-    The summary includes key context like source, destination, and date.
+    Saves session with a strict 10-message window and persistent entities.
     """
     ttl = Config.REDIS_SESSION_EXPIRY_SECONDS
     
-    # Create a compact summary
+    # 1. Enforce 10-message context window (5 user + 5 assistant)
     messages = data.get("messages", [])
-    last_10_messages = messages[-10:]
-
-    source = None
-    destination = None
-    date = None
-
-    for msg in reversed(last_10_messages):
-        if msg.get("role") == "assistant" and msg.get("collected"):
-            if not source and msg["collected"].get("source"):
-                source = msg["collected"]["source"]
-            if not destination and msg["collected"].get("destination"):
-                destination = msg["collected"]["destination"]
-            if not date and msg["collected"].get("date"):
-                date = msg["collected"]["date"]
-        if source and destination and date:
-            break
-            
-    summary = {
-        "source": source,
-        "destination": destination,
-        "date": date,
-        "last_message_timestamp": last_10_messages[-1]["timestamp"] if last_10_messages else None
-    }
+    if len(messages) > 10:
+        messages = messages[-10:]
     
+    # 2. Extract and Persist Entities (Source, Destination, Date)
+    entities = data.get("extracted_entities", {})
+    
+    # Also look into recent messages if not explicitly set
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant" and msg.get("collected"):
+            for k, v in msg["collected"].items():
+                if v and not entities.get(k):
+                    entities[k] = v
+
     compact_data = {
         "created_at": data.get("created_at"),
-        "summary": summary,
-        # Storing last 2 messages for immediate context
-        "messages": messages[-2:] 
+        "messages": messages,
+        "extracted_entities": entities,
+        "context": data.get("context", {})
     }
 
     if _redis:
@@ -334,7 +436,7 @@ def _save_session(session_id: str, data: Dict[str, Any]) -> None:
             logger.error(f"Failed to save session to Redis: {e}")
             
     # Fallback to local session storage
-    _local_sessions[session_id] = data
+    _local_sessions[session_id] = compact_data
 
 
 
@@ -388,16 +490,19 @@ CITY_STATION_MAP = {
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
+    message_id: Optional[str] = None # Added for deduplication
 
 class ChatAction(BaseModel):
     label: str
     type: str
     value: Optional[str] = None
+    icon: Optional[str] = None # Added for UI enrichment
 
 class ChatResponse(BaseModel):
     reply: str
     message: Optional[str] = None
     actions: Optional[List[ChatAction]] = None
+    suggestions: Optional[List[ChatAction]] = None # Same model for chips
     state: Optional[str] = "idle"
     trigger_search: Optional[bool] = False
     collected: Optional[Dict[str, str]] = None
@@ -464,6 +569,14 @@ async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "name": "SOSAlertTool",
                 "description": SOSAlertTool.__doc__,
                 "parameters": SOSAlertTool.model_json_schema()
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "FareCalculationTool",
+                "description": FareCalculationTool.__doc__,
+                "parameters": FareCalculationTool.model_json_schema()
             }
         }
     ]
@@ -698,36 +811,31 @@ def get_intent_from_message(message: str) -> str:
 
 def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -> ChatResponse:
     actions = []
+    suggestions = []
     reply = ""
     trigger_search = False
     collected = None
     correlation_id = None
+    
     if intent == 'search':
-        stations = extract_stations_from_message(message)
-        date = extract_date_from_message(message)
-        if stations.get('source') and stations.get('destination'):
-            source_display = f"{stations['source']} ({stations.get('source_city', '')})" if stations.get('source_city') else stations['source']
-            dest_display = f"{stations['destination']} ({stations.get('destination_city', '')})" if stations.get('destination_city') else stations['destination']
-            reply = f"🔍 Searching for routes from {source_display} to {dest_display}"
+        # Use existing extracted entities if available
+        entities = session_data.get("extracted_entities", {})
+        source = entities.get("source")
+        destination = entities.get("destination")
+        date = entities.get("date")
+        
+        if source and destination:
+            reply = f"🔍 Searching for routes from {source} to {destination}"
             if date:
                 reply += f" on {date}"
             reply += "..."
             trigger_search = True
-            collected = {
-                "source": stations.get('source', ''),
-                "source_city": stations.get('source_city', ''),
-                "source_code": stations.get('source_code', ''),
-                "destination": stations.get('destination', ''),
-                "destination_city": stations.get('destination_city', ''),
-                "destination_code": stations.get('destination_code', ''),
-            }
-            if date:
-                collected["date"] = date
+            collected = entities
             correlation_id = str(uuid.uuid4())
-            actions = [
-                ChatAction(label="View Results", type="intent", value="view_search"),
-                ChatAction(label="Modify Search", type="intent", value="modify_search"),
-                ChatAction(label="Dashboard", type="navigate", value="/dashboard")
+            suggestions = [
+                ChatAction(label="View Results", type="intent", value="view_search", icon="Eye"),
+                ChatAction(label="Modify Search", type="intent", value="modify_search", icon="Edit"),
+                ChatAction(label="Dashboard", type="navigate", value="/dashboard", icon="Layout")
             ]
         else:
             reply = """I need both source and destination stations to search for routes.
@@ -735,86 +843,65 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -
 💡 **Examples:**
 • 'Delhi to Mumbai'
 • 'Book ticket from Kota to Bangalore'
-• 'Kolkata to Chennai on Monday'
-• 'Search trains Jaipur to Pune on 12-02-2026'
 
 Please try again!"""
-            actions = [
-                ChatAction(label="Popular Routes", type="intent", value="popular_routes"),
-                ChatAction(label="Search Form", type="navigate", value="/"),
-                ChatAction(label="Help", type="intent", value="help")
+            suggestions = [
+                ChatAction(label="Popular Routes", type="intent", value="popular_routes", icon="Star"),
+                ChatAction(label="Search Form", type="navigate", value="/", icon="Search"),
+                ChatAction(label="Help", type="intent", value="help", icon="HelpCircle")
             ]
     elif intent == 'trigger_sos':
         reply = "🚨 **EMERGENCY MODE**\n\nI can trigger an immediate SOS alert with your live location. Please confirm by tapping the button below."
-        actions = [
-            ChatAction(label="Open SOS Page", type="navigate", value="/sos"),
-            ChatAction(label="Emergency Help", type="intent", value="help")
-        ]
-
-    elif intent == 'navigate_guardian':
-        reply = "🛡️ **Journey Guardian**\n\nYou can enable live telemetry monitoring and family alerts using Guardian Mode. It's recommended for night journeys."
-        actions = [
-            ChatAction(label="Activate Guardian", type="navigate", value="/sos"),
-            ChatAction(label="Safety Info", type="navigate", value="/safety")
+        suggestions = [
+            ChatAction(label="🚨 TRIGGER SOS NOW", type="navigate", value="/sos", icon="AlertTriangle"),
+            ChatAction(label="Safe Routes", type="navigate", value="/safety", icon="ShieldCheck")
         ]
 
     elif intent == 'safety_info':
-        reply = "✅ **Route Safety**\n\nRouteMaster uses AI to calculate **Safety Scores** for every route based on historical data and live telemetry. Look for the 'Verified Safe' badge!"
-        actions = [
-            ChatAction(label="Safety Guarantee", type="navigate", value="/safety"),
-            ChatAction(label="Popular Routes", type="intent", value="popular_routes")
-        ]
-
-    elif intent == 'navigate_dashboard':
-        reply = "📊 Opening your dashboard..."
-        actions = [
-            ChatAction(label="Go to Dashboard", type="navigate", value="/dashboard")
-        ]
-
-    elif intent == 'navigate_sos':
-        reply = "🚨 Opening emergency SOS page..."
-        actions = [
-            ChatAction(label="Open SOS", type="navigate", value="/sos")
-        ]
-
-    elif intent == 'navigate_bookings':
-        reply = "📋 Opening your bookings..."
-        actions = [
-            ChatAction(label="View Bookings", type="navigate", value="/bookings")
-        ]
-
-    elif intent == 'navigate_admin':
-        reply = "⚙️ Opening admin dashboard..."
-        actions = [
-            ChatAction(label="Admin Panel", type="navigate", value="/admin")
-        ]
-
-    elif intent == 'open_telegram':
-        reply = "📱 Opening RouteMaster in Telegram..."
-        actions = [
-            ChatAction(label="Open Telegram Bot", type="open_url", value="https://t.me/RoutemasternagarindustrisBot")
-        ]
-
-    elif intent == 'sort_cost':
-        reply = "💰 Sorting routes by lowest cost..."
-        actions = [
-            ChatAction(label="Sort by Cost", type="sort", value="cost")
-        ]
-
-    elif intent == 'sort_duration':
-        reply = "⚡ Sorting routes by shortest duration..."
-        actions = [
-            ChatAction(label="Sort by Duration", type="sort", value="duration")
+        reply = "✅ **Route Safety**\n\nRouteMaster uses AI to calculate **Safety Scores** for every route based on historical data and live telemetry."
+        suggestions = [
+            ChatAction(label="Safety Score Details", type="navigate", value="/safety", icon="Shield"),
+            ChatAction(label="Plan Safe Journey", type="navigate", value="/", icon="Map")
         ]
 
     elif intent == 'popular_routes':
-        reply = "🌟 **Popular Routes in RouteMaster** — try 'Delhi → Mumbai', 'Mumbai → Goa' or 'Bengaluru → Chennai'."
+        reply = "🌟 **Popular Routes** — try 'Delhi → Mumbai' or 'Mumbai → Goa'."
+        suggestions = [
+            ChatAction(label="NDLS → CSTM", type="intent", value="search_ndls_cstm", icon="TrendingUp"),
+            ChatAction(label="BCT → ADI", type="intent", value="search_bct_adi", icon="Zap")
+        ]
+
+    elif intent == 'pnr_status':
+        pnr = session_data.get("extracted_entities", {}).get("pnr")
+        if pnr:
+            reply = f"🎫 **PNR Status for {pnr}**\n\nI am fetching the latest seat and delay info for your journey. One moment..."
+            suggestions = [
+                ChatAction(label="Track Live Train", type="navigate", value=f"/live?pnr={pnr}", icon="Navigation"),
+                ChatAction(label="Coach Position", type="intent", value=f"coach_pos_{pnr}", icon="MapPin"),
+                ChatAction(label="Refresh Status", type="intent", value=f"pnr_{pnr}", icon="RefreshCcw")
+            ]
+        else:
+            reply = "Please provide your **10-digit PNR number** so I can check the status for you."
+            suggestions = [
+                ChatAction(label="What is PNR?", type="intent", value="pnr_help", icon="HelpCircle")
+            ]
+
+    elif intent == 'fallback' or intent == 'unknown':
+        reply = """I'm having a little trouble connecting to my full 'AI brain' right now, but I can still help you with the essentials!
+
+• To **Search Trains**, type 'Delhi to Mumbai'
+• To **Check PNR**, paste your 10-digit number
+• For **Emergencies**, type 'SOS'"""
+        suggestions = [
+            ChatAction(label="Manual Search", type="navigate", value="/", icon="Search"),
+            ChatAction(label="Emergency SOS", type="navigate", value="/sos", icon="AlertTriangle"),
+            ChatAction(label="My Bookings", type="navigate", value="/bookings", icon="Ticket")
+        ]
 
     # Build and return ChatResponse
     return ChatResponse(
         reply=reply or "I'm not sure how to help with that.",
-        message=None,
-        actions=actions or None,
+        suggestions=suggestions or None,
         state="search" if trigger_search else "idle",
         trigger_search=trigger_search,
         collected=collected,
@@ -833,48 +920,102 @@ async def chat_message(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    # 0. Safety Firewall (CRITICAL)
+    from utils.safety import SafetyScanner
+    if not SafetyScanner.is_safe(chat_message_request.message):
+        raise HTTPException(
+            status_code=400, 
+            detail="Your message was flagged by our security filters. Please stick to travel-related queries."
+        )
+
     session_id = chat_message_request.session_id or str(uuid.uuid4())
     session = _load_session(session_id)
+
+    # 0. Deduplication Check (Offline Sync Support)
+    if chat_message_request.message_id:
+        for msg in reversed(session.get("messages", [])):
+            if msg.get("message_id") == chat_message_request.message_id:
+                logger.info(f"Duplicate message detected: {chat_message_request.message_id}")
+                # Return the existing assistant response if found
+                # (Simplification: return a flag or the actual cached response)
+                return ChatResponse(
+                    reply="I already received this message. Processing...",
+                    state="duplicate"
+                )
 
     session.setdefault("messages", []).append({
         "role": "user",
         "content": chat_message_request.message,
+        "message_id": chat_message_request.message_id,
         "timestamp": datetime.utcnow().isoformat()
     })
     
     # --- AI Integration Start ---
+    from utils.translator import MultiLingualBridge
+    
+    # 1. Detect and Translate to English for Processing
+    original_message = chat_message_request.message
+    message_en, user_lang = MultiLingualBridge.detect_and_translate(original_message)
+    
+    # Analyze Sentiment
+    from utils.sentiment import SentimentAnalyzer
+    sentiment = SentimentAnalyzer.analyze(message_en)
+    persona_override = SentimentAnalyzer.get_persona_override(sentiment)
+    
+    session.setdefault("context", {})["user_language"] = user_lang
+    session["context"]["last_sentiment"] = sentiment
+
     response_obj: ChatResponse
     validator = GatewayValidator(current_user, db)
 
     # Upgrade 1: Deterministic Intent First (CRITICAL)
-    # Never send everything to LLM immediately. Fast-path known intents.
-    from backend.utils.nlp_router import get_local_intent
-    local_intent_data = await asyncio.to_thread(get_local_intent, chat_message_request.message)
+    # Use translated English message for extraction
+    from utils.nlp_router import get_local_intent
+    from utils.entity_extractor import EntityExtractor
+    
+    extracted = EntityExtractor.extract_all(message_en)
+    if extracted:
+        session.setdefault("extracted_entities", {}).update(extracted)
+
+    local_intent_data = await asyncio.to_thread(get_local_intent, message_en)
     
     intent = "unknown"
     if local_intent_data:
         intent = local_intent_data["intent"]
-        # If we have entities, we can pre-populate session or response
-        if "entities" in local_intent_data:
-            session.setdefault("extracted_entities", {}).update(local_intent_data["entities"])
 
-    # If intent is unknown but message contains 'X to Y' station pattern, treat as search
-    if intent == 'unknown':
-        stations_look = await asyncio.to_thread(extract_stations_from_message, chat_message_request.message)
-        if stations_look.get('source') and stations_look.get('destination'):
-            intent = 'search'
+    # Fallback to search intent if stations were found
+    if intent == 'unknown' and "source" in session["extracted_entities"] and "destination" in session["extracted_entities"]:
+        intent = 'search'
 
-    # Fast-Path Execution (Bypass LLM for known commands to guarantee speed/reliability)
+    # Fast-Path Execution
     if intent != 'unknown' or not Config.OPENROUTER_API_KEY:
-        response_obj = await asyncio.to_thread(generate_response, intent, chat_message_request.message, session)
+        response_obj = await asyncio.to_thread(generate_response, intent, message_en, session)
         ai_reply_content = response_obj.reply
         tool_calls = []
     else:
+        # LLM processing with message_en...
+        from utils.token_limiter import TokenLimiter
+        from utils.chat_cache import ChatCache
+        
+        # 1. Check Token Limit
+        if not TokenLimiter.check_limit(session_id):
+            return ChatResponse(
+                reply="You have reached your daily limit for AI messages. Please try again in 24 hours or upgrade to a premium plan.",
+                state="limit_exceeded"
+            )
+
+        # 2. Check Frequent Questions Cache
+        cached_response = ChatCache.get(message_en)
+        if cached_response:
+            return ChatResponse(**cached_response)
+
         # Upgrade 2: Structured Tool Calling for complex queries
         ai_messages = []
         ai_messages.append({
             "role": "system",
-            "content": """You are Diksha (RouteMaster's AI Brain), an infinitely powerful, omniscient, and highly empathetic multi-modal travel and safety assistant. You have access to vast knowledge about Indian Railways, flights, buses, safety telemetry, and journey planning.
+            "content": f"""{persona_override}
+
+You are Diksha (RouteMaster's AI Brain), an infinitely powerful, omniscient, and highly empathetic multi-modal travel and safety assistant. You have access to vast knowledge about Indian Railways, flights, buses, safety telemetry, and journey planning.
 
 CORE PRINCIPLES:
 - Deep Comprehension: Understand complex queries, misspellings, multi-intent requests, and emotional nuances effortlessly.
@@ -894,6 +1035,8 @@ TOOLS USAGE & CAPABILITIES:
 - MultiModalPlanTool: For complex cross-country journeys with layovers or budget constraints.
 - BookRouteTool: Trigger booking flows.
 - SOSAlertTool: Trigger distress signals.
+- RailwayDatabaseTool: Query factual railway data (timings, stations).
+- FareCalculationTool: Quote accurate ticket prices.
 - Always explain your reasoning step-by-step for complex planning. Anticipate the user's next question.
 
 RESPONSE STYLE:
@@ -954,6 +1097,14 @@ RESPONSE STYLE:
 
     # --- AI Integration End ---
     
+    # Populate cache for frequent questions (if appropriate)
+    if intent == "unknown" and response_obj.reply:
+        ChatCache.set(message_en, response_obj.dict())
+
+    # Final Translation Step: Translate back to user's native language if not English
+    if user_lang != "en":
+        response_obj.reply = MultiLingualBridge.translate_to(response_obj.reply, user_lang)
+
     session["messages"].append({
         "role": "assistant",
         "content": response_obj.reply,
@@ -971,6 +1122,50 @@ RESPONSE STYLE:
     response_obj.message = response_obj.reply
     return response_obj
 
+
+class ChatFeedback(BaseModel):
+    session_id: str
+    message_id: Optional[str] = None
+    prompt: str
+    response: str
+    rating: int # 1 for up, -1 for down
+
+@router.post("/feedback")
+async def chat_feedback(
+    feedback: ChatFeedback,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Logs user feedback for AI responses."""
+    from database.models import RLFeedbackLog
+    try:
+        log = RLFeedbackLog(
+            user_id=current_user.id if current_user else None,
+            prompt=feedback.prompt,
+            response=feedback.response,
+            rating=feedback.rating,
+            timestamp=datetime.utcnow()
+        )
+        db.add(log)
+        db.commit()
+        return {"status": "success", "message": "Feedback recorded. Thank you!"}
+    except Exception as e:
+        logger.error(f"Feedback submission failed: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/history")
+async def get_chat_history(
+    session_id: str,
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Retrieves conversation history for a given session."""
+    session = _load_session(session_id)
+    return {
+        "session_id": session_id,
+        "messages": session.get("messages", []),
+        "extracted_entities": session.get("extracted_entities", {})
+    }
 
 @router.get("/health")
 async def chat_health():

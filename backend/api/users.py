@@ -69,9 +69,20 @@ async def update_location(
     db: Session = Depends(get_db)
 ):
     """
-    Update the user's current GPS location.
+    Update the user's current GPS location and check for journey safety.
     """
     from services.user_service import UserService
+    from services.emergency.safety_service import safety_service
+    
     user_service = UserService(db)
+    # 1. Update persistent location history
     await asyncio.to_thread(user_service.update_user_location, current_user, latitude, longitude)
-    return {"status": "success", "message": "Location updated"}
+    
+    # 2. Safety Check: Journey Deviation
+    safety_data = await safety_service.check_journey_deviation(current_user.id, latitude, longitude, db)
+    
+    return {
+        "status": "success", 
+        "message": "Location updated",
+        "safety": safety_data
+    }

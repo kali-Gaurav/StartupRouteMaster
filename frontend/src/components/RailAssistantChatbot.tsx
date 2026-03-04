@@ -15,6 +15,9 @@ import { evaluateProactiveRules } from "@/ai/proactiveRules";
 import { listenWakeWord } from "@/ai/wakeWord";
 import { analyzeEmotionalRisk } from "@/ai/emotionalEngine";
 import { voiceService } from "@/services/voiceService";
+import { MarkdownRenderer } from "./MarkdownRenderer";
+import { RouteVisualizer } from "./RouteVisualizer";
+import { InteractiveDatePicker } from "./InteractiveDatePicker";
 
 // Declare SpeechRecognition for browser compatibility
 declare global {
@@ -120,6 +123,16 @@ function generateSessionId() {
 
 const TELEGRAM_BOT_URL = "https://t.me/RoutemasternagarindustrisBot";
 
+function TypingIndicator() {
+  return (
+    <div className="flex gap-1.5 items-center bg-white dark:bg-muted border border-border rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm w-fit">
+      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "0ms" }} />
+      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "150ms" }} />
+      <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "300ms" }} />
+    </div>
+  );
+}
+
 export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
   const isBackendOnline = useBackendHealth();
   const [isOpen, setIsOpen] = useState(false);
@@ -132,6 +145,14 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string>(generateSessionId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [conversationState, setConversationState] = useState<ConversationState>({
@@ -431,6 +452,12 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
 
   const executeAction = useCallback((type: string, value?: string, label?: string) => {
     logEvent("chatbot_action_executed", { action_type: type });
+    
+    // Dispatch Global UI Event
+    window.dispatchEvent(new CustomEvent("chatbot-ui-control", {
+      detail: { type, value, label }
+    }));
+
     const handler = actionHandlers.current[type] || actionHandlers.current.default;
     handler(value, label);
   }, []);
@@ -651,22 +678,52 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
                         : "bg-white dark:bg-muted text-foreground border border-border rounded-tl-sm"
                     )}
                   >
-                    <p className="whitespace-pre-wrap leading-relaxed">{m.content}</p>
+                    <MarkdownRenderer content={m.content} />
                     <span className="text-[9px] opacity-50 mt-1 block text-right">
                       {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
                   {m.actions && m.actions.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-3">
-                      {m.actions.map((a, i) => (
-                        <button
-                          key={i}
-                          onClick={() => handleActionClick(a)}
-                          className="px-4 py-2 rounded-xl text-xs font-semibold bg-primary/10 text-primary hover:bg-primary hover:text-white border border-primary/20 transition-all transform hover:scale-105 active:scale-95 shadow-sm"
-                        >
-                          {a.label}
-                        </button>
-                      ))}
+                    <div className="flex flex-col gap-3 mt-3 w-full">
+                      {/* Enhanced Action Renderers */}
+                      {m.actions.some(a => a.type === "route_visualizer") && (
+                        <div className="w-full animate-in zoom-in duration-300">
+                          {m.actions
+                            .filter(a => a.type === "route_visualizer")
+                            .map((a, i) => {
+                              const [src, dst, ...trans] = (a.value || "").split("|");
+                              return <RouteVisualizer key={i} source={src} destination={dst} transfers={trans} />;
+                            })
+                          }
+                        </div>
+                      )}
+
+                      {m.actions.some(a => a.type === "datepicker") && (
+                        <div className="w-full animate-in slide-in-from-left-4 duration-300">
+                          <InteractiveDatePicker 
+                            onDateSelect={(d) => {
+                              setInput(d);
+                              handleSend();
+                            }} 
+                          />
+                        </div>
+                      )}
+
+                      {/* Standard Buttons */}
+                      <div className="flex flex-wrap gap-2">
+                        {m.actions
+                          .filter(a => !["route_visualizer", "datepicker"].includes(a.type))
+                          .map((a, i) => (
+                            <button
+                              key={i}
+                              onClick={() => handleActionClick(a)}
+                              className="px-4 py-2 rounded-xl text-xs font-semibold bg-primary/10 text-primary hover:bg-primary hover:text-white border border-primary/20 transition-all transform hover:scale-105 active:scale-95 shadow-sm"
+                            >
+                              {a.label}
+                            </button>
+                          ))
+                        }
+                      </div>
                     </div>
                   )}
                   {/* Confirmation Layer for Critical Actions */}

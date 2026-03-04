@@ -1,62 +1,59 @@
-import os
+import httpx
 import logging
-import asyncio
-import aiohttp
+from typing import Optional, List, Union
+from database.config import Config
 
 logger = logging.getLogger(__name__)
 
-# It's best to put these in Config, but for MVP we read directly from env
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-
-async def send_telegram_message(text: str):
+class TelegramService:
     """
-    Sends an async fire-and-forget message to the configured Telegram bot.
+    Handles emergency broadcasts and notifications via Telegram Bot API.
     """
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram credentials missing. Skipping notification.")
-        return
+    
+    def __init__(self):
+        self.bot_token = Config.TELEGRAM_TOKEN
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+    async def send_message(self, chat_id: Union[str, int], text: str):
+        if not self.bot_token:
+            logger.warning("TELEGRAM_BOT_TOKEN not configured. Skipping message.")
+            return False
+            
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    f"{self.base_url}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "Markdown"
+                    },
+                    timeout=10.0
+                )
+                res.raise_for_status()
+                return True
+        except Exception as e:
+            logger.error(f"Telegram send failed: {e}")
+            return False
 
-    try:
-        # Non-blocking network request
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=5) as response:
-                if response.status != 200:
-                    logger.error(f"Telegram API failed with status {response.status}")
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+    async def broadcast_sos(self, user_name: str, lat: float, lng: float, telegram_ids: List[Union[str, int]]):
+        """
+        Sends an SOS alert to a list of Telegram IDs.
+        """
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+        message = (
+            f"🚨 *EMERGENCY SOS ALERT* 🚨\n\n"
+            f"Passenger: *{user_name}*\n"
+            f"Location: [{lat}, {lng}]({maps_url})\n\n"
+            f"⚠️ Help is requested immediately. Click the link above to see the live location."
+        )
+        
+        results = []
+        for tid in telegram_ids:
+            success = await self.send_message(tid, message)
+            results.append(success)
+        
+        return all(results)
 
-def format_booking_alert(booking_id: str, journey: dict, passengers: list, phone: str, email: str) -> str:
-    """
-    Formats the booking request into a clean Telegram alert.
-    """
-    source = journey.get("source", "Unknown")
-    dest = journey.get("destination", "Unknown")
-    date = journey.get("date", "Unknown")
-
-    pax_str = ""
-    for i, p in enumerate(passengers):
-        pax_str += f"{i+1}. {p.get('name')} ({p.get('age')}{p.get('gender')}) - {p.get('preference')}\n"
-
-    msg = f"""🚨 <b>NEW BOOKING REQUEST</b> 🚨
-
-<b>ID:</b> {booking_id}
-<b>Route:</b> {source} ➡️ {dest}
-<b>Date:</b> {date}
-
-<b>Contact:</b>
-📞 {phone}
-📧 {email}
-
-<b>Passengers:</b>
-{pax_str}
-<b>Action:</b> Please manually book this ticket on IRCTC and send details to the user."""
-
-    return msg
+from typing import Union
+telegram_service = TelegramService()

@@ -1,6 +1,12 @@
 import logging
 import time
+import sys
+import os
 from contextlib import asynccontextmanager
+
+# Add current directory to path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,7 +18,7 @@ from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
 from api.v2 import search, debug, admin, live, user, booking
-from api import chat, chat_ws
+from api import chat, chat_ws, sos, voice_triage
 
 # Configure Logging
 logging.basicConfig(
@@ -32,9 +38,14 @@ async def lifespan(app: FastAPI):
     logger.info("📡 Warming up routing graph...")
     get_route_engine()
     
+    # Task 38: Start Escalation Monitor
+    from services.emergency.escalation_service import escalation_service
+    await escalation_service.start()
+    
     yield
     # Shutdown
     logger.info("🛑 Shutting down Gateway...")
+    await escalation_service.stop()
 
 app = FastAPI(
     title="RouteMaster V2 API",
@@ -54,15 +65,25 @@ app.add_middleware(
 app.add_middleware(ObservabilityMiddleware)
 
 # Standard Error Handler
+from starlette.responses import JSONResponse
+
 @app.exception_handler(Exception)
 async def unified_exception_handler(request: Request, exc: Exception):
     logger.error(f"UNHANDLED ERROR: {exc}", exc_info=True)
-    return {
-        "error": True,
-        "error_code": "INTERNAL_SERVER_ERROR",
-        "message": "A critical system error occurred.",
-        "detail": str(exc) if Config.DEBUG else "Please contact support."
-    }
+    try:
+        debug_val = Config.DEBUG
+    except:
+        debug_val = False
+        
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": True,
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "message": "A critical system error occurred.",
+            "detail": str(exc) if debug_val else "Please contact support."
+        }
+    )
 
 # --- Register Routers ---
 app.include_router(search.router, prefix="/api/v2")
@@ -73,6 +94,12 @@ app.include_router(debug.router, prefix="/api/v2")
 app.include_router(admin.router, prefix="/api/v2")
 app.include_router(chat.router)
 app.include_router(chat_ws.router)
+app.include_router(sos.router, prefix="/api/sos")
+app.include_router(voice_triage.router)
+
+@app.get("/api/sos/test-route")
+async def test_route():
+    return {"message": "Root test route works"}
 
 @app.get("/admin/dashboard", tags=["Internal"])
 async def serve_dashboard():

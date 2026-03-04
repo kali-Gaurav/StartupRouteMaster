@@ -26,6 +26,8 @@ class ConnectionManager:
         self.train_subscriptions: Dict[str, List[WebSocket]] = {}
         # Global SOS listeners
         self.sos_listeners: List[WebSocket] = []
+        # Maps user_id -> list of websockets for personal messages
+        self.user_connections: Dict[str, List[WebSocket]] = {}
         
         # Redis Pub/Sub components
         self.redis: Optional[aioredis.Redis] = None
@@ -56,7 +58,7 @@ class ConnectionManager:
             await self.pubsub.subscribe("sos_alerts")
             # We will dynamically subscribe to train channels as needed or listen to a pattern
             await self.pubsub.psubscribe("train_position:*")
-            
+            await self.pubsub.psubscribe("admin_chat:*") # Added for Task 36
             if not self._pubsub_task or self._pubsub_task.done():
                 self._pubsub_task = asyncio.create_task(self._redis_listener())
             
@@ -91,6 +93,12 @@ class ConnectionManager:
                     
                     if channel == "sos_alerts":
                         await self._local_broadcast_sos(payload)
+                    elif channel.startswith("user_alert:"):
+                        user_id = channel.split(":")[1]
+                        await self._local_send_personal_message(user_id, payload)
+                    elif channel.startswith("admin_chat:"):
+                        event_id = channel.split(":")[1]
+                        await self._local_broadcast_admin_message(channel, payload) # channel is the room name
                     elif channel.startswith("train_position:"):
                         train_no = channel.split(":")[1]
                         await self._local_broadcast_to_train(train_no, payload)
@@ -107,9 +115,14 @@ class ConnectionManager:
                 self.pubsub = None
                 await asyncio.sleep(5)
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, user_id: Optional[str] = None):
         await websocket.accept()
         self.active_connections.add(websocket)
+        if user_id:
+            if user_id not in self.user_connections:
+                self.user_connections[user_id] = []
+            self.user_connections[user_id].append(websocket)
+            
         WS_CONNECTIONS.inc()
         # Ensure Redis is initialized
         if not self.redis:
@@ -118,6 +131,13 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket):
         self.active_connections.discard(websocket)
         WS_CONNECTIONS.dec()
+        # Cleanup user connections
+        for uid, conns in list(self.user_connections.items()):
+            if websocket in conns:
+                conns.remove(websocket)
+                if not conns:
+                    del self.user_connections[uid]
+
         # Cleanup subscriptions
         for train, subs in list(self.train_subscriptions.items()):
             if websocket in subs:
@@ -127,6 +147,29 @@ class ConnectionManager:
                     del self.train_subscriptions[train]
         if websocket in self.sos_listeners:
             self.sos_listeners.remove(websocket)
+
+    async def send_personal_message(self, user_id: str, data: Dict):
+        """Sends a high-priority personal alert to a specific user via Redis."""
+        if self.redis:
+            try:
+                await self.redis.publish(f"user_alert:{user_id}", json.dumps(data))
+            except Exception as e:
+                logger.error(f"Redis Personal Message Error: {e}")
+                await self._local_send_personal_message(user_id, data)
+        else:
+            await self._local_send_personal_message(user_id, data)
+
+    async def _local_send_personal_message(self, user_id: str, data: Dict):
+        """Sends message only to locally connected user instances."""
+        if user_id in self.user_connections:
+            dead_connections = []
+            for connection in self.user_connections[user_id]:
+                try:
+                    await connection.send_json({"type": "personal_alert", "data": data})
+                except Exception:
+                    dead_connections.append(connection)
+            for dead in dead_connections:
+                self.disconnect(dead)
 
     async def subscribe_to_train(self, websocket: WebSocket, train_number: str):
         if train_number not in self.train_subscriptions:
@@ -151,6 +194,39 @@ class ConnectionManager:
         if websocket not in self.sos_listeners:
             self.sos_listeners.append(websocket)
             logger.info("Local WebSocket joined SOS responder channel")
+
+    async def subscribe_to_admin_chat(self, websocket: WebSocket, event_id: str):
+        """Join a specific SOS incident's admin-user chat room."""
+        room = f"admin_chat:{event_id}"
+        if room not in self.train_subscriptions: # Reuse same dict structure for rooms
+            self.train_subscriptions[room] = []
+        if websocket not in self.train_subscriptions[room]:
+            self.train_subscriptions[room].append(websocket)
+            logger.info(f"WebSocket joined Admin Chat Room: {room}")
+
+    async def broadcast_admin_message(self, event_id: str, message: Dict):
+        """Broadcasts an admin message to a specific SOS room via Redis."""
+        room = f"admin_chat:{event_id}"
+        if self.redis:
+            try:
+                await self.redis.publish(room, json.dumps(message))
+            except Exception as e:
+                logger.error(f"Redis Admin Chat Publish Error: {e}")
+                await self._local_broadcast_admin_message(room, message)
+        else:
+            await self._local_broadcast_admin_message(room, message)
+
+    async def _local_broadcast_admin_message(self, room: str, data: Dict):
+        """Sends admin message only to local room participants."""
+        if room in self.train_subscriptions:
+            dead_connections = []
+            for connection in self.train_subscriptions[room]:
+                try:
+                    await connection.send_json({"type": "admin_chat", "data": data})
+                except Exception:
+                    dead_connections.append(connection)
+            for dead in dead_connections:
+                self.disconnect(dead)
 
     async def broadcast_to_train(self, train_number: str, data: Dict):
         """Publishes to Redis for distributed broadcasting."""
@@ -245,7 +321,7 @@ async def train_websocket_endpoint(
         return
 
     # 2. Connection Handling
-    await manager.connect(websocket)
+    await manager.connect(websocket, user_id=getattr(user, 'supabase_id', None))
     await manager.subscribe_to_train(websocket, train_number)
     try:
         while True:
@@ -257,24 +333,36 @@ async def train_websocket_endpoint(
         logger.error(f"WS Error for {train_number}: {e}")
         manager.disconnect(websocket)
 
-@router.websocket("/ws/sos")
-async def sos_websocket_endpoint(
+@router.websocket("/ws/sos/chat/{event_id}")
+async def admin_chat_websocket_endpoint(
     websocket: WebSocket,
+    event_id: str,
     token: Optional[str] = Query(None)
 ):
-    """Endpoint for emergency responders to receive SOS alerts.
-    Authentication is disabled in tests so we can connect freely.
     """
-    # skip all auth/role checks for integration testing
-
-    # Connection Handling
+    Direct Secure Chat room for a specific SOS event.
+    Participants: Admin(s) and the User who triggered the SOS.
+    """
     await manager.connect(websocket)
-    await manager.subscribe_to_sos(websocket)
+    await manager.subscribe_to_admin_chat(websocket, event_id)
     try:
         while True:
-            await websocket.receive_text()
+            raw_data = await websocket.receive_text()
+            data = json.loads(raw_data)
+            
+            # Broadcast the message to the room
+            msg_payload = {
+                "event_id": event_id,
+                "sender": data.get("sender", "System"),
+                "content": data.get("message", ""),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await manager.broadcast_admin_message(event_id, msg_payload)
+            
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        logger.error(f"SOS WS Error: {e}")
+        logger.error(f"Admin Chat WS Error: {e}")
         manager.disconnect(websocket)
+
+from datetime import datetime

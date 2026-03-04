@@ -14,73 +14,73 @@ export interface LocationData {
 
 export class LocationService {
   private static watchId: number | null = null;
+  private static wakeLock: any = null;
+  private static channel = new BroadcastChannel('location-updates');
 
   /**
-   * Check if location permission is granted
+   * Register Background Location Worker
    */
-  static async checkPermission(): Promise<PermissionState | null> {
-    if (!navigator.permissions) {
-      return null;
+  static async registerWorker(): Promise<void> {
+    if ('serviceWorker' in navigator) {
+      try {
+        const registration = await navigator.serviceWorker.register('/location-sw.js', {
+          scope: '/'
+        });
+        console.log('[Location] ServiceWorker registered:', registration.scope);
+      } catch (error) {
+        console.error('[Location] ServiceWorker registration failed:', error);
+      }
     }
+  }
 
+  /**
+   * Request Screen Wake Lock
+   */
+  private static async requestWakeLock() {
     try {
-      const result = await navigator.permissions.query({ name: 'geolocation' });
-      return result.state;
-    } catch (error) {
-      console.error('Failed to check location permission:', error);
-      return null;
+      if ('wakeLock' in navigator) {
+        this.wakeLock = await (navigator as any).wakeLock.request('screen');
+        console.log('[Location] Wake Lock active');
+      }
+    } catch (err) {
+      console.error('[Location] Wake Lock error:', err);
     }
   }
 
   /**
-   * Request location permission and get current location
+   * Start watching location (with background support)
    */
-  static async requestLocation(): Promise<LocationData | null> {
-    if (!navigator.geolocation) {
-      throw new Error('Geolocation not supported');
-    }
-
-    return new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          resolve({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            accuracy: position.coords.accuracy,
-            timestamp: position.timestamp,
-          });
-        },
-        (error) => {
-          reject(error);
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        }
-      );
-    });
-  }
-
-  /**
-   * Start watching location (for active journey tracking)
-   */
-  static startWatching(
+  static async startWatching(
     onUpdate: (location: LocationData) => void,
     onError?: (error: GeolocationPositionError) => void
-  ): void {
+  ): Promise<void> {
     if (!navigator.geolocation) {
       return;
     }
 
+    // 1. Enable Wake Lock
+    await this.requestWakeLock();
+
+    // 2. Register SW
+    await this.registerWorker();
+
     this.watchId = navigator.geolocation.watchPosition(
       (position) => {
-        onUpdate({
+        const data: LocationData = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy,
           timestamp: position.timestamp,
-        });
+        };
+
+        // Notify UI
+        onUpdate(data);
+
+        // Broadcast to Service Worker
+        this.channel.postMessage({ type: 'LOCATION_UPDATE', location: data });
+
+        // Update Server
+        this.updateServerLocation(data);
       },
       (error) => {
         console.error('Location watch error:', error);
@@ -89,18 +89,25 @@ export class LocationService {
       {
         enableHighAccuracy: true,
         timeout: 30000,
-        maximumAge: 5000, // Update every 5 seconds
+        maximumAge: 5000,
       }
     );
   }
 
   /**
-   * Stop watching location
+   * Stop watching location and release locks
    */
   static stopWatching(): void {
     if (this.watchId !== null && navigator.geolocation) {
       navigator.geolocation.clearWatch(this.watchId);
       this.watchId = null;
+    }
+
+    if (this.wakeLock !== null) {
+      this.wakeLock.release().then(() => {
+        this.wakeLock = null;
+        console.log('[Location] Wake Lock released');
+      });
     }
   }
 

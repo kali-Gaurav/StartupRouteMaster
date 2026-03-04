@@ -96,13 +96,20 @@ async def chat_websocket_endpoint(websocket: WebSocket):
                 "timestamp": datetime.utcnow().isoformat()
             })
 
-            # 1. Local Intent Check (Instant)
+            # 1. Local Pre-processing
+            from utils.entity_extractor import EntityExtractor
+            extracted = EntityExtractor.extract_all(message)
+            if extracted:
+                session.setdefault("extracted_entities", {}).update(extracted)
+
             local_intent_data = get_local_intent(message)
             intent = "unknown"
             if local_intent_data:
                 intent = local_intent_data["intent"]
-                if "entities" in local_intent_data:
-                    session.setdefault("extracted_entities", {}).update(local_intent_data["entities"])
+
+            # Fallback to search intent if stations were found
+            if intent == 'unknown' and "source" in session["extracted_entities"] and "destination" in session["extracted_entities"]:
+                intent = 'search'
 
             # 2. Decision: Local Response or AI Stream
             if intent != "unknown":

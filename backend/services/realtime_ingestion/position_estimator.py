@@ -42,18 +42,19 @@ class TrainPositionEstimator:
             # 2. Resolve Segment (Current stn to Next stn)
             prev_stn = self.session.query(TrainStation).filter(
                 TrainStation.train_number == train_number,
-                TrainStation.sequence == curr_stn_seq
+                TrainStation.stop_sequence == curr_stn_seq
             ).first()
             
             next_stn = self.session.query(TrainStation).filter(
                 TrainStation.train_number == train_number,
-                TrainStation.sequence == curr_stn_seq + 1
+                TrainStation.stop_sequence == curr_stn_seq + 1
             ).first()
 
             if not prev_stn or not next_stn:
                 # Terminal station or invalid data
                 coords = self._get_station_coords(prev_stn.station_code if prev_stn else None)
                 return {**coords, "status": "At Terminal"} if coords else None
+
 
             # 3. Time-Differential Calculation
             # scheduled_departure = prev_stn.departure_time (if we have it)

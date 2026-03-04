@@ -116,6 +116,10 @@ class StationSearchEngine:
             ts, results = self._query_cache[q]
             if now - ts < self.PREFIX_CACHE_TTL: return results[:limit]
 
+        # 1.5 Direct Code Lookup (Highest Priority)
+        if q.upper() in self._station_map:
+            return [self._station_map[q.upper()]]
+
         # 2. Check Aliases (Suggestion #3)
         if q in self.ALIASES:
             alias_code = self.ALIASES[q]
