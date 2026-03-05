@@ -931,6 +931,10 @@ async def chat_message(
     session_id = chat_message_request.session_id or str(uuid.uuid4())
     session = _load_session(session_id)
 
+    # Persist user message to DB if authenticated
+    if current_user:
+        _persist_to_db(db, current_user.id, session_id, "user", chat_message_request.message)
+
     # 0. Deduplication Check (Offline Sync Support)
     if chat_message_request.message_id:
         for msg in reversed(session.get("messages", [])):
@@ -1114,6 +1118,10 @@ RESPONSE STYLE:
 
     _save_session(session_id, session)
 
+    # Persist assistant message to DB if authenticated
+    if current_user:
+        _persist_to_db(db, current_user.id, session_id, "assistant", response_obj.reply, response_obj.actions)
+
     # Track Chatbot Engagement Telemetry
     CHATBOT_MESSAGES_TOTAL.labels(intent=response_obj.state or "idle").inc()
 
@@ -1157,15 +1165,57 @@ async def chat_feedback(
 @router.get("/history")
 async def get_chat_history(
     session_id: str,
+    db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Retrieves conversation history for a given session."""
+    """Retrieves conversation history for a given session.
+    Authenticated users get full persistent history; others get Redis-cached messages.
+    """
+    from database.models import PersistentChatMessage
+    
+    # 1. Try DB first if user is logged in
+    if current_user:
+        history = db.query(PersistentChatMessage)\
+            .filter(PersistentChatMessage.user_id == current_user.id)\
+            .filter(PersistentChatMessage.session_id == session_id)\
+            .order_by(PersistentChatMessage.timestamp.asc()).all()
+        if history:
+            return {
+                "session_id": session_id,
+                "messages": [
+                    {
+                        "role": m.role,
+                        "content": m.content,
+                        "timestamp": m.timestamp.isoformat(),
+                        "actions": m.actions
+                    } for m in history
+                ]
+            }
+
+    # 2. Fallback to Redis session
     session = _load_session(session_id)
     return {
         "session_id": session_id,
         "messages": session.get("messages", []),
         "extracted_entities": session.get("extracted_entities", {})
     }
+
+def _persist_to_db(db: Session, user_id: str, session_id: str, role: str, content: str, actions: Optional[List[Any]] = None):
+    """Saves a message to the persistent SQLite store."""
+    from database.models import PersistentChatMessage
+    try:
+        new_msg = PersistentChatMessage(
+            user_id=user_id,
+            session_id=session_id,
+            role=role,
+            content=content,
+            actions=[a.dict() if hasattr(a, 'dict') else a for a in (actions or [])]
+        )
+        db.add(new_msg)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to persist chat message to DB: {e}")
+        db.rollback()
 
 @router.get("/health")
 async def chat_health():

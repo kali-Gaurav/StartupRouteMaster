@@ -1,85 +1,35 @@
-import json
+import sys
 import os
-import re
-from sqlalchemy.orm import sessionmaker
-from database import engine, Base
-from database.models import StationMaster, Station, Stop
 
-# Create tables
-Base.metadata.create_all(bind=engine)
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from database.session import SessionTransit
+from sqlalchemy import text
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-db = SessionLocal()
+def seed_stations():
+    print("🚉 Seeding sample stations...")
+    db = SessionTransit()
+    try:
+        # 1. Major stations
+        data = [
+            ("NDLS", "New Delhi", "Delhi", 28.6428, 77.2190),
+            ("BCT", "Mumbai Central", "Mumbai", 18.9697, 72.8194),
+            ("CNB", "Kanpur Central", "Kanpur", 26.4547, 80.3513),
+            ("SBC", "Bangalore City", "Bangalore", 12.9781, 77.5697),
+            ("MAS", "Chennai Central", "Chennai", 13.0827, 80.2707)
+        ]
+        
+        insert_query = text("""
+            INSERT INTO stations (id, name, city, latitude, longitude)
+            VALUES (:id, :name, :city, :lat, :lng)
+        """)
+        
+        for sid, name, city, lat, lng in data:
+            db.execute(insert_query, {"id": sid, "name": name, "city": city, "lat": lat, "lng": lng})
+            
+        db.commit()
+        print(f"✅ Seeded {len(data)} stations.")
+    finally:
+        db.close()
 
-# Load data from JSON
-# Using relative path for robustness
-current_dir = os.path.dirname(os.path.abspath(__file__))
-json_path = os.path.join(current_dir, "..", "..", "src", "data", "station_search_data.json")
-# Fallback to hardcoded path if relative fails
-if not os.path.exists(json_path):
-    json_path = r"C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\src\data\station_search_data.json"
-
-print(f"JSON path: {json_path}")
-print(f"Exists: {os.path.exists(json_path)}")
-
-if not os.path.exists(json_path):
-    print("❌ STATION DATA NOT FOUND. SEARCH WILL REMAIN EMPTY.")
-    db.close()
-    exit(1)
-
-with open(json_path, 'r') as f:
-    data = json.load(f)
-
-stations = data['stations']
-
-print("Preparing bulk data for all station models...")
-master_data = []
-station_data = []
-stop_data = []
-
-for station in stations:
-    is_junction = bool(re.search(r'JN|JUNCTION|TERMINUS|CENTRAL', station['name'], re.IGNORECASE))
-    
-    # StationMaster (Legacy)
-    master_data.append({
-        "station_code": station['code'],
-        "station_name": station['name'],
-        "city": station['city'],
-        "state": station['state'],
-        "is_junction": is_junction,
-        "latitude": 0.0,
-        "longitude": 0.0
-    })
-    
-    # Station (Search)
-    station_data.append({
-        "code": station['code'],
-        "name": station['name'],
-        "city": station['city'],
-        "latitude": 0.0,
-        "longitude": 0.0
-    })
-
-    # Stop (GTFS/Routing Engine)
-    stop_data.append({
-        "stop_id": station['code'], # Use code as ID for easy lookup
-        "name": station['name'],
-        "city": station['city'],
-        "state": station['state'],
-        "latitude": 0.0,
-        "longitude": 0.0,
-        "is_major_junction": is_junction
-    })
-
-print(f"Bulk inserting {len(stations)} entries into each table...")
-try:
-    db.bulk_insert_mappings(StationMaster, master_data)
-    db.bulk_insert_mappings(Station, station_data)
-    db.bulk_insert_mappings(Stop, stop_data)
-    db.commit()
-    print(f"✅ Successfully seeded {len(stations)} stations across all models")
-except Exception as e:
-    db.rollback()
-    print(f"❌ Error during bulk seed: {e}")
-finally:
-    db.close()
+if __name__ == "__main__":
+    seed_stations()

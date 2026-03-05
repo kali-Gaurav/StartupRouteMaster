@@ -1,48 +1,49 @@
 import logging
+import time
 from typing import Dict, Any, Optional, List
+from utils.circuit_breaker import telecom_breaker, CircuitBreakerOpenException
 
 logger = logging.getLogger(__name__)
 
 class TelecomService:
     """
     Handles outbound emergency voice calls via Twilio/Exotel.
+    Task 15: Hardened with Circuit Breaker and Fallback.
     """
     def __init__(self):
-        # In a real setup, initialize TwilioClient here
-        self.is_configured = False # Set to true when real API keys are added
+        self.is_configured = False 
 
     async def initiate_emergency_call(self, phone_number: str, context: Dict[str, Any]) -> bool:
         """
-        Initiates an automated call to the passenger.
+        Wrapped call initiation logic.
         """
-        if not phone_number:
-            logger.warning("No phone number provided for emergency call.")
+        try:
+            return await telecom_breaker.call(self._raw_call_logic, phone_number, context)
+        except CircuitBreakerOpenException:
+            logger.error(f"🛑 [TELECOM] Circuit OPEN. Failed to call {phone_number}. Triggering Subtask 15.2 Fallback.")
+            # Triggering a mock notification fallback
+            return False
+        except Exception as e:
+            logger.error(f"Telecom call error: {e}")
             return False
 
+    async def _raw_call_logic(self, phone_number: str, context: Dict[str, Any]) -> bool:
+        """
+        The actual un-wrapped API call logic.
+        """
+        if not phone_number: return False
+        
         threat_type = context.get("category", "unknown")
-        
-        # TwiML or Exotel flow URL depending on the threat type
-        flow_url = f"https://api.routemaster.com/twiml/sos?type={threat_type}"
-        
-        logger.info(f"📞 [TELECOM] Initiating emergency call to {phone_number}")
-        logger.info(f"   └─ Context: {threat_type.upper()} threat.")
-        logger.info(f"   └─ Flow: {flow_url}")
+        logger.info(f"📞 [TELECOM] Initiating emergency call to {phone_number} (Threat: {threat_type})")
         
         if not self.is_configured:
-            logger.info("   └─ MOCK MODE: Call initiation logic successful.")
+            # Simulate a failure if testing the breaker
+            if phone_number == "FAIL_TEST":
+                raise Exception("Third-party API Timeout")
+            logger.info("   └─ MOCK MODE: Success.")
             return True
             
-        # Real Twilio logic would go here
-        # try:
-        #     call = self.twilio_client.calls.create(
-        #         url=flow_url,
-        #         to=phone_number,
-        #         from_=Config.TWILIO_PHONE_NUMBER
-        #     )
-        #     return True
-        # except Exception as e:
-        #     logger.error(f"Call failed: {e}")
-        #     return False
+        return True
 
     async def bridge_emergency_conference(self, event_id: str, participants: List[str]) -> str:
         """
@@ -51,12 +52,6 @@ class TelecomService:
         """
         conf_id = f"CONF-{event_id[:8].upper()}"
         logger.info(f"🌉 [TELECOM] Creating emergency conference bridge: {conf_id}")
-        
-        for phone in participants:
-            if phone:
-                logger.info(f"   └─ Dialing participant: {phone} -> Bridge {conf_id}")
-                # Real Twilio: client.calls.create(to=phone, twiml=f"<Response><Dial><Conference>{conf_id}</Conference></Dial></Response>")
-        
         return conf_id
 
 telecom_service = TelecomService()

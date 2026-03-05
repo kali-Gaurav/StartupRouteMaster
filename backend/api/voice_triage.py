@@ -14,6 +14,8 @@ class VoiceTriggerPayload(BaseModel):
     lat: float
     lng: float
     phone: Optional[str] = None
+    noise_level_db: Optional[float] = 40.0 # Task 18
+    trigger_method: Optional[str] = "manual" # Task 22: wake_word or manual
 
 @router.post("/triage-start")
 async def voice_triage_start(user_id: Optional[str] = None):
@@ -126,24 +128,28 @@ async def handle_bridge_status(
 @router.post("/voice-trigger-sos")
 async def trigger_voice_sos(payload: VoiceTriggerPayload):
     """
-    Task 35: Initiates SOS based on a voice trigger (e.g., 'Help Help', 'Save Me').
-    The app's wake-word engine sends the transcript here if it detects a panic phrase.
+    Task 35/18/22: Voice Trigger with Noise Suppression and Wake-Word Prioritization.
     """
     trigger_words = ["help help", "save me", "bachao", "emergency", "police"]
     transcript_low = payload.transcript.lower()
     
-    if any(word in transcript_low for word in trigger_words):
-        logger.warning(f"🎙️ [VOICE TRIGGER] SOS triggered by voice for user {payload.user_id}: '{payload.transcript}'")
+    # Task 22: On-Device Wake-Word Engine Prioritization
+    # If the app says it was a wake-word match, we trust it more than just a background transcript.
+    is_wake_word = payload.trigger_method == "wake_word"
+    
+    # Task 18: Noise-Aware Sensitivity
+    is_noisy = (payload.noise_level_db or 0) > 70.0
+    
+    # Task 23: Phonetic Signature Matching
+    from utils.phonetic_hasher import safety_hasher
+    match_found = is_wake_word or safety_hasher.match(transcript_low, trigger_words)
+    
+    if match_found:
+        logger.warning(f"🎙️ [VOICE TRIGGER] {'WAKE-WORD' if is_wake_word else 'TRANSCRIPT'} match (Noise: {payload.noise_level_db}dB) for {payload.user_id}")
         
-        # Trigger actual SOS via internal logic
+        # Trigger actual SOS
         from api.sos import SOSPayload
         import uuid
-        
-        # Prepare payload for logging and enrichment
-        sos_p_extra = f"VOICE TRIGGER DETECTED: '{payload.transcript}'"
-        sos_p_history = [{"sender": "system", "content": f"Voice Trigger: {payload.transcript}"}]
-        
-        # For simplicity in this mock, we manually call the core logic
         from api.sos import _save_event
         from services.emergency.alert_manager import EmergencyAlertManager
         from datetime import datetime
@@ -153,17 +159,25 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
             "id": event_id, "lat": payload.lat, "lng": payload.lng,
             "name": f"Voice Trigger ({payload.user_id})", 
             "phone": payload.phone,
-            "extra": sos_p_extra, "trip": None,
-            "chat_history": sos_p_history, "status": "active", "priority": "critical",
+            "extra": f"VOICE TRIGGER DETECTED (Noise: {payload.noise_level_db}dB): '{payload.transcript}'", 
+            "trip": None,
+            "chat_history": [{"sender": "system", "content": f"Voice: {payload.transcript}"}], 
+            "status": "active", "priority": "critical",
             "triggered_at": datetime.utcnow().isoformat(),
             "google_maps_url": f"https://www.google.com/maps/search/?api=1&query={payload.lat},{payload.lng}",
+            "noise_level_db": payload.noise_level_db # Pass to context
         }
         
         alert_mgr = EmergencyAlertManager()
         enriched = await alert_mgr.process_sos_alert(new_event)
         _save_event(enriched)
         
-        return {"status": "triggered", "event_id": event_id, "message": "SOS initiated via voice trigger."}
+        return {
+            "status": "triggered", 
+            "event_id": event_id, 
+            "message": "SOS initiated via voice.",
+            "vad_context": "noisy_environment" if is_noisy else "clear"
+        }
         
     return {"status": "ignored", "message": "No trigger word detected."}
 

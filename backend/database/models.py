@@ -57,6 +57,18 @@ class User(UserBase):
     subscription = relationship("Subscription", back_populates="user", uselist=False)
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
     ai_preferences = relationship("UserAIPreference", back_populates="user", uselist=False)
+    chat_history = relationship("PersistentChatMessage", back_populates="user")
+
+class PersistentChatMessage(UserBase):
+    __tablename__ = "persistent_chat_messages"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    session_id = Column(String(100), index=True)
+    role = Column(String(20)) # 'user' or 'assistant'
+    content = Column(Text)
+    actions = Column(JSON, nullable=True) # Store as JSON list
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="chat_history")
 
 class TrainLiveUpdate(TransitBase):
     __tablename__ = "train_live_updates"

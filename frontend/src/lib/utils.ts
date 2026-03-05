@@ -52,3 +52,12 @@ export const getRailwayApiUrl = (path: string): string => {
   const normalizedBase = baseUrl.replace(/\/$/, "");
   return `${normalizedBase}${apiPath}`;
 };
+
+/**
+ * Get the WebSocket URL for the backend.
+ * Converts http:// to ws:// and https:// to wss://.
+ */
+export const getRailwayWsUrl = (path: string): string => {
+  const apiUrl = getRailwayApiUrl(path);
+  return apiUrl.replace(/^http/, "ws");
+};

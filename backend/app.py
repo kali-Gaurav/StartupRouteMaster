@@ -2,6 +2,7 @@ import logging
 import time
 import sys
 import os
+import asyncio
 from contextlib import asynccontextmanager
 
 # Add current directory to path
@@ -42,10 +43,18 @@ async def lifespan(app: FastAPI):
     from services.emergency.escalation_service import escalation_service
     await escalation_service.start()
     
+    # Task 11: Start UDP Safety Listener
+    from workers.udp_safety_listener import UDPSafetyListener
+    udp_listener = UDPSafetyListener()
+    asyncio.create_task(udp_listener.start())
+    app.state.udp_listener = udp_listener
+    
     yield
     # Shutdown
     logger.info("🛑 Shutting down Gateway...")
     await escalation_service.stop()
+    if hasattr(app.state, 'udp_listener'):
+        app.state.udp_listener.stop()
 
 app = FastAPI(
     title="RouteMaster V2 API",
@@ -62,7 +71,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # Suggestion #19: Latency Tracking
-app.add_middleware(ObservabilityMiddleware)
+# app.add_middleware(ObservabilityMiddleware)
 
 # Standard Error Handler
 from starlette.responses import JSONResponse

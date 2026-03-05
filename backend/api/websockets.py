@@ -259,32 +259,30 @@ class ConnectionManager:
             await self._local_broadcast_sos(data)
 
     async def _local_broadcast_to_train(self, train_number: str, data: Dict):
-        """Sends to only locally connected clients."""
+        """Task 14: Sends to locally connected clients concurrently."""
         if train_number in self.train_subscriptions:
-            dead_connections = []
-            for connection in self.train_subscriptions[train_number]:
+            async def safe_send(connection, msg):
                 try:
-                    await connection.send_json({"type": "position_update", "data": data})
+                    await asyncio.wait_for(connection.send_json({"type": "position_update", "data": msg}), timeout=1.0)
                 except Exception:
                     WS_BROADCAST_ERRORS.labels(type='pos').inc()
-                    dead_connections.append(connection)
-            
-            for dead in dead_connections:
-                self.disconnect(dead)
+                    # We don't disconnect here to avoid list mutation during gather
+
+            tasks = [safe_send(conn, data) for conn in self.train_subscriptions[train_number]]
+            if tasks: await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _local_broadcast_sos(self, data: Dict):
-        """Sends to only locally connected emergency responders."""
-        dead_connections = []
-        for connection in self.sos_listeners:
+        """Task 14: Sends to locally connected responders concurrently."""
+        if not self.sos_listeners: return
+
+        async def safe_send(connection, msg):
             try:
-                await connection.send_json({"type": "sos_alert", "data": data})
+                await asyncio.wait_for(connection.send_json({"type": "sos_alert", "data": msg}), timeout=1.0)
             except Exception:
                 WS_BROADCAST_ERRORS.labels(type='sos').inc()
-                dead_connections.append(connection)
-        
-        for dead in dead_connections:
-            self.disconnect(dead)
 
+        tasks = [safe_send(conn, data) for conn in self.sos_listeners]
+        if tasks: await asyncio.gather(*tasks, return_exceptions=True)
 manager = ConnectionManager()
 
 async def get_ws_user(token: str):
