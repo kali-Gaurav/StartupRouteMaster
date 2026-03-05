@@ -15,7 +15,9 @@ class VoiceTriggerPayload(BaseModel):
     lng: float
     phone: Optional[str] = None
     noise_level_db: Optional[float] = 40.0 # Task 18
-    trigger_method: Optional[str] = "manual" # Task 22: wake_word or manual
+    trigger_method: Optional[str] = "manual" # Task 22
+    audio_pitch_hz: Optional[float] = 150.0 # Task 24: Normal speech ~100-200Hz
+    audio_energy: Optional[float] = 0.5 # Task 24: Volume/Intensity
 
 @router.post("/triage-start")
 async def voice_triage_start(user_id: Optional[str] = None):
@@ -144,6 +146,41 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
     from utils.phonetic_hasher import safety_hasher
     match_found = is_wake_word or safety_hasher.match(transcript_low, trigger_words)
     
+    # Task 45: Safe-Word Cancellation
+    # Check if this is an existing incident and user says "ALRIGHT" or "OKAY"
+    from api.sos import _load_event, _save_event, PNR_REGISTRY_KEY, _redis
+    
+    # We'd need a way to link voice user_id to active event (Task 3 registry)
+    # For now, we mock the PNR resolution or user search
+    active_event_id = None
+    if _redis:
+        try:
+            # Try to find if this phone has an active SOS
+            ids = _redis.smembers("sos:events") or []
+            for eid in ids:
+                e = _load_event(eid.decode() if isinstance(eid, bytes) else eid)
+                if e and e.get("phone") == payload.phone and e.get("status") in ["active", "responding"]:
+                    active_event_id = e["id"]
+                    break
+        except Exception: pass
+
+    if active_event_id and any(word in transcript_low for word in ["alright", "cancel", "okay now"]):
+        logger.info(f"🛑 [SAFE-WORD] Auto-cancelling incident {active_event_id} via voice command.")
+        from api.websockets import manager
+        event = _load_event(active_event_id)
+        event["status"] = "resolved"
+        event["resolved_at"] = datetime.utcnow().isoformat()
+        event["extra"] = f"{event.get('extra', '')} | 🛑 CANCELLED VIA SAFE-WORD."
+        _save_event(event)
+        await manager.broadcast_sos(event)
+        
+        return f"""
+        <Response>
+            <Say>Safe-word received. Incident has been cancelled. Glad you are safe.</Say>
+            <Hangup/>
+        </Response>
+        """
+
     if match_found:
         logger.warning(f"🎙️ [VOICE TRIGGER] {'WAKE-WORD' if is_wake_word else 'TRANSCRIPT'} match (Noise: {payload.noise_level_db}dB) for {payload.user_id}")
         
@@ -152,7 +189,6 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
         import uuid
         from api.sos import _save_event
         from services.emergency.alert_manager import EmergencyAlertManager
-        from datetime import datetime
         
         event_id = str(uuid.uuid4())
         new_event = {

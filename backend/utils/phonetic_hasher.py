@@ -20,11 +20,7 @@ class PhoneticHasher:
         for word in text.split():
             if not word: continue
             
-            # 2. Phonetic Normalization (Simplified Metaphone-like)
-            # Remove vowels (except maybe the first one if we wanted more accuracy, but consonants are key)
             # Remove repeated characters (Heeelp -> Help)
-            
-            # Remove repeats
             word = re.sub(r'(.)\1+', r'\1', word)
             
             # Strip vowels
@@ -33,17 +29,18 @@ class PhoneticHasher:
             if word:
                 signatures.append(word.upper())
                 
-        return " ".join(signatures)
+        return signatures # Return list of word signatures
 
     @staticmethod
     def match(source_text: str, target_keywords: list) -> bool:
         """Checks if any target keyword phonetically matches words in source_text."""
-        source_sig = PhoneticHasher.get_signature(source_text)
+        source_sigs = PhoneticHasher.get_signature(source_text)
         
         for kw in target_keywords:
-            kw_sig = PhoneticHasher.get_signature(kw)
-            if kw_sig in source_sig:
-                return True
+            kw_sigs = PhoneticHasher.get_signature(kw)
+            for ks in kw_sigs:
+                if ks in source_sigs:
+                    return True
         return False
 
 # Global instance

@@ -16,6 +16,7 @@ class DispatchService:
         """
         auth = event.get("nearest_authority", {})
         context = event.get("railway_context", {})
+        trip = event.get("trip") or {}
         
         dispatch_id = f"RPF-{uuid.uuid4().hex[:8].upper()}"
         
@@ -28,8 +29,8 @@ class DispatchService:
             "subject": f"SOS Alert: {event.get('category', 'Emergency').upper()}",
             "details": {
                 "passenger_name": event.get("name", "Unknown"),
-                "pnr": event.get("trip", {}).get("pnr", "N/A"),
-                "train_no": event.get("trip", {}).get("vehicle_number"),
+                "pnr": trip.get("pnr_number", "N/A"),
+                "train_no": trip.get("vehicle_number", "N/A"),
                 "coach": context.get("coach_id", "N/A"),
                 "platform": context.get("platform", "N/A"),
                 "location": f"{event.get('lat')}, {event.get('lng')}",

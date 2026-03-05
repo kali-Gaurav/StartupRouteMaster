@@ -244,19 +244,48 @@ class ConnectionManager:
             await self._local_broadcast_to_train(train_number, data)
 
     async def broadcast_sos(self, data: Dict):
-        """Publishes to Redis for distributed broadcasting."""
+        """
+        Task 58: Dynamic Dispatcher Load Balancing.
+        Routes SOS to the least-loaded dispatcher first.
+        """
         if not self.redis:
             await self.initialize()
             
-        if self.redis:
+        # 1. Identify active dispatchers
+        online_dispatchers = list(self.user_connections.keys())
+        
+        # 2. Find least loaded
+        best_dispatcher = None
+        min_load = 999
+        
+        if self.redis and online_dispatchers:
             try:
-                await self.redis.publish("sos_alerts", json.dumps(data))
+                for d_id in online_dispatchers:
+                    # Task 58.1: Redis-backed load tracking
+                    load_val = await self.redis.get(f"dispatcher:load:{d_id}")
+                    load = int(load_val) if load_val else 0
+                    if load < min_load:
+                        min_load = load
+                        best_dispatcher = d_id
             except Exception as e:
-                logger.error(f"Redis SOS Publish Error: {e}")
-                await self._local_broadcast_sos(data)
+                logger.error(f"Load balancing calculation failed: {e}")
+
+        # 3. Route targeted message if a dispatcher is found and under limit (5)
+        if best_dispatcher and min_load < 5:
+            logger.info(f"⚖️ [LOAD BALANCE] Routing incident to dispatcher {best_dispatcher} (Load: {min_load})")
+            await self.send_personal_message(best_dispatcher, data)
+            if self.redis:
+                await self.redis.incr(f"dispatcher:load:{best_dispatcher}", 1)
         else:
-            # Fallback to local
-            await self._local_broadcast_sos(data)
+            # 4. Fallback to general broadcast
+            if self.redis:
+                try:
+                    await self.redis.publish("sos_alerts", json.dumps(data))
+                except Exception as e:
+                    logger.error(f"Redis SOS Publish Error: {e}")
+                    await self._local_broadcast_sos(data)
+            else:
+                await self._local_broadcast_sos(data)
 
     async def _local_broadcast_to_train(self, train_number: str, data: Dict):
         """Task 14: Sends to locally connected clients concurrently."""

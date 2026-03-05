@@ -157,29 +157,30 @@ class BookingResponseSchema(BaseModel):
     id: str
     pnr_number: str
     user_id: str
-    # travel_date stored as a date in the DB; allow either date or datetime
-    travel_date: Optional[datetime]  # will accept date as well because of from_attributes
+    travel_date: Optional[datetime]
     booking_status: str
+    escrow_status: str
     amount_paid: float
+    upi_tx_id: Optional[str] = None
+    utr_number: Optional[str] = None
+    train_number: Optional[str] = None
     booking_details: Dict[str, Any]
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
     created_at: datetime
-
-    # deprecated fields that might appear
-    payment_status: Optional[str] = None
+    upi_url: Optional[str] = None # Transient field for payment initiation
 
     class Config:
         from_attributes = True
-        extra = "ignore"  # ignore any other attributes coming from ORM
-    # legacy passenger fields (kept for backward compatibility, usually the first passenger)
-    gender: str = Field(..., pattern="^[MFO]$")  # M, F, O (Other)
-    phone_number: Optional[str] = None
-    email: Optional[EmailStr] = None
-    document_type: Optional[str] = None  # Aadhar, PAN, Passport
-    document_number: Optional[str] = None
-    concession_type: Optional[str] = None
-    concession_discount: float = Field(0.0, ge=0.0, le=100.0)
-    meal_preference: Optional[str] = None  # Veg, NonVeg, Jain
+        extra = "ignore"
+
+class SubmitUtrSchema(BaseModel):
+    utr_number: str = Field(..., min_length=12, max_length=12, pattern=r"^\d{12}$")
+
+class EscrowStatusSchema(BaseModel):
+    booking_id: str
+    status: str
+    message: str
+    pnr: Optional[str] = None
 
 
 # New schema for paginated booking responses

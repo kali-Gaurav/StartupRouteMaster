@@ -19,9 +19,14 @@ class SOSEntityExtractor:
     def extract(text: str) -> Dict[str, Any]:
         results = {}
         for key, pattern in SOSEntityExtractor.PATTERNS.items():
-            match = re.search(pattern, text)
-            if match:
-                results[key] = match.group(1) if len(match.groups()) > 0 else match.group(0)
+            if key == "medical":
+                matches = re.findall(pattern, text)
+                if matches:
+                    results[key] = list(set(matches)) # Unique symptoms
+            else:
+                match = re.search(pattern, text)
+                if match:
+                    results[key] = match.group(1) if len(match.groups()) > 0 else match.group(0)
         return results
 
     @staticmethod

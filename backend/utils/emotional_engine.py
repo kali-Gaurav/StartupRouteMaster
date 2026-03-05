@@ -13,9 +13,9 @@ class EmotionalEngine:
     }
 
     @staticmethod
-    def calculate_panic_score(text: str) -> int:
+    def calculate_panic_score(text: str, pitch_hz: float = 150.0, energy: float = 0.5) -> int:
         """
-        Returns a panic score from 1-10.
+        Returns a panic score from 1-10 based on text and audio signals (Task 24).
         """
         if not text: return 1
         
@@ -34,9 +34,12 @@ class EmotionalEngine:
         if "!!!" in text: score += 2
         
         # 3. Typography Intensity (ALL CAPS)
-        # Check if message is mostly caps and long enough
         if len(text) > 5 and text.isupper():
             score += 2
+            
+        # 4. Audio Intensity (Task 24)
+        if (pitch_hz or 0) > 250.0: score += 2 # High pitch scream
+        if (energy or 0) > 0.8: score += 2 # High volume
             
         return min(score, 10)
 

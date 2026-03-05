@@ -28,6 +28,15 @@ class BookingStatus(enum.Enum):
     CANCELLED = "cancelled"
     PENDING = "pending"
 
+class EscrowStatus(enum.Enum):
+    CREATED = "CREATED"
+    UTR_SUBMITTED = "UTR_SUBMITTED"
+    VERIFIED = "VERIFIED"
+    BOOKING_INITIATED = "BOOKING_INITIATED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    REFUNDED = "REFUNDED"
+
 class CoachClass(enum.Enum):
     SL = "sl"
     AC3 = "ac3"
@@ -141,7 +150,7 @@ class StationHealthIndex(TransitBase):
 
 class Profile(UserBase):
     __tablename__ = "profiles"
-    id = Column(String(255), primary_key=True)
+    id = Column(String(255), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"))
     name = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
@@ -151,8 +160,13 @@ class Profile(UserBase):
     blood_group = Column(String(5), nullable=True)
     medical_conditions = Column(Text, nullable=True)
     is_high_risk_passenger = Column(Boolean, default=False)
-    
+    karma_score = Column(Integer, default=100) # Task 32
+    help_count = Column(Integer, default=0) # Task 32
+    is_volunteer = Column(Boolean, default=False) # Task 39
+    expertise = Column(String(50), nullable=True) # Task 39
+
     ai_memory = Column(JSON, default={}, nullable=False)
+
     user = relationship("User", back_populates="profile")
 
 class Booking(UserBase):
@@ -161,14 +175,22 @@ class Booking(UserBase):
     pnr_number = Column(String(10), unique=True, index=True)
     user_id = Column(String(36), ForeignKey("users.id"))
     travel_date = Column(Date, index=True)
-    booking_status = Column(String(50), default="pending")
+    booking_status = Column(String(50), default="pending") # Confirmed, Waitlist, etc.
+    escrow_status = Column(SQLEnum(EscrowStatus), default=EscrowStatus.CREATED)
+    
     amount_paid = Column(Float, default=0.0)
+    upi_tx_id = Column(String(100), unique=True, index=True)
+    utr_number = Column(String(12), unique=True, nullable=True, index=True)
+    
+    train_number = Column(String(20), nullable=True)
+    berth_preference = Column(String(20), nullable=True)
     
     # Matches actual DB column 'booking_details'
     booking_details = Column(JSON, nullable=True)
     
     route_id = Column(String(36), nullable=True)
     trip_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="bookings")
     passenger_details = relationship("PassengerDetails", back_populates="booking")

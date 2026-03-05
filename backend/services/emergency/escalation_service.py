@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import shutil
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 from api.sos import get_all_sos, _save_event, _load_event
@@ -36,41 +38,81 @@ class EscalationService:
 
     async def purge_old_incidents(self, days: int = 30):
         """
-        Task 42: Automated deletion of emergency data after 30 days.
+        Task 42/41: Automated deletion and PII scrubbing.
+        Logic: 
+        - 24 hours: 'Soft-Scrub' (Clear PII, keep metadata).
+        - 30 days: 'Hard-Delete' (Complete removal).
         """
-        from api.sos import get_all_sos, _redis, SOS_KEY_PREFIX, SOS_INDEX_KEY
+        from api.sos import get_all_sos, _redis, SOS_KEY_PREFIX, SOS_INDEX_KEY, _save_event
         all_events = await get_all_sos()
         now = datetime.utcnow()
-        purge_threshold = now - timedelta(days=days)
+        hard_delete_threshold = now - timedelta(days=days)
+        soft_scrub_threshold = now - timedelta(hours=24)
         
         purged_count = 0
+        scrubbed_count = 0
+        
         for event in all_events:
             triggered_at = datetime.fromisoformat(event.get("triggered_at"))
-            if triggered_at < purge_threshold:
-                eid = event["id"]
-                logger.info(f"♻️ [RETENTION] Purging old incident {eid} (Triggered: {triggered_at})")
+            eid = event["id"]
+            
+            # 1. Hard Delete (> 30 days) - Task 42
+            if triggered_at < hard_delete_threshold:
+                logger.info(f"♻️ [HARD DELETE] Decisively wiping all data for incident {eid}")
                 
-                # Delete from Redis
+                # A. Redis Cleanup
                 if _redis:
                     try:
                         _redis.delete(f"{SOS_KEY_PREFIX}{eid}")
                         _redis.srem(SOS_INDEX_KEY, eid)
+                        # Clear PNR registry
+                        trip = event.get("trip")
+                        if trip and trip.get("pnr_number"):
+                            from api.sos import PNR_REGISTRY_KEY
+                            _redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
                     except Exception: pass
                 
-                # Delete from local (if using)
+                # B. Media Cleanup (Task 35)
+                from api.sos import MEDIA_DIR
+                media_path = os.path.join(MEDIA_DIR, eid)
+                if os.path.exists(media_path):
+                    shutil.rmtree(media_path)
+                    logger.info(f"🗑️ [MEDIA] Deleted media folder for {eid}")
+                
+                # C. Local Memory cleanup
                 from api.sos import _local_events
                 for i, e in enumerate(_local_events):
                     if e['id'] == eid:
                         _local_events.pop(i)
                         break
                 purged_count += 1
+                
+            # 2. Soft Scrub (> 24 hours) - Task 41
+            elif triggered_at < soft_scrub_threshold and event.get("privacy_status") != "scrubbed":
+                logger.info(f"🛡️ [SOFT SCRUB] Redacting PII for incident {eid}")
+                import hashlib
+                
+                # Pseudonymize
+                if event.get("phone"):
+                    event["phone"] = hashlib.sha256(event["phone"].encode()).hexdigest()[:12]
+                event["name"] = "ANONYMOUS_USER"
+                
+                # Clear sensitive history
+                event["chat_history"] = []
+                event["location_history"] = []
+                event["extra"] = "[DATA_REDACTED_FOR_PRIVACY]"
+                event["privacy_status"] = "scrubbed"
+                
+                _save_event(event)
+                scrubbed_count += 1
         
-        if purged_count > 0:
-            logger.info(f"✅ [RETENTION] Successfully purged {purged_count} incidents older than {days} days.")
+        if purged_count > 0 or scrubbed_count > 0:
+            logger.info(f"✅ [PRIVACY] Scoped operations: Hard-deleted {purged_count}, Soft-scrubbed {scrubbed_count}.")
 
     async def check_all_active_incidents(self):
         """
-        Task 38: Monitor unresolved incidents and escalate to HQ if > 60 mins.
+        Task 38: Dynamic Escalation Profiler.
+        Calculates timeout based on Time, Priority, and Category.
         """
         from api.sos import get_all_sos
         all_events = await get_all_sos()
@@ -78,22 +120,46 @@ class EscalationService:
         
         for event in all_events:
             if event.get("status") in ["active", "responding"]:
+                # Task 38: Multi-factor timeout calculation
+                timeout_mins = 60 # Base
+                
+                # 1. Night Bias (Task 26)
+                is_night = now.hour >= 23 or now.hour <= 4
+                if is_night: timeout_mins -= 40
+                
+                # 2. Category Speedup
+                cat = event.get("category", "unknown")
+                if cat == "fire": timeout_mins -= 45
+                elif cat in ["medical", "medical_emergency_fall"]: timeout_mins -= 30
+                elif cat == "security": timeout_mins -= 20
+                
+                # 3. Priority Floor
+                if event.get("priority") == "critical": timeout_mins = min(timeout_mins, 10)
+                
+                # Final Floor
+                timeout_mins = max(timeout_mins, 5)
+                
                 triggered_at = datetime.fromisoformat(event.get("triggered_at"))
                 duration_mins = (now - triggered_at).total_seconds() / 60
                 
-                # If unresolved for more than 60 mins and not yet at escalation level 3
-                if duration_mins >= 60 and event.get("escalation_level", 1) < 3:
+                if duration_mins >= timeout_mins and event.get("escalation_level", 1) < 3:
+                    logger.warning(f"🚀 [DYNAMIC ESCALATION] Escalating {event['id']} (Cat: {cat}) after {round(duration_mins, 1)}m (Timeout: {timeout_mins}m)")
                     await self.escalate_incident(event)
 
     async def escalate_incident(self, event: Dict[str, Any]):
-        """Perform Level 3 Escalation."""
+        """Perform Level 3 Escalation with AI Summary (Task 57)."""
         event_id = event["id"]
         logger.warning(f"⚠️ [ESCALATION] Incident {event_id} has been active for 60+ mins. Escalating to HQ...")
         
         # 1. Update Event State
         event["escalation_level"] = 3
         event["priority"] = "critical"
-        event["extra"] = f"{event.get('extra', '')} | AUTO-ESCALATED TO NATIONAL HQ"
+        
+        # Task 57: Generate Brief for HQ
+        from utils.summarizer import ai_summarizer
+        event["hq_summary"] = ai_summarizer.generate_summary(event)
+        
+        event["extra"] = f"{event.get('extra', '')} | AUTO-ESCALATED TO NATIONAL HQ | SUMMARY: {event['hq_summary']}"
         
         # 2. Dispatch to HQ
         hq_dispatch = await dispatch_service.escalate_to_hq(event)
