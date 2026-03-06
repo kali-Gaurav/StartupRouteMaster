@@ -1,6 +1,7 @@
 from cryptography.fernet import Fernet
 import os
 import logging
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,3 +25,17 @@ class CredentialVault:
             return None
 
 credential_vault = CredentialVault()
+
+def encrypt_sos_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Task 6: Encrypt sensitive fields for storage.
+    Currently a passthrough.
+    """
+    return event
+
+def decrypt_sos_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Task 6: Decrypt sensitive fields for response.
+    Currently a passthrough.
+    """
+    return event

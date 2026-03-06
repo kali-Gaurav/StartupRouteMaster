@@ -80,16 +80,25 @@ async def search_routes_endpoint(
         )
 
         if not result or not result.get("journeys"):
+            # Task 34: Alternative Hub-Route Suggestion
+            from services.hub_route_service import HubRouteService
+            hub_service = HubRouteService(db)
+            hub_alternatives = await hub_service.suggest_hub_routes(
+                search_request.source, 
+                search_request.destination, 
+                travel_date_str
+            )
+            
             # Return smart error with suggestions (Topic 7)
             return {
-                "error": "NO_ROUTES_FOUND",
-                "message": f"No routes found for {search_request.source} -> {search_request.destination} on {travel_date_str}",
+                "error": "NO_DIRECT_ROUTES",
+                "message": f"No direct routes found. However, we found {len(hub_alternatives)} alternatives via major hubs.",
                 "suggestions": [
-                    "Try nearby stations",
-                    "Try a different travel date",
-                    "Check if direct trains are available on this day"
+                    "Consider booking via a connecting hub (Nagpur/Itarsi)",
+                    "Try a different travel date"
                 ],
-                "journeys": []
+                "journeys": hub_alternatives,
+                "is_hub_fallback": True
             }
 
         status_label = "success"

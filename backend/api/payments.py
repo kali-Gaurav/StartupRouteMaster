@@ -20,8 +20,23 @@ from api.dependencies import get_current_user, verify_webhook_signature
 from utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
 from utils.limiter import limiter
 
-router = APIRouter(prefix="/api/payments", tags=["payments"])
+router = APIRouter(prefix="/payment", tags=["payments"])
 logger = logging.getLogger(__name__)
+
+@router.get("/u/{short_id}")
+async def redirect_upi(short_id: str):
+    """
+    Task 1.6: Short-URL redirector for UPI links.
+    Redirects to the actual upi://pay URI.
+    """
+    from services.cache_service import cache_service
+    from fastapi.responses import RedirectResponse
+    
+    upi_uri = cache_service.get(f"upi_short:{short_id}")
+    if not upi_uri:
+        raise HTTPException(status_code=404, detail="Payment link expired or invalid.")
+    
+    return RedirectResponse(url=upi_uri)
 
 UNLOCK_PRICE = 39.0
 SEAT_LOCK_TTL_SECONDS = 600
@@ -519,6 +534,8 @@ from database.models import PaymentSession
 class PaymentSessionRequest(BaseModel):
     journey_id: str
     amount: float = 39.0
+    discount_code: Optional[str] = None
+    user_region: str = "ALL" # New field for regional routing
 
 class PaymentSessionVerify(BaseModel):
     session_code: str
@@ -533,6 +550,7 @@ async def create_payment_session(
     """
     Creates a simple payment session for UPI.
     NEW: Performs real-time verification of ALL segments before allowing session creation.
+    Task 5: Now includes Platform Fee & GST breakdown.
     """
     # 1. Real-time Verification (Phase 10 Core Requirement)
     verification_service = RouteVerificationService(db)
@@ -548,65 +566,334 @@ async def create_payment_session(
     if not verify_result.get("success"):
         raise HTTPException(status_code=400, detail=verify_result.get("error", "Route verification failed"))
 
+    # 2. Task 5: Platform Fee & GST Calculation
+    from services.tax_engine_service import tax_engine
+    # Use request.amount as base fare if provided, otherwise default to 39.0
+    breakdown = tax_engine.calculate_breakdown(request.amount, request.discount_code)
+    final_amount = breakdown["total"]
+
     # Generate random 6-character session code
     session_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     
-    # Store in DB with verification snapshot
+    # Task 4: Dynamic VPA Merchant Load Balancer (with Region support)
+    from services.merchant_vpa_service import merchant_vpa_service
+    merchant_info = merchant_vpa_service.get_next_vpa(user_region=request.user_region)
+    
+    # Store in DB with verification snapshot and fee breakdown
     session = PaymentSession(
         user_id=str(current_user.id),
         route_id=request.journey_id,
         session_code=session_code,
-        amount=request.amount,
-        verification_details=verify_result, # New: Store snapshot
-        expires_at=datetime.utcnow() + timedelta(minutes=15)
+        amount=final_amount,
+        verification_details={
+            "verification": verify_result,
+            "breakdown": breakdown
+        },
+        expires_at=datetime.utcnow() + timedelta(minutes=10) # Task 10: Strict 10 min
     )
     db.add(session)
     db.commit()
     
-    # Generate UPI intent
-    upi_id = "gauravnagar@okaxis" # Target UPI
-    upi_link = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={request.amount}&cu=INR&tn=Unlock_{session_code}"
+    # Task 7.5 & 7.10: Initialize Session Lock
+    from services.session_lock_service import SessionLockService
+    lock_service = SessionLockService(db)
+    # Using journey_id as booking_id placeholder since they map 1:1 in this context
+    lock_service.initialize_lock(session_code, str(current_user.id), booking_id=request.journey_id)
+    
+    # Generate UPI intent with load-balanced VPA and total amount
+    from utils.payments import generate_upi_uri
+    upi_link, tid = generate_upi_uri(
+        merchant_vpa=merchant_info["vpa"],
+        merchant_name=merchant_info["name"],
+        amount=final_amount,
+        transaction_note=f"Unlock_{session_code}"
+    )
+    
+    # Record volume in tracker (Task 4)
+    merchant_vpa_service.record_volume(merchant_info["vpa"], final_amount)
     
     return {
         "success": True,
         "session_code": session_code,
         "upi_link": upi_link,
-        "amount": request.amount,
+        "amount_breakdown": breakdown,
+        "merchant_name": merchant_info["name"],
         "verification": verify_result, # Frontend shows 'Verified' badge
-        "message": "Route verified. Please pay via UPI and enter the session code to unlock."
+        "message": f"Route verified. Please pay {final_amount} to {merchant_info['name']} and enter the code to unlock.",
+        "expires_at": session.expires_at.isoformat()
     }
+
+@router.post("/refresh_session/{old_session_code}")
+async def refresh_payment_session(
+    old_session_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Task 10.3: "Refresh QR" button for expired sessions.
+    Generates a new session code and 10-minute window for an expired session.
+    """
+    old_session = db.query(PaymentSession).filter(
+        PaymentSession.session_code == old_session_code,
+        PaymentSession.user_id == str(current_user.id)
+    ).first()
+    
+    if not old_session:
+        raise HTTPException(status_code=404, detail="Original session not found")
+        
+    if old_session.status == "VERIFIED":
+        raise HTTPException(status_code=400, detail="Cannot refresh a verified session")
+        
+    # Mark old as explicitly expired if it isn't already
+    old_session.status = "EXPIRED"
+    
+    # Generate new random 6-character session code
+    new_session_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    
+    # Create new session based on old data
+    new_session = PaymentSession(
+        user_id=str(current_user.id),
+        route_id=old_session.route_id,
+        session_code=new_session_code,
+        amount=old_session.amount,
+        verification_details=old_session.verification_details,
+        expires_at=datetime.utcnow() + timedelta(minutes=10) # Fresh 10 min window
+    )
+    db.add(new_session)
+    db.commit()
+    
+    # Initialize lock for new session
+    from services.session_lock_service import SessionLockService
+    lock_service = SessionLockService(db)
+    lock_service.initialize_lock(new_session_code, str(current_user.id), booking_id=old_session.route_id)
+    
+    # Generate new UPI intent
+    from services.merchant_vpa_service import merchant_vpa_service
+    merchant_info = merchant_vpa_service.get_next_vpa()
+    from utils.payments import generate_upi_uri
+    upi_link, tid = generate_upi_uri(
+        merchant_vpa=merchant_info["vpa"],
+        merchant_name=merchant_info["name"],
+        amount=new_session.amount,
+        transaction_note=f"Unlock_{new_session_code}"
+    )
+    
+    return {
+        "success": True,
+        "session_code": new_session_code,
+        "upi_link": upi_link,
+        "merchant_name": merchant_info["name"],
+        "expires_at": new_session.expires_at.isoformat(),
+        "message": "Session refreshed successfully."
+    }
+
+@router.post("/heartbeat/{session_code}")
+async def payment_heartbeat(
+    session_code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Task 7.10: Heartbeat check.
+    Frontend calls this every 30s while on the payment page.
+    """
+    from services.session_lock_service import SessionLockService
+    lock_service = SessionLockService(db)
+    
+    is_active = lock_service.record_heartbeat(session_code)
+    if not is_active:
+        raise HTTPException(status_code=400, detail="Session expired or invalid")
+        
+    return {"success": True, "status": "ACTIVE"}
+
+@router.get("/admin/vpa_dashboard")
+async def admin_vpa_dashboard(current_user: User = Depends(get_current_user)):
+    """
+    Task 4.7: Real-time VPA utilization dashboard endpoint.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    from services.merchant_vpa_service import merchant_vpa_service
+    return {
+        "success": True,
+        "stats": merchant_vpa_service.get_dashboard_stats()
+    }
+
+@router.get("/admin/export_gstr1")
+async def export_gstr1(
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2020),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Task 5.5: Monthly GSTR-1 export utility."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    from services.tax_engine_service import tax_engine
+    from fastapi.responses import PlainTextResponse
+    
+    csv_data = tax_engine.export_gstr1_csv(db, month, year)
+    
+    return PlainTextResponse(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=gstr1_{year}_{month}.csv"}
+    )
+
+@router.get("/invoice/{payment_id}/pdf")
+async def download_invoice_pdf(
+    payment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Task 5.4: Tax Invoice generator (PDF) for the user."""
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+        
+    # Security: Only admin or the owner can download
+    unlocked_route = db.query(UnlockedRoute).filter(UnlockedRoute.payment_id == payment.id).first()
+    if not unlocked_route or (unlocked_route.user_id != str(current_user.id) and current_user.role != "admin"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    from services.tax_engine_service import tax_engine
+    from fastapi.responses import StreamingResponse
+    
+    # Calculate breakdown
+    base_fare = payment.amount - 39.0 # Placeholder logic for demo
+    if base_fare < 0: base_fare = payment.amount
+    
+    breakdown = tax_engine.calculate_breakdown(base_fare)
+    
+    pdf_buffer = tax_engine.generate_tax_invoice_pdf(
+        transaction_id=payment.razorpay_order_id,
+        date_str=payment.created_at.strftime("%Y-%m-%d"),
+        breakdown=breakdown
+    )
+    
+    if not pdf_buffer:
+        raise HTTPException(status_code=500, detail="PDF generation failed (ReportLab missing?)")
+        
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=invoice_{payment_id}.pdf"}
+    )
+
+class ClickAnalyticsRequest(BaseModel):
+    session_code: str
+    selected_app: str # 'gpay', 'phonepe', 'paytm', 'qr_fallback', 'copy_vpa'
+    device_os: str # 'ios', 'android', 'web'
+
+@router.get("/intents/{session_code}")
+async def get_payment_intents(
+    session_code: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Task 9.3 & 9.8: Mobile Deep-Link Intent Generator.
+    Returns app-specific intent URIs for the frontend.
+    """
+    session = db.query(PaymentSession).filter(PaymentSession.session_code == session_code).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    # Reconstruct the base URI (In prod, we'd store the merchant VPA used in the session)
+    # Defaulting to our North node for demo
+    vpa = "gauravnagar@okaxis" 
+    name = "RouteMaster"
+    amount = session.amount
+    
+    base_upi = f"upi://pay?pa={vpa}&pn={name}&am={amount}&cu=INR&tn=Unlock_{session_code}"
+    
+    # Android Intent formats
+    intents = {
+        "generic": base_upi,
+        "gpay": f"intent://pay?pa={vpa}&pn={name}&am={amount}&cu=INR&tn=Unlock_{session_code}#Intent;scheme=upi;package=com.google.android.apps.nbu.paisa.user;end",
+        "phonepe": f"intent://pay?pa={vpa}&pn={name}&am={amount}&cu=INR&tn=Unlock_{session_code}#Intent;scheme=upi;package=com.phonepe.app;end",
+        "paytm": f"intent://pay?pa={vpa}&pn={name}&am={amount}&cu=INR&tn=Unlock_{session_code}#Intent;scheme=upi;package=net.one97.paytm;end",
+        "bhim": f"intent://pay?pa={vpa}&pn={name}&am={amount}&cu=INR&tn=Unlock_{session_code}#Intent;scheme=upi;package=in.org.npci.upiapp;end"
+    }
+    
+    return {"success": True, "intents": intents}
+
+@router.post("/analytics/click")
+async def track_app_click(
+    request: ClickAnalyticsRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Task 9.7: Track "App Click-through Rate".
+    Allows the frontend to prioritize sorting based on historical usage (Task 9.2).
+    """
+    # Store analytics in Redis for fast aggregation
+    from services.cache_service import cache_service
+    
+    # Increment global counter for the app
+    if cache_service.redis:
+        cache_service.redis.hincrby("payment_app_analytics", request.selected_app, 1)
+    
+    # Log it for potential audit
+    logger.info(f"Payment Click Analytics - Session: {request.session_code}, App: {request.selected_app}, OS: {request.device_os}")
+    
+    return {"success": True}
 
 @router.post("/confirm_manual")
 async def confirm_payment_session(
-    request: PaymentSessionVerify,
+    request_data: PaymentSessionVerify,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Verifies the payment session code entered by the user.
     """
+    # 1. Check Fraud Lockout (Task 3)
+    from services.fraud_detection_service import fraud_service
+    client_ip = request.client.host if request.client else None
+    device_fp = request.headers.get("X-Device-Fingerprint") # Task 3.3
+    
+    is_valid, error = fraud_service.validate_utr_advanced(
+        request_data.session_code, 
+        str(current_user.id), 
+        ip_address=client_ip,
+        device_fp=device_fp
+    )
+    
+    if not is_valid:
+        raise HTTPException(status_code=403, detail=error)
+
     session = db.query(PaymentSession).filter(
-        PaymentSession.session_code == request.session_code,
-        PaymentSession.route_id == request.journey_id,
+        PaymentSession.session_code == request_data.session_code,
+        PaymentSession.route_id == request_data.journey_id,
         PaymentSession.user_id == current_user.id
     ).first()
     
     if not session:
+        # Record failed attempt for fraud detection
+        fraud_service.record_attempt(str(current_user.id), False)
+        if client_ip: fraud_service.record_attempt(f"IP:{client_ip}", False)
+        if device_fp: fraud_service.record_attempt(f"FP:{device_fp}", False)
         raise HTTPException(status_code=400, detail="Invalid session code or journey ID.")
         
     if session.status == "VERIFIED":
-        # Idempotent return if already verified
+        fraud_service.record_attempt(str(current_user.id), True)
         return {"success": True, "message": "Already verified"}
         
     if session.expires_at < datetime.utcnow():
         session.status = "EXPIRED"
         db.commit()
+        fraud_service.record_attempt(str(current_user.id), False)
         raise HTTPException(status_code=400, detail="Session code expired.")
         
     # Mark as verified
     session.status = "VERIFIED"
+    fraud_service.record_attempt(str(current_user.id), True)
+    if client_ip: fraud_service.record_attempt(f"IP:{client_ip}", True)
     
-    # NEW: Create a real Payment record for this manual session to satisfy FK constraints
     new_payment = PaymentModel(
         status="completed",
         amount=session.amount,
@@ -615,17 +902,15 @@ async def confirm_payment_session(
         created_at=datetime.utcnow()
     )
     db.add(new_payment)
-    db.flush() # Get the payment ID
+    db.flush()
     
-    # NEW: Check if route exists in PrecalculatedRoute to avoid FK violation
     from database.models import PrecalculatedRoute
-    route_exists = db.query(PrecalculatedRoute).filter(PrecalculatedRoute.id == request.journey_id).first()
+    route_exists = db.query(PrecalculatedRoute).filter(PrecalculatedRoute.id == request_data.journey_id).first()
     
-    # We unlock the route in the DB here
     unlocked_route = UnlockedRoute(
         user_id=str(current_user.id),
-        route_id=request.journey_id if route_exists else None, # FK only if exists
-        cached_route_id=request.journey_id if not route_exists else None, # Store as cached ID otherwise
+        route_id=request_data.journey_id if route_exists else None,
+        cached_route_id=request_data.journey_id if not route_exists else None,
         is_active=True,
         payment_id=new_payment.id
     )
@@ -633,9 +918,26 @@ async def confirm_payment_session(
     db.add(unlocked_route)
     db.commit()
     db.refresh(unlocked_route)
-    logger.info(f"DEBUG: Manually unlocked route {request.journey_id} for user {current_user.id}. ID in DB: {unlocked_route.id}")
+    logger.info(f"DEBUG: Manually unlocked route {request_data.journey_id} for user {current_user.id}. ID in DB: {unlocked_route.id}")
     
     return {
         "success": True, 
         "message": "Payment confirmed and route unlocked."
     }
+
+@router.post("/admin/clear_fraud_lockout")
+async def admin_clear_fraud_lockout(
+    identifier: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Task 3.6: Admin dashboard for manual unblocking.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    from services.fraud_detection_service import fraud_service
+    fraud_service.clear_lockout(identifier)
+    
+    return {"success": True, "message": f"Lockout cleared for {identifier}"}
+

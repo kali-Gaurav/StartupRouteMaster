@@ -21,7 +21,7 @@ from api.websockets import manager
 from services.emergency.alert_manager import EmergencyAlertManager
 from utils.limiter import limiter
 
-router = APIRouter(tags=["sos"])
+router = APIRouter(prefix="/sos", tags=["sos"])
 
 # Use the singleton instance directly
 _redis = cache_service.redis

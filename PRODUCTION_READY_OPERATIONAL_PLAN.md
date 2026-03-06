@@ -130,43 +130,6 @@ This document outlines the final 50 high-priority tasks required to move RouteMa
 
 ---
 
-## 🚄 Phase B: Automated AI Booking Pipeline (Tasks 26-50)
-
-### 26. Stealth Playwright Pool Manager
-1. Max-concurrency semaphore (Task 26).
-2. Automatic browser context cleanup.
-3. Random delay between user actions (Human simulation).
-4. Mouse movement jittering.
-5. WebGL/Font fingerprint masking.
-6. Headless mode toggle for debugging.
-7. Zombie process reaper script.
-8. Per-worker resource monitoring (CPU/RAM).
-9. Reuse browser instances for speed (Warmup).
-10. Shared session state for Tatkal speed.
-
-### 27. Residential Proxy Failover (Task 46 Pro)
-1. Pool of 100+ Indian Residential IPs.
-2. Automatic rotation on HTTP 403/Blocked.
-3. Proxy health scoring (Success vs Failure rate).
-4. Sticky sessions (One IP per booking).
-5. Geo-specific proxies (Mumbai/Delhi/Chennai).
-6. Proxy authentication vault.
-7. Retry logic with "Premium" backup pool.
-8. Latency-based proxy selection.
-9. User-Agent + Proxy consistency checking.
-10. Bandwidth usage monitoring per proxy.
-
-### 28. Human-in-the-Loop CAPTCHA (Task 29 Pro)
-1. Real-time image extraction from DOM.
-2. Base64 streaming via WebSocket.
-3. Responsive UI input for user response.
-4. Auto-submit logic once 5 chars entered.
-5. CAPTCHA Refresh button (Triggering worker reload).
-6. AI Fallback (Gemini Vision) for 80% accuracy.
-7. Sound-to-Text for Audio Captchas.
-8. Captcha solve-time analytics.
-9. "Invalid Captcha" retry loop (Max 3).
-10. Pre-loading next captcha for Tatkal.
 
 ### 29. NLP Passenger Schema Mapper (Task 27 Pro)
 1. Gemini-based name/age extraction.
@@ -191,18 +154,6 @@ This document outlines the final 50 high-priority tasks required to move RouteMa
 8. "Tatkal Mode" UI for users (simplified).
 9. One-click Tatkal "Force Start".
 10. Success probability calculator.
-
-### 31. Ghost Worker WebSocket Logs (Task 42 Pro)
-1. Standardized event schema (`status`, `message`, `timestamp`).
-2. Auto-scrolling log window in frontend.
-3. Progress bar linked to worker phases.
-4. "Stuck Worker" detection (No logs for 30s).
-5. Visual icons for each phase (Login, Search, Pay).
-6. Debug mode: Show raw HTML snippets on failure.
-7. Multi-language log support (Hindi/English).
-8. Real-time seat count updates.
-9. "User Action Required" pulsing alerts.
-10. Log persistence for post-booking review.
 
 ### 32. Branded PDF Ticket Engine (Task 37 Pro)
 1. `reportlab` template with SVG icons.

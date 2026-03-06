@@ -57,8 +57,13 @@ class User(UserBase):
     phone_number = Column(String(20), nullable=True)
     role = Column(String(50), default="user")
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Task 35: Credential Vault
+    encrypted_irctc_creds = Column(LargeBinary, nullable=True)
+    creds_iv = Column(LargeBinary, nullable=True)
+    opt_in_persistent_creds = Column(Boolean, default=False)
 
-    bookings = relationship("Booking", back_populates="user")
+    bookings = relationship("Booking", back_populates="user", foreign_keys="[Booking.user_id]")
     profile = relationship("Profile", back_populates="user", uselist=False)
     reviews = relationship("Review", back_populates="user")
     commission_tracks = relationship("CommissionTracking", back_populates="user")
@@ -205,8 +210,38 @@ class Booking(UserBase):
     trip_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    user = relationship("User", back_populates="bookings")
+    user = relationship("User", back_populates="bookings", foreign_keys=[user_id])
     passenger_details = relationship("PassengerDetails", back_populates="booking")
+
+    def validate_status_transition(self, new_status: str) -> bool:
+        """
+        Validate if the booking_status transition is allowed.
+        """
+        allowed_transitions = {
+            "pending": ["confirmed", "cancelled"],
+            "confirmed": ["cancelled"],
+            "cancelled": [],
+        }
+        current = self.booking_status.lower() if self.booking_status else "pending"
+        return new_status.lower() in allowed_transitions.get(current, [])
+
+    def validate_escrow_transition(self, new_status: EscrowStatus) -> bool:
+        """
+        Validate if the escrow_status transition is allowed.
+        CREATED -> UTR_SUBMITTED -> VERIFIED -> BOOKING_INITIATED -> COMPLETED
+        Any -> FAILED
+        Any -> REFUNDED (if failed)
+        """
+        allowed = {
+            EscrowStatus.CREATED: [EscrowStatus.UTR_SUBMITTED, EscrowStatus.FAILED],
+            EscrowStatus.UTR_SUBMITTED: [EscrowStatus.VERIFIED, EscrowStatus.FAILED],
+            EscrowStatus.VERIFIED: [EscrowStatus.BOOKING_INITIATED, EscrowStatus.FAILED],
+            EscrowStatus.BOOKING_INITIATED: [EscrowStatus.COMPLETED, EscrowStatus.FAILED],
+            EscrowStatus.COMPLETED: [],
+            EscrowStatus.FAILED: [EscrowStatus.REFUNDED],
+            EscrowStatus.REFUNDED: [],
+        }
+        return new_status in allowed.get(self.escrow_status, [])
 
 class TrainAvailabilityCache(UserBase):
     __tablename__ = "train_availability_cache"
@@ -442,3 +477,98 @@ class RealtimeData(TransitBase):
     timestamp = Column(DateTime)
     source = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class Disruption(TransitBase):
+    __tablename__ = "disruptions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    disruption_type = Column(String(50), nullable=False) # 'delay', 'cancellation', 'reroute'
+    description = Column(Text, nullable=True)
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    status = Column(String(50), default="active")
+    created_by_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    gtfs_route_id = Column(Integer, ForeignKey("gtfs_routes.id"), nullable=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"), nullable=True)
+    stop_id = Column(Integer, ForeignKey("stops.id"), nullable=True)
+
+class SeatInventory(TransitBase):
+    __tablename__ = "seat_inventory"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trip_id = Column(Integer, ForeignKey("trips.id"), index=True)
+    stop_time_id = Column(Integer, ForeignKey("stop_times.id"), nullable=True)
+    travel_date = Column(Date, index=True)
+    coach_type = Column(String(10), index=True) # SL, AC3, etc.
+    total_seats = Column(Integer, default=0)
+    available_seats = Column(Integer, default=0)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+class Coach(TransitBase):
+    __tablename__ = "coaches"
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"))
+    coach_number = Column(String(10))
+    class_type = Column(String(50))
+    total_seats = Column(Integer, default=0)
+
+class Seat(TransitBase):
+    __tablename__ = "seats"
+    id = Column(Integer, primary_key=True)
+    coach_id = Column(Integer, ForeignKey("coaches.id"))
+    seat_number = Column(String(10))
+    is_available = Column(Boolean, default=True)
+
+class Fare(TransitBase):
+    __tablename__ = "fares"
+    id = Column(Integer, primary_key=True)
+    segment_id = Column(Integer, ForeignKey("segments.id"), nullable=True)
+    trip_id = Column(Integer, ForeignKey("trips.id"))
+    class_type = Column(String(50))
+    amount = Column(Float)
+
+class PaymentSession(UserBase):
+    __tablename__ = "payment_sessions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"))
+    route_id = Column(String(36), nullable=True)
+    session_code = Column(String(20), unique=True, index=True) # Added missing column
+    amount = Column(Float, nullable=False)
+    status = Column(String(50), default="PENDING")
+    payment_method = Column(String(50), nullable=True)
+    verification_details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+class WebhookEvent(UserBase):
+    __tablename__ = "webhook_events"
+    id = Column(String(100), primary_key=True) # Usually event ID from provider
+    event_type = Column(String(50))
+    payload = Column(JSON)
+    processed_at = Column(DateTime, default=datetime.utcnow)
+
+class BankTransaction(UserBase):
+    __tablename__ = "bank_transactions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    utr = Column(String(50), unique=True, index=True)
+    amount = Column(Float, nullable=False)
+    bank_name = Column(String(50))
+    raw_payload = Column(Text)
+    sender_phone = Column(String(20))
+    received_at = Column(DateTime, default=datetime.utcnow)
+    sms_timestamp = Column(DateTime) # Original SMS time from phone
+    status = Column(String(50), default="PENDING") # PENDING, MATCHED, UNMATCHED_FUNDS, RECONCILED, REVERSED
+
+class AuditLog(UserBase):
+    """
+    Task 8.7: Immutable Audit trail for every financial status change.
+    """
+    __tablename__ = "audit_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type = Column(String(50), nullable=False) # e.g., 'Booking', 'BankTransaction'
+    entity_id = Column(String(36), nullable=False, index=True)
+    action = Column(String(50), nullable=False) # e.g., 'STATUS_CHANGE', 'RECONCILED', 'ROLLBACK'
+    old_value = Column(String(255), nullable=True)
+    new_value = Column(String(255), nullable=True)
+    performed_by = Column(String(50), default="SYSTEM") # 'SYSTEM' or admin user ID
+    reason = Column(String(255), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)

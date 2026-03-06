@@ -95,6 +95,36 @@ class RailwayRouteEngine:
         
         return routes
 
+    async def search_hub_routes(
+        self,
+        source_code: str,
+        destination_code: str,
+        departure_date: datetime,
+        constraints: RouteConstraints,
+        db: Optional[Session] = None
+    ) -> List[Route]:
+        from utils.station_utils import resolve_stations
+        from database.session import SessionTransit
+        
+        # Always use SessionTransit for transit entities
+        res_db = SessionTransit()
+        try:
+            source_stop, dest_stop = resolve_stations(res_db, source_code, destination_code)
+        finally:
+            res_db.close()
+
+        if not source_stop or not dest_stop:
+            return []
+
+        graph = await self._get_current_graph(departure_date)
+        
+        raptor = OptimizedRAPTOR(max_transfers=1)
+        routes = await raptor.find_one_transfer_hub_routes(
+            source_stop.id, dest_stop.id, departure_date, constraints, graph
+        )
+        
+        return routes
+
     async def rebuild_snapshot(self, date: datetime):
         """Force a rebuild of the graph snapshot."""
         async with self._lock:

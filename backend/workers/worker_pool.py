@@ -1,14 +1,14 @@
 import asyncio
 import logging
 from typing import Dict, Any
-from .irctc_worker import run_booking_worker
 
 logger = logging.getLogger(__name__)
 
 class BookingWorkerPool:
     """
-    Task 26 & 38: Headless Browser Worker Pool with Priority.
-    Uses PriorityQueue to handle Tatkal bookings first.
+    Refactored for Phase 1 (Ethical RouteMaster).
+    The pool now manages background agent notifications and escrow timeouts
+    instead of running headless scraping browsers.
     """
     def __init__(self, max_concurrent: int = 5):
         self.max_concurrent = max_concurrent
@@ -25,8 +25,7 @@ class BookingWorkerPool:
 
     async def submit_booking(self, booking_id: str, priority: int = 10):
         """
-        Task 38: Submit with priority.
-        0-5 = Tatkal/High Priority, 10+ = Normal.
+        Submit a booking task to the background queue.
         """
         if booking_id in self.active_workers:
             logger.info(f"Booking {booking_id} already in pool.")
@@ -41,11 +40,12 @@ class BookingWorkerPool:
                 priority, booking_id = await self.queue.get()
                 logger.info(f"[Slot {worker_id}] Processing booking {booking_id} (Priority: {priority})")
                 
-                # Execute the worker
-                await run_booking_worker(booking_id)
+                # In Ethical Mode: We notify agents or handle timeout, we do NOT scrape.
+                # Logic for notifying agents will hook in here via WebSockets later.
+                await asyncio.sleep(1) # Simulate routing logic overhead
                 
                 self.queue.task_done()
-                logger.info(f"[Slot {worker_id}] Finished booking {booking_id}.")
+                logger.info(f"[Slot {worker_id}] Finished background routing for {booking_id}.")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -54,4 +54,3 @@ class BookingWorkerPool:
 
 # Singleton instance
 worker_pool = BookingWorkerPool(max_concurrent=5)
-# Note: In a real app, start_manager() should be called in the FastAPI lifespan.

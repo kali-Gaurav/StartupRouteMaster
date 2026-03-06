@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path("backend").resolve()))
+
 from utils.payments import generate_upi_uri
 import urllib.parse
 
@@ -20,7 +24,4 @@ def verify_task_1():
     print("✅ Task 1 Verification SUCCESSFUL!")
 
 if __name__ == "__main__":
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path("backend").resolve()))
     verify_task_1()

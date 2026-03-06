@@ -9,7 +9,7 @@ from database.models import User, Profile
 from api.dependencies import get_current_user
 from schemas import UserRead
 
-router = APIRouter(prefix="/api/users", tags=["users"])
+router = APIRouter(prefix="/user", tags=["users"])
 
 
 class UserProfileUpdate(BaseModel):

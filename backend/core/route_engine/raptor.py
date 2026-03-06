@@ -166,6 +166,100 @@ class OptimizedRAPTOR:
                         new_routes.append(new_rt)
         return new_routes
 
+    async def find_one_transfer_hub_routes(self, source_stop_id: int, dest_stop_id: int,
+                                         departure_date: datetime, constraints: RouteConstraints,
+                                         graph: TimeDependentGraph) -> List[Route]:
+        """
+        Task 34.1: Graph-based search for 1-transfer hub routes.
+        Task 34.5: Enforces minimum 2-hour buffer at hub.
+        """
+        from .hub import HubManager
+        hub_manager = HubManager(SessionLocal)
+        hub_manager.initialize_hubs()
+        
+        # 1. Round 0: Direct trips from source to any Hub
+        # We collect all routes from source that reach a Hub
+        source_to_hubs = []
+        source_departures = graph.get_departures_from_stop(source_stop_id, departure_date, lookahead_minutes=720)
+        
+        for dep_time, trip_id in source_departures[:self.max_initial_departures]:
+            segments = graph.get_trip_segments(trip_id)
+            start_idx = -1
+            for idx, s in enumerate(segments):
+                if s.departure_stop_id == source_stop_id and s.departure_time >= dep_time:
+                    start_idx = idx
+                    break
+            
+            if start_idx == -1: continue
+            
+            current_segs = []
+            for i in range(start_idx, len(segments)):
+                seg = segments[i]
+                current_segs.append(seg)
+                
+                # Check if this stop is a Hub
+                if hub_manager.is_hub(seg.arrival_stop_id):
+                    route = Route(segments=list(current_segs))
+                    source_to_hubs.append(route)
+
+        # 2. Round 1: From each Hub to Destination
+        hub_alternatives = []
+        # Enforce Task 34.5: 2-hour buffer (120 mins)
+        buffer_min = 120 
+        
+        for leg1 in source_to_hubs:
+            hub_id = leg1.segments[-1].arrival_stop_id
+            hub_arrival = leg1.segments[-1].arrival_time
+            
+            # Search departures from hub to destination with buffer
+            onward_departures = graph.get_departures_from_stop(hub_id, hub_arrival + timedelta(minutes=buffer_min))
+            
+            for onward_dep_time, onward_trip_id in onward_departures[:self.max_onward_departures]:
+                onward_segments = graph.get_trip_segments(onward_trip_id)
+                start_idx = -1
+                for idx, s in enumerate(onward_segments):
+                    if s.departure_stop_id == hub_id and s.departure_time >= onward_dep_time:
+                        start_idx = idx
+                        break
+                
+                if start_idx == -1: continue
+                
+                current_onward = []
+                for i in range(start_idx, len(onward_segments)):
+                    s = onward_segments[i]
+                    current_onward.append(s)
+                    
+                    if s.arrival_stop_id == dest_stop_id:
+                        # Success! Found a hub-based 1-transfer route
+                        combined_route = Route(segments=leg1.segments + list(current_onward))
+                        
+                        # Task 34.8: Platform Numbering (extract from Stop/StopTime if available)
+                        arrival_platform = getattr(s, 'platform', None) or "N/A"
+                        
+                        # Record transfer info for metadata
+                        tr = TransferConnection(
+                            station_id=hub_id,
+                            station_name="HUB", # We'll fill this later or use stop code
+                            arrival_time=hub_arrival,
+                            departure_time=s.departure_time,
+                            duration_minutes=int((s.departure_time - hub_arrival).total_seconds() / 60),
+                            facilities_score=5.0,
+                            safety_score=5.0
+                        )
+                        combined_route.transfers = [tr]
+                        # Attach platform info to metadata
+                        if not hasattr(combined_route, 'metadata') or combined_route.metadata is None:
+                            combined_route.metadata = {}
+                        combined_route.metadata["platforms"] = {
+                            "hub_arrival": getattr(leg1.segments[-1], 'platform', "N/A"),
+                            "hub_departure": getattr(s, 'platform', "N/A")
+                        }
+                        
+                        hub_alternatives.append(combined_route)
+                        break # Only need best from this trip
+
+        return self._deduplicate_routes(hub_alternatives)
+
     def _deduplicate_routes(self, routes: List[Route]) -> List[Route]:
         seen = set()
         unique = []

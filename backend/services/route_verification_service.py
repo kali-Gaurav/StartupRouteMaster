@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 import json
 
 from core.route_engine.data_provider import DataProvider
-from database.models import Trip, StopTime, Stop, Segment, Station
+from database.models import Trip, StopTime, Stop, Segment
 from core.redis import async_redis_client
 
 logger = logging.getLogger(__name__)

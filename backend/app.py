@@ -18,8 +18,8 @@ from database.config import Config
 from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
-from api.v2 import search, debug, admin, live, user, booking, booking_ws, agent
-from api import chat, chat_ws, sos, voice_triage
+from api.v2 import search as search_v2, debug, admin, live, user as user_v2, booking as booking_v2, booking_ws, agent
+from api import chat, chat_ws, sos, voice_triage, search, bookings, stations, payments, auth, users, flow, bank_webhooks, admin_refunds, admin_reconciliation, tatkal, telegram_bot, vault
 
 # Configure Logging
 logging.basicConfig(
@@ -99,17 +99,33 @@ async def unified_exception_handler(request: Request, exc: Exception):
     )
 
 # --- Register Routers ---
-app.include_router(search.router, prefix="/api/v2")
+app.include_router(search_v2.router, prefix="/api/v2")
 app.include_router(live.router, prefix="/api/v2")
-app.include_router(user.router, prefix="/api/v2")
-app.include_router(booking.router, prefix="/api/v2")
+app.include_router(user_v2.router, prefix="/api/v2")
+app.include_router(booking_v2.router, prefix="/api/v2")
 app.include_router(booking_ws.router, prefix="/api/v2")
 app.include_router(debug.router, prefix="/api/v2")
 app.include_router(admin.router, prefix="/api/v2")
-app.include_router(chat.router)
-app.include_router(chat_ws.router)
-app.include_router(sos.router, prefix="/api/sos")
+
+# V1 / Legacy / Base Routers (to match frontend expectations)
+app.include_router(search.router)      # already has /api/search prefix
+app.include_router(bookings.router)    # already has /api/v1/booking prefix
+app.include_router(stations.router)    # already has /api/stations prefix
+app.include_router(payments.router, prefix="/api") # Router has /payment prefix, becomes /api/payment
+app.include_router(auth.router)        # already has /api/auth prefix
+app.include_router(users.router, prefix="/api")    # Router has /user prefix, becomes /api/user
+app.include_router(sos.router, prefix="/api")   # Router has /sos prefix, becomes /api/sos
+app.include_router(flow.router)        # already has /api/flow prefix
+
+app.include_router(chat.router, prefix="/api")
+app.include_router(chat_ws.router, prefix="/api")
 app.include_router(voice_triage.router)
+app.include_router(bank_webhooks.router, prefix="/api")
+app.include_router(admin_refunds.router, prefix="/api")
+app.include_router(admin_reconciliation.router, prefix="/api")
+app.include_router(tatkal.router, prefix="/api")
+app.include_router(telegram_bot.router, prefix="/api")
+app.include_router(vault.router, prefix="/api")
 
 @app.get("/api/sos/test-route")
 async def test_route():

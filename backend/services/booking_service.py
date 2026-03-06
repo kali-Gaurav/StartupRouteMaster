@@ -440,3 +440,102 @@ class BookingService:
 
 
         return stats
+
+    def create_escrow_booking(
+        self,
+        user_id: str,
+        passenger_name: str,
+        passenger_age: int,
+        train_number: str,
+        amount: float,
+    ) -> Optional[Booking]:
+        """
+        Initialize a booking in CREATED escrow status.
+        """
+        from database.models import EscrowStatus
+        import uuid
+        
+        upi_tx_id = f"TX{int(datetime.utcnow().timestamp())}{uuid.uuid4().hex[:6].upper()}"
+        
+        booking = Booking(
+            user_id=user_id,
+            train_number=train_number,
+            amount_paid=amount,
+            escrow_status=EscrowStatus.CREATED,
+            upi_tx_id=upi_tx_id,
+            booking_status="pending",
+            travel_date=date.today() # Fallback
+        )
+        self.db.add(booking)
+        self.db.flush()
+        
+        passenger = PassengerDetails(
+            booking_id=booking.id,
+            full_name=passenger_name,
+            age=passenger_age,
+            gender="M" # Default
+        )
+        self.db.add(passenger)
+        self.db.commit()
+        self.db.refresh(booking)
+        return booking
+
+    def submit_utr(self, booking_id: str, utr_number: str) -> Optional[Booking]:
+        """
+        Submit UTR for a booking and transition to UTR_SUBMITTED.
+        """
+        from database.models import EscrowStatus
+        booking = self.db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            return None
+            
+        if not booking.validate_escrow_transition(EscrowStatus.UTR_SUBMITTED):
+            logger.error(f"Invalid transition to UTR_SUBMITTED from {booking.escrow_status}")
+            return booking
+
+        # Check if UTR already exists
+        existing = self.db.query(Booking).filter(Booking.utr_number == utr_number).first()
+        if existing:
+            raise ValueError("UTR already submitted for another booking")
+
+        booking.utr_number = utr_number
+        booking.escrow_status = EscrowStatus.UTR_SUBMITTED
+        self.db.commit()
+        self.db.refresh(booking)
+        
+        # Trigger background verification (Mock for now)
+        asyncio.create_task(self._mock_escrow_verification(booking.id))
+        
+        return booking
+
+    async def _mock_escrow_verification(self, booking_id: str):
+        """
+        Simulate background escrow verification and booking.
+        """
+        from database.models import EscrowStatus
+        from sqlalchemy.orm import sessionmaker
+        from database import engine
+        
+        # Need a new session for background task
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        db = SessionLocal()
+        try:
+            await asyncio.sleep(5) # Wait 5 seconds
+            booking = db.query(Booking).filter(Booking.id == booking_id).first()
+            if booking and booking.escrow_status == EscrowStatus.UTR_SUBMITTED:
+                booking.escrow_status = EscrowStatus.VERIFIED
+                db.commit()
+                
+                await asyncio.sleep(5)
+                booking.escrow_status = EscrowStatus.BOOKING_INITIATED
+                db.commit()
+                
+                await asyncio.sleep(10)
+                booking.escrow_status = EscrowStatus.COMPLETED
+                booking.pnr_number = generate_pnr()
+                booking.booking_status = "confirmed"
+                db.commit()
+        except Exception as e:
+            logger.error(f"Error in mock verification: {e}")
+        finally:
+            db.close()

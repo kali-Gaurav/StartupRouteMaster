@@ -88,7 +88,23 @@ class SearchService:
                 })
             await self._log_engine_metrics("raptor", (time.perf_counter()-r_start)*1000, len(raptor_res)>0)
 
-        # 3. Fingerprinting
+        # 3. Task 34: HUB-FALLBACK SEARCH (Subtask 34.1, 34.2, 34.3)
+        # If we have very few direct or simple transfer results, find dedicated Hub routes
+        if len(results) < 3:
+            h_start = time.perf_counter()
+            from services.hub_route_service import HubRouteService
+            hub_service = HubRouteService(self.db)
+            hub_routes = await hub_service.suggest_hub_routes(source_code=source_stop.code, destination_code=dest_stop.code, travel_date=travel_date)
+            
+            for hr in hub_routes:
+                # Add a unique ID for the frontend mapping
+                hr["journey_id"] = f"hub_{int(time.time() * 1000)}"
+                hr["is_hub_fallback"] = True
+                results.append(hr)
+                
+            await self._log_engine_metrics("hub_search", (time.perf_counter()-h_start)*1000, len(hub_routes)>0)
+
+        # 4. Fingerprinting
         ids_blob = "".join([str(j.get("journey_id", j.get("train_no", ""))) for j in results])
         
         # Suggestion #25: Store failure if found nothing after all tiers
