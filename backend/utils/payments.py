@@ -12,13 +12,18 @@ def generate_upi_uri(
     amount: float,
     transaction_id: str = None,
     transaction_note: str = None,
-    currency: str = "INR"
+    currency: str = "INR",
+    merchant_code: str = "4112", # MCC 4112 is Passenger Railways
+    min_amount: float = None
 ) -> tuple[str, str]:
     """
-    Task 1: Generates a standard NPCI UPI URI.
-    Subtask 1.1: NPCI Format
-    Subtask 1.2: Custom notes and IDs
+    Task 1: Generates an Advanced NPCI UPI URI.
+    Subtasks: URI 2.0, mam, mc, tid, currency locking.
     """
+    if currency != "INR":
+        logger.warning(f"Forcing currency to INR from {currency}")
+        currency = "INR"
+
     # VPA Validation
     if not re.match(r"^[\w\.\-]+@[\w\-]+$", merchant_vpa):
         logger.warning(f"Potentially invalid VPA: {merchant_vpa}")
@@ -30,15 +35,20 @@ def generate_upi_uri(
         transaction_note = f"Booking {transaction_id}"
 
     # NPCI Parameters
-    # pa: Payee VPA, pn: Payee Name, am: Amount, cu: Currency, tn: Note, tr: Ref ID
+    # pa: Payee VPA, pn: Payee Name, am: Amount, cu: Currency, tn: Note, tr: Ref ID, tid: Transaction ID, mc: Merchant Category
     params = {
         "pa": merchant_vpa,
         "pn": merchant_name,
-        "am": f"{amount:.2f}",
-        "cu": currency,
+        "mc": merchant_code,
+        "tid": transaction_id,
+        "tr": transaction_id,
         "tn": transaction_note,
-        "tr": transaction_id
+        "am": f"{amount:.2f}",
+        "cu": currency
     }
+
+    if min_amount is not None:
+        params["mam"] = f"{min_amount:.2f}"
     
     # URL encode parameters safely
     encoded_params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)

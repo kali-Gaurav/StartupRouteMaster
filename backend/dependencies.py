@@ -42,16 +42,37 @@ async def get_current_user(
     
     token = authorization.replace("Bearer ", "")
     
-    # --- 1. JWT Claims Validation (Suggestion #1) ---
-    # In production: jwt.decode(token, secret, audience="authenticated", options={"verify_exp": True})
-    # Mocking validation logic:
-    if token == "expired":
-        raise HTTPException(status_code=401, detail="Token Expired")
-
+    # --- 1. JWT Claims Validation (Real Implementation) ---
     try:
-        # Mocking Supabase ID extraction
-        supabase_id = token if len(token) > 20 else "fixed_test_id"
-        email = "user@example.com" # From JWT payload
+        # Decode and verify the token
+        # Ideally, fetch the secret from config
+        secret = Config.SUPABASE_JWT_SECRET
+        if not secret:
+            logger.error("SUPABASE_JWT_SECRET not set in Config")
+            raise HTTPException(status_code=500, detail="Server Configuration Error")
+            
+        payload = jwt.decode(
+            token, 
+            secret, 
+            algorithms=["HS256"], 
+            audience="authenticated",
+            options={"verify_exp": True}
+        )
+        
+        supabase_id = payload.get("sub")
+        email = payload.get("email")
+        
+        if not supabase_id or not email:
+             raise HTTPException(status_code=401, detail="Invalid Token Payload")
+             
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token Expired")
+    except jwt.JWTError as e:
+        logger.warning(f"JWT Decode Error: {e}")
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+    except Exception as e:
+        logger.error(f"Unexpected Auth Error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication Failed")
         
         # --- 2. Atomic Sync (Suggestion #2) ---
         with db.begin_nested(): # Transaction savepoint

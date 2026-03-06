@@ -3,6 +3,8 @@ import logging
 import os
 from typing import Optional
 from playwright.async_api import async_playwright, Page
+from playwright_stealth import stealth_async
+from fake_useragent import UserAgent
 from database.session import SessionLocal
 from database.models import Booking, EscrowStatus, BookingStatus
 
@@ -78,14 +80,46 @@ class IRCTCWorker:
                 if "Service Unavailable" in content or "Maintenance" in content:
                     raise Exception("IRCTC 503 Service Unavailable")
 
-                # ... (rest of login logic) ...
-                break # Exit loop on success
+                # Click Login Button
+                login_btn = await self.page.wait_for_selector("a.search_btn.loginText", timeout=10000)
+                await login_btn.click()
+                
+                # Fill Credentials
+                await self.page.fill("input[formcontrolname='userName']", username)
+                await self.page.fill("input[formcontrolname='password']", password)
+                
+                await self.update_status("Credentials entered. Solving CAPTCHA...", EscrowStatus.BOOKING_INITIATED)
+                
+                # Task 29 & Gap 7: CAPTCHA Solver Integration with Refresh Loop
+                while True:
+                    captcha_result = await self.solve_captcha()
+                    if captcha_result == "REFRESH":
+                        logger.info("Captcha refresh requested by user.")
+                        # Click the refresh icon next to captcha on IRCTC
+                        try:
+                            await self.page.click("span.fa-refresh", timeout=3000)
+                            await asyncio.sleep(2) # wait for new image
+                        except:
+                            pass # fallback if not found
+                        continue
+                        
+                    if captcha_result:
+                        await self.page.fill("input[placeholder='Enter Captcha']", captcha_result)
+                        await self.page.click("button[type='submit']")
+                    
+                    break # exit captcha loop if not refresh
+                
+                # For now, we simulate waiting for user/AI interaction
+                await asyncio.sleep(2)
+                break # Exit outer retry loop on success
             except Exception as e:
                 if attempt < 2:
                     logger.warning(f"IRCTC 503/Error (Attempt {attempt+1}): {e}. Retrying in 5s...")
                     await asyncio.sleep(5)
                     continue
                 else:
+                    logger.error(f"Login failed for {self.booking_id}: {e}")
+                    await self.update_status(f"Login Failure: {str(e)}", EscrowStatus.FAILED)
                     raise
 
     async def solve_captcha(self) -> Optional[str]:

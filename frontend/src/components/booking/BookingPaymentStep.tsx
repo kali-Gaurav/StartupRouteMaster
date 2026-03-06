@@ -136,10 +136,17 @@ export function BookingPaymentStep() {
   const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
 
   // WebSocket Live Logs & Captcha State
-  const [liveLog, setLiveLog] = useState<string>("");
+  const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const [captchaImage, setCaptchaImage] = useState<string | null>(null);
   const [captchaInput, setCaptchaInput] = useState("");
   const [captchaSubmitting, setCaptchaSubmitting] = useState(false);
+  
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [liveLogs]);
 
   // Task 16: Session Lock - Prevent navigation during active worker
   useEffect(() => {
@@ -190,7 +197,7 @@ export function BookingPaymentStep() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === "booking_log") {
-          setLiveLog(data.message);
+          setLiveLogs((prev) => [...prev, data.message]);
         } else if (data.type === "captcha_required") {
           setCaptchaImage(data.image);
         }
@@ -269,12 +276,20 @@ export function BookingPaymentStep() {
     const urlParams = new URLSearchParams(booking?.upi_url?.split('?')[1]);
     const upiId = urlParams.get('pa') || "anthonynagar1122-1@oksbi";
     navigator.clipboard.writeText(upiId);
+    if (navigator.vibrate) navigator.vibrate(50); // Task 1.7 Haptic Feedback
     toast({ title: "UPI ID Copied", description: upiId });
   };
 
   const openUpiApp = () => {
     if (booking?.upi_url) {
+      if (navigator.vibrate) navigator.vibrate([50, 50, 50]); // Task 1.7
       window.location.href = booking.upi_url;
+      // Task 1.8 & 9.9 Fallback logic: If the app doesn't open, we could show a toast after a delay.
+      setTimeout(() => {
+        if (!document.hidden) {
+          toast({ title: "Couldn't open app", description: "Please scan the QR or copy the UPI ID manually.", variant: "destructive" });
+        }
+      }, 2500);
     }
   };
 
@@ -593,12 +608,26 @@ export function BookingPaymentStep() {
                 {/* Live Message Bubbles */}
                 {(booking.escrow_message || !isCompleted) && !isFailed && (
                   <div className="mt-10 p-4 rounded-2xl bg-secondary/50 border border-border/40 space-y-2 animate-in fade-in zoom-in-95 duration-500">
-                    <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">Ghost Worker Logs</p>
-                    <div className="flex gap-2 items-center">
-                      {!isCompleted && <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />}
-                      <p className="text-sm font-medium text-foreground italic">
-                        {liveLog || booking.escrow_message || "Awaiting payment initialization..."}
-                      </p>
+                    <p className="text-[10px] font-black text-muted-foreground uppercase tracking-widest flex justify-between">
+                      <span>Ghost Worker Logs</span>
+                      {!isCompleted && <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" /> Live</span>}
+                    </p>
+                    <div className="max-h-32 overflow-y-auto space-y-1.5 pr-2 custom-scrollbar">
+                      {liveLogs.length > 0 ? (
+                        liveLogs.map((log, idx) => (
+                          <p key={idx} className={cn(
+                            "text-sm font-medium italic transition-opacity duration-300",
+                            idx === liveLogs.length - 1 ? "text-foreground" : "text-muted-foreground opacity-60"
+                          )}>
+                            {log}
+                          </p>
+                        ))
+                      ) : (
+                        <p className="text-sm font-medium text-foreground italic">
+                          {booking.escrow_message || "Awaiting payment initialization..."}
+                        </p>
+                      )}
+                      <div ref={logEndRef} />
                     </div>
                   </div>
                 )}
@@ -606,10 +635,15 @@ export function BookingPaymentStep() {
                 {/* Human-in-the-Loop CAPTCHA Solver */}
                 {captchaImage && (
                   <div className="mt-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 shadow-md animate-in fade-in zoom-in duration-300">
-                    <h4 className="text-sm font-bold text-amber-900 mb-2 flex items-center gap-2">
-                      <Shield className="w-4 h-4" />
-                      IRCTC Captcha Required
-                    </h4>
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="text-sm font-bold text-amber-900 flex items-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        IRCTC Captcha Required
+                      </h4>
+                      <Button variant="ghost" size="sm" onClick={() => setCaptchaInput("REFRESH")} className="h-6 text-xs px-2 bg-amber-100 text-amber-900 hover:bg-amber-200">
+                        <RefreshCw className="w-3 h-3 mr-1" /> Reload
+                      </Button>
+                    </div>
                     <div className="bg-white p-2 rounded-xl mb-3 flex justify-center border border-amber-100">
                       <img src={captchaImage} alt="IRCTC Captcha" className="max-w-full h-auto rounded" />
                     </div>

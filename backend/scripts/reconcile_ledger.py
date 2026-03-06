@@ -33,14 +33,28 @@ def reconcile(csv_path: str):
                 if booking:
                     if abs(booking.amount_paid - bank_amount) < 0.01:
                         print(f"✅ MATCH: UTR {utr} | Amount {bank_amount}")
-                        # If it was only UTR_SUBMITTED, we can auto-verify it here if needed
                         if booking.escrow_status == EscrowStatus.UTR_SUBMITTED:
                             booking.escrow_status = EscrowStatus.VERIFIED
                             booking.escrow_message = "Verified via Bank Ledger Reconciliation."
                         stats["matched"] += 1
                     else:
-                        print(f"⚠️ MISMATCH: UTR {utr} | Bank: {bank_amount} | DB: {booking.amount_paid}")
+                        print(f"⚠️ MISMATCH (Partial Payment): UTR {utr} | Bank: {bank_amount} | DB: {booking.amount_paid}")
                         stats["mismatch_amount"] += 1
+                        # Handle Partial Payment (Gap 5)
+                        if bank_amount > 0:
+                            from database.models import RefundQueue
+                            # Push the received amount to the refund queue because it didn't match the required amount
+                            refund = RefundQueue(
+                                booking_id=booking.id,
+                                user_id=booking.user_id,
+                                amount=bank_amount,
+                                vpa=row.get('VPA', 'UNKNOWN'),
+                                status="PENDING",
+                                reason=f"Partial/Mismatch Payment: Required {booking.amount_paid}, Received {bank_amount}"
+                            )
+                            db.add(refund)
+                            booking.escrow_status = EscrowStatus.FAILED
+                            booking.escrow_message = f"Payment mismatch. Received ₹{bank_amount}. Refund initiated."
                 else:
                     print(f"❌ NOT FOUND: UTR {utr} in Database.")
                     stats["not_found"] += 1

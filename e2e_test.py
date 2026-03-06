@@ -73,10 +73,12 @@ async def test_e2e_flow():
     # Simulate Frontend CAPTCHA Submission
     async def simulate_frontend_captcha(booking_id: str):
         from backend.services.multi_layer_cache import multi_layer_cache
+        await multi_layer_cache.initialize()
         await asyncio.sleep(15) # Wait for worker to reach CAPTCHA phase
         print(f"🖥️ [Frontend Mock] Submitting CAPTCHA for {booking_id}...")
         redis_key = f"captcha:{booking_id}"
-        await multi_layer_cache.redis.setex(redis_key, 300, "MOCK_CAPTCHA_123")
+        if multi_layer_cache.redis:
+            await multi_layer_cache.redis.setex(redis_key, 300, "MOCK_CAPTCHA_123")
         print("🖥️ [Frontend Mock] CAPTCHA submitted!")
 
     asyncio.create_task(simulate_frontend_captcha(test_booking_id))
