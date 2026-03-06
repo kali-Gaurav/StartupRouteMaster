@@ -1,14 +1,17 @@
 /**
  * Payment Modal
- * Handles ₹49 service fee payment via Razorpay
+ * Handles ₹39 service fee payment via Zero-Gateway UPI
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { useAuth } from '@/context/AuthContext';
-import { createPaymentOrder, verifyPayment, consumeRedirectToken, openRazorpayCheckout, checkPaymentStatus, pollPaymentStatus } from '@/lib/paymentApi';
-import { Loader2, CheckCircle2, IndianRupee, ShieldCheck, Clock, Zap } from 'lucide-react';
+import { checkPaymentStatus } from '@/lib/paymentApi';
+import { fetchWithAuth } from '@/lib/apiClient';
+import { Loader2, CheckCircle2, IndianRupee, ShieldCheck, Clock, Zap, QrCode } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 
 interface PaymentModalProps {
   open: boolean;
@@ -17,6 +20,7 @@ interface PaymentModalProps {
   routeDestination: string;
   trainNo?: string;
   travelDate?: string;
+  routeId?: string;
   onSuccess: (paymentOrderId: string) => void;
 }
 
@@ -27,6 +31,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   routeDestination,
   trainNo,
   travelDate,
+  routeId,
   onSuccess,
 }) => {
   const { user, token } = useAuth();
@@ -34,11 +39,17 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   const [checking, setChecking] = useState(true);
   const [alreadyPaid, setAlreadyPaid] = useState(false);
   const [error, setError] = useState('');
+  
+  // Escrow state
+  const [sessionCode, setSessionCode] = useState('');
+  const [upiLink, setUpiLink] = useState('');
+  const [manualCode, setManualCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
 
   const checkExistingPayment = useCallback(async () => {
     setChecking(true);
     try {
-      const response = await checkPaymentStatus(routeOrigin, routeDestination);
+      const response = await checkPaymentStatus(routeId || '', travelDate || '');
       if (response.paid) {
         setAlreadyPaid(true);
       }
@@ -47,115 +58,72 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     } finally {
       setChecking(false);
     }
-  }, [routeOrigin, routeDestination]);
+  }, [routeId, travelDate]);
 
   useEffect(() => {
     if (open && token) {
       checkExistingPayment();
+    } else {
+      // Reset state on close
+      setSessionCode('');
+      setUpiLink('');
+      setManualCode('');
+      setError('');
     }
   }, [open, token, checkExistingPayment]);
 
-  const handlePayment = async () => {
-    if (!token || !user) {
-      setError('Please login to continue');
+  const handlePaymentInitiate = async () => {
+    if (!token || !user || !routeId) {
+      setError('Please login and select a valid route to continue');
       return;
     }
 
     setError('');
     setLoading(true);
 
-        try {
-          // Step 1: Create order
-          const orderResponse = await createPaymentOrder({
-            route_id: '', // Minimal placeholder for booking flow if not provided
-            route_origin: routeOrigin,
-            route_destination: routeDestination,
-            train_no: trainNo,
-            travel_date: travelDate || new Date().toISOString().split('T')[0],
-          });
-     // Cast to any temporarily to bypass complex CreateOrderRequest issues
-
-      if (!orderResponse.success) {
-        throw new Error(orderResponse.message || 'Failed to create order');
-      }
-
-      if (orderResponse.already_paid) {
-        setAlreadyPaid(true);
-        setLoading(false);
-        return;
-      }
-
-      const order = orderResponse.order;
-
-      // Step 2: Open Razorpay checkout
-      openRazorpayCheckout(
-        order,
-        user,
-        async (paymentResponse: unknown) => {
-          try {
-            const r = paymentResponse as Record<string, string>;
-            const verifyResponse = await verifyPayment({
-              payment_id: order.order_id,
-              razorpay_order_id: r.razorpay_order_id,
-              razorpay_payment_id: r.razorpay_payment_id,
-              razorpay_signature: r.razorpay_signature,
-            });
-            if (!verifyResponse.success) {
-              setError('Payment verification failed. Please contact support.');
-              return;
-            }
-            if (verifyResponse.redirect_token) {
-              const consumeResponse = await consumeRedirectToken(verifyResponse.redirect_token);
-              if (!consumeResponse?.success) {
-                setError('Payment confirmation invalid. Please contact support.');
-                return;
-              }
-            }
-            
-            // Poll payment status to ensure it's confirmed
-            setLoading(true);
-            setError('');
-            try {
-              const pollResult = await pollPaymentStatus(order.order_id, {
-                maxAttempts: 30,
-                intervalMs: 1000,
-                onStatusChange: (status) => {
-                  console.log('Payment status:', status);
-                }
-              });
-              
-              if (pollResult.status === 'completed') {
-                onSuccess(order.order_id);
-                onClose();
-              } else if (pollResult.status === 'failed') {
-                setError('Payment verification failed. Please contact support.');
-                setLoading(false);
-              } else {
-                // Timeout - but verification succeeded, so proceed
-                console.warn('Payment status poll timeout, but verification succeeded');
-                onSuccess(order.order_id);
-                onClose();
-              }
-            } catch (pollError) {
-              console.error('Payment status poll error:', pollError);
-              // Verification succeeded, so proceed even if polling fails
-              onSuccess(order.order_id);
-              onClose();
-            }
-          } catch (err: unknown) {
-            setError('Payment verification failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
-          } finally {
-            setLoading(false);
-          }
-        },
-        (err: Error) => {
-          setError(err.message || 'Payment failed');
-          setLoading(false);
-        }
-      );
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to initiate payment');
+    try {
+      const response = await fetchWithAuth('/payments/create_session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ journey_id: routeId, amount: 39.0 })
+      });
+      
+      const data = await response.json();
+      if (!data.success) throw new Error(data.detail || 'Failed to initiate payment');
+      
+      setSessionCode(data.session_code);
+      setUpiLink(data.upi_link);
+    } catch (err: any) {
+      setError(err.message || 'Failed to initiate payment');
+    } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVerify = async () => {
+    if (!manualCode.trim()) {
+      setError("Please enter the session code shown after payment");
+      return;
+    }
+    
+    setVerifying(true);
+    setError('');
+    try {
+      const response = await fetchWithAuth('/payments/confirm_manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ journey_id: routeId, session_code: manualCode })
+      });
+      
+      const data = await response.json();
+      if (!data.success) throw new Error(data.detail || 'Invalid session code');
+      
+      onSuccess(sessionCode);
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Verification failed');
+    } finally {
+      setVerifying(false);
     }
   };
 
@@ -187,7 +155,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               Already Paid
             </DialogTitle>
             <DialogDescription>
-              You have already paid for this route. Proceeding to IRCTC booking...
+              You have already unlocked this route. Proceeding to view details...
             </DialogDescription>
           </DialogHeader>
 
@@ -201,13 +169,10 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 <p className="text-sm text-green-700">Valid for 7 days</p>
               </div>
             </div>
-            <div className="text-sm text-green-800">
-              <strong>Route:</strong> {routeOrigin} → {routeDestination}
-            </div>
           </div>
 
           <Button onClick={handleProceedWithoutPayment} className="w-full" size="lg">
-            Continue to IRCTC Booking
+            View Route Details
           </Button>
         </DialogContent>
       </Dialog>
@@ -218,112 +183,91 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle className="text-2xl font-bold">Complete Your Booking</DialogTitle>
+          <DialogTitle className="text-2xl font-bold">Unlock Route Details</DialogTitle>
           <DialogDescription>
-            Pay our one-time service fee to unlock IRCTC booking
+            Pay our one-time service fee to unlock full segment data and booking
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 my-6">
-          {/* Price Card */}
-          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-sm text-muted-foreground mb-1">One-Time Service Fee</p>
-                <div className="flex items-baseline gap-1">
-                  <IndianRupee className="h-8 w-8 text-blue-600" />
-                  <span className="text-5xl font-bold text-blue-600">39</span>
+          {!upiLink ? (
+            <>
+              {/* Price Card */}
+              <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-lg p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-1">One-Time Unlock Fee</p>
+                    <div className="flex items-baseline gap-1">
+                      <IndianRupee className="h-8 w-8 text-blue-600" />
+                      <span className="text-5xl font-bold text-blue-600">39</span>
+                    </div>
+                  </div>
+                  <div className="h-16 w-16 bg-blue-100 rounded-full flex items-center justify-center">
+                    <Zap className="h-8 w-8 text-blue-600" />
+                  </div>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  For complete route: <strong>{routeOrigin} → {routeDestination}</strong>
+                </p>
+              </div>
+
+              {/* Benefits */}
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Full Route Visibility</p>
+                    <p className="text-sm text-muted-foreground">See all train numbers and layover details</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <ShieldCheck className="h-5 w-5 text-purple-600 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Direct UPI Payment</p>
+                    <p className="text-sm text-muted-foreground">Zero gateway fees. 100% Secure.</p>
+                  </div>
                 </div>
               </div>
-              <div className="h-16 w-16 bg-blue-100 rounded-full flex items-center justify-center">
-                <Zap className="h-8 w-8 text-blue-600" />
-              </div>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              For complete route: <strong>{routeOrigin} → {routeDestination}</strong>
-            </p>
-          </div>
 
-          {/* Benefits */}
-          <div className="space-y-3">
-            <h3 className="font-semibold text-sm text-muted-foreground">What you get:</h3>
-            
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5">
-                <CheckCircle2 className="h-5 w-5 text-green-600" />
-              </div>
-              <div>
-                <p className="font-medium">Direct IRCTC Integration</p>
-                <p className="text-sm text-muted-foreground">
-                  Pre-filled booking details for instant checkout
+              {/* Error Message */}
+              {error && <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">{error}</div>}
+
+              {/* Payment Button */}
+              <Button onClick={handlePaymentInitiate} disabled={loading} className="w-full h-12 text-lg font-semibold" size="lg">
+                {loading ? <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Processing...</> : <><IndianRupee className="mr-2 h-5 w-5" /> Pay ₹39 Now</>}
+              </Button>
+            </>
+          ) : (
+            <div className="space-y-6 animate-in fade-in">
+              <div className="bg-primary/5 border border-primary/20 p-6 rounded-xl flex flex-col items-center">
+                <div className="bg-white p-2 rounded-lg shadow-sm mb-4">
+                  <QRCodeSVG value={upiLink} size={160} level="H" />
+                </div>
+                <h3 className="font-bold text-lg mb-1">Scan to Pay ₹39</h3>
+                <p className="text-sm text-muted-foreground text-center">
+                  Use any UPI app. Do not close this window.
                 </p>
               </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5">
-                <Clock className="h-5 w-5 text-blue-600" />
+              
+              <div className="space-y-3">
+                <label className="text-sm font-medium">Enter Session Code after payment:</label>
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="e.g. A1B2C3" 
+                    value={manualCode}
+                    onChange={(e) => setManualCode(e.target.value)}
+                    className="font-mono uppercase"
+                  />
+                  <Button onClick={handleVerify} disabled={verifying || !manualCode}>
+                    {verifying ? <Loader2 className="w-4 h-4 animate-spin" /> : "Verify"}
+                  </Button>
+                </div>
+                {error && <p className="text-xs text-destructive">{error}</p>}
               </div>
-              <div>
-                <p className="font-medium">Valid for 7 Days</p>
-                <p className="text-sm text-muted-foreground">
-                  Use anytime within a week
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5">
-                <ShieldCheck className="h-5 w-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="font-medium">Secure Payment</p>
-                <p className="text-sm text-muted-foreground">
-                  100% safe via Razorpay
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Error Message */}
-          {error && (
-            <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md border border-red-200">
-              {error}
             </div>
           )}
-
-          {/* Payment Button */}
-          <div className="space-y-3">
-            <Button
-              onClick={handlePayment}
-              disabled={loading}
-              className="w-full h-12 text-lg font-semibold"
-              size="lg"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  Processing...
-                </>
-              ) : (
-                <>
-                  <IndianRupee className="mr-2 h-5 w-5" />
-                  Pay ₹49 Now
-                </>
-              )}
-            </Button>
-
-            <p className="text-xs text-center text-muted-foreground">
-              Powered by Razorpay • 100% Secure
-            </p>
-          </div>
         </div>
 
-        <div className="border-t pt-4">
-          <p className="text-xs text-center text-muted-foreground">
-            Note: This is a service fee for using our platform. Actual train ticket cost will be paid on IRCTC.
-          </p>
-        </div>
       </DialogContent>
     </Dialog>
   );

@@ -160,6 +160,7 @@ class BookingResponseSchema(BaseModel):
     travel_date: Optional[datetime]
     booking_status: str
     escrow_status: str
+    escrow_message: Optional[str] = None
     amount_paid: float
     upi_tx_id: Optional[str] = None
     utr_number: Optional[str] = None

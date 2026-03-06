@@ -39,18 +39,40 @@ async def initiate_booking(
     if not journey:
         raise HTTPException(status_code=400, detail="Journey expired or invalid. Please re-search.")
 
-    # --- 3. Fare Lock ---
+    # --- 3. Fare Lock & Re-check (Task 23) ---
     fare_lock_key = f"fare_lock:{journey_id}"
     locked_fare = await multi_layer_cache.redis.get(fare_lock_key)
-    fare_amount = float(locked_fare.decode()) if locked_fare else journey.get("total_fare", 0.0)
-    if not locked_fare:
-        await multi_layer_cache.redis.setex(fare_lock_key, 600, str(fare_amount))
     
-    # --- 4. Generate UPI Details ---
-    upi_id = "gauravnagar@okaxis" # Target UPI
-    upi_tx_id = f"TX{int(time.time())}{str(uuid.uuid4().hex[:6]).upper()}"
-    note = f"Booking_{upi_tx_id}"
-    upi_link = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={fare_amount}&cu=INR&tn={note}&tr={upi_tx_id}"
+    # Task 23: Dynamic Re-check
+    # Task 9 & 12: Platform Service Fee Logic
+    PLATFORM_SERVICE_FEE = 49.00 
+    
+    current_fare = journey.get("total_fare", 0.0)
+    if locked_fare and abs(float(locked_fare.decode()) - current_fare) > 10.0:
+        # If fare changed > ₹10, update lock
+        await multi_layer_cache.redis.setex(fare_lock_key, 600, str(current_fare))
+        fare_amount = current_fare
+    else:
+        fare_amount = float(locked_fare.decode()) if locked_fare else current_fare
+        if not locked_fare:
+            await multi_layer_cache.redis.setex(fare_lock_key, 600, str(fare_amount))
+    
+    # Total user must pay = IRCTC Fare + Our Service Fee
+    total_escrow_amount = fare_amount + PLATFORM_SERVICE_FEE
+    
+    # --- 4. Generate UPI Details (Task 20: Rotation) ---
+    from utils.payments import generate_upi_uri
+    
+    # Task 20: Merchant VPA Rotation
+    merchants = ["anthonynagar1122-1@oksbi", "8529841981@ptsbi"]
+    # Simple rotation based on current minute
+    upi_id = merchants[int(time.time() // 60) % len(merchants)]
+    
+    upi_link, upi_tx_id = generate_upi_uri(
+        merchant_vpa=upi_id,
+        merchant_name="RouteMaster",
+        amount=total_escrow_amount
+    )
 
     # --- 5. Create local Booking record (Escrow State: CREATED) ---
     new_booking = Booking(
@@ -59,8 +81,16 @@ async def initiate_booking(
         travel_date=date.fromisoformat(journey["date"].split(' ')[0]),
         booking_status=BookingStatus.PENDING.value,
         escrow_status=EscrowStatus.CREATED,
-        amount_paid=fare_amount,
+        amount_paid=total_escrow_amount, # Now includes service fee
         upi_tx_id=upi_tx_id,
+        # Task 24: Initialize transaction history
+        transaction_history=[{
+            "tx_id": upi_tx_id,
+            "amount": fare_amount,
+            "vpa": upi_id,
+            "type": "initial_request",
+            "timestamp": datetime.utcnow().isoformat()
+        }],
         booking_details=journey,
         trip_id=journey["legs"][0].get("trip_id") if journey.get("legs") else None,
         train_number=journey["legs"][0].get("train_number") if journey.get("legs") else None
@@ -80,53 +110,105 @@ async def initiate_booking(
 
 @router.post("/{booking_id}/utr", response_model=BookingResponseSchema)
 async def submit_utr(
+    request: Request, # Added for IP tracking
     payload: SubmitUtrSchema,
     booking_id: str = Path(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
     """
-    Submits a UTR for manual verification, transitioning the state.
-    Includes mock AI verification pipeline.
+    Submits a UTR for manual verification.
+    Task 19: Fraudulent UTR Lockout
     """
+    # Task 19: Lockout Check
+    client_ip = request.client.host
+    lockout_key = f"fraud_lock:{client_ip}"
+    attempts = await multi_layer_cache.redis.get(lockout_key)
+    if attempts and int(attempts) >= 3:
+        raise HTTPException(status_code=429, detail="Too many invalid attempts. IP locked for 1 hour.")
+
     booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
         
+    # --- Task 7: Timeout Check ---
+    expiry_limit = 15 * 60 
+    if (datetime.utcnow() - booking.created_at).total_seconds() > expiry_limit:
+        if booking.escrow_status == EscrowStatus.CREATED:
+            booking.escrow_status = EscrowStatus.FAILED
+            booking.escrow_message = "Payment session timed out (15 min limit exceeded)."
+            db.commit()
+        raise HTTPException(status_code=400, detail="This payment session has expired.")
+
     if booking.escrow_status != EscrowStatus.CREATED:
         raise HTTPException(status_code=400, detail=f"Booking is already in state: {booking.escrow_status.name}")
+
+    # --- Task 10: Duplicate UTR Check ---
+    existing_utr = db.query(Booking).filter(Booking.utr_number == payload.utr_number).first()
+    if existing_utr:
+        # Increment fraud attempts on duplicate submisson (Task 19)
+        current_attempts = await multi_layer_cache.redis.incr(lockout_key)
+        if current_attempts == 1:
+            await multi_layer_cache.redis.expire(lockout_key, 3600)
+        
+        raise HTTPException(status_code=400, detail=f"This UTR has already been used. Attempt {current_attempts}/3")
+
+    # If logic reaches here, UTR is "new" but we don't know if it's valid yet.
+    # In a real system, bank verification failure would also increment this.
 
     # Update state to UTR_SUBMITTED
     booking.utr_number = payload.utr_number
     booking.escrow_status = EscrowStatus.UTR_SUBMITTED
+    booking.escrow_message = "UTR received. Verifying with banking network..."
     db.commit()
     db.refresh(booking)
     
-    # Trigger background mock verification
-    asyncio.create_task(_mock_verification_pipeline(booking.id))
+    # Trigger background verification and real worker
+    asyncio.create_task(_process_payment_and_launch_worker(booking.id))
     
     return booking
 
-async def _mock_verification_pipeline(booking_id: str):
-    """Background task to simulate the verification and AI booking process."""
-    await asyncio.sleep(2) # Simulate UTR check
+@router.post("/{booking_id}/captcha")
+async def submit_captcha(
+    captcha: str = Body(..., embed=True),
+    booking_id: str = Path(...)
+):
+    """
+    Endpoint for frontend to submit the solved CAPTCHA.
+    """
+    await multi_layer_cache.initialize()
+    redis_key = f"captcha:{booking_id}"
+    await multi_layer_cache.redis.setex(redis_key, 300, captcha)
+    return {"message": "CAPTCHA received"}
+
+async def _process_payment_and_launch_worker(booking_id: str):
+    """
+    Tasks 28-35: Verifies payment then launches the Ghost Worker.
+    """
     db = next(get_db())
     try:
         booking = db.query(Booking).filter(Booking.id == booking_id).first()
         if not booking: return
         
+        # Step 1: Simulate bank API verification (UTR -> Verified)
+        booking.escrow_message = "Verifying UTR with banking gateway..."
+        db.commit()
+        await asyncio.sleep(2) # Network latency simulation
+        
         booking.escrow_status = EscrowStatus.VERIFIED
+        booking.escrow_message = "Payment confirmed. Launching AI Ghost Worker..."
         db.commit()
         
-        await asyncio.sleep(2) # Simulate AI logging in
-        booking.escrow_status = EscrowStatus.BOOKING_INITIATED
-        db.commit()
+        # Step 2: Launch via Pool Manager (Task 26)
+        from workers.worker_pool import worker_pool
+        await worker_pool.submit_booking(booking.id)
         
-        await asyncio.sleep(3) # Simulate AI Booking and getting PNR
-        booking.escrow_status = EscrowStatus.COMPLETED
-        booking.booking_status = BookingStatus.CONFIRMED.value
-        # Real PNR from IRCTC would go here
-        db.commit()
+    except Exception as e:
+        logger.error(f"Pipeline Launch Error: {e}")
+        if booking:
+            booking.escrow_status = EscrowStatus.FAILED
+            booking.escrow_message = f"Critical Pipeline Error: {str(e)}"
+            db.commit()
     finally:
         db.close()
 

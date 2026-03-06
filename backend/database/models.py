@@ -177,10 +177,18 @@ class Booking(UserBase):
     travel_date = Column(Date, index=True)
     booking_status = Column(String(50), default="pending") # Confirmed, Waitlist, etc.
     escrow_status = Column(SQLEnum(EscrowStatus), default=EscrowStatus.CREATED)
+    escrow_message = Column(String(255), nullable=True) # Pipeline sub-status message
     
     amount_paid = Column(Float, default=0.0)
     upi_tx_id = Column(String(100), unique=True, index=True)
     utr_number = Column(String(12), unique=True, nullable=True, index=True)
+    
+    # Task 24: Support for multiple transactions (Split/Partial payments)
+    transaction_history = Column(JSON, default=[], nullable=True) 
+    
+    # Task 38: Tatkal & Priority
+    is_tatkal = Column(Boolean, default=False)
+    priority = Column(Integer, default=10) # 0 = Highest, 10 = Normal
     
     train_number = Column(String(20), nullable=True)
     berth_preference = Column(String(20), nullable=True)
@@ -203,6 +211,18 @@ class PassengerDetails(UserBase):
     age = Column(Integer, nullable=False)
     gender = Column(String(10), nullable=False)
     booking = relationship("Booking", back_populates="passenger_details")
+
+class RefundQueue(UserBase):
+    __tablename__ = "refund_queue"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id = Column(String(36), ForeignKey("bookings.id"), index=True)
+    user_id = Column(String(36), ForeignKey("users.id"))
+    amount = Column(Float, nullable=False)
+    vpa = Column(String(100), nullable=False) # User's VPA for refund
+    status = Column(String(20), default="PENDING") # PENDING, PROCESSED, FAILED
+    reason = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)
 
 class Payment(UserBase):
     __tablename__ = "payments"

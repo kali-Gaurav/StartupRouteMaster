@@ -50,6 +50,47 @@ export interface BookingRedirectRequest {
   travel_class?: string;
 }
 
+export interface InitiateBookingRequest {
+  journey_id: string;
+}
+
+export interface BookingResponse {
+  id: string;
+  pnr_number: string;
+  booking_status: string;
+  escrow_status: string;
+  amount_paid: number;
+  upi_tx_id?: string;
+  utr_number?: string;
+  upi_url?: string;
+}
+
+export const initiateEscrowBooking = async (data: InitiateBookingRequest, idempotencyKey: string): Promise<BookingResponse> => {
+  const response = await fetchWithAuth('/booking/initiate', {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'idempotency-key': idempotencyKey
+    },
+    body: JSON.stringify(data),
+  });
+  return await response.json();
+};
+
+export const submitEscrowUtr = async (bookingId: string, utrNumber: string): Promise<BookingResponse> => {
+  const response = await fetchWithAuth(`/booking/${bookingId}/utr`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ utr_number: utrNumber }),
+  });
+  return await response.json();
+};
+
+export const getEscrowBookingStatus = async (bookingId: string): Promise<BookingResponse> => {
+  const response = await fetchWithAuth(`/booking/${bookingId}/status`);
+  return await response.json();
+};
+
 /** Uses token from apiClient config. */
 export const createPaymentOrder = async (data: CreateOrderRequest): Promise<{ 
   success: boolean; 

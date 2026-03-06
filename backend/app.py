@@ -18,7 +18,7 @@ from database.config import Config
 from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
-from api.v2 import search, debug, admin, live, user, booking
+from api.v2 import search, debug, admin, live, user, booking, booking_ws
 from api import chat, chat_ws, sos, voice_triage
 
 # Configure Logging
@@ -42,6 +42,10 @@ async def lifespan(app: FastAPI):
     # Task 38: Start Escalation Monitor
     from services.emergency.escalation_service import escalation_service
     await escalation_service.start()
+    
+    # Task 26/38: Start Booking Worker Pool
+    from workers.worker_pool import worker_pool
+    await worker_pool.start_manager()
     
     # Task 11: Start UDP Safety Listener
     from workers.udp_safety_listener import UDPSafetyListener
@@ -99,6 +103,7 @@ app.include_router(search.router, prefix="/api/v2")
 app.include_router(live.router, prefix="/api/v2")
 app.include_router(user.router, prefix="/api/v2")
 app.include_router(booking.router, prefix="/api/v2")
+app.include_router(booking_ws.router, prefix="/api/v2")
 app.include_router(debug.router, prefix="/api/v2")
 app.include_router(admin.router, prefix="/api/v2")
 app.include_router(chat.router)
