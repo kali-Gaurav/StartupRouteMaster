@@ -12,12 +12,12 @@ from backend.core.route_engine import route_engine
 from backend.core.route_engine.constraints import RouteConstraints
 from backend.database.session import SessionLocal
 from backend.utils.station_utils import resolve_stations
-from backend.services.seat_availability_service import SeatAvailabilityService
+from backend.services.seat_verification import SeatVerificationService
 
 async def plan_journey():
     print("=== JOURNEY PLANNER: PALAKKAD TO KOTA ===")
     db = SessionLocal()
-    seat_service = SeatAvailabilityService()
+    seat_service = SeatVerificationService()
     
     try:
         # 1. Resolve Stations
@@ -79,7 +79,7 @@ async def plan_journey():
                 
                 # Check Seat Availability
                 try:
-                    # In this system, SeatAvailabilityService might have a method like get_availability
+                    # In this system, SeatVerificationService might have a method like get_availability
                     # We'll use a generic check since we don't have live APIs
                     print(f"  💺 Verifying seats for {seg.train_number} from {seg.departure_stop_id} to {seg.arrival_stop_id}...")
                     

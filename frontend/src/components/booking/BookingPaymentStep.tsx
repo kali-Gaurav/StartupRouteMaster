@@ -170,7 +170,7 @@ export function BookingPaymentStep() {
   }, []);
 
   const handleComplete = useCallback((final: BookingResponse) => {
-    if (final.escrow_status === 'COMPLETED') {
+    if (final.escrow_status === 'COMPLETED' || (final.service_type === 'UNLOCK' && final.escrow_status === 'VERIFIED')) {
       setShowConfetti(true);
       setTimeout(() => setShowConfetti(false), 5000);
       invalidateBookingsCache();
@@ -179,6 +179,8 @@ export function BookingPaymentStep() {
 
   const polledBooking = usePaymentPolling(initialBooking?.id, handleComplete);
   const booking = polledBooking || initialBooking;
+  
+  const isUnlocked = booking?.service_type === 'UNLOCK' && (booking?.escrow_status === 'VERIFIED' || booking?.escrow_status === 'COMPLETED');
 
   // Task 42: Live WebSocket Logging
   useEffect(() => {

@@ -3,7 +3,7 @@ import logging
 import os
 from typing import Optional
 from playwright.async_api import async_playwright, Page
-from playwright_stealth import stealth_async
+from playwright_stealth import stealth
 from fake_useragent import UserAgent
 from database.session import SessionLocal
 from database.models import Booking, EscrowStatus, BookingStatus
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class IRCTCWorker:
     """
-    Task 28: IRCTC Login Automator with Stealth.
+    Task 28 & 5: IRCTC Login Automator with Stealth and Human Jitter.
     """
     def __init__(self, booking_id: str):
         self.booking_id = booking_id
@@ -24,6 +24,38 @@ class IRCTCWorker:
         import time
         self.start_timestamp = time.perf_counter()
 
+    async def human_delay(self, min_s=1.5, max_s=3.5):
+        """Task 5: Random jitter sleep."""
+        import random
+        await asyncio.sleep(random.uniform(min_s, max_s))
+
+    async def human_move_and_click(self, selector: str):
+        """Task 5: Simulate real mouse movement to element before click."""
+        try:
+            element = self.page.locator(selector)
+            box = await element.bounding_box()
+            if box:
+                import random
+                # Move to element with steps (jitter)
+                await self.page.mouse.move(
+                    box["x"] + box["width"] / 2 + random.randint(-5, 5),
+                    box["y"] + box["height"] / 2 + random.randint(-5, 5),
+                    steps=random.randint(15, 30)
+                )
+                await self.human_delay(0.2, 0.5)
+                await element.click()
+        except Exception as e:
+            logger.warning(f"Human click failed for {selector}: {e}")
+            await self.page.click(selector) # Fallback
+
+    async def human_type(self, selector: str, text: str):
+        """Task 5: Type like a human with random delays."""
+        await self.page.focus(selector)
+        import random
+        for char in text:
+            await self.page.keyboard.type(char)
+            await asyncio.sleep(random.uniform(0.05, 0.2)) # Real typing speed
+
     async def record_metric(self, phase: str):
         import time
         duration = time.perf_counter() - self.start_timestamp
@@ -32,40 +64,58 @@ class IRCTCWorker:
         self.start_timestamp = time.perf_counter()
 
     async def start(self):
-        playwright = await async_playwright().start()
+        self.playwright = await async_playwright().start()
         
         # Task 46: Proxy Rotation Logic
         proxy_config = None
-        proxy_url = os.getenv("RESIDENTIAL_PROXY_URL") # e.g. "http://user:pass@host:port"
+        proxy_url = os.getenv("RESIDENTIAL_PROXY_URL")
         if proxy_url:
             proxy_config = {"server": proxy_url}
-            logger.info(f"Using proxy for booking {self.booking_id}")
 
-        # Disable HTTP/2 via launch arguments
-        self.browser = await playwright.chromium.launch(
+        # Task 2: Real Chrome Binary (Executable Path)
+        chrome_path = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+        
+        # Task 3: Persistent Browser Profile Manager
+        # We use a specific folder for each user to "farm" cookies
+        db = SessionLocal()
+        booking = db.query(Booking).filter(Booking.id == self.booking_id).first()
+        user_id = booking.user_id if booking else "default_user"
+        db.close()
+        
+        profile_path = f"backend/browser_profiles/user_{user_id}"
+        os.makedirs(profile_path, exist_ok=True)
+        
+        ua = UserAgent(platforms='pc').random
+        
+        self.context = await playwright.chromium.launch_persistent_context(
+            user_data_dir=profile_path,
+            executable_path=chrome_path if os.path.exists(chrome_path) else None,
             headless=True,
             proxy=proxy_config,
-            args=["--disable-http2"]
+            user_agent=ua,
+            viewport={"width": 1366, "height": 768},
+            locale="en-IN",
+            timezone_id="Asia/Kolkata",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-sandbox",
+                "--disable-http2"
+            ]
         )
         
-        # Task 28: Residential Stealth Context
-        self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.irctc.co.in/"
-            }
-        )
-        
-        # Mask automation flags
+        # Task 1: Apply Manual Stealth at Context Level
         await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
             window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-GB', 'en-US'] });
         """)
         
-        self.page = await self.context.new_page()
-        await self.update_status("Navigating to IRCTC...", EscrowStatus.BOOKING_INITIATED)
+        # In launch_persistent_context, the first page is already created
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        
+        await self.update_status("Launching Persistent AI Ghost Worker...", EscrowStatus.BOOKING_INITIATED)
 
     async def login(self, username, password):
         """
@@ -73,20 +123,27 @@ class IRCTCWorker:
         """
         for attempt in range(3):
             try:
-                await self.page.goto("https://www.irctc.co.in/nget/train-search", wait_until="networkidle")
+                await self.page.goto("https://www.irctc.co.in/nget/train-search", wait_until="domcontentloaded")
                 
                 # Check for 503 or maintenance text
                 content = await self.page.content()
                 if "Service Unavailable" in content or "Maintenance" in content:
                     raise Exception("IRCTC 503 Service Unavailable")
 
-                # Click Login Button
-                login_btn = await self.page.wait_for_selector("a.search_btn.loginText", timeout=10000)
-                await login_btn.click()
+                # Click Login Button with Human Jitter
+                await self.human_move_and_click("a.search_btn.loginText")
                 
-                # Fill Credentials
-                await self.page.fill("input[formcontrolname='userName']", username)
-                await self.page.fill("input[formcontrolname='password']", password)
+                # Task 5: Random Delay
+                await self.human_delay(1.0, 2.0)
+
+                # Fill Credentials with Human Typing
+                await self.page.focus("input[formcontrolname='userName']")
+                await self.human_type("input[formcontrolname='userName']", username)
+                
+                await self.human_delay(0.5, 1.0)
+                
+                await self.page.focus("input[formcontrolname='password']")
+                await self.human_type("input[formcontrolname='password']", password)
                 
                 await self.update_status("Credentials entered. Solving CAPTCHA...", EscrowStatus.BOOKING_INITIATED)
                 
@@ -456,8 +513,20 @@ class IRCTCWorker:
             db.close()
 
     async def close(self):
-        if self.browser:
-            await self.browser.close()
+        """Strict sequential shutdown to prevent pipe errors on Windows."""
+        try:
+            if hasattr(self, 'page') and self.page:
+                await self.page.close()
+            if hasattr(self, 'context') and self.context:
+                await self.context.close()
+            if hasattr(self, 'playwright') and self.playwright:
+                await self.playwright.stop()
+            
+            # Windows safety delay to allow OS to release pipe handles
+            await asyncio.sleep(1) 
+            logger.info(f"Worker for {self.booking_id} resources released cleanly.")
+        except Exception as e:
+            logger.warning(f"Error during worker cleanup: {e}")
 
 async def run_booking_worker(booking_id: str):
     worker = IRCTCWorker(booking_id)

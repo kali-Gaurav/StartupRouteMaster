@@ -54,6 +54,19 @@ class RouteQuery:
         key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
         return f"route:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
+@dataclass
+class AvailabilityQuery:
+    train_id: int
+    from_stop_id: int
+    to_stop_id: int
+    travel_date: date
+    quota_type: str = "GN"
+    class_type: str = "SL"
+
+    def cache_key(self) -> str:
+        date_str = self.travel_date.isoformat()
+        return f"avail:{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{date_str}:{self.quota_type}:{self.class_type}"
+
 class LRUCache:
     def __init__(self, capacity: int = 500):
         self.cache = OrderedDict()
@@ -158,6 +171,33 @@ class MultiLayerCache:
             self.metrics['query_cache'].sets += 1
             # Broadcast invalidation to others (Task 25)
             await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "type": "set", "key": key}))
+
+    async def get_availability(self, query: AvailabilityQuery) -> Optional[Dict]:
+        key = query.cache_key()
+        # Layer 0
+        lru_data = self.lru.get(key)
+        if lru_data:
+            self.metrics['lru_cache'].hits += 1
+            return lru_data
+        
+        if not self.redis: return None
+        
+        # Layer 1
+        data = await self.redis.get(key)
+        if data:
+            res = json.loads(data.decode('utf-8'))
+            self.lru.put(key, res)
+            self.metrics['query_cache'].hits += 1
+            return res
+        self.metrics['query_cache'].misses += 1
+        return None
+
+    async def set_availability(self, query: AvailabilityQuery, result: Dict, ttl: int = 300):
+        key = query.cache_key()
+        self.lru.put(key, result)
+        if self.redis:
+            await self.redis.setex(key, ttl, json.dumps(result, default=str))
+            self.metrics['query_cache'].sets += 1
 
     async def get_cache_stats(self) -> Dict:
         return {k: v.to_dict() for k, v in self.metrics.items()}

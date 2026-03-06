@@ -12,7 +12,7 @@ from database.config import Config
 from services.cache_service import cache_service
 from services.fare_service import FareService
 from services.live_status_service import LiveStatusService
-from services.seat_availability_service import SeatAvailabilityService
+from services.seat_verification import SeatVerificationService
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class VerificationOrchestrator:
         self.cache = cache or cache_service
         self.config = config
         self.live_status_service = LiveStatusService(config)
-        self.seat_service = SeatAvailabilityService(config)
+        self.seat_service = SeatVerificationService()
         self.fare_service = FareService(config)
         self.cache_ttl = _clamp(getattr(config, "VERIFICATION_CACHE_TTL", 180), 120, 300)
         self.total_timeout = getattr(config, "VERIFICATION_TOTAL_TIMEOUT", 7)
@@ -146,16 +146,24 @@ class VerificationOrchestrator:
         return await self._run_blocking(self.live_status_service.get_live_status, train_number, timeout=self.live_timeout)
 
     async def _call_seat(self, train_no: str, date: str, from_station: str, to_station: str, class_code: str, quota: str) -> Optional[Dict[str, Any]]:
-        return await self._run_blocking(
-            self.seat_service.get_seat_availability,
-            train_no,
-            date,
-            from_station,
-            to_station,
-            class_code,
-            quota,
-            timeout=self.seat_timeout
-        )
+        try:
+            return await asyncio.wait_for(
+                self.seat_service.check_segment(
+                    train_no,
+                    from_station,
+                    to_station,
+                    date,
+                    quota,
+                    class_code
+                ),
+                timeout=self.seat_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Verification call timed out: _call_seat")
+            return None
+        except Exception as exc:
+            logger.warning("Verification call failed _call_seat: %s", exc)
+            return None
 
     async def _call_fare(self, train_no: str, from_station: str, to_station: str, class_code: str, quota: str, date: str) -> Optional[Dict[str, Any]]:
         return await self._run_blocking(

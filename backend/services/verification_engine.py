@@ -18,7 +18,7 @@ from core.segment_detail import SegmentDetail, JourneyOption
 from database.models import Stop
 from services.cache_service import cache_service
 from services.live_status_service import LiveStatusService
-from services.seat_availability_service import SeatAvailabilityService
+from services.seat_verification import SeatVerificationService
 from services.fare_service import FareService
 
 
@@ -196,9 +196,10 @@ class RouteVerificationEngine:
         self.db = db
         self.cache = cache or cache_service
         self.live_status_service = LiveStatusService(config)
-        self.seat_service = SeatAvailabilityService(config)
+        self.seat_service = SeatVerificationService()
         self.fare_service = FareService(config)
         self.ttl = getattr(config, "VERIFICATION_CACHE_TTL", 180)
+        self._loop = asyncio.new_event_loop()
 
     def _cache_key(self, journey_id: str) -> str:
         return f"verification:{journey_id}"
@@ -255,14 +256,21 @@ class RouteVerificationEngine:
         class_code = self._map_class(coach_preference)
 
         live_status = self.live_status_service.get_live_status(train_number)
-        seat_payload = self.seat_service.get_seat_availability(
-            train_no=train_number,
-            date=date_str,
-            from_station=start_code or "",
-            to_station=end_code or "",
-            class_code=class_code,
-            quota=quota
-        )
+        
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                seat_payload = pool.submit(
+                    asyncio.run,
+                    self.seat_service.check_segment(
+                        train_number, start_code or "", end_code or "", date_str, quota, class_code
+                    )
+                ).result()
+        except RuntimeError:
+            seat_payload = asyncio.run(self.seat_service.check_segment(
+                train_number, start_code or "", end_code or "", date_str, quota, class_code
+            ))
         fare_payload = self.fare_service.get_fare(
             train_no=train_number,
             from_station=start_code or "",

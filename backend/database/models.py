@@ -190,6 +190,11 @@ class Booking(UserBase):
     is_tatkal = Column(Boolean, default=False)
     priority = Column(Integer, default=10) # 0 = Highest, 10 = Normal
     
+    # NEW: Compliant Service Logic
+    service_type = Column(String(20), default="UNLOCK") # UNLOCK, AGENT_BOOKING
+    is_unlocked = Column(Boolean, default=False)
+    agent_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    
     train_number = Column(String(20), nullable=True)
     berth_preference = Column(String(20), nullable=True)
     
@@ -202,6 +207,26 @@ class Booking(UserBase):
 
     user = relationship("User", back_populates="bookings")
     passenger_details = relationship("PassengerDetails", back_populates="booking")
+
+class TrainAvailabilityCache(UserBase):
+    __tablename__ = "train_availability_cache"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    train_number = Column(String(20), index=True)
+    from_station_code = Column(String(10), index=True)
+    to_station_code = Column(String(10), index=True)
+    journey_date = Column(Date, index=True)
+    class_type = Column(String(10), index=True)
+    quota = Column(String(10), index=True)
+    status_text = Column(String(100)) # e.g. "AVAILABLE-0120"
+    seats_available = Column(Integer, default=0)
+    fare = Column(Float, default=0.0)
+    ticket_fare = Column(Float, default=0.0)
+    catering_charge = Column(Float, default=0.0)
+    alt_cnf_seat = Column(Boolean, default=False)
+    alt_seat_status = Column(String(100), nullable=True)
+    alt_seat_fare = Column(Float, nullable=True)
+    raw_payload = Column(Text, nullable=True) # Ethical API response dump
+    last_updated_at = Column(DateTime, default=datetime.utcnow)
 
 class PassengerDetails(UserBase):
     __tablename__ = "passenger_details"

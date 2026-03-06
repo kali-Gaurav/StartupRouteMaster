@@ -15,6 +15,7 @@ class Config:
     SUPABASE_URL = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
     SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+    SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", "")
     
     # Database Configuration (Railway / Supabase Postgres)
     DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -199,6 +200,11 @@ class Config:
         """Validate critical configuration presence."""
         if not cls.SUPABASE_URL or not cls.SUPABASE_KEY:
             raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set (for Auth)")
+            
+        if not cls.SUPABASE_JWT_SECRET:
+             # Warning only for now to allow local dev startup, but critical for auth
+             logger = logging.getLogger(__name__)
+             logger.warning("SUPABASE_JWT_SECRET not set; JWT validation will fail.")
         
         if not cls.DATABASE_URL:
             if cls.OFFLINE_MODE:

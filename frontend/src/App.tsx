@@ -12,15 +12,14 @@ import { BottomNav } from "@/components/BottomNav";
 import { DevBootstrap } from "@/components/DevBootstrap";
 import { DevDebugPanel } from "@/components/DevDebugPanel";
 import { AuthProvider } from "@/context/AuthContext";
+import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
-import { queryClient } from "@/infrastructure/queryClient";
-import { usePushNotifications } from "@/hooks/usePushNotifications";
-import { IconSprite } from "@/components/ui/IconSprite";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Lazy load pages
 const Index = lazy(() => import("./pages/Index"));
+const LoginPage = lazy(() => import("./pages/auth/LoginPage"));
+const SignupPage = lazy(() => import("./pages/auth/SignupPage"));
 const SOS = lazy(() => import("./pages/SOS"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Bookings = lazy(() => import("./pages/Bookings"));
@@ -87,9 +86,23 @@ const AppContent = () => {
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<ErrorBoundary name="Landing"><Index /></ErrorBoundary>} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/signup" element={<SignupPage />} />
+            
             <Route path="/sos" element={<ErrorBoundary name="SOS"><SOS /></ErrorBoundary>} />
-            <Route path="/dashboard" element={<ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>} />
-            <Route path="/bookings" element={<ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>} />
+            
+            <Route path="/dashboard" element={
+              <ProtectedRoute>
+                <ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>
+              </ProtectedRoute>
+            } />
+            
+            <Route path="/bookings" element={
+              <ProtectedRoute>
+                <ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>
+              </ProtectedRoute>
+            } />
+            
             <Route path="/ticket/:bookingId" element={<ErrorBoundary name="Ticket"><Ticket /></ErrorBoundary>} />
             <Route path="/responder" element={<Responder />} />
             <Route path="/privacy" element={<Privacy />} />
@@ -99,7 +112,11 @@ const AppContent = () => {
             <Route path="/ops/sos" element={<SOSDashboard />} />
 
             {/* Mini App with Granular Resilience (Suggestion #25) */}
-            <Route path="/mini-app" element={<MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>}>
+            <Route path="/mini-app" element={
+              <ProtectedRoute>
+                <MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>
+              </ProtectedRoute>
+            }>
               <Route index element={<Navigate to="home" replace />} />
               <Route path="home" element={<ErrorBoundary name="MiniHome"><MiniAppHome /></ErrorBoundary>} />
               <Route path="search" element={<ErrorBoundary name="MiniSearch"><MiniAppSearch /></ErrorBoundary>} />

@@ -11,12 +11,12 @@ from backend.core.route_engine import route_engine
 from backend.core.route_engine.constraints import RouteConstraints
 from backend.database.session import SessionLocal
 from backend.utils.station_utils import resolve_stations
-from backend.services.seat_availability_service import SeatAvailabilityService
+from backend.services.seat_verification import SeatVerificationService
 
 async def find_and_verify_pgt_kota():
     print("=== SEARCHING PALAKKAD TO KOTA FOR TOMORROW ===")
     db = SessionLocal()
-    seat_service = SeatAvailabilityService()
+    seat_service = SeatVerificationService()
     
     try:
         src_query = "PGT"

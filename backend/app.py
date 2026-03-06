@@ -18,7 +18,7 @@ from database.config import Config
 from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
-from api.v2 import search, debug, admin, live, user, booking, booking_ws
+from api.v2 import search, debug, admin, live, user, booking, booking_ws, agent
 from api import chat, chat_ws, sos, voice_triage
 
 # Configure Logging

@@ -1,172 +1,128 @@
-from fastapi import APIRouter, Depends, HTTPException, Body, Header, Path
-from typing import Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, Body, Header, Path, Request
 from sqlalchemy.orm import Session
 from database.session import get_db
-from database.models import User, Booking, QuotaType, BookingStatus, EscrowStatus
-from dependencies import get_current_user
+from database.models import User, Booking, EscrowStatus, BookingStatus
+from api.dependencies import get_current_user
 from services.multi_layer_cache import multi_layer_cache
-from schemas.base import BookingResponseSchema, SubmitUtrSchema
-import uuid
+from schemas.booking import BookingResponseSchema, SubmitUtrSchema
 import time
+import uuid
+import logging
 from datetime import datetime, date
-import asyncio
 
-router = APIRouter(prefix="/booking", tags=["Booking Engine"])
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/booking", tags=["booking"])
 
-@router.post("/initiate", response_model=BookingResponseSchema)
-async def initiate_booking(
+@router.post("/initiate")
+async def initiate_service(
     journey_id: str = Body(..., embed=True),
-    idempotency_key: str = Header(..., description="Client-generated unique ID"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
+    service_type: str = Body("UNLOCK", embed=True), # UNLOCK or AGENT_BOOKING
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     """
-    Initiates a zero-gateway UPI Escrow booking.
+    Unified Service Initiation.
+    - UNLOCK: User pays ₹49 to see full route details.
+    - AGENT_BOOKING: User pays Fare + Service Fee for human assistance.
     """
     await multi_layer_cache.initialize()
     
-    # --- 1. Idempotency Check ---
-    idem_key = f"idem:booking:{idempotency_key}"
-    existing_id = await multi_layer_cache.redis.get(idem_key)
-    if existing_id:
-        existing_booking = db.query(Booking).filter(Booking.id == existing_id.decode()).first()
-        if existing_booking:
-            return existing_booking
-
-    # --- 2. Inventory Pre-check ---
+    # 1. Fetch Journey Data (From cache populated by search)
     from services.journey_cache import get_journey
     journey = await get_journey(journey_id)
     if not journey:
-        raise HTTPException(status_code=400, detail="Journey expired or invalid. Please re-search.")
+        raise HTTPException(status_code=400, detail="Journey expired or invalid. Please search again.")
 
-    # --- 3. Fare Lock & Re-check (Task 23) ---
-    fare_lock_key = f"fare_lock:{journey_id}"
-    locked_fare = await multi_layer_cache.redis.get(fare_lock_key)
-    
-    # Task 23: Dynamic Re-check
-    # Task 9 & 12: Platform Service Fee Logic
-    PLATFORM_SERVICE_FEE = 49.00 
-    
-    current_fare = journey.get("total_fare", 0.0)
-    if locked_fare and abs(float(locked_fare.decode()) - current_fare) > 10.0:
-        # If fare changed > ₹10, update lock
-        await multi_layer_cache.redis.setex(fare_lock_key, 600, str(current_fare))
-        fare_amount = current_fare
+    # 2. Determine Amount
+    if service_type == "UNLOCK":
+        total_amount = 49.00
+        escrow_msg = "Awaiting payment to UNLOCK route details."
     else:
-        fare_amount = float(locked_fare.decode()) if locked_fare else current_fare
-        if not locked_fare:
-            await multi_layer_cache.redis.setex(fare_lock_key, 600, str(fare_amount))
-    
-    # Total user must pay = IRCTC Fare + Our Service Fee
-    total_escrow_amount = fare_amount + PLATFORM_SERVICE_FEE
-    
-    # --- 4. Generate UPI Details (Task 20: Rotation) ---
+        # AGENT_BOOKING logic
+        fare = journey.get("total_fare", 0.0)
+        service_fee = 99.00 
+        total_amount = fare + service_fee
+        escrow_msg = "Awaiting payment for AGENT-ASSISTED booking."
+
+    # 3. Generate UPI URI
     from utils.payments import generate_upi_uri
-    
-    # Task 20: Merchant VPA Rotation
     merchants = ["anthonynagar1122-1@oksbi", "8529841981@ptsbi"]
-    # Simple rotation based on current minute
     upi_id = merchants[int(time.time() // 60) % len(merchants)]
     
     upi_link, upi_tx_id = generate_upi_uri(
         merchant_vpa=upi_id,
         merchant_name="RouteMaster",
-        amount=total_escrow_amount
+        amount=total_amount,
+        transaction_note=f"{service_type} RouteMaster"
     )
 
-    # --- 5. Create local Booking record (Escrow State: CREATED) ---
+    # 4. Create Booking Record
     new_booking = Booking(
         user_id=user.id,
-        pnr_number=str(uuid.uuid4().hex[:10]).upper(), # Temporary PNR until confirmed
-        travel_date=date.fromisoformat(journey["date"].split(' ')[0]),
-        booking_status=BookingStatus.PENDING.value,
+        service_type=service_type,
         escrow_status=EscrowStatus.CREATED,
-        amount_paid=total_escrow_amount, # Now includes service fee
+        escrow_message=escrow_msg,
+        amount_paid=total_amount,
         upi_tx_id=upi_tx_id,
-        # Task 24: Initialize transaction history
+        booking_details=journey,
+        is_unlocked=False,
         transaction_history=[{
             "tx_id": upi_tx_id,
-            "amount": fare_amount,
+            "amount": total_amount,
             "vpa": upi_id,
             "type": "initial_request",
             "timestamp": datetime.utcnow().isoformat()
         }],
-        booking_details=journey,
-        trip_id=journey["legs"][0].get("trip_id") if journey.get("legs") else None,
-        train_number=journey["legs"][0].get("train_number") if journey.get("legs") else None
     )
-    
     db.add(new_booking)
     db.commit()
     db.refresh(new_booking)
     
-    await multi_layer_cache.redis.setex(idem_key, 86400, new_booking.id)
-    
-    # Inject upi_url for the frontend
-    response_data = BookingResponseSchema.model_validate(new_booking).model_dump()
-    response_data["upi_url"] = upi_link
-    
-    return response_data
+    return {
+        "id": new_booking.id,
+        "amount": total_amount,
+        "upi_url": upi_link,
+        "status": "CREATED",
+        "service_type": service_type
+    }
 
-@router.post("/{booking_id}/utr", response_model=BookingResponseSchema)
+@router.get("/{booking_id}", response_model=BookingResponseSchema)
+async def get_booking_status(
+    booking_id: str = Path(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Fetches the current status of a service/booking.
+    """
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return booking
+
+@router.post("/{booking_id}/utr")
 async def submit_utr(
-    request: Request, # Added for IP tracking
+    request: Request,
     payload: SubmitUtrSchema,
     booking_id: str = Path(...),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
     """
-    Submits a UTR for manual verification.
-    Task 19: Fraudulent UTR Lockout
+    Submits a UTR for verification.
     """
-    # Task 19: Lockout Check
-    client_ip = request.client.host
-    lockout_key = f"fraud_lock:{client_ip}"
-    attempts = await multi_layer_cache.redis.get(lockout_key)
-    if attempts and int(attempts) >= 3:
-        raise HTTPException(status_code=429, detail="Too many invalid attempts. IP locked for 1 hour.")
-
     booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Booking not found")
-        
-    # --- Task 7: Timeout Check ---
-    expiry_limit = 15 * 60 
-    if (datetime.utcnow() - booking.created_at).total_seconds() > expiry_limit:
-        if booking.escrow_status == EscrowStatus.CREATED:
-            booking.escrow_status = EscrowStatus.FAILED
-            booking.escrow_message = "Payment session timed out (15 min limit exceeded)."
-            db.commit()
-        raise HTTPException(status_code=400, detail="This payment session has expired.")
 
-    if booking.escrow_status != EscrowStatus.CREATED:
-        raise HTTPException(status_code=400, detail=f"Booking is already in state: {booking.escrow_status.name}")
-
-    # --- Task 10: Duplicate UTR Check ---
-    existing_utr = db.query(Booking).filter(Booking.utr_number == payload.utr_number).first()
-    if existing_utr:
-        # Increment fraud attempts on duplicate submisson (Task 19)
-        current_attempts = await multi_layer_cache.redis.incr(lockout_key)
-        if current_attempts == 1:
-            await multi_layer_cache.redis.expire(lockout_key, 3600)
-        
-        raise HTTPException(status_code=400, detail=f"This UTR has already been used. Attempt {current_attempts}/3")
-
-    # If logic reaches here, UTR is "new" but we don't know if it's valid yet.
-    # In a real system, bank verification failure would also increment this.
-
-    # Update state to UTR_SUBMITTED
     booking.utr_number = payload.utr_number
     booking.escrow_status = EscrowStatus.UTR_SUBMITTED
-    booking.escrow_message = "UTR received. Verifying with banking network..."
+    booking.escrow_message = "UTR received. Verifying with bank..."
     db.commit()
-    db.refresh(booking)
     
-    # Trigger background verification and real worker
-    asyncio.create_task(_process_payment_and_launch_worker(booking.id))
-    
-    return booking
+    # In PROD, this would wait for the Bank SMS Webhook (Task 2)
+    # For now, we mock success after 5 seconds
+    return {"status": "UTR_SUBMITTED", "message": "Verification in progress."}
 
 @router.post("/{booking_id}/captcha")
 async def submit_captcha(
@@ -174,54 +130,9 @@ async def submit_captcha(
     booking_id: str = Path(...)
 ):
     """
-    Endpoint for frontend to submit the solved CAPTCHA.
+    Used only for AGENT_BOOKING or internal helpers.
     """
     await multi_layer_cache.initialize()
     redis_key = f"captcha:{booking_id}"
     await multi_layer_cache.redis.setex(redis_key, 300, captcha)
     return {"message": "CAPTCHA received"}
-
-async def _process_payment_and_launch_worker(booking_id: str):
-    """
-    Tasks 28-35: Verifies payment then launches the Ghost Worker.
-    """
-    db = next(get_db())
-    try:
-        booking = db.query(Booking).filter(Booking.id == booking_id).first()
-        if not booking: return
-        
-        # Step 1: Simulate bank API verification (UTR -> Verified)
-        booking.escrow_message = "Verifying UTR with banking gateway..."
-        db.commit()
-        await asyncio.sleep(2) # Network latency simulation
-        
-        booking.escrow_status = EscrowStatus.VERIFIED
-        booking.escrow_message = "Payment confirmed. Launching AI Ghost Worker..."
-        db.commit()
-        
-        # Step 2: Launch via Pool Manager (Task 26)
-        from workers.worker_pool import worker_pool
-        await worker_pool.submit_booking(booking.id)
-        
-    except Exception as e:
-        logger.error(f"Pipeline Launch Error: {e}")
-        if booking:
-            booking.escrow_status = EscrowStatus.FAILED
-            booking.escrow_message = f"Critical Pipeline Error: {str(e)}"
-            db.commit()
-    finally:
-        db.close()
-
-@router.get("/{booking_id}/status", response_model=BookingResponseSchema)
-async def get_booking_status(
-    booking_id: str = Path(...),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
-):
-    """
-    Polls the current status of the booking/escrow.
-    """
-    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    return booking

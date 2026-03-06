@@ -20,7 +20,10 @@ def fix_schema():
         ("berth_preference", "VARCHAR(20)"),
         ("created_at", "DATETIME"),
         ("is_tatkal", "BOOLEAN"),
-        ("priority", "INTEGER")
+        ("priority", "INTEGER"),
+        ("service_type", "VARCHAR(20)"),
+        ("is_unlocked", "BOOLEAN"),
+        ("agent_id", "VARCHAR(36)")
     ]
     
     for col_name, col_type in columns_to_add:

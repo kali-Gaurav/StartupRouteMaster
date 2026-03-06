@@ -7,6 +7,7 @@ from typing import Union, Optional
 
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+from jose import jwt, JWTError
 
 # Ensure correct pathing
 sys.path.insert(0, os.path.dirname(__file__))
@@ -45,7 +46,6 @@ async def get_current_user(
     # --- 1. JWT Claims Validation (Real Implementation) ---
     try:
         # Decode and verify the token
-        # Ideally, fetch the secret from config
         secret = Config.SUPABASE_JWT_SECRET
         if not secret:
             logger.error("SUPABASE_JWT_SECRET not set in Config")
@@ -64,7 +64,7 @@ async def get_current_user(
         
         if not supabase_id or not email:
              raise HTTPException(status_code=401, detail="Invalid Token Payload")
-             
+
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token Expired")
     except jwt.JWTError as e:
@@ -73,13 +73,17 @@ async def get_current_user(
     except Exception as e:
         logger.error(f"Unexpected Auth Error: {e}")
         raise HTTPException(status_code=401, detail="Authentication Failed")
+
+    # --- 2. Atomic Sync (Suggestion #2) ---
+    try:
+        # Check if user exists, if not create
+        user = db.query(User).filter(User.supabase_id == supabase_id).first()
         
-        # --- 2. Atomic Sync (Suggestion #2) ---
-        with db.begin_nested(): # Transaction savepoint
-            user = db.query(User).filter(User.supabase_id == supabase_id).first()
+        if not user:
+            logger.info(f"Creating encrypted local record for {supabase_id}")
             
-            if not user:
-                logger.info(f"Creating encrypted local record for {supabase_id}")
+            # Use a nested transaction for atomic creation
+            with db.begin_nested(): 
                 # --- 3. PII Encryption (Suggestion #4) ---
                 user = User(
                     supabase_id=supabase_id,
@@ -91,14 +95,15 @@ async def get_current_user(
                 
                 profile = Profile(id=supabase_id, user_id=user.id)
                 db.add(profile)
+            
+            db.commit() # Commit the creation
         
-        db.commit() # Commit the transaction
         return user
         
     except Exception as e:
         db.rollback()
         logger.error(f"Auth sync failed: {e}")
-        raise HTTPException(status_code=401, detail="Session Invalid")
+        raise HTTPException(status_code=401, detail="Session Sync Failed")
 
 @lru_cache(maxsize=1)
 def get_route_engine():
