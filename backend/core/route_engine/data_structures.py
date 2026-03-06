@@ -34,6 +34,9 @@ class RouteSegment:
     fare_amount: Optional[float] = None
     train_name: str = ""
     train_number: str = ""
+    service_mask: int = 127 # Task 8: Bitmask for days of run (127 = all days)
+    is_unconfirmed_allowed: bool = False # Task 3: Allow GN compromise
+    has_pantry: bool = False # Task 6: Pantry Car Priority
 
     def __post_init__(self):
         # backward-compatible alias: keep `fare` and `fare_amount` in sync
@@ -107,6 +110,21 @@ class Route:
     metadata: Dict[str, Any] = field(default_factory=dict) # Added for engine tracking
     cost_diagnostics: Dict[str, float] = field(default_factory=dict)
     visited_stations: Set[int] = field(default_factory=set) # Optimization for RAPTOR cycle detection
+
+    def __post_init__(self):
+        """Task 14: Ensure visited stations are tracked from the start."""
+        if self.segments:
+            for s in self.segments:
+                self.visited_stations.add(s.departure_stop_id)
+                self.visited_stations.add(s.arrival_stop_id)
+                
+                # Also ensure totals are calculated if segments passed via init
+                if self.total_duration == 0:
+                    self.total_duration = sum(seg.duration_minutes for seg in self.segments)
+                if self.total_cost == 0:
+                    self.total_cost = sum(seg.fare for seg in self.segments)
+                if self.total_distance == 0:
+                    self.total_distance = sum(seg.distance_km for seg in self.segments)
 
     def to_dict(self) -> Dict[str, Any]:
         """Production serialization matching the blueprint."""

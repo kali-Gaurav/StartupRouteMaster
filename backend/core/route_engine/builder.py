@@ -101,12 +101,32 @@ class GraphBuilder:
                 
         return list(active_set)
 
+    def _get_service_bitmasks(self, session, service_ids: List[str]) -> Dict[str, int]:
+        """Task 8: Calculate 7-bit mask for each service (Mon=1, Tue=2... Sun=64)."""
+        bitmasks = {}
+        if not service_ids: return {}
+        
+        calendars = session.query(Calendar).filter(Calendar.service_id.in_(service_ids)).all()
+        for cal in calendars:
+            mask = 0
+            if cal.monday: mask |= 1
+            if cal.tuesday: mask |= 2
+            if cal.wednesday: mask |= 4
+            if cal.thursday: mask |= 8
+            if cal.friday: mask |= 16
+            if cal.saturday: mask |= 32
+            if cal.sunday: mask |= 64
+            bitmasks[cal.service_id] = mask
+        return bitmasks
+
     def _build_graph_sync(self, date: datetime) -> Dict:
         session = SessionLocal()
         try:
             service_ids = self._get_active_service_ids(session, date)
+            service_bitmasks = self._get_service_bitmasks(session, service_ids)
             logger.info(f"Building graph for {date.date()} with {len(service_ids)} active services")
-
+            
+            # ... rest of the setup ...
             departures = defaultdict(list)
             arrivals = defaultdict(list)
             trip_segments = defaultdict(list)
@@ -116,13 +136,8 @@ class GraphBuilder:
             station_schedule = defaultdict(list)
             train_path = defaultdict(list)
             
-            # Phase 2: station_time_index (TODO #11)
             station_time_index = defaultdict(_get_hour_buckets)
-            
-            # Phase 4: Reliability (TODO #32)
             reliability_scores = self._get_reliability_scores(session)
-            
-            # Phase 5: Routing Optimizations (O(1) destination checks)
             station_ids_by_trip = defaultdict(set)
 
             # 1. Load all stops
@@ -133,7 +148,7 @@ class GraphBuilder:
                 s.is_major_junction, s.latitude, s.longitude = bool(row[6]), float(row[7] or 0.0), float(row[8] or 0.0)
                 stop_cache[int(s.id)] = s
 
-            # 2. Query Segments
+            # 2. Query Segments (Include service_id for bitmasking)
             if not service_ids:
                 segments_raw = []
             else:
@@ -143,7 +158,8 @@ class GraphBuilder:
                         s.trip_id, s.source_station_id, s.dest_station_id, 
                         s.departure_time, s.arrival_time, s.arrival_day_offset, 
                         s.duration_minutes, s.distance_km, s.cost,
-                        t.trip_id as train_number, r.long_name as train_name
+                        t.trip_id as train_number, r.long_name as train_name,
+                        t.service_id
                     FROM segments s
                     JOIN trips t ON CAST(s.trip_id AS INTEGER) = t.id
                     JOIN gtfs_routes r ON t.route_id = r.id
@@ -153,7 +169,6 @@ class GraphBuilder:
                 segments_raw = session.execute(text(query)).fetchall()
             
             logger.info(f"Found {len(segments_raw)} segments.")
-            self._pre_build_audit(session, service_ids, len(segments_raw))
 
             trip_cumulative_offsets = defaultdict(int)
             trip_last_arrival_time = {}
@@ -182,12 +197,13 @@ class GraphBuilder:
                 departures[sid_src].append((dep_dt, tid))
                 arrivals[sid_dst].append((arr_dt, tid))
                 
-                # Phase 2: Bucketize
                 station_time_index[sid_src][dep_dt.hour].append((dep_dt, tid))
-                
-                # Phase 5: Fast destination lookup
                 station_ids_by_trip[tid].add(sid_src)
                 station_ids_by_trip[tid].add(sid_dst)
+                
+                # Fetch bitmask for Task 8
+                sid = row[11]
+                mask = service_bitmasks.get(sid, 127)
                 
                 seg = RouteSegment(
                     trip_id=tid, departure_stop_id=sid_src, arrival_stop_id=sid_dst,
@@ -195,10 +211,13 @@ class GraphBuilder:
                     duration_minutes=int(row[6] or 0), distance_km=float(row[7] or 0),
                     departure_code=stop_cache[sid_src].code if sid_src in stop_cache else str(sid_src),
                     arrival_code=stop_cache[sid_dst].code if sid_dst in stop_cache else str(sid_dst),
-                    fare=float(row[8] or 0.0), train_number=str(row[9] or ""), train_name=str(row[10] or "")
+                    fare=float(row[8] or 0.0), train_number=str(row[9] or ""), train_name=str(row[10] or ""),
+                    service_mask=mask
                 )
                 if seg.duration_minutes <= 0:
                     seg.duration_minutes = max(1, int((arr_dt - dep_dt).total_seconds() / 60))
+                
+                # IMPORTANT: Always add to trip_segments for Task 16 backward lookup
                 trip_segments[tid].append(seg)
 
             # 3. Build Route Patterns
@@ -246,6 +265,21 @@ class GraphBuilder:
                             facilities_score=StationQualityManager.calculate_facility_score(getattr(target, 'facilities_json', {})),
                             safety_score=StationQualityManager.normalize_safety_score(getattr(target, 'safety_score', 50.0))
                         ))
+                        
+                        # Task 11: Cross-terminal Walking Transfers
+                        from .clustering import StationClusterManager
+                        cluster_manager = StationClusterManager(session)
+                        nearby = cluster_manager.get_nearby_stations(sid)
+                        for near_id, dist in nearby:
+                            # 4km/h walking speed + buffer
+                            walk_min = int((dist / 4.0) * 60) + 20 
+                            near_stop = stop_cache.get(near_id)
+                            if near_stop:
+                                transfer_graph[sid].append(TransferConnection(
+                                    station_id=near_id, arrival_time=datetime.min, departure_time=datetime.max,
+                                    duration_minutes=walk_min, station_name=near_stop.name,
+                                    facilities_score=0.0, safety_score=50.0
+                                ))
 
             except Exception as te: logger.warning(f"Transfer error: {te}")
 
