@@ -33,6 +33,9 @@ class RouteConstraints:
 
     # Debug/diagnostics
     debug: bool = False
+    
+    # Task 26.1: Quota support (GN, TQ, LD, etc.)
+    quota: str = "GN"
 
     @dataclass
     class Weights:

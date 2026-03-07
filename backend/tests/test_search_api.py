@@ -3,7 +3,7 @@ import sys
 from datetime import datetime, timedelta
 
 def test_search_api():
-    url = "http://localhost:8000/api/v2/search/unified"
+    url = "http://127.0.0.1:8000/api/v2/search/unified"
     
     # Use PGT to KOTA for tomorrow
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")

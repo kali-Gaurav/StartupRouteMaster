@@ -106,6 +106,19 @@ class SpaceTimeNode:
 
 
 @dataclass
+class PaginationMetadata:
+    """Subtask 40.1: Standardized result window reporting."""
+    total_results: int
+    current_page: int
+    limit: int
+    has_next: bool
+    total_pages: int
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+@dataclass
 class RouteSegment:
     """Represents a single train journey segment (leg)."""
     trip_id: Any
@@ -123,6 +136,9 @@ class RouteSegment:
     service_mask: int = 127         # 7-bit mask for days of run
     is_unconfirmed_allowed: bool = False 
     has_pantry: bool = False 
+    departure_platform: Optional[str] = None
+    arrival_platform: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Unified API serialization."""
@@ -137,7 +153,9 @@ class RouteSegment:
             "duration": self.duration_minutes,
             "distance": self.distance_km,
             "fare": self.fare,
-            "has_pantry": self.has_pantry
+            "has_pantry": self.has_pantry,
+            "departure_platform": self.departure_platform,
+            "arrival_platform": self.arrival_platform
         }
 
 
@@ -176,6 +194,8 @@ class Route:
     reliability: float = 1.0
     availability_probability: float = 1.0 
     is_locked: bool = True  
+    is_featured: bool = False
+    highlight_label: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     visited_stations: Set[int] = field(default_factory=set)
 
@@ -230,6 +250,8 @@ class Route:
             "reliability": self.reliability,
             "score": self.score,
             "is_locked": self.is_locked,
+            "is_featured": self.is_featured,
+            "highlight_label": self.highlight_label,
             "availability_prob": self.availability_probability,
             "metadata": self.metadata
         }
@@ -238,6 +260,19 @@ class Route:
 # ==============================================================================
 # USER & CONTEXT STRUCTURES
 # ==============================================================================
+
+@dataclass
+class Passenger:
+    """Subtask 39.1: Unified Passenger Definition."""
+    name: str = ""
+    age: int = 30
+    gender: str = "M" # M, F, T
+    preference: Optional[str] = None # LB, UB, SL, SU
+    is_primary: bool = False
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
 
 @dataclass
 class UserContext:

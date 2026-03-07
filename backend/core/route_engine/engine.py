@@ -185,3 +185,13 @@ class RailwayRouteEngine:
             self.current_graph = await self.graph_builder.build_graph(date)
             self.current_snapshot = self.current_graph.snapshot
             await self.snapshot_manager.save_snapshot(self.current_snapshot)
+            
+            # Task 11.9: Record metrics for the heartbeat
+            from services.multi_layer_cache import multi_layer_cache
+            nodes = len(self.current_snapshot.nodes)
+            edges = len(self.current_snapshot.edges)
+            multi_layer_cache.record_graph_metrics(
+                nodes=nodes, 
+                edges=edges, 
+                rebuild_time=_time.time()
+            )

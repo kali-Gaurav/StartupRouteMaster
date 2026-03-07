@@ -56,17 +56,45 @@ class MerchantVPAService:
     def record_volume(self, vpa: str, amount: float):
         """
         Updates the current daily volume for a VPA when a booking is VERIFIED.
+        Also records a snapshot for trend charting (Task 6.3).
         """
         db = SessionLocal()
         try:
             merchant = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa).first()
             if merchant:
                 merchant.current_daily_volume += amount
+                
+                # Subtask 6.3: Record Volume Snapshot
+                from database.models import MerchantVPAVolumeSnapshot
+                snapshot = MerchantVPAVolumeSnapshot(
+                    vpa=vpa,
+                    volume=merchant.current_daily_volume
+                )
+                db.add(snapshot)
+                
                 db.commit()
                 logger.info(f"Updated VPA {vpa} volume: +{amount} (New Total: {merchant.current_daily_volume})")
         except Exception as e:
             logger.error(f"Error recording VPA volume: {e}")
             db.rollback()
+        finally:
+            db.close()
+
+    def get_vpa_history(self, vpa: str, limit: int = 24) -> List[Dict[str, Any]]:
+        """
+        Fetch historical volume snapshots for a specific VPA.
+        """
+        db = SessionLocal()
+        try:
+            from database.models import MerchantVPAVolumeSnapshot
+            history = db.query(MerchantVPAVolumeSnapshot).filter(
+                MerchantVPAVolumeSnapshot.vpa == vpa
+            ).order_by(MerchantVPAVolumeSnapshot.timestamp.desc()).limit(limit).all()
+            
+            return [
+                {"volume": h.volume, "timestamp": h.timestamp.isoformat()}
+                for h in reversed(history)
+            ]
         finally:
             db.close()
 

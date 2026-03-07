@@ -95,6 +95,13 @@ def get_current_user(
                 profile.phone = sb_phone
             db.commit()
             
+    # Subtask 4.2: DAU Analytics - Update last_active_at with 5min cooldown
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    if not user.last_active_at or (now - user.last_active_at) > timedelta(minutes=5):
+        user.last_active_at = now
+        db.commit()
+
     return user
 
 

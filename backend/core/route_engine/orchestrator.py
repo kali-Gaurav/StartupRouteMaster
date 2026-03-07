@@ -148,10 +148,30 @@ class UnifiedRoutingOrchestrator:
                 fare_map[str(tno)] = amt
 
         for r in routes:
+            # [38.3] Multi-leg fare optimization
+            is_multi = len(r.segments) > 1
+            total_dist = sum(s.distance_km for s in r.segments)
+            
             for s in r.segments:
-                s.fare = fare_map.get(str(s.trip_id)) or fare_map.get(str(s.train_number)) or 750.0
+                # If distance is missing, use a default slab
+                if not s.distance_km: s.distance_km = 100.0
+                
+                # Fetch base amount from map (populated above)
+                base_amt = fare_map.get(str(s.trip_id)) or fare_map.get(str(s.train_number))
+                
+                if base_amt and not is_multi:
+                    s.fare = float(base_amt)
+                else:
+                    # [38.2] Recalculate using telescopic logic for multi-leg
+                    # Assuming SL class for default discovery
+                    fare_res = calculate_fare(s.distance_km, "SL", is_multi_leg=is_multi)
+                    s.fare = fare_res["total_fare"]
             
             r.total_cost = sum(s.fare for s in r.segments)
+            # Add small discount if total distance is large (Telescopic benefit)
+            if is_multi and total_dist > 1000:
+                r.total_cost *= 0.98 # Extra 2% optimization for backbone routes
+            
             r.total_duration = sum(s.duration_minutes for s in r.segments) + sum(t.duration_minutes for t in r.transfers)
             r.score = await RouteScorer.score_route(r, constraints, getattr(graph.snapshot, 'reliability_scores', {}))
 
@@ -230,15 +250,36 @@ class UnifiedRoutingOrchestrator:
             return datetime.now()
 
     def _global_deduplicate(self, routes: List[Route]) -> List[Route]:
-        """Pareto-based strict deduplication across all engines."""
+        """[33.6] Tuned multi-dimensional Pareto deduplication."""
         if not routes: return []
+        
+        import numpy as np
+        from utils.algo_utils import find_pareto_frontier
+        
+        # 1. First Pass: Hard Unique (Train Sequence + Time)
         unique_map = {}
         for r in routes:
             if not r.segments: continue
             path_key = tuple((s.train_number or s.trip_id, s.departure_time.isoformat()) for s in r.segments)
-            if path_key not in unique_map:
+            if path_key not in unique_map or r.score < unique_map[path_key].score:
                 unique_map[path_key] = r
-            else:
-                if r.score < unique_map[path_key].score:
-                    unique_map[path_key] = r
-        return list(unique_map.values())
+        
+        initial_list = list(unique_map.values())
+        
+        # 2. Second Pass: Pareto Optimization
+        # Dimensions: [Arrival, Score, Cost, Transfers]
+        data = np.array([
+            [
+                r.segments[-1].arrival_time.timestamp() if r.segments else 0,
+                r.score,
+                r.total_cost,
+                len(r.transfers)
+            ]
+            for r in initial_list
+        ], dtype=np.float64)
+        
+        mask = find_pareto_frontier(data)
+        final_list = [initial_list[i] for i in range(len(initial_list)) if mask[i]]
+        
+        logger.info(f"Global Deduplication: {len(routes)} -> {len(initial_list)} (Unique) -> {len(final_list)} (Pareto)")
+        return final_list

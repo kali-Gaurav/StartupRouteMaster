@@ -35,22 +35,45 @@ class BookingWorkerPool:
         logger.info(f"Booking {booking_id} queued with priority {priority}.")
 
     async def _worker_loop(self, worker_id: int):
+        from database.session import SessionLocal
+        from database.models import Booking, EscrowStatus
+        
         while True:
             try:
-                priority, booking_id = await self.queue.get()
+                # [46.4] Database Polling for High Priority (if queue is empty)
+                if self.queue.empty():
+                    db = SessionLocal()
+                    try:
+                        # Find top 1 pending verified booking sorted by priority
+                        next_booking = db.query(Booking).filter(
+                            Booking.escrow_status == EscrowStatus.VERIFIED,
+                            Booking.service_type == "AGENT_BOOKING"
+                        ).order_by(Booking.priority.asc(), Booking.created_at.asc()).first()
+                        
+                        if next_booking:
+                            await self.submit_booking(next_booking.id, next_booking.priority)
+                    finally:
+                        db.close()
+
+                # Process from queue
+                try:
+                    priority, booking_id = await asyncio.wait_for(self.queue.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 logger.info(f"[Slot {worker_id}] Processing booking {booking_id} (Priority: {priority})")
                 
-                # In Ethical Mode: We notify agents or handle timeout, we do NOT scrape.
-                # Logic for notifying agents will hook in here via WebSockets later.
-                await asyncio.sleep(1) # Simulate routing logic overhead
+                # Update status to BOOKING_INITIATED if not already
+                # ... (Logic to transition status) ...
+                await asyncio.sleep(2) # Simulate work
                 
                 self.queue.task_done()
-                logger.info(f"[Slot {worker_id}] Finished background routing for {booking_id}.")
+                logger.info(f"[Slot {worker_id}] Finished processing for {booking_id}.")
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[Slot {worker_id}] Error: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
 
 # Singleton instance
 worker_pool = BookingWorkerPool(max_concurrent=5)

@@ -368,6 +368,39 @@ ML_FEATURE_VALUE_HISTOGRAM = Histogram(
     buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, float('inf'))
 )
 
+# --- In-Memory Graph Health (Task 11.1) ---
+GRAPH_NODES_TOTAL = Gauge('graph_nodes_total', 'Total number of nodes in the memory-resident graph.')
+GRAPH_EDGES_TOTAL = Gauge('graph_edges_total', 'Total number of edges in the memory-resident graph.')
+GRAPH_MEMORY_USAGE_MB = Gauge('graph_memory_usage_mb', 'Estimated memory footprint of the routing graph in MB.')
+GRAPH_LAST_REBUILD_TIMESTAMP = Gauge('graph_last_rebuild_timestamp', 'Unix timestamp of the last graph snapshot build.')
+
+# --- Multi-Layer Cache Analytics (Task 11.4 & 11.5) ---
+CACHE_OPERATIONS_TOTAL = Counter(
+    'cache_operations_total',
+    'Total cache operations tracked by layer and result.',
+    ['layer', 'operation', 'result'] # layer: 'L1_MEM', 'L2_REDIS' | result: 'hit', 'miss', 'set', 'evict'
+)
+
+# --- External Provider Metrics (Task 3.1) ---
+EXTERNAL_API_LATENCY_SECONDS = Histogram(
+    'external_api_duration_seconds',
+    'Latency of outgoing calls to external providers.',
+    ['provider', 'endpoint'],
+    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0)
+)
+
+EXTERNAL_API_CALLS_TOTAL = Counter(
+    'external_api_calls_total',
+    'Total volume of outgoing API requests.',
+    ['provider', 'endpoint', 'status']
+)
+
+EXTERNAL_API_COSTS_TOTAL = Counter(
+    'external_api_costs_estimated_total',
+    'Estimated cost of API usage in provider-specific units or cents.',
+    ['provider']
+)
+
 # --- SLA / Performance check metrics (RT-110) ---
 SLA_CHECK_P50_MS = Gauge(
     'sla_check_p50_ms',

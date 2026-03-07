@@ -2,7 +2,7 @@ import httpx
 import time
 import sys
 
-def check_health(url="http://localhost:8000/health", retries=10, delay=2):
+def check_health(url="http://127.0.0.1:8000/health", retries=10, delay=2):
     print(f"Checking health at {url}...")
     for i in range(retries):
         try:

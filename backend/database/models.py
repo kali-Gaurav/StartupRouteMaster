@@ -6,8 +6,11 @@ from sqlalchemy.orm import relationship, Session
 from datetime import datetime
 import uuid
 import enum
+import logging
 
 from .session import UserBase, TransitBase
+
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
 # ENUMS
@@ -33,8 +36,11 @@ class User(UserBase):
     email = Column(String(255), unique=True, nullable=True, index=True)
     supabase_id = Column(String(255), unique=True, nullable=True, index=True)
     phone_number = Column(String(20), nullable=True)
+    full_name = Column(String(255), nullable=True)
     role = Column(String(50), default="user")
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_active_at = Column(DateTime, default=datetime.utcnow)
+    preferences = Column(JSON, nullable=True)
     
     # Task 35: Credential Vault
     encrypted_irctc_creds = Column(LargeBinary, nullable=True)
@@ -50,6 +56,18 @@ class User(UserBase):
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
     ai_preferences = relationship("UserAIPreference", back_populates="user", uselist=False)
     chat_history = relationship("PersistentChatMessage", back_populates="user")
+    sessions = relationship("UserSession", back_populates="user")
+
+class UserSession(UserBase):
+    __tablename__ = "user_sessions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"))
+    ip_address = Column(String(50))
+    user_agent = Column(String(255))
+    login_at = Column(DateTime, default=datetime.utcnow)
+    duration_seconds = Column(Integer, default=0)
+    
+    user = relationship("User", back_populates="sessions")
 
 class PersistentChatMessage(UserBase):
     __tablename__ = "persistent_chat_messages"
@@ -61,75 +79,6 @@ class PersistentChatMessage(UserBase):
     actions = Column(JSON, nullable=True) # Store as JSON list
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="chat_history")
-
-class TrainLiveUpdate(TransitBase):
-    __tablename__ = "train_live_updates"
-    id = Column(Integer, primary_key=True)
-    train_number = Column(String(50), index=True)
-    station_code = Column(String(100))
-    station_name = Column(String(255))
-    sequence = Column(Integer)
-    distance_km = Column(Float)
-    scheduled_arrival = Column(DateTime)
-    scheduled_departure = Column(DateTime)
-    actual_arrival = Column(DateTime)
-    actual_departure = Column(DateTime)
-    delay_minutes = Column(Integer, default=0)
-    platform = Column(String(20))
-    halt_minutes = Column(Integer)
-    status = Column(String(100))
-    is_current_station = Column(Boolean, default=False)
-    recorded_at = Column(DateTime, default=datetime.utcnow)
-    source = Column(String(100))
-
-class TrainStation(TransitBase):
-    __tablename__ = "train_stations"
-    id = Column(Integer, primary_key=True)
-    train_number = Column(String(20), index=True)
-    stop_id = Column(String(50), index=True)
-    arrival_time = Column(String(20))
-    departure_time = Column(String(20))
-    stop_sequence = Column(Integer)
-
-class UserAIPreference(UserBase):
-    __tablename__ = "user_ai_preferences"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"), unique=True)
-    preferred_language = Column(String(20), default="en")
-    persona_bias = Column(Float, default=0.5)
-    user = relationship("User", back_populates="ai_preferences")
-
-class RLFeedbackLog(UserBase):
-    __tablename__ = "rl_feedback_logs"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
-    prompt = Column(Text)
-    response = Column(Text)
-    rating = Column(Integer) # 1 or -1
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-class Transfer(TransitBase):
-    """
-    GTFS-standard transfers between stops.
-    """
-    __tablename__ = "transfers"
-    id = Column(Integer, primary_key=True)
-    from_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
-    to_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
-    transfer_type = Column(Integer, default=0) # 0: recommended, 1: timed, 2: min_time, 3: no_transfer
-    min_transfer_time = Column(Integer, nullable=True) # seconds
-
-class StationHealthIndex(TransitBase):
-    """
-    Qualitative metrics for station safety and facilities.
-    """
-    __tablename__ = "station_health_index"
-    id = Column(Integer, primary_key=True)
-    stop_id = Column(Integer, ForeignKey("stops.id"), unique=True)
-    infrastructure_score = Column(Float, default=0.0)
-    safety_score = Column(Float, default=0.0)
-    cleanliness_score = Column(Float, default=0.0)
-    last_audited = Column(DateTime, default=datetime.utcnow)
 
 class Profile(UserBase):
     __tablename__ = "profiles"
@@ -182,7 +131,6 @@ class Booking(UserBase):
     train_number = Column(String(20), nullable=True)
     berth_preference = Column(String(20), nullable=True)
     
-    # Matches actual DB column 'booking_details'
     booking_details = Column(JSON, nullable=True)
     
     route_id = Column(String(36), nullable=True)
@@ -193,40 +141,19 @@ class Booking(UserBase):
     user = relationship("User", back_populates="bookings", foreign_keys=[user_id])
     passenger_details = relationship("PassengerDetails", back_populates="booking")
 
-    def validate_status_transition(self, new_status: str) -> bool:
-        """
-        Validate if the booking_status transition is allowed.
-        """
-        allowed_transitions = {
-            "pending": ["confirmed", "cancelled"],
-            "confirmed": ["cancelled"],
-            "cancelled": [],
-        }
-        current = self.booking_status.lower() if self.booking_status else "pending"
-        return new_status.lower() in allowed_transitions.get(current, [])
-
     def validate_escrow_transition(self, new_status: EscrowStatus) -> bool:
-        """
-        Validate if the escrow_status transition is allowed.
-        CREATED -> UTR_SUBMITTED -> VERIFIED -> BOOKING_INITIATED -> COMPLETED
-        Any -> FAILED
-        Any -> REFUNDED (if failed)
-        """
         allowed = {
             EscrowStatus.CREATED: [EscrowStatus.UTR_SUBMITTED, EscrowStatus.FAILED],
             EscrowStatus.UTR_SUBMITTED: [EscrowStatus.VERIFIED, EscrowStatus.FAILED],
             EscrowStatus.VERIFIED: [EscrowStatus.BOOKING_INITIATED, EscrowStatus.FAILED, EscrowStatus.COMPLETED],
-            EscrowStatus.BOOKING_INITIATED: [EscrowStatus.COMPLETED, EscrowStatus.FAILED, EscrowStatus.VERIFIED], # Allowed to go back to VERIFIED for retry
+            EscrowStatus.BOOKING_INITIATED: [EscrowStatus.COMPLETED, EscrowStatus.FAILED, EscrowStatus.VERIFIED],
             EscrowStatus.COMPLETED: [],
-            EscrowStatus.FAILED: [EscrowStatus.REFUNDED, EscrowStatus.UTR_SUBMITTED], # Allow re-submitting UTR if it failed
+            EscrowStatus.FAILED: [EscrowStatus.REFUNDED, EscrowStatus.UTR_SUBMITTED],
             EscrowStatus.REFUNDED: [],
         }
         return new_status in allowed.get(self.escrow_status, [])
 
     def update_escrow_status(self, db: Session, new_status: EscrowStatus, message: str = None, performed_by: str = "SYSTEM", reason: str = None):
-        """
-        Hardened state machine update with validation and audit logging.
-        """
         if not self.validate_escrow_transition(new_status):
             logger.warning(f"Illegal state transition attempted: {self.escrow_status} -> {new_status} for Booking {self.id}")
             raise ValueError(f"Transition from {self.escrow_status} to {new_status} is not allowed.")
@@ -238,8 +165,6 @@ class Booking(UserBase):
         if message:
             self.escrow_message = message
         
-        # Log to Audit Table
-        from .models import AuditLog
         audit = AuditLog(
             entity_type="Booking",
             entity_id=self.id,
@@ -251,6 +176,15 @@ class Booking(UserBase):
         )
         db.add(audit)
         logger.info(f"Booking {self.id} transition: {old_status_val} -> {new_status_val}")
+
+class PassengerDetails(UserBase):
+    __tablename__ = "passenger_details"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id = Column(String(36), ForeignKey("bookings.id"))
+    full_name = Column(String(255), nullable=False)
+    age = Column(Integer, nullable=False)
+    gender = Column(String(10), nullable=False)
+    booking = relationship("Booking", back_populates="passenger_details")
 
 class TrainAvailabilityCache(UserBase):
     __tablename__ = "train_availability_cache"
@@ -269,17 +203,8 @@ class TrainAvailabilityCache(UserBase):
     alt_cnf_seat = Column(Boolean, default=False)
     alt_seat_status = Column(String(100), nullable=True)
     alt_seat_fare = Column(Float, nullable=True)
-    raw_payload = Column(Text, nullable=True) # Ethical API response dump
+    raw_payload = Column(Text, nullable=True)
     last_updated_at = Column(DateTime, default=datetime.utcnow)
-
-class PassengerDetails(UserBase):
-    __tablename__ = "passenger_details"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    booking_id = Column(String(36), ForeignKey("bookings.id"))
-    full_name = Column(String(255), nullable=False)
-    age = Column(Integer, nullable=False)
-    gender = Column(String(10), nullable=False)
-    booking = relationship("Booking", back_populates="passenger_details")
 
 class RefundQueue(UserBase):
     __tablename__ = "refund_queue"
@@ -287,11 +212,135 @@ class RefundQueue(UserBase):
     booking_id = Column(String(36), ForeignKey("bookings.id"), index=True)
     user_id = Column(String(36), ForeignKey("users.id"))
     amount = Column(Float, nullable=False)
-    vpa = Column(String(100), nullable=False) # User's VPA for refund
-    status = Column(String(20), default="PENDING") # PENDING, PROCESSED, FAILED
+    vpa = Column(String(100), nullable=False)
+    status = Column(String(20), default="PENDING")
     reason = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
+
+class BankTransaction(UserBase):
+    __tablename__ = "bank_transactions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    utr_number = Column(String(50), unique=True, index=True)
+    amount = Column(Float, nullable=False)
+    bank_name = Column(String(50))
+    raw_sms = Column(Text)
+    sender_vpa = Column(String(100), nullable=True)
+    sender_phone = Column(String(20))
+    received_at = Column(DateTime, default=datetime.utcnow)
+    is_reconciled = Column(Boolean, default=False)
+    status = Column(String(50), default="PENDING")
+
+class MerchantVPA(UserBase):
+    __tablename__ = "merchant_vpas"
+    vpa = Column(String(100), primary_key=True)
+    name = Column(String(100), default="RouteMaster")
+    daily_limit = Column(Float, default=100000.0)
+    current_daily_volume = Column(Float, default=0.0)
+    is_active = Column(Boolean, default=True)
+    last_volume_update = Column(DateTime, default=datetime.utcnow)
+
+class MerchantVPAVolumeSnapshot(UserBase):
+    __tablename__ = "merchant_vpa_volume_snapshots"
+    id = Column(Integer, primary_key=True)
+    vpa = Column(String(100), index=True)
+    volume = Column(Float)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+class AuditLog(UserBase):
+    __tablename__ = "audit_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type = Column(String(50), nullable=False) # 'Booking', 'System', 'Admin'
+    entity_id = Column(String(36), nullable=False, index=True)
+    action = Column(String(50), nullable=False) # 'STATUS_TRANSITION', 'SENSITIVE_VIEW', etc.
+    old_value = Column(String(255), nullable=True)
+    new_value = Column(String(255), nullable=True)
+    performed_by = Column(String(50), default="SYSTEM")
+    reason = Column(String(255), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+class PlatformConfig(UserBase):
+    """
+    Subtask 25.1: Dynamic Platform Configuration.
+    Stores real-time settings for fees, maintenance, and system thresholds.
+    """
+    __tablename__ = "platform_configs"
+    key = Column(String(50), primary_key=True) # 'MAINTENANCE_MODE', 'UNLOCK_FEE', etc.
+    value = Column(String(255), nullable=False)
+    description = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class VPABlacklist(UserBase):
+    """
+    Subtask 28.1: UPI Fraud Prevention.
+    Stores blacklisted sender VPAs to prevent malicious payment attempts.
+    """
+    __tablename__ = "vpa_blacklist"
+    vpa = Column(String(100), primary_key=True)
+    reason = Column(String(255), nullable=True)
+    blacklisted_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+
+class AdminSession(UserBase):
+    __tablename__ = "admin_sessions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    admin_id = Column(String(50), index=True)
+    ip_address = Column(String(50))
+    user_agent = Column(String(255))
+    geo_state = Column(String(50), nullable=True)
+    login_at = Column(DateTime, default=datetime.utcnow)
+    last_active_at = Column(DateTime, default=datetime.utcnow)
+    is_revoked = Column(Boolean, default=False)
+    session_token = Column(String(255), unique=True)
+
+class AdminDashboardSession(UserBase):
+    __tablename__ = "admin_dashboard_sessions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    admin_username = Column(String(50), index=True)
+    ip_address = Column(String(50))
+    user_agent = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+
+class AIIntentLog(UserBase):
+    __tablename__ = "ai_intent_logs"
+    id = Column(Integer, primary_key=True)
+    query = Column(Text)
+    matched_intent = Column(String(100), nullable=True)
+    confidence = Column(Float)
+    llm_latency_ms = Column(Integer)
+    intent_latency_ms = Column(Integer)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+class RouteSearchLog(UserBase):
+    __tablename__ = "route_search_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    src = Column(String(255), nullable=False)
+    dst = Column(String(255), nullable=False)
+    date = Column(Date, nullable=False)
+    latency_ms = Column(Float, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    geo_state = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User", back_populates="route_search_logs")
+
+class UserAIPreference(UserBase):
+    __tablename__ = "user_ai_preferences"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), unique=True)
+    preferred_language = Column(String(20), default="en")
+    persona_bias = Column(Float, default=0.5)
+    user = relationship("User", back_populates="ai_preferences")
+
+class RLFeedbackLog(UserBase):
+    __tablename__ = "rl_feedback_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    prompt = Column(Text)
+    response = Column(Text)
+    rating = Column(Integer)
+    timestamp = Column(DateTime, default=datetime.utcnow)
 
 class Payment(UserBase):
     __tablename__ = "payments"
@@ -326,20 +375,50 @@ class Review(UserBase):
 class CommissionTracking(UserBase):
     __tablename__ = "commission_tracking"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey('users.id'))
-    tracking_id = Column(String(64), unique=True, index=True)
+    user_id = Column(String(36), ForeignKey('users.id')) # The Agent
+    booking_id = Column(String(36), ForeignKey('bookings.id'), unique=True)
+    amount = Column(Float, default=10.0)
+    commission_type = Column(String(50), default="FIXED_AGENT_FEE")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    settled_at = Column(DateTime, nullable=True)
+    payout_id = Column(String(100), nullable=True)
+    
     user = relationship("User", back_populates="commission_tracks")
 
-class RouteSearchLog(UserBase):
-    __tablename__ = "route_search_logs"
+class PaymentSession(UserBase):
+    __tablename__ = "payment_sessions"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
-    src = Column(String(255), nullable=False)
-    dst = Column(String(255), nullable=False)
-    date = Column(Date, nullable=False)
-    latency_ms = Column(Float, nullable=False)
+    user_id = Column(String(36), ForeignKey("users.id"))
+    route_id = Column(String(36), nullable=True)
+    session_code = Column(String(20), unique=True, index=True)
+    amount = Column(Float, nullable=False)
+    status = Column(String(50), default="PENDING")
+    payment_method = Column(String(50), nullable=True)
+    verification_details = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    user = relationship("User", back_populates="route_search_logs")
+    expires_at = Column(DateTime, nullable=True)
+
+class WebhookEvent(UserBase):
+    __tablename__ = "webhook_events"
+    id = Column(String(100), primary_key=True)
+    event_type = Column(String(50))
+    payload = Column(JSON)
+    processed_at = Column(DateTime, default=datetime.utcnow)
+
+class DailyReconciliation(UserBase):
+    """
+    Task 49.1: Daily Financial Balance reporting.
+    """
+    __tablename__ = "daily_reconciliation"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    recon_date = Column(Date, unique=True, index=True)
+    total_revenue = Column(Float, default=0.0)
+    total_agent_commissions = Column(Float, default=0.0)
+    total_unlocked_fees = Column(Float, default=0.0)
+    variance_amount = Column(Float, default=0.0)
+    status = Column(String(20), default="MATCHED") # MATCHED, VARIANCE, PENDING
+    report_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 # ==============================================================================
 # TRANSIT GRAPH MODELS (transit_graph.db)
@@ -405,9 +484,6 @@ class Trip(TransitBase):
     stop_times = relationship("StopTime", back_populates="trip")
 
 class Segment(TransitBase):
-    """
-    Pre-computed or cached route segments for high-performance routing.
-    """
     __tablename__ = "segments"
     id = Column(Integer, primary_key=True)
     trip_id = Column(Integer, ForeignKey("trips.id"), index=True)
@@ -418,8 +494,6 @@ class Segment(TransitBase):
     duration_minutes = Column(Integer, nullable=False)
     distance_km = Column(Float, nullable=True)
     fare = Column(Float, nullable=True)
-    
-    # Redundant but useful for fast indexing
     train_number = Column(String(50), index=True)
     train_name = Column(String(255))
 
@@ -490,7 +564,7 @@ class RealtimeData(TransitBase):
 class Disruption(TransitBase):
     __tablename__ = "disruptions"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    disruption_type = Column(String(50), nullable=False) # 'delay', 'cancellation', 'reroute'
+    disruption_type = Column(String(50), nullable=False)
     description = Column(Text, nullable=True)
     start_time = Column(DateTime, nullable=True)
     end_time = Column(DateTime, nullable=True)
@@ -507,9 +581,11 @@ class SeatInventory(TransitBase):
     trip_id = Column(Integer, ForeignKey("trips.id"), index=True)
     stop_time_id = Column(Integer, ForeignKey("stop_times.id"), nullable=True)
     travel_date = Column(Date, index=True)
-    coach_type = Column(String(10), index=True) # SL, AC3, etc.
+    coach_type = Column(String(10), index=True)
     total_seats = Column(Integer, default=0)
     available_seats = Column(Integer, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    locked_by_booking_id = Column(String(36), nullable=True)
     last_updated = Column(DateTime, default=datetime.utcnow)
 
 class Coach(TransitBase):
@@ -535,63 +611,48 @@ class Fare(TransitBase):
     class_type = Column(String(50))
     amount = Column(Float)
 
-class PaymentSession(UserBase):
-    __tablename__ = "payment_sessions"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
-    route_id = Column(String(36), nullable=True)
-    session_code = Column(String(20), unique=True, index=True) # Added missing column
-    amount = Column(Float, nullable=False)
-    status = Column(String(50), default="PENDING")
-    payment_method = Column(String(50), nullable=True)
-    verification_details = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)
-
-class WebhookEvent(UserBase):
-    __tablename__ = "webhook_events"
-    id = Column(String(100), primary_key=True) # Usually event ID from provider
-    event_type = Column(String(50))
-    payload = Column(JSON)
-    processed_at = Column(DateTime, default=datetime.utcnow)
-
-class BankTransaction(UserBase):
-    __tablename__ = "bank_transactions"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    utr = Column(String(50), unique=True, index=True)
-    amount = Column(Float, nullable=False)
-    bank_name = Column(String(50))
-    raw_payload = Column(Text)
-    sender_phone = Column(String(20))
-    received_at = Column(DateTime, default=datetime.utcnow)
-    sms_timestamp = Column(DateTime) # Original SMS time from phone
-    status = Column(String(50), default="PENDING") # PENDING, MATCHED, UNMATCHED_FUNDS, RECONCILED, REVERSED
-
-class MerchantVPA(UserBase):
-    """
-    Task 1: Multi-Merchant VPA Load Balancing.
-    Stores real UPI IDs and tracks their daily volume to avoid bank limits.
-    """
-    __tablename__ = "merchant_vpas"
+class TrainLiveUpdate(TransitBase):
+    __tablename__ = "train_live_updates"
     id = Column(Integer, primary_key=True)
-    vpa = Column(String(100), unique=True, nullable=False, index=True)
-    name = Column(String(100), default="RouteMaster")
-    daily_limit = Column(Float, default=100000.0) # ₹1 Lakh is standard UPI limit
-    current_daily_volume = Column(Float, default=0.0)
-    is_active = Column(Boolean, default=True)
-    last_reset_at = Column(DateTime, default=datetime.utcnow)
+    train_number = Column(String(50), index=True)
+    station_code = Column(String(100))
+    station_name = Column(String(255))
+    sequence = Column(Integer)
+    distance_km = Column(Float)
+    scheduled_arrival = Column(DateTime)
+    scheduled_departure = Column(DateTime)
+    actual_arrival = Column(DateTime)
+    actual_departure = Column(DateTime)
+    delay_minutes = Column(Integer, default=0)
+    platform = Column(String(20))
+    halt_minutes = Column(Integer)
+    status = Column(String(100))
+    is_current_station = Column(Boolean, default=False)
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+    source = Column(String(100))
 
-class AuditLog(UserBase):
-    """
-    Task 8.7: Immutable Audit trail for every financial status change.
-    """
-    __tablename__ = "audit_logs"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    entity_type = Column(String(50), nullable=False) # e.g., 'Booking', 'BankTransaction'
-    entity_id = Column(String(36), nullable=False, index=True)
-    action = Column(String(50), nullable=False) # e.g., 'STATUS_CHANGE', 'RECONCILED', 'ROLLBACK'
-    old_value = Column(String(255), nullable=True)
-    new_value = Column(String(255), nullable=True)
-    performed_by = Column(String(50), default="SYSTEM") # 'SYSTEM' or admin user ID
-    reason = Column(String(255), nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+class TrainStation(TransitBase):
+    __tablename__ = "train_stations"
+    id = Column(Integer, primary_key=True)
+    train_number = Column(String(20), index=True)
+    stop_id = Column(String(50), index=True)
+    arrival_time = Column(String(20))
+    departure_time = Column(String(20))
+    stop_sequence = Column(Integer)
+
+class Transfer(TransitBase):
+    __tablename__ = "transfers"
+    id = Column(Integer, primary_key=True)
+    from_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    to_stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
+    transfer_type = Column(Integer, default=0)
+    min_transfer_time = Column(Integer, nullable=True)
+
+class StationHealthIndex(TransitBase):
+    __tablename__ = "station_health_index"
+    id = Column(Integer, primary_key=True)
+    stop_id = Column(Integer, ForeignKey("stops.id"), unique=True)
+    infrastructure_score = Column(Float, default=0.0)
+    safety_score = Column(Float, default=0.0)
+    cleanliness_score = Column(Float, default=0.0)
+    last_audited = Column(DateTime, default=datetime.utcnow)

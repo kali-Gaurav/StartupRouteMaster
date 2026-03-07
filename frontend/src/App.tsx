@@ -36,6 +36,16 @@ const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const AdminOperations = lazy(() => import("./pages/AdminOperations"));
+const AdminFinance = lazy(() => import("./pages/AdminFinance"));
+const AdminGrowth = lazy(() => import("./pages/AdminGrowth"));
+const AdminAI = lazy(() => import("./pages/AdminAI"));
+const AdminSystem = lazy(() => import("./pages/AdminSystem"));
+const AdminAudit = lazy(() => import("./pages/AdminAudit"));
+const AdminSettings = lazy(() => import("./pages/AdminSettings"));
+
+import ProtectedAdminRoute from "./components/auth/ProtectedAdminRoute";
+import AdminLayout from "./components/layout/AdminLayout";
 
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
@@ -115,7 +125,22 @@ const AppContent = () => {
             <Route path="/safety" element={<Safety />} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/ops/sos" element={<SOSDashboard />} />
-            <Route path="/ops/admin" element={<AdminDashboard />} />
+            
+            {/* High-Tech Admin Portals (Task 10) */}
+            <Route path="/ops/admin" element={
+              <ProtectedAdminRoute>
+                <AdminLayout />
+              </ProtectedAdminRoute>
+            }>
+              <Route index element={<AdminDashboard />} />
+              <Route path="operations" element={<AdminOperations />} />
+              <Route path="finance" element={<AdminFinance />} />
+              <Route path="growth" element={<AdminGrowth />} />
+              <Route path="ai" element={<AdminAI />} />
+              <Route path="system" element={<AdminSystem />} />
+              <Route path="audit" element={<AdminAudit />} />
+              <Route path="settings" element={<AdminSettings />} />
+            </Route>
 
             {/* Mini App with Granular Resilience (Suggestion #25) */}
             <Route path="/mini-app" element={

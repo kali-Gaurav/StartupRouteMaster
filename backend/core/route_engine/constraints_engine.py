@@ -20,7 +20,8 @@ class ConstraintsEngine:
         direct_only: bool = False,
         travel_date: Optional[date] = None,
         time_priority: float = 0.5,
-        cost_priority: float = 0.5
+        cost_priority: float = 0.5,
+        quota: str = "GN"
     ) -> RouteConstraints:
         """
         Creates a high-performance RouteConstraints object with persona-specific weights.
@@ -44,7 +45,8 @@ class ConstraintsEngine:
         constraints = RouteConstraints(
             persona=persona,
             time_priority=time_priority,
-            cost_priority=cost_priority
+            cost_priority=cost_priority,
+            quota=quota.upper().strip()
         )
 
         # 4. Apply Overrides (Task 4.6, 4.7)
@@ -90,5 +92,6 @@ class ConstraintsEngine:
         """Deterministic hashing for Redis hits (Task 4.9)."""
         persona_val = c.persona.value
         transfers = c.max_transfers
+        quota = c.quota
         # Simple string-based key for the orchestrator
-        return f"route:{source}:{dest}:{travel_date.isoformat()}:{persona_val}:t{transfers}"
+        return f"route:{source}:{dest}:{travel_date.isoformat()}:{persona_val}:t{transfers}:{quota}"

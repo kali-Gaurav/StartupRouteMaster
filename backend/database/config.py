@@ -52,6 +52,8 @@ class Config:
     
     # Admin & Security
     ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "default_token_change_me")
+    ADMIN_DASHBOARD_USERNAME = os.getenv("ADMIN_DASHBOARD_USERNAME", "superadmin")
+    ADMIN_DASHBOARD_PASSWORD_HASH = os.getenv("ADMIN_DASHBOARD_PASSWORD_HASH", "$pbkdf2-sha256$29000$BMD4n9O6NybkPIdwLsWYUw$m1EuhM4eB9.YKZojrFYbtDM1/0zHPgJp/p26sVwjKNY")
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")
     
     # Cache & Search Limits

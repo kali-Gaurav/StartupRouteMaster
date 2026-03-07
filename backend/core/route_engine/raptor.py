@@ -196,27 +196,35 @@ class OptimizedRAPTOR:
         from utils.algo_utils import find_pareto_frontier
         import numpy as np
         
-        # 1. Feature Extraction for Pareto (Duration, Score)
-        # Using Score as second dimension because it includes Cost and Penalties
+        # [33.1] Define Multi-Objective Dimensions
+        # Dimensions: [Arrival Timestamp, Final Score, Total Cost, Transfer Count]
         data = np.array([
-            [r.segments[-1].arrival_time.timestamp() if r.segments else datetime.max.timestamp(), r.score]
+            [
+                r.segments[-1].arrival_time.timestamp() if r.segments else datetime.max.timestamp(),
+                r.score,
+                r.total_cost,
+                len(r.transfers)
+            ]
             for r in routes
         ], dtype=np.float64)
         
-        # 2. Vectorized Pareto Filtering
+        # [33.2] Vectorized Pareto Filtering with more dimensions
+        # This prevents a slow-cheap route from dominating a fast-expensive one.
         mask = find_pareto_frontier(data)
         pareto_routes = [routes[i] for i in range(len(routes)) if mask[i]]
         
-        # 3. Path-based final deduplication (Keep only one per trip sequence)
-        seen_trip_sequences = set()
-        final_results = []
+        # [33.8] Analytics Logging
+        logger.info(f"Pareto Pruning: {len(routes)} -> {len(pareto_routes)} optimal routes.")
+        
+        # 3. Path-based final deduplication (Keep only one per train-sequence)
+        unique_map = {}
         for r in pareto_routes:
-            trip_key = tuple(s.trip_id for s in r.segments)
-            if trip_key not in seen_trip_sequences:
-                final_results.append(r)
-                seen_trip_sequences.add(trip_key)
+            # We use train_numbers + dep_times as the unique path key
+            path_key = tuple((s.train_number or s.trip_id, s.departure_time.isoformat()) for s in r.segments)
+            if path_key not in unique_map or r.score < unique_map[path_key].score:
+                unique_map[path_key] = r
                 
-        return final_results
+        return list(unique_map.values())
 
 class HybridRAPTOR(OptimizedRAPTOR):
     def __init__(self, hub_manager, max_transfers=3):

@@ -33,46 +33,72 @@ def calculate_fare(
     distance_km: float, 
     coach: str, 
     is_tatkal: bool = False,
-    concession_type: Optional[str] = None
+    concession_type: Optional[str] = None,
+    is_multi_leg: bool = False,
+    passengers: List[Dict] = None
 ) -> Dict[str, float]:
     """
-    Implements the 7-step IRCTC Fare Algorithm from the System Blueprint.
+    Implements the 7-step IRCTC Fare Algorithm.
+    [39.5] Handles multiple passengers and discounts.
     """
     coach_code = COACH_MAP.get(coach, coach)
     base_rate = BASE_FARE_PER_100KM.get(coach_code, 150.0)
 
-    # 1. Base Fare Calculation
-    base_fare = (distance_km / 100.0) * base_rate
+    # 1. Base Fare Calculation per 100KM
+    unit_base_fare = (distance_km / 100.0) * base_rate
 
     # 2. Surcharge Application
-    if distance_km > 100:
-        surcharge_multiplier = 1.15  # 15% extra
-    elif distance_km > 50:
-        surcharge_multiplier = 1.10  # 10% extra
-    else:
-        surcharge_multiplier = 1.0
+    surcharge_multiplier = 1.15 if distance_km > 100 else 1.10 if distance_km > 50 else 1.0
+    unit_base_fare *= surcharge_multiplier
+
+    # [38.2] Telescopic Adjustment
+    if is_multi_leg and distance_km > 500:
+        unit_base_fare *= 0.95
+
+    # 3. Multi-Passenger Logic (Subtask 39.5)
+    passengers = passengers or [{"age": 30}] # Default 1 adult
+    total_base = 0.0
     
-    base_fare_with_surcharge = base_fare * surcharge_multiplier
+    for p in passengers:
+        age = p.get("age", 30)
+        p_base = unit_base_fare
+        
+        # Senior Citizen (Female 58+, Male 60+) - Simplified to 60+
+        if age >= 60:
+            p_base *= 0.60 # 40% discount
+        # Child (Under 5: Free, 5-12: Half)
+        elif age < 5:
+            p_base = 0.0
+        elif age < 12:
+            p_base *= 0.50
+            
+        total_base += p_base
 
-    # 3. Tatkal Charge (10%)
-    tatkal_charge = (base_fare_with_surcharge * 0.10) if is_tatkal else 0.0
+    # 4. Tatkal Charge (10%)
+    tatkal_charge = (total_base * 0.10) if is_tatkal else 0.0
 
-    # 4. GST Calculation (5% for AC classes)
+    # 5. GST Calculation (5% for AC classes)
     is_ac = coach_code in ["3A", "3E", "2A", "1A", "CC", "EC"]
-    gst = (base_fare_with_surcharge + tatkal_charge) * 0.05 if is_ac else 0.0
+    gst = (total_base + tatkal_charge) * 0.05 if is_ac else 0.0
 
-    # 5. Concessions (e.g., student 25%)
-    concession_discount = 0.0
-    if concession_type == "student":
-        concession_discount = base_fare_with_surcharge * 0.25
-    
     # 6. Final Total
-    total_fare = (base_fare_with_surcharge - concession_discount) + tatkal_charge + gst
+    total_fare = total_base + tatkal_charge + gst
     
     return {
-        "base_fare": round(base_fare_with_surcharge, 2),
+        "base_fare": round(total_base, 2),
         "tatkal_charge": round(tatkal_charge, 2),
         "gst": round(gst, 2),
-        "concession_discount": round(concession_discount, 2),
-        "total_fare": math.ceil(total_fare) # Round up to nearest rupee
+        "total_fare": math.ceil(total_fare)
     }
+
+def calculate_unlock_fee() -> float:
+    """
+    Subtask 41.2: Fixed platform fee for unlocking journey details.
+    """
+    return 49.0
+
+def calculate_agent_fee() -> float:
+    """
+    Subtask 42.2: Fixed agent commission for manual fulfillment.
+    """
+    return 10.0

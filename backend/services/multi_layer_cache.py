@@ -112,8 +112,9 @@ class MultiLayerCache:
                 await self.redis.config_set("maxmemory-policy", "allkeys-lru")
             except: pass
 
-            # Start Pub/Sub Listener (Task 25)
-            self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+            # Task 30.2: Subscribe to Cluster Invalidation
+            from services.event_bus import platform_bus
+            platform_bus.subscribe("CACHE_INVALIDATE", self._handle_cluster_invalidation)
             
             logger.info(f"Multi-layer cache initialized (Instance: {PROCESS_ID})")
         except Exception as e:
@@ -121,7 +122,17 @@ class MultiLayerCache:
             self.redis = None
         self._initialized = True
 
-    # Suggestion #23: Bloom Filter for Sold Out Trains
+    async def _handle_cluster_invalidation(self, payload: Dict):
+        """Callback for PlatformEventBus to clear local LRU."""
+        key = payload.get("key")
+        if key:
+            self.lru.delete(key)
+            logger.info(f"Cluster Signal: Deleted local key {key}")
+        else:
+            self.lru.clear()
+            logger.info("Cluster Signal: Cleared local LRU")
+        self.metrics['lru_cache'].deletes += 1
+
     async def mark_train_sold_out(self, train_no: str, date_str: str):
         if not self.redis: return
         key = f"soldout:{train_no}:{date_str}"
@@ -133,6 +144,7 @@ class MultiLayerCache:
 
     async def _listen_for_invalidations(self):
         """Background task to clear local LRU on Pub/Sub signal (Task 25)."""
+        if not self.redis: return
         pubsub = self.redis.pubsub()
         await pubsub.subscribe("cache:invalidation")
         async for message in pubsub.listen():
@@ -145,105 +157,135 @@ class MultiLayerCache:
 
     async def get_route_query(self, query: RouteQuery) -> Optional[Dict]:
         key = query.cache_key()
-        # Layer 0
+        # Layer 0: Local In-Memory
         lru_data = self.lru.get(key)
         if lru_data:
             self.metrics['lru_cache'].hits += 1
+            from utils.metrics import CACHE_OPERATIONS_TOTAL
+            CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='get', result='hit').inc()
             return lru_data
         
+        from utils.metrics import CACHE_OPERATIONS_TOTAL
+        CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='get', result='miss').inc()
+
         if not self.redis: return None
         
-        # Layer 1
+        # Layer 1: Redis Infrastructure
         data = await self.redis.get(key)
         if data:
             res = json.loads(data.decode('utf-8'))
             self.lru.put(key, res)
             self.metrics['query_cache'].hits += 1
+            CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
             return res
+        
         self.metrics['query_cache'].misses += 1
+        CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='miss').inc()
         return None
+
+    def record_graph_metrics(self, nodes: int, edges: int, rebuild_time: float = None):
+        """
+        Subtask 11.2: Record Graph Footprint.
+        Populates Prometheus gauges with graph complexity and memory stats.
+        """
+        from utils.metrics import GRAPH_NODES_TOTAL, GRAPH_EDGES_TOTAL, GRAPH_MEMORY_USAGE_MB, GRAPH_LAST_REBUILD_TIMESTAMP
+        GRAPH_NODES_TOTAL.set(nodes)
+        GRAPH_EDGES_TOTAL.set(edges)
+        estimated_mb = ((nodes * 200) + (edges * 100)) / (1024 * 1024)
+        GRAPH_MEMORY_USAGE_MB.set(round(estimated_mb, 2))
+        if rebuild_time: GRAPH_LAST_REBUILD_TIMESTAMP.set(rebuild_time)
+        logger.info(f"Graph Metrics Recorded: {nodes} nodes, {edges} edges (~{estimated_mb:.1f}MB)")
 
     async def set_route_query(self, query: RouteQuery, result: Dict, ttl_minutes: int = 5):
         key = query.cache_key()
         self.lru.put(key, result)
+        from utils.metrics import CACHE_OPERATIONS_TOTAL
+        CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='set', result='success').inc()
+        
         if self.redis:
             await self.redis.setex(key, ttl_minutes * 60, json.dumps(result, default=str))
             self.metrics['query_cache'].sets += 1
-            # Broadcast invalidation to others (Task 25)
+            CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='set', result='success').inc()
             await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "type": "set", "key": key}))
 
     async def get_availability(self, query: AvailabilityQuery) -> Optional[Dict]:
         key = query.cache_key()
-        # Layer 0
         lru_data = self.lru.get(key)
         if lru_data:
             self.metrics['lru_cache'].hits += 1
+            from utils.metrics import CACHE_OPERATIONS_TOTAL
+            CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='get', result='hit').inc()
             return lru_data
         
+        from utils.metrics import CACHE_OPERATIONS_TOTAL
+        CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='get', result='miss').inc()
+
         if not self.redis: return None
-        
-        # Layer 1
         data = await self.redis.get(key)
         if data:
             res = json.loads(data.decode('utf-8'))
             self.lru.put(key, res)
             self.metrics['query_cache'].hits += 1
+            CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
             return res
+        
         self.metrics['query_cache'].misses += 1
+        CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='miss').inc()
         return None
 
     async def set_availability(self, query: AvailabilityQuery, result: Dict, ttl: int = 300):
         key = query.cache_key()
         self.lru.put(key, result)
+        from utils.metrics import CACHE_OPERATIONS_TOTAL
+        CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='set', result='success').inc()
         if self.redis:
             await self.redis.setex(key, ttl, json.dumps(result, default=str))
             self.metrics['query_cache'].sets += 1
+            CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='set', result='success').inc()
 
     async def get_cache_stats(self) -> Dict:
         return {k: v.to_dict() for k, v in self.metrics.items()}
 
-    # --- Task 19: Snapshot Redis Storage ---
+    async def get_many(self, keys: List[str]) -> List[Optional[Dict]]:
+        if not self.redis or not keys: return [None] * len(keys)
+        try:
+            values = await self.redis.mget(keys)
+            return [json.loads(val.decode('utf-8')) if val else None for val in values]
+        except Exception: return [None] * len(keys)
+
+    async def set_many(self, mapping: Dict[str, Any], ttl: int = 3600):
+        if not self.redis or not mapping: return
+        try:
+            async with self.redis.pipeline(transaction=True) as pipe:
+                for key, value in mapping.items():
+                    pipe.setex(key, ttl, json.dumps(value, default=str))
+                await pipe.execute()
+        except Exception: pass
+
     async def get_graph_snapshot(self, date_str: str) -> Optional[Any]:
-        """Fetch compressed graph snapshot from Redis."""
         if not self.redis: return None
         key = f"graph:snapshot:{date_str}"
         try:
             data = await self.redis.get(key)
-            if data:
-                # Decompress and Unpickle
-                decompressed = zlib.decompress(data)
-                return pickle.loads(decompressed)
-        except Exception as e:
-            logger.error(f"Failed to load snapshot from Redis: {e}")
+            if data: return pickle.loads(zlib.decompress(data))
+        except Exception: pass
         return None
 
     async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl: int = 86400):
-        """Save compressed graph snapshot to Redis (24h TTL)."""
         if not self.redis: return
-        key = f"graph:snapshot:{date_str}"
         try:
-            # Pickle -> Compress -> Save
-            serialized = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
-            compressed = zlib.compress(serialized)
-            await self.redis.setex(key, ttl, compressed)
-            logger.info(f"✅ Saved {len(compressed)/1024/1024:.2f}MB snapshot to Redis for {date_str}")
-        except Exception as e:
-            logger.error(f"Failed to save snapshot to Redis: {e}")
+            compressed = zlib.compress(pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL))
+            await self.redis.setex(f"graph:snapshot:{date_str}", ttl, compressed)
+            logger.info(f"✅ Saved {len(compressed)/1024/1024:.2f}MB snapshot to Redis")
+        except Exception: pass
 
-    # --- Lock Support (from CacheService migration) ---
     def get_lock(self, name: str, timeout: int = 10):
-        """Get a distributed Redis lock."""
-        if self.redis:
-            return self.redis.lock(name, timeout=timeout)
-        return None
+        return self.redis.lock(name, timeout=timeout) if self.redis else None
 
-    # --- Sync Wrappers (for SOS legacy support) ---
     def set_sync(self, key: str, value: Any, ttl: int = 3600):
-        """Synchronous set for non-async parts of the code."""
         if self.redis:
-            import redis
-            # We need a sync connection for this
-            sync_redis = redis.from_url(Config.REDIS_URL)
-            sync_redis.setex(key, ttl, json.dumps(value))
+            import redis as sync_redis_lib
+            sync_r = sync_redis_lib.from_url(Config.REDIS_URL)
+            sync_r.setex(key, ttl, json.dumps(value))
 
 multi_layer_cache = MultiLayerCache()

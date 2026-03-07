@@ -26,7 +26,6 @@ class RapidAPIClient:
             "x-rapidapi-host": self.host
         }
         
-        # respect preferred version from config if provided
         try:
             from database.config import Config
             pref = getattr(Config, "RAPIDAPI_PREFERRED_VERSION", "v1")
@@ -34,7 +33,6 @@ class RapidAPIClient:
         except:
             self.preferred_version = "v1"
             
-        # Task 21.6: Semaphore to prevent rate-limiting issues
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -48,7 +46,6 @@ class RapidAPIClient:
             await self._session.close()
 
     def _format_date(self, date_str: str) -> str:
-        """Ensure the date is in DD-MM-YYYY format."""
         if not date_str or "-" not in date_str:
             return date_str
         parts = date_str.split("-")
@@ -57,10 +54,6 @@ class RapidAPIClient:
         return date_str
 
     async def get_seat_availability(self, train_no: str, from_stn: str, to_stn: str, date: str, quota: str = "GN", class_type: str = "SL") -> Optional[Dict[str, Any]]:
-        """
-        Fetch seat availability and fare for a specific train.
-        Endpoint: /checkSeatAvailability
-        """
         async with self._semaphore:
             ver = self.preferred_version
             endpoint = f"https://{self.host}/api/{ver}/checkSeatAvailability"
@@ -72,42 +65,39 @@ class RapidAPIClient:
                 "trainNo": train_no,
                 "date": self._format_date(date)
             }
-            
             try:
                 session = await self._get_session()
                 async with session.get(endpoint, params=params, timeout=15) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    elif response.status == 429:
-                        logger.warning("RapidAPI Rate Limit Exceeded.")
-                        return {"status": "error", "error_code": 429, "message": "Rate limit exceeded"}
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"RapidAPI Error {response.status}: {error_text}")
-                        return None
+                    if response.status == 200: return await response.json()
+                    elif response.status == 429: return {"status": "error", "message": "Rate limit exceeded"}
+                    return None
             except Exception as e:
                 logger.error(f"Failed to fetch seat availability: {str(e)}")
                 return None
 
     async def get_fare(self, train_no: str, from_stn: str, to_stn: str) -> Optional[Dict[str, Any]]:
-        """
-        Fetch fare details.
-        Endpoint: /getFare
-        """
         async with self._semaphore:
             endpoint = f"{self.BASE_URL}/getFare"
-            params = {
-                "trainNo": train_no,
-                "fromStationCode": from_stn,
-                "toStationCode": to_stn
-            }
-            
+            params = {"trainNo": train_no, "fromStationCode": from_stn, "toStationCode": to_stn}
             try:
                 session = await self._get_session()
                 async with session.get(endpoint, params=params, timeout=10) as response:
-                    if response.status == 200:
-                        return await response.json()
+                    if response.status == 200: return await response.json()
                     return None
             except Exception as e:
                 logger.error(f"Failed to fetch fare: {str(e)}")
+                return None
+
+    async def get_live_status(self, train_no: str) -> Optional[Dict[str, Any]]:
+        """Task 28.1: Fetch live running status."""
+        async with self._semaphore:
+            endpoint = f"{self.BASE_URL}/getTrainLiveStatus"
+            params = {"trainNo": train_no}
+            try:
+                session = await self._get_session()
+                async with session.get(endpoint, params=params, timeout=10) as response:
+                    if response.status == 200: return await response.json()
+                    return None
+            except Exception as e:
+                logger.error(f"Failed to fetch live status: {str(e)}")
                 return None
