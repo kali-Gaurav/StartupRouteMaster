@@ -26,13 +26,15 @@ async def simulate_user(user_id: int):
             src, dst = random.sample(stations, 2)
             tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
             
-            search_res = await client.get(f"{BASE_URL}/search/unified", params={
-                "source": src, "destination": dst, "date": tomorrow
-            })
+            # Unified search API expects a POST with JSON payload
+            search_res = await client.post(
+                f"{BASE_URL}/search/unified",
+                json={"source": src, "destination": dst, "date": tomorrow},
+            )
             search_lat = (time.perf_counter() - start_search) * 1000
-            
+
             if search_res.status_code != 200:
-                return {"user": user_id, "step": "search", "error": search_res.status_code}
+                return {"user": user_id, "step": "search", "error": f"{search_res.status_code} {search_res.text}"}
 
             # 2. Select first journey and Initiate Unlock
             data = search_res.json()
