@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Loader2, IndianRupee, CheckCircle2, ShieldCheck, QrCode, CreditCard, XCircle, TicketCheck, RefreshCw, Shield, ExternalLink, Copy } from "lucide-react";
+import { Loader2, IndianRupee, CheckCircle2, ShieldCheck, QrCode, CreditCard, XCircle, TicketCheck, RefreshCw, Shield, ExternalLink, Copy, Clock, ArrowRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import Confetti from "react-confetti";
 import { useAuth } from "@/context/AuthContext";
@@ -116,7 +116,7 @@ function PaymentTimer({ createdAt, onExpire }: { createdAt: string, onExpire: ()
   );
 }
 
-export function BookingPaymentStep() {
+export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: 'UNLOCK' | 'AGENT_BOOKING' }) {
   const { user, token } = useAuth();
   const {
     route,
@@ -148,18 +148,6 @@ export function BookingPaymentStep() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [liveLogs]);
 
-  // Task 16: Session Lock - Prevent navigation during active worker
-  useEffect(() => {
-    if (booking?.escrow_status === 'BOOKING_INITIATED') {
-      const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-        e.preventDefault();
-        e.returnValue = "Your booking is in progress. Leaving now will cause the session to fail.";
-      };
-      window.addEventListener('beforeunload', handleBeforeUnload);
-      return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-    }
-  }, [booking?.escrow_status]);
-
   // Mobile check for Task 3
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
@@ -179,8 +167,18 @@ export function BookingPaymentStep() {
 
   const polledBooking = usePaymentPolling(initialBooking?.id, handleComplete);
   const booking = polledBooking || initialBooking;
-  
-  const isUnlocked = booking?.service_type === 'UNLOCK' && (booking?.escrow_status === 'VERIFIED' || booking?.escrow_status === 'COMPLETED');
+
+  // Task 16: Session Lock - Prevent navigation during active worker
+  useEffect(() => {
+    if (booking?.escrow_status === 'BOOKING_INITIATED') {
+      const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+        e.preventDefault();
+        e.returnValue = "Your booking is in progress. Leaving now will cause the session to fail.";
+      };
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }
+  }, [booking?.escrow_status]);
 
   // Task 42: Live WebSocket Logging
   useEffect(() => {
@@ -246,7 +244,10 @@ export function BookingPaymentStep() {
     setLoading(true);
     try {
       const idemKey = `idem_${route.id}_${travelDate}_${Date.now()}`;
-      const res = await initiateEscrowBooking({ journey_id: route.id }, idemKey);
+      const res = await initiateEscrowBooking({ 
+        journey_id: route.id,
+        service_type: serviceType
+      }, idemKey);
       setInitialBooking(res);
     } catch (err: any) {
       setError(err.message || "Failed to initiate booking");
@@ -345,7 +346,7 @@ export function BookingPaymentStep() {
                 <p className="text-sm text-muted-foreground mb-1">Total to Pay</p>
                 <div className="flex items-baseline gap-1 justify-end">
                   <IndianRupee className="h-6 w-6 text-primary" />
-                  <span className="text-4xl font-black text-primary">{route?.total_cost || 0}</span>
+                  <span className="text-4xl font-black text-primary">{route?.totalCost || 0}</span>
                 </div>
               </div>
             </div>
@@ -418,11 +419,11 @@ export function BookingPaymentStep() {
                 <div className="col-span-2 pt-2 border-t border-border/40 space-y-1">
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-muted-foreground">IRCTC Ticket Fare</span>
-                    <span className="font-semibold">₹{(Number(booking.amount_paid) - 49.00).toFixed(2)}</span>
+                    <span className="font-semibold">₹{(Number(booking.amount_paid) - (booking.service_type === 'AGENT_BOOKING' ? 68.00 : 49.00)).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-muted-foreground">Platform Service Fee</span>
-                    <span className="font-semibold">₹49.00</span>
+                    <span className="font-semibold">₹{booking.service_type === 'AGENT_BOOKING' ? '68.00' : '49.00'}</span>
                   </div>
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-muted-foreground">Gateway Processing Fee</span>

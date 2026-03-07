@@ -27,111 +27,122 @@ class TurboRouter:
         return [station_code]
 
     def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
-        # Suggestion #6: City-Cluster Adjacency Integration
         src_cluster = self._get_city_cluster(source_code.upper())
         dst_cluster = self._get_city_cluster(dest_code.upper())
         
         day_mask = (1 << departure_date.weekday())
         all_routes = []
 
-        # Try all combinations in the clusters
+        # 1. Direct Search (Binary Optimized)
         for src in src_cluster:
             for dst in dst_cluster:
                 if len(all_routes) >= limit: break
-                
-                # Check Backbone first (Suggestion #4 & #8)
-                hub_routes = self._search_hub_backbone(src, dst)
-                if hub_routes:
-                    all_routes.extend(hub_routes)
-                    continue
-
-                # Fallback to standard Direct
-                direct = self._search_direct(src, dst, day_mask, limit - len(all_routes))
+                direct = self._search_direct_binary(src, dst, day_mask, limit - len(all_routes))
                 all_routes.extend(direct)
         
-        if len(all_routes) < 3:
-            logger.info(f"Triggering 1-Transfer for clusters...")
-            transfer_routes = self._search_one_transfer(source_code.upper(), dest_code.upper(), day_mask, limit - len(all_routes))
+        # 2. 1-Transfer Search (Binary Optimized)
+        if len(all_routes) < 5:
+            transfer_routes = self._search_one_transfer_binary(source_code.upper(), dest_code.upper(), day_mask, limit - len(all_routes))
             all_routes.extend(transfer_routes)
             
         return all_routes[:limit]
 
-    def _search_hub_backbone(self, src: str, dst: str) -> List[Dict[str, Any]]:
-        """O(1) lookup via hub_transit_index."""
+    def _search_direct_binary(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
+        """Fastest binary intersection for direct routes."""
         try:
-            row = self.db.execute(text("""
-                SELECT trains_json FROM hub_transit_index 
-                WHERE src_hub = :src AND dst_hub = :dst
-            """), {"src": src, "dst": dst}).fetchone()
+            res = self.db.execute(text(
+                "SELECT station_code, trains_binary FROM station_transit_index WHERE station_code IN (:src, :dst)"
+            ), {"src": src, "dst": dst}).fetchall()
             
-            if row:
-                trains = json.loads(row[0])
-                return [{"type": "direct_backbone", "train_no": t['t'], "dep": t['d'], "arr": t['a']} for t in trains]
-        except: pass
-        return []
+            if len(res) < 2: return []
+            
+            binary_map = {row[0]: row[1] for row in res}
+            src_trains = self._unpack_trains(binary_map.get(src))
+            dst_trains = self._unpack_trains(binary_map.get(dst))
 
-    def _search_direct(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
-        # Modified to use the original station_transit_index for compatibility, 
-        # but in production, we decode the struct.pack blobs.
-        sql = text("""
-            SELECT 
-                s_item.key as train_no,
-                json_extract(s_item.value, '$[0]') as dep_time,
-                json_extract(d_item.value, '$[0]') as arr_time,
-                CAST(json_extract(s_item.value, '$[3]') AS INTEGER) as s_seq,
-                CAST(json_extract(d_item.value, '$[3]') AS INTEGER) as d_seq
-            FROM station_transit_index s, station_transit_index d,
-                 json_each(s.trains_map) as s_item,
-                 json_each(d.trains_map) as d_item
-            WHERE s.station_code = :src AND d.station_code = :dst
-              AND s_item.key = d_item.key
-              AND s_seq < d_seq
-              AND (CAST(json_extract(s_item.value, '$[2]') AS INTEGER) & :mask) > 0
-            LIMIT :limit
-        """)
-        try:
-            results = self.db.execute(sql, {"src": src, "dst": dst, "mask": mask, "limit": limit}).fetchall()
-            return [{"type": "direct", "train_no": r[0], "dep": r[1], "arr": r[2]} for r in results]
+            results = []
+            common_trips = set(src_trains.keys()).intersection(dst_trains.keys())
+            
+            for tid in common_trips:
+                s_data, d_data = src_trains[tid], dst_trains[tid]
+                if (s_data['mask'] & mask) and s_data['seq'] < d_data['seq']:
+                    results.append({
+                        "type": "direct",
+                        "train_no": tid,
+                        "dep": self._min_to_time(s_data['dep']),
+                        "arr": self._min_to_time(d_data['arr']),
+                        "fare": float(d_data['f3a'] or 1500.0)
+                    })
+            return results[:limit]
         except: return []
 
-    def _search_one_transfer(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
-        # Using pre-calculated neighbor flags or direct query
-        sql = text("""
-            SELECT 
-                s_item.key as t1, h_item1.key as t1_h,
-                json_extract(s_item.value, '$[0]') as t1_dep,
-                json_extract(h_item1.value, '$[0]') as t1_arr,
-                h.station_code as hub,
-                h_item2.key as t2,
-                json_extract(h_item2.value, '$[0]') as t2_dep,
-                json_extract(d_item.value, '$[0]') as t2_arr
-            FROM station_transit_index s,
-                 station_transit_index h,
-                 station_transit_index d,
-                 json_each(s.trains_map) as s_item,
-                 json_each(h.trains_map) as h_item1,
-                 json_each(h.trains_map) as h_item2,
-                 json_each(d.trains_map) as d_item
-            WHERE s.station_code = :src AND d.station_code = :dst
-              AND s_item.key = h_item1.key 
-              AND h_item2.key = d_item.key 
-              AND s.station_code != h.station_code AND d.station_code != h.station_code
-              AND t2_dep > t1_arr
-              AND (CAST(json_extract(s_item.value, '$[2]') AS INTEGER) & :mask) > 0
-              AND (CAST(json_extract(h_item2.value, '$[2]') AS INTEGER) & :mask) > 0
-            LIMIT :limit
-        """)
+    def _search_one_transfer_binary(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
+        """Binary intersection via pre-defined Hubs (Strategic Junctions)."""
+        HUBS = [
+            'NDLS', 'BCT', 'MS', 'HWH', 'KGP', 'ET', 'NGP', 'BSL', 'DR', 'KYN', 'PNVL', 
+            'STA', 'JBP', 'PUNE', 'ADI', 'MAS', 'SBC', 'SC', 'BRC', 'RTM', 'KOTA', 
+            'AGC', 'VGLJ', 'CNB', 'LKO', 'BSB', 'GAYA', 'MGS', 'BPL', 'GTL', 'SRR', 'TCR'
+        ]
+        
         try:
-            res = self.db.execute(sql, {"src": src, "dst": dst, "mask": mask, "limit": limit}).fetchall()
-            return [{
-                "type": "1-transfer",
-                "hub": r.hub,
-                "legs": [
-                    {"train": r.t1, "from": src, "to": r.hub, "dep": r.t1_dep, "arr": r.t1_arr},
-                    {"train": r.t2, "from": r.hub, "to": dst, "dep": r.t2_dep, "arr": r.t2_arr}
-                ]
-            } for r in res]
+            placeholders = ",".join([f"'{h}'" for h in HUBS])
+            res = self.db.execute(text(f"""
+                SELECT station_code, trains_binary 
+                FROM station_transit_index 
+                WHERE station_code IN (:src, :dst, {placeholders})
+            """), {"src": src, "dst": dst}).fetchall()
+            
+            data = {row[0]: self._unpack_trains(row[1]) for row in res}
+            src_trains = data.get(src, {})
+            dst_trains = data.get(dst, {})
+            
+            results = []
+            for hub_code in HUBS:
+                hub_trains = data.get(hub_code)
+                if not hub_trains: continue
+                
+                t1_options = set(src_trains.keys()).intersection(hub_trains.keys())
+                t2_options = set(hub_trains.keys()).intersection(dst_trains.keys())
+                
+                for tid1 in t1_options:
+                    s_data, h1_data = src_trains[tid1], hub_trains[tid1]
+                    if not (s_data['mask'] & mask) or s_data['seq'] >= h1_data['seq']: continue
+                    
+                    for tid2 in t2_options:
+                        h2_data, d_data = hub_trains[tid2], dst_trains[tid2]
+                        if not (h2_data['mask'] & mask) or h2_data['seq'] >= d_data['seq']: continue
+                        
+                        if h2_data['dep'] > h1_data['arr'] + 30:
+                            results.append({
+                                "type": "1-transfer",
+                                "hub": hub_code,
+                                "legs": [
+                                    {"train": tid1, "from": src, "to": hub_code, "dep": self._min_to_time(s_data['dep']), "arr": self._min_to_time(h1_data['arr'])},
+                                    {"train": tid2, "from": hub_code, "to": dst, "dep": self._min_to_time(h2_data['dep']), "arr": self._min_to_time(d_data['arr'])}
+                                ],
+                                "total_fare": float(h1_data['f3a'] + d_data['f3a'])
+                            })
+                            if len(results) >= limit: return results
+            return results
         except: return []
+
+    def _unpack_trains(self, blob: bytes) -> Dict[int, Dict]:
+        """Unpack the 18-byte binary format (v3)."""
+        if not blob: return {}
+        try:
+            num_trains = struct.unpack_from("<H", blob, 0)[0]
+            trains = {}
+            offset = 2
+            for _ in range(num_trains):
+                # IHHBBII = 18 bytes
+                tid, dep, arr, mask, seq, f3a, fsl = struct.unpack_from("<IHHBBII", blob, offset)
+                trains[tid] = {'dep': dep, 'arr': arr, 'mask': mask, 'seq': seq, 'f3a': f3a, 'fsl': fsl}
+                offset += 18
+            return trains
+        except: return {}
+
+    def _min_to_time(self, minutes: int) -> str:
+        return f"{minutes // 60:02d}:{minutes % 60:02d}:00"
 
     def __del__(self):
         try: self.db.close()

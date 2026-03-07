@@ -9,13 +9,48 @@ import asyncio # Import asyncio
 
 from database.session import SessionLocal
 from services.payment_service import PaymentService
-from database.models import Booking, Payment, SeatInventory, Segment
+from database.models import Booking, Payment, SeatInventory, Segment, EscrowStatus
 from tasks.inventory_reconciliation_task import run_inventory_reconciliation_task
 from tasks.partner_health_check_task import run_partner_health_check_task
 from database.config import Config
 from services.ml.retraining_pipeline import MLRetrainingManager
 
 logger = logging.getLogger(__name__)
+
+def expire_old_escrow_bookings():
+    """
+    Task 7: Escrow Timeout Background Worker
+    Expires CREATED bookings after 15 minutes.
+    """
+    logger.info(f"Checking for expired escrow bookings at {datetime.now()}")
+    db = SessionLocal()
+    try:
+        # 15 minute timeout
+        time_threshold = datetime.utcnow() - timedelta(minutes=15)
+        
+        expired_bookings = db.query(Booking).filter(
+            Booking.escrow_status == EscrowStatus.CREATED,
+            Booking.created_at < time_threshold
+        ).all()
+        
+        if not expired_bookings:
+            logger.info("No expired escrow bookings found.")
+            return
+            
+        for booking in expired_bookings:
+            logger.info(f"Expiring booking {booking.id} due to payment timeout.")
+            booking.escrow_status = EscrowStatus.FAILED
+            booking.escrow_message = "Payment Timed Out. Please try again."
+            # Optionally log to audit trail (Task 17)
+            
+        db.commit()
+        logger.info(f"Expired {len(expired_bookings)} bookings.")
+        
+    except Exception as e:
+        logger.error(f"Error expiring escrow bookings: {e}", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
 
 def reconcile_payments():
     """
@@ -130,6 +165,13 @@ def start_reconciliation_worker():
         CronTrigger(day_of_week='sun', hour=2, minute=0),
         id='ml_retraining_job',
         name='Weekly Model Retraining',
+        replace_existing=True
+    )
+    scheduler.add_job(
+        expire_old_escrow_bookings,
+        IntervalTrigger(minutes=5),
+        id='escrow_timeout_job',
+        name='Escrow Payment Timeout',
         replace_existing=True
     )
     scheduler.start()

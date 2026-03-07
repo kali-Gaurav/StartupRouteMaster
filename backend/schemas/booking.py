@@ -13,6 +13,7 @@ class BookingResponseSchema(BaseModel):
     amount_paid: float
     upi_tx_id: Optional[str] = None
     utr_number: Optional[str] = None
+    merchant_vpa: Optional[str] = None
     transaction_history: Optional[List[Dict[str, Any]]] = None
     is_tatkal: bool
     priority: int

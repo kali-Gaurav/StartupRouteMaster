@@ -208,4 +208,29 @@ export class LocationService {
   static formatLocation(latitude: number, longitude: number): string {
     return `${latitude.toFixed(6)}°, ${longitude.toFixed(6)}°`;
   }
+
+  /**
+   * Request current location once (used by prompts)
+   */
+  static async requestLocation(): Promise<LocationData | null> {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation not supported'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          resolve({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            timestamp: position.timestamp,
+          });
+        },
+        (err) => reject(err),
+        { enableHighAccuracy: true, timeout: 30000 }
+      );
+    });
+  }
 }

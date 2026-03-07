@@ -2,7 +2,7 @@
  * Observability & Error Logging Utility
  */
 
-type ErrorReporter = (error: any, info?: { componentStack?: string }) => void;
+type ErrorReporter = (error: any, info?: { componentStack?: string; [key: string]: any }) => void;
 type EventLogger = (name: string, properties?: Record<string, any>, extra?: any) => void;
 
 let currentErrorReporter: ErrorReporter = (error, info) => {
@@ -18,7 +18,7 @@ let currentEventLogger: EventLogger = (name, properties, extra) => {
   }
 };
 
-export const logError = (error: any, info?: { componentStack?: string }) => {
+export const logError = (error: any, info?: Record<string, any>) => {
   currentErrorReporter(error, info);
 };
 

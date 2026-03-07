@@ -3,50 +3,27 @@
  * Features: WebSockets, Streaming, Offline Queue, Session Context, Voice, Proactive AI.
  */
 import { useState, useRef, useEffect, useCallback } from "react";
-import { MessageCircle, Mic, MicOff, Send, X, Bot, User, Plus, WifiOff, RefreshCw } from "lucide-react";
+import { MessageCircle, Mic, MicOff, Send, X, Bot, User, WifiOff, RefreshCw } from "lucide-react";
 import { cn, getRailwayApiUrl, getRailwayWsUrl } from "@/lib/utils";
 import { searchStationsApi } from "@/services/railwayBackApi";
 import { processLocalIntent } from "@/services/localChatBrain";
 import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { logEvent } from "@/lib/observability";
-import { loadMemory, saveMemory } from "@/ai/persistentMemory";
+import { loadMemory } from "@/ai/persistentMemory";
 import { evaluateProactiveRules } from "@/ai/proactiveRules";
 import { listenWakeWord } from "@/ai/wakeWord";
 import { analyzeEmotionalRisk } from "@/ai/emotionalEngine";
 import { voiceService } from "@/services/voiceService";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { RouteVisualizer } from "./RouteVisualizer";
-import { InteractiveDatePicker } from "./InteractiveDatePicker";
 import { queueMessage, getQueuedMessages, clearQueuedMessage } from "@/services/chatOfflineQueue";
 
 // Declare SpeechRecognition for browser compatibility
+// (Avoid strict typing since not all browsers support it)
 declare global {
   interface Window {
-    SpeechRecognition: typeof SpeechRecognition | undefined;
-    webkitSpeechRecognition: typeof SpeechRecognition | undefined;
+    SpeechRecognition?: any;
+    webkitSpeechRecognition?: any;
   }
-}
-
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-  resultIndex: number;
-}
-
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string;
-  message: string;
-}
-
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: (event: SpeechRecognitionEvent) => void;
-  onerror: (event: SpeechRecognitionErrorEvent) => void;
-  onend: () => void;
-  start(): void;
-  stop(): void;
-  abort(): void;
 }
 
 export interface ChatAction {
@@ -124,7 +101,7 @@ const TELEGRAM_BOT_URL = "https://t.me/RoutemasternagarindustrisBot";
 /**
  * Task 10: Typing Cadence Indicator
  */
-function TypingIndicator({ durationMs = 2000 }: { durationMs?: number }) {
+function TypingIndicator({ durationMs = 2000, onCancel }: { durationMs?: number, onCancel?: () => void }) {
   return (
     <div className="flex flex-col gap-1.5 animate-in fade-in duration-300">
       <div className="flex gap-1.5 items-center bg-white dark:bg-muted border border-border rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm w-fit">
@@ -132,14 +109,24 @@ function TypingIndicator({ durationMs = 2000 }: { durationMs?: number }) {
         <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "150ms" }} />
         <span className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: "300ms" }} />
       </div>
-      <span className="text-[10px] text-muted-foreground ml-2 italic">
-        Thinking... (~{(durationMs / 1000).toFixed(1)}s)
-      </span>
+      <div className="flex items-center gap-2 ml-2">
+        <span className="text-[10px] text-muted-foreground italic">
+          Thinking... (~{(durationMs / 1000).toFixed(1)}s)
+        </span>
+        {onCancel && (
+          <button 
+            onClick={onCancel}
+            className="text-[10px] text-red-500 hover:text-red-600 font-bold uppercase tracking-wider"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
+export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
   const isBackendOnline = useBackendHealth();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -175,7 +162,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
 
     const isAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
     if (isAtBottom || force) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
     }
   }, []);
 
@@ -414,6 +401,15 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     executeAction(action.type, action.value, action.label);
   };
 
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    addMessage("assistant", "Request cancelled.");
+  };
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text) return;
@@ -422,6 +418,9 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     addMessage("user", text);
     setIsLoading(true);
     logEvent("chatbot_message_sent", { text_length: text.length });
+
+    // Create new abort controller for this request
+    abortControllerRef.current = new AbortController();
 
     // Emotional Safety check
     const risk = analyzeEmotionalRisk(text);
@@ -439,6 +438,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
     if (localResult) {
       setConversationState(prev => ({ ...prev, lastIntent: "local_handled" }));
       addMessage("assistant", localResult.reply, localResult.actions);
+      if (localResult.actions && localResult.actions.length > 0) {
+        window.dispatchEvent(new CustomEvent("rail-assistant-suggestions", {
+          detail: { actions: localResult.actions }
+        }));
+      }
       if (localResult.triggerSearch && localResult.collected) {
         await resolveAndTriggerSearch(localResult.collected);
       }
@@ -471,14 +475,26 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ message: text, session_id: sessionIdRef.current }),
+            signal: abortControllerRef.current.signal
           });
           const data = await res.json();
           setIsLoading(false);
           addMessage("assistant", data.reply, data.actions);
+          
+          if (data.actions && data.actions.length > 0) {
+            window.dispatchEvent(new CustomEvent("rail-assistant-suggestions", {
+              detail: { actions: data.actions }
+            }));
+          }
+
           if (data.trigger_search && data.collected) {
             await resolveAndTriggerSearch(data.collected, data.correlation_id);
           }
-        } catch (e) {
+        } catch (e: any) {
+          if (e.name === 'AbortError') {
+            console.log('Fetch aborted');
+            return;
+          }
           setIsLoading(false);
           addMessage("assistant", "I'm having trouble connecting. Try again in a moment.");
         }
@@ -559,7 +575,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
                 </div>
               </div>
             ))}
-            {isLoading && <TypingIndicator durationMs={2500} />}
+            {isLoading && <TypingIndicator durationMs={2500} onCancel={handleCancel} />}
             <div ref={messagesEndRef} />
           </div>
 
@@ -592,7 +608,12 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange, onNavigate
               <button onClick={toggleVoice} className={cn("p-3 rounded-xl transition-colors", isListening ? "bg-red-500 text-white" : "bg-secondary")}>
                 {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
               </button>
-              <button onClick={handleSend} disabled={!input.trim() || isLoading} className="p-3 rounded-xl bg-primary text-primary-foreground disabled:opacity-50">
+              <button
+                aria-label="Send"
+                onClick={handleSend}
+                disabled={!input.trim() || isLoading}
+                className="p-3 rounded-xl bg-primary text-primary-foreground disabled:opacity-50"
+              >
                 <Send className="w-5 h-5" />
               </button>
             </div>

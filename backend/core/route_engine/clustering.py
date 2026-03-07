@@ -3,7 +3,7 @@ from typing import List, Dict, Set, Tuple
 from sqlalchemy.orm import Session
 from database.models import Stop
 from utils.geo_utils import haversine_distance
-from .data_structures import TransferConnection
+from core.data_structures import TransferConnection
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)

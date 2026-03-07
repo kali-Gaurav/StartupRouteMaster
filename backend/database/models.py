@@ -2,7 +2,7 @@ from sqlalchemy import (
     Column, String, Integer, Float, DateTime, Boolean, ForeignKey, JSON, Text, 
     LargeBinary, CheckConstraint, UniqueConstraint, Date, Index, Time, Enum as SQLEnum
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Session
 from datetime import datetime
 import uuid
 import enum
@@ -13,29 +13,7 @@ from .session import UserBase, TransitBase
 # ENUMS
 # ==============================================================================
 
-class QuotaType(enum.Enum):
-    GENERAL = "general"
-    TATKAL = "tatkal"
-    LADIES = "ladies"
-    SENIOR_CITIZEN = "senior_citizen"
-    DEFENCE = "defence"
-    FOREIGN_TOURIST = "foreign_tourist"
-
-class BookingStatus(enum.Enum):
-    CONFIRMED = "confirmed"
-    RAC = "rac"
-    WAITLIST = "waitlist"
-    CANCELLED = "cancelled"
-    PENDING = "pending"
-
-class EscrowStatus(enum.Enum):
-    CREATED = "CREATED"
-    UTR_SUBMITTED = "UTR_SUBMITTED"
-    VERIFIED = "VERIFIED"
-    BOOKING_INITIATED = "BOOKING_INITIATED"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    REFUNDED = "REFUNDED"
+from core.data_structures import QuotaType, BookingStatus, EscrowStatus, Persona, AllocationStatus
 
 class CoachClass(enum.Enum):
     SL = "sl"
@@ -187,6 +165,7 @@ class Booking(UserBase):
     amount_paid = Column(Float, default=0.0)
     upi_tx_id = Column(String(100), unique=True, index=True)
     utr_number = Column(String(12), unique=True, nullable=True, index=True)
+    merchant_vpa = Column(String(100), nullable=True) # The rotated VPA used for this booking
     
     # Task 24: Support for multiple transactions (Split/Partial payments)
     transaction_history = Column(JSON, default=[], nullable=True) 
@@ -208,6 +187,7 @@ class Booking(UserBase):
     
     route_id = Column(String(36), nullable=True)
     trip_id = Column(Integer, nullable=True)
+    ticket_pdf_url = Column(String(1024), nullable=True) # Task 26
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="bookings", foreign_keys=[user_id])
@@ -235,13 +215,42 @@ class Booking(UserBase):
         allowed = {
             EscrowStatus.CREATED: [EscrowStatus.UTR_SUBMITTED, EscrowStatus.FAILED],
             EscrowStatus.UTR_SUBMITTED: [EscrowStatus.VERIFIED, EscrowStatus.FAILED],
-            EscrowStatus.VERIFIED: [EscrowStatus.BOOKING_INITIATED, EscrowStatus.FAILED],
-            EscrowStatus.BOOKING_INITIATED: [EscrowStatus.COMPLETED, EscrowStatus.FAILED],
+            EscrowStatus.VERIFIED: [EscrowStatus.BOOKING_INITIATED, EscrowStatus.FAILED, EscrowStatus.COMPLETED],
+            EscrowStatus.BOOKING_INITIATED: [EscrowStatus.COMPLETED, EscrowStatus.FAILED, EscrowStatus.VERIFIED], # Allowed to go back to VERIFIED for retry
             EscrowStatus.COMPLETED: [],
-            EscrowStatus.FAILED: [EscrowStatus.REFUNDED],
+            EscrowStatus.FAILED: [EscrowStatus.REFUNDED, EscrowStatus.UTR_SUBMITTED], # Allow re-submitting UTR if it failed
             EscrowStatus.REFUNDED: [],
         }
         return new_status in allowed.get(self.escrow_status, [])
+
+    def update_escrow_status(self, db: Session, new_status: EscrowStatus, message: str = None, performed_by: str = "SYSTEM", reason: str = None):
+        """
+        Hardened state machine update with validation and audit logging.
+        """
+        if not self.validate_escrow_transition(new_status):
+            logger.warning(f"Illegal state transition attempted: {self.escrow_status} -> {new_status} for Booking {self.id}")
+            raise ValueError(f"Transition from {self.escrow_status} to {new_status} is not allowed.")
+
+        old_status_val = self.escrow_status.value if hasattr(self.escrow_status, 'value') else str(self.escrow_status)
+        new_status_val = new_status.value if hasattr(new_status, 'value') else str(new_status)
+
+        self.escrow_status = new_status
+        if message:
+            self.escrow_message = message
+        
+        # Log to Audit Table
+        from .models import AuditLog
+        audit = AuditLog(
+            entity_type="Booking",
+            entity_id=self.id,
+            action="ESCROW_TRANSITION",
+            old_value=old_status_val,
+            new_value=new_status_val,
+            performed_by=performed_by,
+            reason=reason or message
+        )
+        db.add(audit)
+        logger.info(f"Booking {self.id} transition: {old_status_val} -> {new_status_val}")
 
 class TrainAvailabilityCache(UserBase):
     __tablename__ = "train_availability_cache"
@@ -557,6 +566,20 @@ class BankTransaction(UserBase):
     received_at = Column(DateTime, default=datetime.utcnow)
     sms_timestamp = Column(DateTime) # Original SMS time from phone
     status = Column(String(50), default="PENDING") # PENDING, MATCHED, UNMATCHED_FUNDS, RECONCILED, REVERSED
+
+class MerchantVPA(UserBase):
+    """
+    Task 1: Multi-Merchant VPA Load Balancing.
+    Stores real UPI IDs and tracks their daily volume to avoid bank limits.
+    """
+    __tablename__ = "merchant_vpas"
+    id = Column(Integer, primary_key=True)
+    vpa = Column(String(100), unique=True, nullable=False, index=True)
+    name = Column(String(100), default="RouteMaster")
+    daily_limit = Column(Float, default=100000.0) # ₹1 Lakh is standard UPI limit
+    current_daily_volume = Column(Float, default=0.0)
+    is_active = Column(Boolean, default=True)
+    last_reset_at = Column(DateTime, default=datetime.utcnow)
 
 class AuditLog(UserBase):
     """

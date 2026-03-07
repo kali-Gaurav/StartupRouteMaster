@@ -3,11 +3,12 @@ from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 import logging
+import numpy as np
 
 from database.models import Stop
 
 
-from .data_structures import RouteSegment, TransferConnection, Route
+from core.data_structures import RouteSegment, TransferConnection, Route
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,15 @@ class StaticGraphSnapshot:
     # Phase 5: Routing Optimizations
     # trip_id -> set of station_ids visited by this trip
     station_ids_by_trip: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
-    
-    version: str = "v2.5"
+
+    # Task 16.1: Vectorized Coordinate Matrix
+    # Numpy array of shape (N, 2) storing [lat, lon]
+    coordinate_matrix: Optional[Any] = None 
+    stop_id_to_idx: Dict[int, int] = field(default_factory=dict)
+    idx_to_stop_id: List[int] = field(default_factory=list)
+
+    version: str = "v3.0" # Bumped for Task 16
+
     created_at: datetime = field(default_factory=datetime.utcnow)
     transfer_metrics: Dict[str, Any] = field(default_factory=dict)
     density_metrics: Dict[str, Any] = field(default_factory=dict)
@@ -153,6 +161,36 @@ class TimeDependentGraph:
     def get_train_path(self, trip_id: int) -> List[Dict[str, Any]]:
         """Get O(1) train path (all stations served by this trip)."""
         return self.train_path.get(trip_id, [])
+
+    # Task 16.3: Vectorized Spatial Filtering
+    def get_nearby_stations(self, lat: float, lon: float, radius_km: float) -> List[int]:
+        """Find all station IDs within radius_km using numpy vectorization."""
+        if self.snapshot.coordinate_matrix is None:
+            return []
+            
+        from utils.geo_utils import haversine_vectorized
+        
+        # 1. Broad Bounding Box Filter (Fastest)
+        # 1 deg lat ~ 111km
+        lat_delta = radius_km / 111.0
+        # 1 deg lon ~ 111km * cos(lat)
+        lon_delta = radius_km / (111.0 * np.cos(np.radians(lat)))
+        
+        m = self.snapshot.coordinate_matrix
+        mask = (m[:, 0] >= lat - lat_delta) & (m[:, 0] <= lat + lat_delta) & \
+               (m[:, 1] >= lon - lon_delta) & (m[:, 1] <= lon + lon_delta)
+        
+        # 2. Precise Haversine Filter on remaining points
+        indices = np.where(mask)[0]
+        if indices.size == 0: return []
+        
+        filtered_coords = m[indices]
+        distances = haversine_vectorized(lat, lon, filtered_coords[:, 0], filtered_coords[:, 1])
+        
+        # 3. Map back to Stop IDs
+        final_indices = indices[distances <= radius_km]
+        
+        return [self.snapshot.idx_to_stop_id[idx] for idx in final_indices]
 
     # ----------------------------- event helpers -----------------------------
     def add_departure(self, stop_id: int, departure_time: datetime, trip_id: int):

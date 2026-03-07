@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, ArrowLeft, Loader2, Train, IndianRupee, Info, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ArrowLeft, ArrowRight, Loader2, Train, IndianRupee, Info, ShieldCheck } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { BookingPaymentStep } from "@/components/booking/BookingPaymentStep";
 import { BookingFlowProvider, useBookingFlowContext } from "@/context/BookingFlowContext";
@@ -90,7 +90,7 @@ const MiniAppBookingContent = () => {
            </div>
         </div>
         <div className="max-w-5xl mx-auto px-4">
-          <BookingPaymentStep />
+          <BookingPaymentStep serviceType="AGENT_BOOKING" />
         </div>
       </div>
     );

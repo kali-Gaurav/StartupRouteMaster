@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from ...database.models import Stop, Transfer, StopTime, Trip
-from .data_structures import TransferConnection, RouteSegment
+from core.data_structures import TransferConnection, RouteSegment
 
 logger = logging.getLogger(__name__)
 

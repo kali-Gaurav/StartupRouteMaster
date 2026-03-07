@@ -161,7 +161,8 @@ class FrequencyAwareWindowSizer:
         """
         def _query():
             try:
-                db = SessionLocal()
+                from database.session import SessionTransit
+                db = SessionTransit()
                 try:
                     # Check if date is valid (has calendar entry)
                     calendar_entry = db.query(Calendar).filter(

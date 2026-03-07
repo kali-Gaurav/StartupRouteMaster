@@ -148,7 +148,11 @@ class EscalationService:
 
     async def escalate_incident(self, event: Dict[str, Any]):
         """Perform Level 3 Escalation with AI Summary (Task 57)."""
-        event_id = event["id"]
+        if not event or not isinstance(event, dict):
+            logger.error("Cannot escalate null or invalid event object.")
+            return
+
+        event_id = event.get("id")
         logger.warning(f"⚠️ [ESCALATION] Incident {event_id} has been active for 60+ mins. Escalating to HQ...")
         
         # 1. Update Event State
@@ -156,20 +160,29 @@ class EscalationService:
         event["priority"] = "critical"
         
         # Task 57: Generate Brief for HQ
-        from utils.summarizer import ai_summarizer
-        event["hq_summary"] = ai_summarizer.generate_summary(event)
+        try:
+            from utils.summarizer import ai_summarizer
+            event["hq_summary"] = ai_summarizer.generate_summary(event)
+        except Exception as e:
+            logger.error(f"Summarizer failed: {e}")
+            event["hq_summary"] = "Manual intervention required."
         
-        event["extra"] = f"{event.get('extra', '')} | AUTO-ESCALATED TO NATIONAL HQ | SUMMARY: {event['hq_summary']}"
+        event["extra"] = f"{event.get('extra', '')} | AUTO-ESCALATED TO NATIONAL HQ | SUMMARY: {event.get('hq_summary')}"
         
         # 2. Dispatch to HQ
-        hq_dispatch = await dispatch_service.escalate_to_hq(event)
-        event["hq_dispatch"] = hq_dispatch
+        try:
+            hq_dispatch = await dispatch_service.escalate_to_hq(event)
+            event["hq_dispatch"] = hq_dispatch
+        except Exception as e:
+            logger.error(f"HQ Dispatch failed: {e}")
         
         # 3. Persist & Broadcast
-        from api.sos import _save_event
-        _save_event(event)
-        await manager.broadcast_sos(event)
-        
-        logger.info(f"✅ [ESCALATION] Incident {event_id} escalated to Level 3.")
+        try:
+            from api.sos import _save_event
+            _save_event(event)
+            await manager.broadcast_sos(event)
+            logger.info(f"✅ [ESCALATION] Incident {event_id} escalated to Level 3.")
+        except Exception as e:
+            logger.error(f"Failed to persist/broadcast escalation: {e}")
 
 escalation_service = EscalationService()

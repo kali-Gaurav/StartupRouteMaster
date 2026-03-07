@@ -55,7 +55,7 @@ export function BookingFlowModal() {
                     </button>
                   </div>
                 ) : (
-                  <BookingPaymentStep />
+                  <BookingPaymentStep serviceType={useBookingFlowContext().isUnlockFlow ? "UNLOCK" : "AGENT_BOOKING"} />
                 )}
               </>
             )}

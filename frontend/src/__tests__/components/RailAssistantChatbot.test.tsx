@@ -31,59 +31,63 @@ test('dispatches suggestion event when backend returns actions', async () => {
   fireEvent.click(toggleBtn);
 
   // Type into input and send a phrase that BYPASSES local intent (which triggers search directly)
-  const input = await screen.findByPlaceholderText(/Type or Ask Rail Assistant/i);
+  const input = await screen.findByPlaceholderText(/Ask me anything/i);
   fireEvent.change(input, { target: { value: 'tell me about the app' } });
   const sendBtn = screen.getByRole('button', { name: /send/i }) || screen.getAllByRole('button').find(b => b.querySelector('svg'));
   // Click send (use any available send button)
   fireEvent.click(sendBtn as Element);
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
-    expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'rail-assistant-suggestions' }));
-  
-    fetchSpy.mockRestore();
-    dispatchSpy.mockRestore();
-  });
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+  expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'rail-assistant-suggestions' }));
 
-  test('quick action Search Trains adds prompt and does not trigger backend', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch');
-    render(<RailAssistantChatbot onSearchRequest={noop} onSortChange={noop} onNavigate={noop} />);
-    // clear any initialization network calls
-    fetchSpy.mockClear();
+  fetchSpy.mockRestore();
+  dispatchSpy.mockRestore();
+});
 
-    const toggleBtn = screen.getByRole('button');
-    fireEvent.click(toggleBtn);
-    const quickBtns = await screen.findAllByText('Search Trains');
-    // click the bottom toolbar version (last occurrence)
-    fireEvent.click(quickBtns[quickBtns.length - 1]);
-    // user message should appear immediately (at least one message contains the text)
-    expect(screen.getAllByText(/Search Trains/).length).toBeGreaterThanOrEqual(1);
-    // the prompt text should show (partial match to avoid markup issues)
-    await waitFor(() => expect(screen.getByText(/Where would you like/i)).toBeInTheDocument());
-    expect(fetchSpy).not.toHaveBeenCalled();
-    fetchSpy.mockRestore();
-  });
+test('quick action Search Trains adds prompt and does not trigger backend', async () => {
+  const fetchSpy = vi.spyOn(global, 'fetch');
+  render(<RailAssistantChatbot onSearchRequest={noop} onSortChange={noop} onNavigate={noop} />);
+
+  const toggleBtn = screen.getByRole('button');
+  fireEvent.click(toggleBtn);
+
+  // Wait for initial history fetch to complete, then reset call count
+  await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+  fetchSpy.mockClear();
+
+  const quickBtns = await screen.findAllByText('Search Trains');
+  // click the bottom toolbar version (last occurrence)
+  fireEvent.click(quickBtns[quickBtns.length - 1]);
+
+  const input = screen.getByPlaceholderText(/Ask me anything/i) as HTMLInputElement;
+  expect(input.value).toBe('Search Trains');
+
+  // Quick action should not trigger any new network calls
+  expect(fetchSpy).not.toHaveBeenCalled();
+  fetchSpy.mockRestore();
+});
 
 
   test('cancel button aborts inflight request and hides loader', async () => {
     // simulate a long-running fetch
-    let resolveFetch: Function;
-    const promise = new Promise<Response>((res) => { resolveFetch = res; });
+    let _resolveFetch: Function;
+    const promise = new Promise<Response>((res) => { _resolveFetch = res; });
     const fetchSpy = vi.spyOn(global, 'fetch').mockReturnValue(promise as any);
 
     render(<RailAssistantChatbot onSearchRequest={noop} onSortChange={noop} onNavigate={noop} />);
     const toggleBtn = screen.getByRole('button');
     fireEvent.click(toggleBtn);
-    const input = await screen.findByPlaceholderText(/Type or Ask Rail Assistant/i);
+    const input = await screen.findByPlaceholderText(/Ask me anything/i);
     // send a query that will NOT be handled locally so backend request is made
     fireEvent.change(input, { target: { value: 'unhandled query 123' } });
-    const sendBtn = screen.getByRole('button', { name: /send/i }) || screen.getAllByRole('button').find(b => b.querySelector('svg'));
-    fireEvent.click(sendBtn as Element);
+    const sendBtn = screen.getByRole('button', { name: /send/i });
+    fireEvent.click(sendBtn);
     // wait for loader/cancel to appear
-    await waitFor(() => expect(screen.getByText(/cancel/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: /cancel/i })).toBeTruthy());
     // click cancel
-    fireEvent.click(screen.getByText(/cancel/i));
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     // loader should disappear
-    await waitFor(() => expect(screen.queryByText(/cancel/i)).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull());
     fetchSpy.mockRestore();
   });
   

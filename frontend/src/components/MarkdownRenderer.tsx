@@ -9,10 +9,10 @@ interface MarkdownRendererProps {
 
 export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      className={cn("prose prose-sm dark:prose-invert max-w-none break-words", className)}
-      components={{
+    <div className={cn("prose prose-sm dark:prose-invert max-w-none break-words", className)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
         table: ({ children }) => (
           <div className="overflow-x-auto my-2 rounded-lg border border-border">
             <table className="min-w-full divide-y divide-border border-collapse">
@@ -37,5 +37,6 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
     >
       {content}
     </ReactMarkdown>
+    </div>
   );
 }

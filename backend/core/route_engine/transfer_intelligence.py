@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from database.models import Stop, TrainState
 
 
-from .data_structures import TransferConnection, Route
+from core.data_structures import TransferConnection, Route
 from .constraints import RouteConstraints
 
 logger = logging.getLogger(__name__)

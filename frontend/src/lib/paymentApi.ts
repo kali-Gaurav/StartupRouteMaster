@@ -52,6 +52,7 @@ export interface BookingRedirectRequest {
 
 export interface InitiateBookingRequest {
   journey_id: string;
+  service_type?: 'UNLOCK' | 'AGENT_BOOKING';
 }
 
 export interface BookingResponse {
@@ -63,10 +64,12 @@ export interface BookingResponse {
   upi_tx_id?: string;
   utr_number?: string;
   upi_url?: string;
+  service_type?: string; // Optional unlock/booking service type returned by backend
+  escrow_message?: string; // Optional message returned when escrow processing fails
 }
 
 export const initiateEscrowBooking = async (data: InitiateBookingRequest, idempotencyKey: string): Promise<BookingResponse> => {
-  const response = await fetchWithAuth('/booking/initiate', {
+  const response = await fetchWithAuth('/v2/booking/initiate', {
     method: 'POST',
     headers: { 
       'Content-Type': 'application/json',
@@ -78,7 +81,7 @@ export const initiateEscrowBooking = async (data: InitiateBookingRequest, idempo
 };
 
 export const submitEscrowUtr = async (bookingId: string, utrNumber: string): Promise<BookingResponse> => {
-  const response = await fetchWithAuth(`/booking/${bookingId}/utr`, {
+  const response = await fetchWithAuth(`/v2/booking/${bookingId}/utr`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ utr_number: utrNumber }),
@@ -87,7 +90,7 @@ export const submitEscrowUtr = async (bookingId: string, utrNumber: string): Pro
 };
 
 export const getEscrowBookingStatus = async (bookingId: string): Promise<BookingResponse> => {
-  const response = await fetchWithAuth(`/booking/${bookingId}/status`);
+  const response = await fetchWithAuth(`/v2/booking/${bookingId}`);
   return await response.json();
 };
 

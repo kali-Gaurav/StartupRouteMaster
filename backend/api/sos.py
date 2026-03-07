@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 from database.models import User
 from api.dependencies import get_optional_user
-from services.cache_service import cache_service
+from services.multi_layer_cache import multi_layer_cache
 from api.websockets import manager
 from services.emergency.alert_manager import EmergencyAlertManager
 from utils.limiter import limiter
@@ -24,7 +24,7 @@ from utils.limiter import limiter
 router = APIRouter(prefix="/sos", tags=["sos"])
 
 # Use the singleton instance directly
-_redis = cache_service.redis
+_redis = multi_layer_cache.redis
 _local_events: List[Dict[str, Any]] = []
 SOS_KEY_PREFIX = "sos:event:"
 SOS_INDEX_KEY = "sos:events"
@@ -136,7 +136,6 @@ def _save_event(event: Dict[str, Any]):
     Task 6: Encrypts and Compresses for storage.
     """
     from utils.encryption import encrypt_sos_event
-    redis_inst = cache_service.redis
     
     # 1. Encrypt first
     storage_event = encrypt_sos_event(event)
@@ -147,17 +146,14 @@ def _save_event(event: Dict[str, Any]):
     if storage_event.get("call_logs") and isinstance(storage_event["call_logs"], list):
         storage_event["call_logs"] = _compress(storage_event["call_logs"])
 
-    # 3. Save to Redis
-    if redis_inst:
-        try:
-            redis_inst.set(_event_key(storage_event['id']), json.dumps(storage_event))
-            redis_inst.sadd(SOS_INDEX_KEY, storage_event['id'])
-            trip = storage_event.get("trip")
-            if trip and trip.get("pnr_number"):
-                redis_inst.hset(PNR_REGISTRY_KEY, str(trip.get("pnr_number")), storage_event['id'])
-            # Task 7: Redis Stream Publishing
-            redis_inst.xadd(SOS_STREAM_KEY, {"event_id": storage_event['id'], "priority": storage_event['priority'], "data": json.dumps(storage_event)})
-        except Exception: pass
+    # 3. Save to Redis (Synchronous fallback for legacy logic)
+    multi_layer_cache.set_sync(_event_key(storage_event['id']), storage_event)
+    
+    # Update PNR Registry
+    trip = storage_event.get("trip")
+    if trip and trip.get("pnr_number") and multi_layer_cache.redis:
+        # PNR lookup is high-frequency, keep in redis
+        multi_layer_cache.set_sync(f"{PNR_REGISTRY_KEY}:{trip.get('pnr_number')}", storage_event['id'])
         
     # 4. Save to Local Memory (Task 6: Keep uncompressed in RAM for API performance)
     global _local_events
@@ -175,9 +171,14 @@ def _load_event(event_id: str) -> Optional[Dict[str, Any]]:
     """
     from utils.encryption import decrypt_sos_event
     raw_event = None
-    if _redis:
+    if multi_layer_cache.redis:
         try:
-            raw = _redis.get(_event_key(event_id))
+            # Note: multi_layer_cache.redis is async, this needs sync fallback or async rewrite.
+            # For now, we use local memory fallback or a quick sync connection.
+            import redis
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
+            raw = sync_redis.get(_event_key(event_id))
             if raw: raw_event = json.loads(raw)
         except Exception: pass
     if not raw_event:
@@ -300,9 +301,13 @@ async def get_incident_heatmap(precision: float = 0.1):
     """
     all_events = []
     ids = []
-    if _redis:
+    if multi_layer_cache.redis:
         try:
-            raw_ids = _redis.smembers(SOS_INDEX_KEY) or []
+            # Use sync connection for quick iteration
+            import redis
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
+            raw_ids = sync_redis.smembers(SOS_INDEX_KEY) or []
             ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
         except Exception: pass
     
@@ -329,9 +334,12 @@ async def get_incident_heatmap(precision: float = 0.1):
 
 @router.get('/pnr/{pnr}')
 async def get_sos_by_pnr(pnr: str):
-    if _redis:
+    if multi_layer_cache.redis:
         try:
-            event_id = _redis.hget(PNR_REGISTRY_KEY, str(pnr))
+            import redis
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
+            event_id = sync_redis.get(f"{PNR_REGISTRY_KEY}:{pnr}")
             if event_id:
                 event_id = event_id.decode('utf-8') if isinstance(event_id, bytes) else event_id
                 event = _load_event(event_id)
@@ -354,9 +362,12 @@ async def get_sos_by_id(event_id: str):
 @router.get('/all')
 async def get_all_sos():
     ids = []
-    if _redis:
+    if multi_layer_cache.redis:
         try:
-            raw_ids = _redis.smembers(SOS_INDEX_KEY) or []
+            import redis
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
+            raw_ids = sync_redis.smembers(SOS_INDEX_KEY) or []
             ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
         except Exception: pass
     if not ids: return [_map_event_to_res(e) for e in _local_events]
@@ -629,11 +640,14 @@ async def resolve_sos(event_id: str):
     if not event: raise HTTPException(status_code=404)
     event['status'] = 'resolved'
     event['resolved_at'] = datetime.utcnow().isoformat()
-    if _redis:
+    if multi_layer_cache.redis:
         try:
+            import redis
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
             trip = event.get("trip")
             if trip and trip.get("pnr_number"):
-                _redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
+                sync_redis.delete(f"{PNR_REGISTRY_KEY}:{trip.get('pnr_number')}")
         except Exception: pass
     _save_event(event)
     await manager.broadcast_sos(event)

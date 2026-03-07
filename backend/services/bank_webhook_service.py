@@ -14,9 +14,11 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+from services.ws_manager import ws_manager
+
 class BankWebhookService:
     """
-    Task 2: Real-Time Bank SMS/Webhook Integration.
+    Task 2 & 3: Real-Time Bank SMS/Webhook Integration.
     Handles SMS parsing, UTR deduplication, and transaction matching.
     """
     
@@ -43,13 +45,23 @@ class BankWebhookService:
         r"UCO.*INR\s*(?P<amount>[\d\.]+).*UTR\s*(?P<utr>\d{12})",
         r"PAYTM.*Rs\.\s*(?P<amount>[\d\.]+).*Ref\s*(?P<utr>\d{12})",
         r"(Paid|Sent|Transfer).*?(?P<amount>[\d\.]+).*?(UTR|Ref).*?(?P<utr>\d{12})",
-        r"credited.*?(?P<amount>[\d\.]+).*?UTR.*?(?P<utr>\d{12})"
+        r"credited.*?(?P<amount>[\d\.]+).*?UTR.*?(?P<utr>\d{12})",
+        # Generic fallback for any bank SMS containing a 12-digit number and decimal amount
+        r"(?P<amount>\d+\.\d{2}).*?(?P<utr>\d{12})",
+        r"(?P<utr>\d{12}).*?(?P<amount>\d+\.\d{2})",
+        # Task 4: Match RM_ tag (Short ID)
+        r"RM_(?P<short_id>[A-Z0-9]{8})"
     ]
 
     def decrypt_payload(self, ciphertext_b64: str, iv_b64: str) -> str:
         """Task 2.7: End-to-end encryption for SMS data payload using AES-256-CBC."""
         try:
-            key = Config.RAZORPAY_KEY_SECRET[:32].encode('utf-8').ljust(32, b'\0') # 32 bytes for AES-256
+            # Task 2.7: Uses secure secret from config
+            secret = Config.BANK_WEBHOOK_SECRET or Config.RAZORPAY_KEY_SECRET
+            if not secret:
+                raise ValueError("No encryption secret found in config")
+                
+            key = secret[:32].encode('utf-8').ljust(32, b'\0') # 32 bytes for AES-256
             iv = base64.b64decode(iv_b64)
             ciphertext = base64.b64decode(ciphertext_b64)
             cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
@@ -69,34 +81,28 @@ class BankWebhookService:
             match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
             if match:
                 try:
-                    amount = float(match.group("amount"))
+                    amount_str = match.group("amount")
                     utr = match.group("utr")
-                    return amount, utr
+                    return float(amount_str), utr
                 except (ValueError, IndexError):
                     continue
         return None, None
 
     async def process_transaction(self, db: Session, payload: BankSMSPayload) -> Dict[str, Any]:
         """
-        Main logic for Task 2.
+        Main logic for Task 2 & 3.
         - Parsers SMS
         - Filters duplicates via Redis
-        - Matches with PENDING bookings
-        - Tracks latency
+        - Matches with PENDING bookings (UTR first, then Cent-Matching)
+        - Notifies via WebSockets
         """
         receive_time = datetime.utcnow()
         
         # Task 2.8: Battery/Connectivity monitoring
         if payload.status:
-            logger.info(f"Companion App Status - Device: {payload.device_id}, "
-                        f"Battery: {payload.status.battery_level}%, "
-                        f"Charging: {payload.status.is_charging}, "
-                        f"Net: {payload.status.network_type} ({payload.status.signal_strength}dBm)")
-            if payload.status.battery_level < 15 and not payload.status.is_charging:
-                logger.warning("Companion App battery is critically low!")
+            logger.info(f"Companion App Status - Device: {payload.device_id}, Battery: {payload.status.battery_level}%")
 
         sms_body = payload.body
-        # Task 2.7: E2E Decryption
         if payload.is_encrypted:
             try:
                 sms_body = self.decrypt_payload(payload.body, payload.iv)
@@ -109,20 +115,13 @@ class BankWebhookService:
             logger.warning(f"Failed to parse UTR from SMS: {sms_body[:50]}...")
             return {"success": False, "message": "Could not parse UTR"}
 
-        # 2.4 Duplicate UTR filtering at the webhook layer (using Redis)
+        # 2.4 Duplicate UTR filtering
         dedup_key = f"utr_processed:{utr}"
         if cache_service.get(dedup_key):
-            logger.info(f"Duplicate UTR detected: {utr}")
             return {"success": False, "message": "Duplicate UTR", "utr": utr}
-        
-        # Mark as seen for 24 hours
         cache_service.set(dedup_key, "1", ttl_seconds=86400)
 
-        # 2.6 Latency tracking (SMS Time vs Webhook Received Time)
-        latency = (receive_time - payload.timestamp).total_seconds()
-        logger.info(f"Transaction {utr} received with latency: {latency}s")
-
-        # Save to BankTransaction for audit
+        # Save to BankTransaction
         txn = BankTransaction(
             utr=utr,
             amount=amount or 0.0,
@@ -135,34 +134,72 @@ class BankWebhookService:
         )
         db.add(txn)
         
-        # 2.5 Amount matching logic (Tolerance ±0.01)
-        booking = db.query(Booking).filter(Booking.utr_number == utr).first()
-        
         matched = False
         booking_id = None
         
+        # 0. Attempt RM_ tag (Short ID) matching (Highest confidence)
+        short_id_match = re.search(r"RM_(?P<sid>[A-Z0-9]{8})", sms_body)
+        if short_id_match:
+            sid = short_id_match.group("sid")
+            # The booking ID in DB starts with this Short ID (from uuid hex or our logic)
+            # In initiate_service we do: short_id = booking_id_placeholder[:8].upper()
+            booking = db.query(Booking).filter(
+                Booking.id.like(f"{sid.lower()}%"),
+                Booking.escrow_status.in_([EscrowStatus.CREATED, EscrowStatus.UTR_SUBMITTED])
+            ).first()
+            if booking:
+                logger.info(f"Short-ID matching success! SID {sid} matched Booking {booking.id}")
+                booking.utr_number = utr # Save the UTR for future ref
+
+        # 1. Attempt UTR Matching (User manual entry vs SMS)
+        if not booking:
+            booking = db.query(Booking).filter(
+                Booking.utr_number == utr,
+                Booking.escrow_status == EscrowStatus.UTR_SUBMITTED
+            ).first()
+        
+        # 2. Attempt Cent-Matching Fallback (Amount-based identification)
+        if not booking and amount:
+            # Find a booking with this exact amount (including paisa offset) created recently
+            booking = db.query(Booking).filter(
+                Booking.amount_paid == amount,
+                Booking.escrow_status == EscrowStatus.CREATED
+            ).order_by(Booking.created_at.desc()).first()
+            
+            if booking:
+                logger.info(f"Cent-matching success! Amount ₹{amount} matched Booking {booking.id}")
+                booking.utr_number = utr # Save the UTR we just found
+
         if booking:
-            # Check amount tolerance
-            if abs(booking.amount_paid - amount) <= 0.01:
-                booking.escrow_status = EscrowStatus.VERIFIED
-                booking.booking_status = "confirmed" # Auto-promote
-                txn.status = "MATCHED"
-                matched = True
-                booking_id = str(booking.id)
-                logger.info(f"UTR {utr} matched with Booking {booking.id}")
-            else:
-                logger.warning(f"Amount mismatch for UTR {utr}: Expected {booking.amount_paid}, got {amount}")
-                txn.status = "AMOUNT_MISMATCH"
+            # Promote status
+            from database.models import EscrowStatus
+            booking.escrow_status = EscrowStatus.VERIFIED
+            booking.escrow_message = "✅ Payment verified automatically via bank SMS hook."
+            txn.status = "MATCHED"
+            matched = True
+            booking_id = str(booking.id)
+            
+            # Record volume for VPA rotation limits
+            from services.merchant_vpa_service import merchant_vpa_service
+            if booking.merchant_vpa:
+                merchant_vpa_service.record_volume(booking.merchant_vpa, booking.amount_paid)
+
+            # Trigger real-time UI notification
+            await ws_manager.broadcast_log(booking_id, "🔍 Payment detected in bank statement. Matching amount...")
+            await asyncio.sleep(1)
+            await ws_manager.broadcast_log(booking_id, "✅ Payment Secured! Funds held in RouteMaster Escrow.", "VERIFIED")
+            
+            # Log admin alert for AGENT_BOOKING
+            if booking.service_type == "AGENT_BOOKING":
+                logger.info(f"🚨 ADMIN ALERT: New AGENT_BOOKING ready for processing! ID: {booking_id}")
         
         db.commit()
-        
         return {
             "success": True,
-            "message": "Transaction processed",
+            "message": "Matched" if matched else "Saved but unmatched",
             "utr": utr,
             "matched": matched,
-            "booking_id": booking_id,
-            "latency_seconds": latency
+            "booking_id": booking_id
         }
 
     async def process_csv(self, db: Session, csv_content: str) -> Dict[str, Any]:

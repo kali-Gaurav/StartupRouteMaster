@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input';
 import { useAuth } from '@/context/AuthContext';
 import { checkPaymentStatus } from '@/lib/paymentApi';
 import { fetchWithAuth } from '@/lib/apiClient';
-import { Loader2, CheckCircle2, IndianRupee, ShieldCheck, Clock, Zap, QrCode } from 'lucide-react';
+import { Loader2, CheckCircle2, IndianRupee, ShieldCheck, Zap } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 
 interface PaymentModalProps {

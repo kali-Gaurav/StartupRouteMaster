@@ -112,3 +112,30 @@ def create_short_payment_url(upi_uri: str, base_url: str = "http://localhost:800
 def validate_utr(utr: str) -> bool:
     """Task 16: Validates if a string is a valid 12-digit UPI UTR."""
     return bool(re.match(r"^\d{12}$", utr))
+
+def get_unique_paisa_amount(base_amount: float, db_session, vpa: str) -> float:
+    """
+    Task 2: cent-matching.
+    Returns a random paisa amount (0.01 to 0.99) that is currently unique for 
+    pending bookings on this VPA to allow identification without UTR.
+    """
+    import random
+    from database.models import Booking, EscrowStatus
+    
+    # Try up to 50 times to find a unique paisa offset for this base amount on this VPA
+    for _ in range(50):
+        paisa = random.randint(1, 99) / 100.0
+        target_amount = round(base_amount + paisa, 2)
+        
+        # Check if any pending booking has this exact amount on this VPA
+        exists = db_session.query(Booking).filter(
+            Booking.merchant_vpa == vpa,
+            Booking.amount_paid == target_amount,
+            Booking.escrow_status == EscrowStatus.CREATED
+        ).first()
+        
+        if not exists:
+            return target_amount
+            
+    # Fallback to just random if collision check fails too many times
+    return round(base_amount + (random.randint(1, 99) / 100.0), 2)

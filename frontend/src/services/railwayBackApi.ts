@@ -147,6 +147,7 @@ export interface BackendJourneyLeg {
   arrival_time: string;
   duration_minutes?: number;
   fare?: number;
+  distance?: number;
   mode?: string;
 }
 
@@ -159,6 +160,7 @@ export interface BackendJourney {
   travel_time?: string;
   total_duration?: number;
   total_cost?: number;
+  total_distance?: number;
   cheapest_fare?: number;
   availability_status?: string;
   reliability_score?: number;

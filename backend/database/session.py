@@ -1,24 +1,30 @@
-from sqlalchemy import create_engine, event, MetaData
+from sqlalchemy import create_engine, event, MetaData, Engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 import logging
 import os
 
 logger = logging.getLogger(__name__)
+
 # Optimization for SQLite
 def _enable_sqlite_optimizations(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
-    # Suggestion #21: Query Only for Transit in Production
-    db_name = str(dbapi_connection)
-    if "transit_graph.db" in db_name:
-        # Suggestion #22: Memory Mapping (2GB)
-        cursor.execute("PRAGMA mmap_size = 2147483648")
-        cursor.execute("PRAGMA journal_mode=DELETE")
-        cursor.execute("PRAGMA synchronous=OFF")
-    else:
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-
-    cursor.execute("PRAGMA foreign_keys=ON")
+    
+    # 10X PERFORMANCE: Memory-Mapped I/O (2GB)
+    # This allows SQLite to bypass read() syscalls and use OS page cache directly.
+    cursor.execute("PRAGMA mmap_size = 2147483648")
+    
+    # Concurrency: Write-Ahead Logging (WAL)
+    cursor.execute("PRAGMA journal_mode = WAL")
+    
+    # Performance: Normal sync is enough for WAL safety
+    cursor.execute("PRAGMA synchronous = NORMAL")
+    
+    # Speed: Increase page cache to 20MB
+    cursor.execute("PRAGMA cache_size = -20000")
+    
+    # Integrity
+    cursor.execute("PRAGMA foreign_keys = ON")
+    
     cursor.close()
 
 
@@ -27,6 +33,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 user_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'user_store.db')}"
 transit_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'transit_graph.db')}"
 
+# We use check_same_thread=False for FastAPI concurrency
 engine_user = create_engine(user_db_path, connect_args={"check_same_thread": False})
 engine_transit = create_engine(transit_db_path, connect_args={"check_same_thread": False})
 
@@ -63,7 +70,6 @@ def get_transit_db():
 async def init_db():
     """Create tables in their respective physical databases."""
     from .models import User, Stop 
-    # Force TransitBase to use engine_transit
     UserBase.metadata.create_all(bind=engine_user)
     TransitBase.metadata.create_all(bind=engine_transit)
     logger.info("Dual-Database physical tables verified.")

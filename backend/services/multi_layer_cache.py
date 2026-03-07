@@ -202,4 +202,48 @@ class MultiLayerCache:
     async def get_cache_stats(self) -> Dict:
         return {k: v.to_dict() for k, v in self.metrics.items()}
 
+    # --- Task 19: Snapshot Redis Storage ---
+    async def get_graph_snapshot(self, date_str: str) -> Optional[Any]:
+        """Fetch compressed graph snapshot from Redis."""
+        if not self.redis: return None
+        key = f"graph:snapshot:{date_str}"
+        try:
+            data = await self.redis.get(key)
+            if data:
+                # Decompress and Unpickle
+                decompressed = zlib.decompress(data)
+                return pickle.loads(decompressed)
+        except Exception as e:
+            logger.error(f"Failed to load snapshot from Redis: {e}")
+        return None
+
+    async def set_graph_snapshot(self, date_str: str, snapshot: Any, ttl: int = 86400):
+        """Save compressed graph snapshot to Redis (24h TTL)."""
+        if not self.redis: return
+        key = f"graph:snapshot:{date_str}"
+        try:
+            # Pickle -> Compress -> Save
+            serialized = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
+            compressed = zlib.compress(serialized)
+            await self.redis.setex(key, ttl, compressed)
+            logger.info(f"✅ Saved {len(compressed)/1024/1024:.2f}MB snapshot to Redis for {date_str}")
+        except Exception as e:
+            logger.error(f"Failed to save snapshot to Redis: {e}")
+
+    # --- Lock Support (from CacheService migration) ---
+    def get_lock(self, name: str, timeout: int = 10):
+        """Get a distributed Redis lock."""
+        if self.redis:
+            return self.redis.lock(name, timeout=timeout)
+        return None
+
+    # --- Sync Wrappers (for SOS legacy support) ---
+    def set_sync(self, key: str, value: Any, ttl: int = 3600):
+        """Synchronous set for non-async parts of the code."""
+        if self.redis:
+            import redis
+            # We need a sync connection for this
+            sync_redis = redis.from_url(Config.REDIS_URL)
+            sync_redis.setex(key, ttl, json.dumps(value))
+
 multi_layer_cache = MultiLayerCache()

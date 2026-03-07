@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..route_engine.raptor import OptimizedRAPTOR, HybridRAPTOR
 from ..route_engine.hub import HubManager, HubConnectivityTable
-from ..route_engine.data_structures import Route, UserContext
+from core.data_structures import Route, UserContext
 from ..route_engine.constraints import RouteConstraints
 
 logger = logging.getLogger(__name__)

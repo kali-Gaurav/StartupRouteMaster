@@ -3,6 +3,7 @@
  * Real-time monitoring of SOS events, System Health, and Route Trends.
  */
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { 
   MapPin, ExternalLink, User, AlertCircle, CheckCircle, RefreshCw, 
   Train, Wifi, WifiOff, History, Star, Cloud, ArrowRight, Zap, ShieldAlert 
@@ -115,7 +116,7 @@ export default function Dashboard() {
 
   // Manual Booking Integration
   const { data: bookingsData } = useBookings({ limit: 3 });
-  const manualBookings = Array.isArray(bookingsData) ? bookingsData : [];
+  const manualBookings = (Array.isArray(bookingsData) ? bookingsData : []) as any[];
 
   // Stats Logic
   const activeCount = events.filter(e => e.status === "active").length;

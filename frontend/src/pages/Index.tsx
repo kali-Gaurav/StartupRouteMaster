@@ -483,6 +483,10 @@ const Index = () => {
 
   const filteredRoutes = useMemo(() => {
     let routes = currentRoutes;
+
+    // Defensive: drop malformed routes that have no segments or invalid data.
+    routes = routes.filter((r) => Array.isArray(r?.segments) && r.segments.length > 0);
+
     if (selectedCategory) {
       routes = routes.filter((r) => getCategoryBase(r.category) === selectedCategory);
     }

@@ -27,6 +27,16 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
 
   const [isExpanded, setIsExpanded] = useState(false);
 
+  // Defensive rendering: avoid crashes when route data is malformed.
+  if (!route?.segments || route.segments.length === 0) {
+    return (
+      <div className="bg-card rounded-2xl border-2 border-dashed border-red-200 p-6 text-center">
+        <div className="text-sm font-bold text-red-700">Invalid route data</div>
+        <div className="text-xs text-muted-foreground">This route is missing required details and cannot be displayed.</div>
+      </div>
+    );
+  }
+
   const getCategoryStyle = (category: string) => {
     if (category.includes("FASTEST") || category.includes("FAST")) {
       return "from-amber-500 to-orange-500";

@@ -1,0 +1,244 @@
+import asyncio
+import logging
+import time
+import struct
+import json
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
+from sqlalchemy import text
+
+from .constraints import RouteConstraints
+from core.data_structures import Route, RouteSegment, TransferConnection
+from .turbo_router import TurboRouter
+from .raptor import OptimizedRAPTOR
+from .fast_router import FastPathRouter
+from .scoring import RouteScorer
+
+logger = logging.getLogger(__name__)
+
+class UnifiedRoutingOrchestrator:
+    """
+    10X Performance Orchestrator.
+    Manages Tiered Routing:
+    - Tier 0: Backbone (Hub-to-Hub)
+    - Tier 1: Turbo (SQL Direct/1-T)
+    - Tier 2: FastPath (O(1) BFS 2-T)
+    - Tier 3: RAPTOR (Discovery)
+    """
+    def __init__(self, route_engine_instance):
+        self.engine = route_engine_instance
+        self.turbo_router = TurboRouter()
+        self.fast_router = FastPathRouter(None) 
+        self.raptor = OptimizedRAPTOR()
+
+    async def search_all_tiers(
+        self,
+        source_code: str,
+        destination_code: str,
+        departure_date: datetime,
+        constraints: RouteConstraints,
+        limit: int = 50,
+        db=None
+    ) -> List[Route]:
+        start_time = time.perf_counter()
+        from utils.station_utils import resolve_stations
+        
+        # Resolve stations for all engines
+        source_stop, dest_stop = resolve_stations(db, source_code, destination_code)
+        if not source_stop or not dest_stop: return []
+
+        # 1. Tier 0: Hub-to-Hub Index (Sub-5ms)
+        hub_results = self._search_tier_0_hubs(source_stop.id, dest_stop.id, departure_date, db)
+
+        # 2. Prepare Graph
+        graph = await self.engine._get_current_graph(departure_date)
+        self.fast_router.graph = graph
+
+        # 3. RUN ALL ENGINES IN PARALLEL
+        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code}")
+        
+        # Tier 1: Turbo (SQL)
+        t1_task = asyncio.to_thread(self.turbo_router.find_routes, source_code, destination_code, departure_date, limit=limit)
+        
+        # Tier 2: FastPath (O(1) BFS)
+        t2_task = asyncio.to_thread(self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
+        
+        # Tier 3: RAPTOR (Deep Discovery)
+        t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
+        
+        turbo_raw, fast_res, raptor_res = await asyncio.gather(t1_task, t2_task, t3_task)
+        
+        # 4. CONSOLIDATE & UNION
+        all_routes: List[Route] = []
+        all_routes.extend(hub_results)
+        all_routes.extend(self._hydrate_turbo_results(turbo_raw, source_code, destination_code))
+        all_routes.extend(fast_res)
+        all_routes.extend(raptor_res)
+        
+        # 5. UNIVERSAL FARE HYDRATION & SCORING
+        unique_routes = self._global_deduplicate(all_routes)
+        await self._hydrate_fares_and_score(unique_routes, constraints, graph, db)
+        
+        unique_routes.sort(key=lambda x: x.score)
+        
+        latency = (time.perf_counter() - start_time) * 1000
+        logger.info(f"Orchestrator: Found {len(unique_routes)} unified routes in {latency:.2f}ms")
+        
+        return unique_routes[:limit]
+
+    def _search_tier_0_hubs(self, src_id: int, dst_id: int, date: datetime, db) -> List[Route]:
+        """Task 18: Instant Hub-to-Hub lookup."""
+        try:
+            row = db.execute(text(
+                "SELECT trains_json FROM hub_connectivity_index WHERE src_hub_id = :src AND dst_hub_id = :dst"
+            ), {"src": src_id, "dst": dst_id}).fetchone()
+            
+            if not row: return []
+            
+            trains = json.loads(row[0])
+            results = []
+            for t in trains:
+                rt = Route()
+                seg = RouteSegment(
+                    trip_id=t['tid'],
+                    departure_stop_id=src_id,
+                    arrival_stop_id=dst_id,
+                    departure_time=self._parse_turbo_time(t['dep']),
+                    arrival_time=self._parse_turbo_time(t['arr']),
+                    duration_minutes=0,
+                    distance_km=0.0,
+                    train_number=str(t['tid'])
+                )
+                rt.add_segment(seg)
+                rt.metadata["engine"] = "hub_tier_0"
+                results.append(rt)
+            return results
+        except Exception as e:
+            logger.error(f"Hub Tier 0 error: {e}")
+            return []
+
+    async def _hydrate_fares_and_score(self, routes: List[Route], constraints: RouteConstraints, graph, db):
+        from .scoring import RouteScorer
+        from sqlalchemy import text
+        
+        trip_pks = set()
+        train_nos = set()
+        for r in routes:
+            for s in r.segments:
+                if isinstance(s.trip_id, int): trip_pks.add(s.trip_id)
+                if s.train_number: train_nos.add(str(s.train_number))
+        
+        fare_map = {} 
+        
+        if trip_pks:
+            pks_str = ",".join([str(tid) for tid in trip_pks])
+            rows = db.execute(text(f"SELECT trip_id, amount FROM fares WHERE trip_id IN ({pks_str})")).fetchall()
+            for tid, amt in rows:
+                fare_map[str(tid)] = amt
+
+        if train_nos:
+            nos_str = ",".join([f"'{n}'" for n in train_nos])
+            rows = db.execute(text(f"""
+                SELECT t.trip_id, f.amount 
+                FROM fares f 
+                JOIN trips t ON f.trip_id = t.id 
+                WHERE t.trip_id IN ({nos_str})
+            """)).fetchall()
+            for tno, amt in rows:
+                fare_map[str(tno)] = amt
+
+        for r in routes:
+            for s in r.segments:
+                s.fare = fare_map.get(str(s.trip_id)) or fare_map.get(str(s.train_number)) or 750.0
+            
+            r.total_cost = sum(s.fare for s in r.segments)
+            r.total_duration = sum(s.duration_minutes for s in r.segments) + sum(t.duration_minutes for t in r.transfers)
+            r.score = await RouteScorer.score_route(r, constraints, getattr(graph.snapshot, 'reliability_scores', {}))
+
+    def _hydrate_turbo_results(self, turbo_raw: List[Dict], source: str, destination: str) -> List[Route]:
+        """Converts raw Turbo SQL results into rich Route objects."""
+        routes = []
+        for r in turbo_raw:
+            rt = Route()
+            if r.get("type") in ("direct", "direct_backbone"):
+                seg = RouteSegment(
+                    trip_id=r.get('train_no'),
+                    departure_stop_id=0,
+                    arrival_stop_id=0,
+                    departure_code=source,
+                    arrival_code=destination,
+                    departure_time=self._parse_turbo_time(r.get('dep')),
+                    arrival_time=self._parse_turbo_time(r.get('arr')),
+                    duration_minutes=0,
+                    distance_km=0.0,
+                    fare=1500.0,
+                    train_number=str(r.get('train_no'))
+                )
+                rt.add_segment(seg)
+                rt.metadata["engine"] = "turbo_direct"
+            elif r.get("type") == "1-transfer":
+                legs = r.get("legs", [])
+                s1 = RouteSegment(
+                    trip_id=legs[0].get('train'),
+                    departure_stop_id=0,
+                    arrival_stop_id=0,
+                    departure_code=legs[0].get('from'),
+                    arrival_code=legs[0].get('to'),
+                    departure_time=self._parse_turbo_time(legs[0].get('dep')),
+                    arrival_time=self._parse_turbo_time(legs[0].get('arr')),
+                    duration_minutes=0,
+                    distance_km=0.0,
+                    train_number=str(legs[0].get('train'))
+                )
+                s2 = RouteSegment(
+                    trip_id=legs[1].get('train'),
+                    departure_stop_id=0,
+                    arrival_stop_id=0,
+                    departure_code=legs[1].get('from'),
+                    arrival_code=legs[1].get('to'),
+                    departure_time=self._parse_turbo_time(legs[1].get('dep')),
+                    arrival_time=self._parse_turbo_time(legs[1].get('arr')),
+                    duration_minutes=0,
+                    distance_km=0.0,
+                    train_number=str(legs[1].get('train'))
+                )
+                rt.add_segment(s1)
+                rt.add_segment(s2)
+                
+                hub_code = r.get("hub", "UNK")
+                wait_mins = int((s2.departure_time - s1.arrival_time).total_seconds() / 60)
+                tc = TransferConnection(
+                    station_id=0, 
+                    arrival_time=s1.arrival_time, 
+                    departure_time=s2.departure_time,
+                    duration_minutes=wait_mins,
+                    station_name=hub_code
+                )
+                rt.add_transfer(tc)
+                rt.metadata["engine"] = "turbo_transfer"
+            
+            if rt.segments:
+                routes.append(rt)
+        return routes
+
+    def _parse_turbo_time(self, time_str: str) -> datetime:
+        try:
+            now = datetime.now()
+            t = datetime.strptime(time_str.split('.')[0], "%H:%M:%S").time()
+            return datetime.combine(now.date(), t)
+        except:
+            return datetime.now()
+
+    def _global_deduplicate(self, routes: List[Route]) -> List[Route]:
+        """Pareto-based strict deduplication across all engines."""
+        if not routes: return []
+        unique_map = {}
+        for r in routes:
+            if not r.segments: continue
+            path_key = tuple((s.train_number or s.trip_id, s.departure_time.isoformat()) for s in r.segments)
+            if path_key not in unique_map:
+                unique_map[path_key] = r
+            else:
+                if r.score < unique_map[path_key].score:
+                    unique_map[path_key] = r
+        return list(unique_map.values())

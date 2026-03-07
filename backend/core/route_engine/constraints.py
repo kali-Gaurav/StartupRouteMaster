@@ -3,12 +3,7 @@ from typing import Optional
 
 from enum import Enum
 
-class Persona(str, Enum):
-    """Task 1: Core Routing Personas."""
-    EMERGENCY = "emergency" # Speed > Comfort
-    COMFORT = "comfort"     # No GN, AC only, min transfers
-    BUDGET = "budget"       # Cheapest CNF
-    FAMILY = "family"       # Reliable connections
+from core.data_structures import Persona
 
 @dataclass
 class RouteConstraints:

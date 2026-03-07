@@ -38,6 +38,13 @@ class Config:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "changeme")
     JWT_REFRESH_EXPIRATION_DAYS = int(os.getenv("JWT_REFRESH_EXPIRATION_DAYS", "30"))
     
+    # Task 2.7: Bank SMS Webhook Decryption
+    BANK_WEBHOOK_SECRET = os.getenv("BANK_WEBHOOK_SECRET", "")
+    
+    # Manual IRCTC Credentials (Task 6)
+    IRCTC_USERNAME = os.getenv("IRCTC_USERNAME", "")
+    IRCTC_PASSWORD = os.getenv("IRCTC_PASSWORD", "")
+    
     # Payment Gateways
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")

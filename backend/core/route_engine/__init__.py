@@ -1,5 +1,5 @@
 from .engine import RailwayRouteEngine as RouteEngine, RailwayRouteEngine
-from .data_structures import Route, RouteSegment, TransferConnection, UserContext
+from core.data_structures import Route, RouteSegment, TransferConnection, UserContext
 from .constraints import RouteConstraints
 from .raptor import OptimizedRAPTOR, HybridRAPTOR
 from .graph import TimeDependentGraph, StaticGraphSnapshot, RealtimeOverlay # Import RealtimeOverlay

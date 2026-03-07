@@ -15,6 +15,10 @@ import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { IconSprite } from "./components/ui/IconSprite";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { queryClient } from "./infrastructure/queryClient";
 
 // Lazy load pages
 const Index = lazy(() => import("./pages/Index"));
@@ -31,6 +35,7 @@ const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
@@ -110,6 +115,7 @@ const AppContent = () => {
             <Route path="/safety" element={<Safety />} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/ops/sos" element={<SOSDashboard />} />
+            <Route path="/ops/admin" element={<AdminDashboard />} />
 
             {/* Mini App with Granular Resilience (Suggestion #25) */}
             <Route path="/mini-app" element={

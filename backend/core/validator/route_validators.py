@@ -6,7 +6,7 @@ from database.models import Segment
 from database.session import SessionLocal
 
 # Import at runtime for type hints to avoid NameError
-from ..route_engine.data_structures import Route, RouteSegment, TransferConnection
+from core.data_structures import Route, RouteSegment, TransferConnection
 from ..route_engine.constraints import RouteConstraints
 
 

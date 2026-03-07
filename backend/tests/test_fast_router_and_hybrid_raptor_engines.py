@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 
 from core.route_engine.graph import TimeDependentGraph, StaticGraphSnapshot
-from core.route_engine.data_structures import RouteSegment
+from core.data_structures import RouteSegment
 from core.route_engine.constraints import RouteConstraints
 from core.route_engine.fast_router import FastPathRouter
 from core.route_engine.raptor import HybridRAPTOR

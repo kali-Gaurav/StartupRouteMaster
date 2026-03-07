@@ -1,5 +1,7 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks
+import os
+import shutil
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, BackgroundTasks, UploadFile, File
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 import logging
@@ -7,11 +9,18 @@ import logging
 from database import get_db
 from schemas import AdminBookingSchema
 from services.booking_service import BookingService
-from database.models import Disruption, CommissionTracking, Booking, User, Payment
+from database.models import Disruption, CommissionTracking, Booking, User, Payment, EscrowStatus
 from database.config import Config
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
+
+# Constants for file storage
+MEDIA_DIR = "media"
+TICKETS_DIR = os.path.join(MEDIA_DIR, "tickets")
+
+# Ensure directories exist
+os.makedirs(TICKETS_DIR, exist_ok=True)
 
 
 def verify_admin_token(x_admin_token: str = Header(...)) -> bool:
@@ -292,6 +301,7 @@ async def update_booking_manual(
         if not booking:
             raise HTTPException(status_code=404, detail="Booking not found")
         
+        old_status = booking.booking_status
         booking.booking_status = status
         if pnr:
             booking.pnr_number = pnr
@@ -303,11 +313,192 @@ async def update_booking_manual(
             booking.booking_details = details
             
         db.commit()
+        
+        # Task 17: Audit Log
+        from services.audit_service import log_audit
+        log_audit(db, "Booking", booking.id, "MANUAL_STATUS_UPDATE", old_value=old_status, new_value=status, performed_by="ADMIN", reason=notes)
+        
         return {"success": True, "message": f"Booking {booking_id} updated to {status}"}
     except Exception as e:
         logger.error(f"Failed to update booking: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update booking")
+
+
+@router.post("/bookings/{booking_id}/verify-escrow")
+async def verify_escrow_payment(
+    booking_id: str,
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 13: Manual 'Mark as Paid' Action (admin only).
+    Task 41: State Machine Guard - only verify if UTR submitted.
+    """
+    from database.models import EscrowStatus
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        # Task 41: Guard
+        if booking.escrow_status != EscrowStatus.UTR_SUBMITTED:
+             raise HTTPException(status_code=400, detail=f"Cannot verify booking in {booking.escrow_status} state. Must be UTR_SUBMITTED.")
+        
+        old_status = booking.escrow_status.value if hasattr(booking.escrow_status, 'value') else str(booking.escrow_status)
+        booking.escrow_status = EscrowStatus.VERIFIED
+        booking.escrow_message = "Payment verified. Seat securing in progress."
+        
+        # For UNLOCK service, we can complete it immediately
+        if booking.service_type == "UNLOCK":
+            booking.escrow_status = EscrowStatus.COMPLETED
+            booking.is_unlocked = True
+            booking.escrow_message = "Route details unlocked successfully."
+            
+        db.commit()
+        
+        # Task 17: Audit Log
+        from services.audit_service import log_audit
+        log_audit(db, "Booking", booking.id, "ESCROW_VERIFICATION", old_value=old_status, new_value=str(booking.escrow_status), performed_by="ADMIN", reason="Manual UTR verification")
+        
+        return {
+            "success": True,
+            "message": f"Escrow verified for booking {booking_id}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to verify escrow: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to verify escrow")
+
+
+@router.post("/bookings/{booking_id}/start-booking")
+async def initiate_manual_booking(
+    booking_id: str,
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 21: "Initiate Booking" State.
+    Moves state to BOOKING_INITIATED to notify user that agent is working.
+    """
+    from database.models import EscrowStatus
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        # Task 41: Guard
+        if booking.escrow_status != EscrowStatus.VERIFIED:
+             raise HTTPException(status_code=400, detail=f"Cannot initiate booking. Escrow must be VERIFIED first. Current: {booking.escrow_status}")
+        
+        old_status = booking.escrow_status.value if hasattr(booking.escrow_status, 'value') else str(booking.escrow_status)
+        booking.escrow_status = EscrowStatus.BOOKING_INITIATED
+        booking.escrow_message = "Agent is currently booking your ticket on IRCTC. Please wait..."
+        
+        db.commit()
+        
+        # Task 17: Audit Log
+        from services.audit_service import log_audit
+        log_audit(db, "Booking", booking.id, "BOOKING_START", old_value=old_status, new_value="BOOKING_INITIATED", performed_by="ADMIN")
+        
+        return {
+            "success": True,
+            "message": f"Booking process started for {booking_id}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initiate booking: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to initiate booking")
+
+
+@router.get("/pending-verifications")
+async def get_pending_verifications(
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 11: Admin UTR Verification Panel (Backend).
+    Lists all bookings where UTR is submitted but not yet verified.
+    """
+    from database.models import EscrowStatus
+    try:
+        bookings = db.query(Booking).filter(
+            Booking.escrow_status == EscrowStatus.UTR_SUBMITTED
+        ).order_by(Booking.created_at.desc()).all()
+        
+        return {
+            "success": True,
+            "bookings": bookings,
+            "count": len(bookings)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get pending verifications: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get pending verifications")
+
+
+@router.get("/unmatched-funds")
+async def get_unmatched_funds(
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 14: Unmatched Funds Ledger.
+    Lists bank transactions that haven't been matched to any booking.
+    """
+    from database.models import BankTransaction
+    try:
+        transactions = db.query(BankTransaction).filter(
+            BankTransaction.status == "PENDING"
+        ).order_by(BankTransaction.received_at.desc()).all()
+        
+        return {
+            "success": True,
+            "transactions": transactions,
+            "count": len(transactions)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get unmatched funds: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get unmatched funds")
+
+
+@router.get("/bookings/{booking_id}/passenger-export")
+async def export_passenger_details(
+    booking_id: str,
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 22: Passenger Data Export (Backend).
+    Returns formatted string for easy copy-pasting into IRCTC.
+    """
+    from database.models import PassengerDetails
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+        
+        passengers = db.query(PassengerDetails).filter(PassengerDetails.booking_id == booking_id).all()
+        
+        formatted_list = []
+        for p in passengers:
+            formatted_list.append(f"Name: {p.full_name}, Age: {p.age}, Gender: {p.gender}")
+            
+        summary = "\n".join(formatted_list)
+        
+        return {
+            "success": True,
+            "passengers": [
+                {"name": p.full_name, "age": p.age, "gender": p.gender} for p in passengers
+            ],
+            "copy_paste_string": summary
+        }
+    except Exception as e:
+        logger.error(f"Failed to export passengers: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export passengers")
 
 
 @router.get("/commission/reconciliation")
@@ -356,3 +547,88 @@ async def get_commission_reconciliation(
     except Exception as e:
         logger.error(f"Failed to get commission reconciliation: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get reconciliation: {e}")
+
+
+@router.post("/bookings/{booking_id}/upload-ticket")
+async def upload_ticket_pdf(
+    booking_id: str,
+    file: UploadFile = File(...),
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 26: Ticket PDF Uploader (Backend).
+    Saves the E-ticket PDF and updates the booking record.
+    """
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        if not file.filename.endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+        # Save file to media/tickets/<booking_id>.pdf
+        file_path = os.path.join(TICKETS_DIR, f"{booking_id}.pdf")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Update booking
+        old_url = booking.ticket_pdf_url
+        booking.ticket_pdf_url = f"/media/tickets/{booking_id}.pdf"
+        booking.escrow_status = EscrowStatus.COMPLETED
+        booking.booking_status = "confirmed"
+        booking.escrow_message = "Ticket booked successfully! You can download it now."
+        db.commit()
+
+        # Task 17: Audit Log
+        from services.audit_service import log_audit
+        log_audit(db, "Booking", booking.id, "TICKET_UPLOAD", old_value=old_url, new_value=booking.ticket_pdf_url, performed_by="ADMIN")
+
+        return {
+            "success": True,
+            "message": "Ticket PDF uploaded and booking completed",
+            "url": booking.ticket_pdf_url
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload ticket: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to upload ticket")
+
+
+@router.post("/bookings/{booking_id}/fail")
+async def fail_booking(
+    booking_id: str,
+    reason: str = Query(..., description="Reason for failure (e.g., Sold Out)"),
+    _: bool = Depends(verify_admin_token),
+    db: Session = Depends(get_db),
+):
+    """
+    Task 29: Booking Failure Handling.
+    Marks a booking as FAILED and triggers the refund flow process.
+    """
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        old_status = booking.escrow_status.value if hasattr(booking.escrow_status, 'value') else str(booking.escrow_status)
+        booking.escrow_status = EscrowStatus.FAILED
+        booking.booking_status = "failed"
+        booking.escrow_message = f"Booking failed: {reason}. Refund will be processed."
+        db.commit()
+
+        # Task 17: Audit Log
+        from services.audit_service import log_audit
+        log_audit(db, "Booking", booking.id, "BOOKING_FAILURE", old_value=old_status, new_value="FAILED", performed_by="ADMIN", reason=reason)
+
+        return {
+            "success": True,
+            "message": f"Booking {booking_id} marked as FAILED. Reason: {reason}"
+        }
+    except Exception as e:
+        logger.error(f"Failed to fail booking: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to mark booking as failed")

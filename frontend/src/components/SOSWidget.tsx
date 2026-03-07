@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { AlertTriangle, X, ShieldAlert } from "lucide-react";
+import { AlertTriangle, X, ShieldAlert, MessageCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LocationService } from "@/lib/locationService";
 
