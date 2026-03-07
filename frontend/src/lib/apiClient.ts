@@ -53,9 +53,24 @@ export async function fetchWithAuth(
   }
 
   if (res.status === 401) {
-    on401();
-    throw new AuthError("Session expired", 401);
+    // Attempt token refresh
+    try {
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error || !data?.session?.access_token) {
+        // Refresh failed - user must re-login
+        on401();
+        throw new AuthError("Session expired", 401);
+      }
+      
+      // Retry with new token
+      headers.set("Authorization", `Bearer ${data.session.access_token}`);
+      res = await fetch(url, { ...init, headers });
+    } catch {
+      on401();
+      throw new AuthError("Session expired", 401);
+    }
   }
+  
   if (res.status === 429) {
     on429();
   }

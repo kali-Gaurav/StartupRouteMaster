@@ -17,7 +17,7 @@ from database.config import Config
 from core.middleware.observability import ObservabilityMiddleware
 
 # --- Import V2 Routers ---
-from api.v2 import search as search_v2, debug, admin, live, user as user_v2, booking as booking_v2, booking_ws, agent, admin_auth, monitoring, unlock, webhooks
+from api.v2 import search as search_v2, debug, admin, live, user as user_v2, booking as booking_v2, booking_ws, agent, admin_auth, monitoring, unlock, webhooks, auth_refresh
 from api import chat, chat_ws, sos, voice_triage, search, bookings, stations, payments, auth, users, flow, bank_webhooks, admin_refunds, admin_reconciliation, tatkal, telegram_bot, vault
 
 # Configure Logging
@@ -117,6 +117,7 @@ app.include_router(admin_auth.router, prefix="/api/v2")
 app.include_router(agent.router, prefix="/api/v2")
 app.include_router(unlock.router, prefix="/api/v2")
 app.include_router(webhooks.router, prefix="/api/v2")
+app.include_router(auth_refresh.router, prefix="/api/v2")
 
 # Legacy V1 Routers
 app.include_router(sos.router, prefix="/api")

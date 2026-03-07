@@ -30,13 +30,19 @@ def get_current_user(
     # first check local blacklist (redis) if present; old tokens we rejected
     if cache_service.is_available():
         if cache_service.get(f"jwt_blacklist:{token}"):
-            raise credentials_exception
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked"
+            )
 
     # verify against Supabase; the client method will raise or return error
     try:
         resp = supabase.auth.get_user(token)
     except Exception as e:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
         
     sb_user = None
     if hasattr(resp, "user"):
@@ -45,7 +51,10 @@ def get_current_user(
         sb_user = resp["data"]
         
     if not sb_user:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
 
     # Extract user metadata cleanly
     sb_id = getattr(sb_user, "id", sb_user.get("id") if isinstance(sb_user, dict) else None)
@@ -134,6 +143,15 @@ def get_optional_user(
         user = user_service.get_user_by_supabase_id(sb_id)
     if not user and sb_email:
         user = user_service.get_user_by_email(sb_email)
+    
+    # Update last_active_at if user exists
+    if user:
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        if not user.last_active_at or (now - user.last_active_at) > timedelta(minutes=5):
+            user.last_active_at = now
+            db.commit()
+    
     return user
 
 async def verify_webhook_signature(request: Request):
