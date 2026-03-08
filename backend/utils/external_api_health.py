@@ -1,85 +1,121 @@
 import time
 import logging
-from collections import deque
-from typing import Dict, Any
+import json
+from enum import Enum
+from typing import Dict, Any, Optional
+from services.multi_layer_cache import multi_layer_cache
 
 logger = logging.getLogger(__name__)
 
+class CircuitState(str, Enum):
+    CLOSED = "CLOSED"       # API healthy, all requests pass
+    OPEN = "OPEN"           # API unhealthy, all requests fail fast
+    HALF_OPEN = "HALF_OPEN" # Testing API with limited requests
+
 class ExternalAPIHealth:
     """
-    Task 25.1 & 29.1: Singleton to track health of external API providers.
-    Implements simple circuit breaker metrics and latency tracking.
+    Task 11: Production-Grade Circuit Breaker for External APIs.
+    [11.1] State machine support.
+    [11.3] Redis-backed for multi-worker consistency.
+    [11.4] 3s Latency Trigger.
     """
-    def __init__(self, window_size: int = 20, failure_threshold: float = 0.5):
-        self.window_size = window_size
+    def __init__(self, provider_name: str = "RapidAPI", failure_threshold: int = 5, recovery_timeout: int = 300):
+        self.name = provider_name
         self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.latency_limit_ms = 3000 # [11.4] 3 seconds
         
-        # history of bool (True=success, False=failure)
-        self.history = deque(maxlen=window_size)
-        # history of floats (ms)
-        self.latencies = deque(maxlen=window_size)
+        # Redis Keys
+        self.key_state = f"health:state:{self.name}"
+        self.key_failures = f"health:failures:{self.name}"
+        self.key_last_trip = f"health:last_trip:{self.name}"
+
+    async def _get_redis(self):
+        await multi_layer_cache.initialize()
+        return multi_layer_cache.redis
+
+    async def get_state(self) -> CircuitState:
+        """[11.1] Retrieve current state from Redis."""
+        r = await self._get_redis()
+        if not r: return CircuitState.CLOSED
         
-        self.is_disabled = False
-        self.disabled_until = 0.0
+        state = await r.get(self.key_state)
+        if not state: return CircuitState.CLOSED
         
-        self.total_calls = 0
-        self.total_success = 0
-        self.total_failure = 0
-        self.last_error = None
+        state_str = state.decode() if isinstance(state, bytes) else state
+        
+        # [11.7] Check for recovery timeout
+        if state_str == CircuitState.OPEN:
+            last_trip = await r.get(self.key_last_trip)
+            if last_trip:
+                trip_time = float(last_trip)
+                if (time.time() - trip_time) > self.recovery_timeout:
+                    await self._set_state(CircuitState.HALF_OPEN)
+                    return CircuitState.HALF_OPEN
+                    
+        return CircuitState(state_str)
 
-    def record_success(self, latency_ms: float = 0.0):
-        self.total_calls += 1
-        self.total_success += 1
-        self.history.append(True)
-        if latency_ms > 0:
-            self.latencies.append(latency_ms)
-        self._check_circuit()
+    async def _set_state(self, state: CircuitState):
+        r = await self._get_redis()
+        if r:
+            await r.set(self.key_state, state.value)
+            if state == CircuitState.OPEN:
+                await r.set(self.key_last_trip, str(time.time()))
+            elif state == CircuitState.CLOSED:
+                await r.delete(self.key_failures)
+            
+            logger.warning(f"🚨 CIRCUIT BREAKER [{self.name}]: State changed to {state.value}")
 
-    def record_failure(self, error: str = None):
-        self.total_calls += 1
-        self.total_failure += 1
-        self.history.append(False)
-        self.last_error = error
-        self._check_circuit()
+    async def record_success(self, latency_ms: float = 0.0):
+        """Handle success based on current state."""
+        state = await self.get_state()
+        r = await self._get_redis()
+        
+        if state == CircuitState.HALF_OPEN:
+            # Successful test request, close the circuit
+            await self._set_state(CircuitState.CLOSED)
+        elif state == CircuitState.CLOSED:
+            # [11.4] Check Latency
+            if latency_ms > self.latency_limit_ms:
+                logger.warning(f"High latency ({latency_ms:.0f}ms) detected for {self.name}.")
+                await self.record_failure("Latency Limit Exceeded")
+            else:
+                if r: await r.delete(self.key_failures)
 
-    def _check_circuit(self):
-        if len(self.history) < self.window_size:
+    async def record_failure(self, error: str = None):
+        """[11.2] Increment failure counter and trip if threshold reached."""
+        r = await self._get_redis()
+        if not r: return
+
+        state = await self.get_state()
+        if state == CircuitState.HALF_OPEN:
+            # Test request failed, reopen immediately
+            await self._set_state(CircuitState.OPEN)
             return
 
-        failure_count = self.history.count(False)
-        failure_rate = failure_count / len(self.history)
-        
-        avg_latency = sum(self.latencies) / len(self.latencies) if self.latencies else 0
+        fails = await r.incr(self.key_failures)
+        if fails >= self.failure_threshold:
+            await self._set_state(CircuitState.OPEN)
 
-        # Auto-disable on high latency (> 10s) or failure rate
-        if (failure_rate >= self.failure_threshold or avg_latency > 10000) and not self.is_disabled:
-            logger.error(f"🚨 CIRCUIT BREAKER TRIPPED: Failure rate={failure_rate*100:.1f}%, Avg Latency={avg_latency:.0f}ms")
-            self.is_disabled = True
-            self.disabled_until = time.time() + 300 
+    async def is_available(self) -> bool:
+        """Helper for DataProvider to check if API should be called."""
+        state = await self.get_state()
+        return state != CircuitState.OPEN
 
-    def is_available(self) -> bool:
-        if self.is_disabled:
-            if time.time() > self.disabled_until:
-                # Attempt recovery
-                logger.info("♻️ CIRCUIT BREAKER: Cooling period over, attempting recovery...")
-                self.is_disabled = False
-                self.history.clear()
-                self.latencies.clear()
-                return True
-            return False
-        return True
-
-    def get_status(self) -> Dict[str, Any]:
-        avg_latency = sum(self.latencies) / len(self.latencies) if self.latencies else 0
+    async def get_status(self) -> Dict[str, Any]:
+        r = await self._get_redis()
+        state = await self.get_state()
+        fails = int(await r.get(self.key_failures) or 0) if r else 0
         return {
-            "available": self.is_available(),
-            "total_calls": self.total_calls,
-            "success_rate": (self.total_success / self.total_calls * 100) if self.total_calls else 0,
-            "failure_rate": (self.history.count(False) / len(self.history)) if self.history else 0.0,
-            "avg_latency_ms": round(avg_latency, 2),
-            "is_disabled": self.is_disabled,
-            "last_error": self.last_error
+            "provider": self.name,
+            "state": state.value,
+            "consecutive_failures": fails,
+            "available": state != CircuitState.OPEN
         }
 
-# Global instance
-api_health = ExternalAPIHealth()
+# Multi-Provider instances
+rapid_api_health = ExternalAPIHealth("RapidAPI")
+rappid_health = ExternalAPIHealth("RappidIn")
+
+# Maintenance for existing code imports
+api_health = rapid_api_health 

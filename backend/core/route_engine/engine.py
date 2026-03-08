@@ -195,3 +195,29 @@ class RailwayRouteEngine:
                 edges=edges, 
                 rebuild_time=_time.time()
             )
+
+    async def run_nightly_refresh(self):
+        """
+        [19.1] Automated Nightly Refresh (2 AM).
+        [19.2] Pre-builds snapshots for next 7 days.
+        """
+        logger.info("📅 Starting Nightly Graph Refresh...")
+        start_date = datetime.now()
+        
+        for i in range(7):
+            target_date = start_date + timedelta(days=i)
+            try:
+                # [19.3] Atomic Swap: SnapshotManager.save_snapshot handles persistence
+                logger.info(f"  Pre-building snapshot for {target_date.date()}")
+                new_graph = await self.graph_builder.build_graph(target_date)
+                await self.snapshot_manager.save_snapshot(new_graph.snapshot)
+                
+                # If it's today, update the current active graph
+                if i == 0:
+                    async with self._lock:
+                        self.current_graph = new_graph
+                        self.current_snapshot = new_graph.snapshot
+            except Exception as e:
+                logger.error(f"  Failed to pre-build {target_date.date()}: {e}")
+        
+        logger.info("✅ Nightly Graph Refresh Complete.")

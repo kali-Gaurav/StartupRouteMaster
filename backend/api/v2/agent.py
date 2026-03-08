@@ -5,6 +5,7 @@ from database.session import get_db
 from database.models import Booking, EscrowStatus, AuditLog, User
 from services.agent_booking_service import AgentBookingService
 from services.ws_manager import ws_manager
+from api.dependencies import require_role # [36.3]
 from datetime import datetime
 import logging
 
@@ -15,7 +16,8 @@ router = APIRouter(prefix="/agent", tags=["Agent Operations"])
 async def get_agent_queue(
     page: int = 1,
     limit: int = 20,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    admin_or_agent: User = Depends(require_role(["agent", "admin"])) # [36.3]
 ):
     """
     Subtask 21.1: Fetch the prioritized queue of verified bookings.
@@ -71,6 +73,13 @@ async def toggle_agent_availability(
         "is_available": agent.is_available,
         "last_heartbeat": agent.last_heartbeat
     }
+@router.post("/bookings/{booking_id}/claim")
+async def claim_booking(
+    booking_id: str, 
+    agent_id: str = Query(...), 
+    db: Session = Depends(get_db),
+    admin_or_agent: User = Depends(require_role(["agent", "admin"])) # [36.3]
+):
     """
     [22.1] Atomic Claim Logic: Uses SELECT FOR UPDATE.
     [22.2] Capacity Guard: Limits agent to 3 active bookings.
@@ -83,6 +92,7 @@ async def toggle_agent_availability(
     ).count()
     
     if active_claims >= 3:
+        logger.warning(f"Agent {agent_id} capacity limit reached: {active_claims}")
         raise HTTPException(
             status_code=403, 
             detail=f"Limit reached. Complete your {active_claims} active bookings before claiming more."
@@ -94,9 +104,11 @@ async def toggle_agent_availability(
         booking = db.query(Booking).filter(Booking.id == booking_id).with_for_update().first()
         
         if not booking:
+            logger.error(f"Booking {booking_id} not found during claim.")
             raise HTTPException(status_code=404, detail="Booking not found.")
             
         if booking.agent_id:
+            logger.info(f"Conflict: Booking {booking_id} already held by {booking.agent_id}")
             raise HTTPException(
                 status_code=409, 
                 detail=f"Conflict: Already claimed by Agent {booking.agent_id}"

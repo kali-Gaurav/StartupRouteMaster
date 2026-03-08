@@ -1,52 +1,52 @@
-/**
- * Network status for global offline/slow indicator.
- */
-
 import { useState, useEffect } from "react";
-
-export interface NetworkStatus {
-  online: boolean;
-  /** True when navigator.connection suggests slow (e.g. 4g or reduced). */
-  slow?: boolean;
-}
+import { toast } from "@/hooks/use-toast";
 
 /**
- * Subscribe to online/offline and optionally effective connection type.
- * Use with NetworkStatusBanner for consistent UX.
+ * [45.2] Enhanced Network Status Hook with Toasts and Slow detection.
  */
-export function useNetworkStatus(): NetworkStatus {
-  const [online, setOnline] = useState(
-    typeof navigator !== "undefined" ? navigator.onLine : true
-  );
+export function useNetworkStatus() {
+  const [online, setOnline] = useState(navigator.onLine);
   const [slow, setSlow] = useState(false);
 
   useEffect(() => {
-    const handleOnline = () => setOnline(true);
-    const handleOffline = () => setOnline(false);
+    // Check for slow connection using Network Information API
+    const checkSlow = () => {
+      const conn = (navigator as any).connection;
+      if (conn) {
+        // slow if RTT > 500ms or effective type is 2g/slow-2g
+        setSlow(conn.rtt > 500 || ['slow-2g', '2g'].includes(conn.effectiveType));
+      }
+    };
+
+    const handleOnline = () => {
+      setOnline(true);
+      toast({
+        title: "Back Online",
+        description: "Your internet connection has been restored.",
+      });
+    };
+
+    const handleOffline = () => {
+      setOnline(false);
+      toast({
+        title: "You are Offline",
+        description: "Please check your internet connection.",
+        variant: "destructive",
+      });
+    };
 
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    setOnline(navigator.onLine);
-
-    // @ts-expect-error - connection is not in all TS libs
-    const conn = navigator.connection ?? navigator.mozConnection ?? navigator.webkitConnection;
-    if (conn) {
-      const updateSlow = () => {
-        const effective = conn.effectiveType;
-        setSlow(effective === "slow-2g" || effective === "2g" || conn.saveData === true);
-      };
-      conn.addEventListener("change", updateSlow);
-      updateSlow();
-      return () => {
-        window.removeEventListener("online", handleOnline);
-        window.removeEventListener("offline", handleOffline);
-        conn.removeEventListener("change", updateSlow);
-      };
-    }
+    
+    // Initial check
+    checkSlow();
+    const conn = (navigator as any).connection;
+    if (conn) conn.addEventListener('change', checkSlow);
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      if (conn) conn.removeEventListener('change', checkSlow);
     };
   }, []);
 

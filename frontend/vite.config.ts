@@ -11,10 +11,13 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
       manifest: {
-        name: 'Rail Assistant 2.0',
-        short_name: 'RailAI',
-        description: 'Intelligent Railway Routing and Booking',
-        theme_color: '#0f172a',
+        name: 'SafeSafar',
+        short_name: 'SafeSafar',
+        description: 'Empowering Secure and Comfortable Travel Across India',
+        theme_color: '#2563eb',
+        background_color: '#f8fafc',
+        display: 'standalone',
+        start_url: '/',
         icons: [
           {
             src: 'pwa-192x192.png',

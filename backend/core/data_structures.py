@@ -155,13 +155,35 @@ class RouteSegment:
             "fare": self.fare,
             "has_pantry": self.has_pantry,
             "departure_platform": self.departure_platform,
-            "arrival_platform": self.arrival_platform
+            "arrival_platform": self.arrival_platform,
+            "departure_stop_id": self.departure_stop_id,
+            "arrival_stop_id": self.arrival_stop_id
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'RouteSegment':
+        """Re-hydrate from dictionary."""
+        return cls(
+            trip_id=data.get("trip_id"),
+            train_number=data.get("train_number", ""),
+            train_name=data.get("train_name", ""),
+            departure_code=data.get("from_station", ""),
+            arrival_code=data.get("to_station", ""),
+            departure_time=datetime.fromisoformat(data["departure_time"]),
+            arrival_time=datetime.fromisoformat(data["arrival_time"]),
+            duration_minutes=data.get("duration", 0),
+            distance_km=data.get("distance", 0.0),
+            fare=data.get("fare", 0.0),
+            departure_platform=data.get("departure_platform"),
+            arrival_platform=data.get("arrival_platform"),
+            has_pantry=data.get("has_pantry", False),
+            departure_stop_id=data.get("departure_stop_id", 0),
+            arrival_stop_id=data.get("arrival_stop_id", 0)
+        )
 
 @dataclass
 class TransferConnection:
-    """Represents a transfer between trains at a station."""
+    # ... existing fields ...
     station_id: int
     arrival_time: datetime
     departure_time: datetime
@@ -172,7 +194,7 @@ class TransferConnection:
     platform_from: Optional[str] = None
     platform_to: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[Any, Any]:
         return {
             "station_id": self.station_id,
             "station_name": self.station_name,
@@ -180,6 +202,16 @@ class TransferConnection:
             "departure_time": self.departure_time.isoformat() if self.departure_time != datetime.max else None,
             "wait_minutes": self.duration_minutes
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TransferConnection':
+        return cls(
+            station_id=data["station_id"],
+            station_name=data["station_name"],
+            arrival_time=datetime.fromisoformat(data["arrival_time"]) if data.get("arrival_time") else datetime.min,
+            departure_time=datetime.fromisoformat(data["departure_time"]) if data.get("departure_time") else datetime.max,
+            duration_minutes=data.get("wait_minutes", 0)
+        )
 
 
 @dataclass
@@ -255,6 +287,26 @@ class Route:
             "availability_prob": self.availability_probability,
             "metadata": self.metadata
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Route':
+        """Re-hydrate from dictionary."""
+        segments = [RouteSegment.from_dict(s) for s in data.get("segments", [])]
+        transfers = [TransferConnection.from_dict(t) for t in data.get("transfers", [])]
+        return cls(
+            segments=segments,
+            transfers=transfers,
+            total_duration=data.get("total_duration", 0),
+            total_cost=data.get("total_fare", 0.0),
+            total_distance=data.get("total_distance", 0.0),
+            score=data.get("score", 0.0),
+            reliability=data.get("reliability", 1.0),
+            availability_probability=data.get("availability_prob", 1.0),
+            is_locked=data.get("is_locked", True),
+            is_featured=data.get("is_featured", False),
+            highlight_label=data.get("highlight_label"),
+            metadata=data.get("metadata", {})
+        )
 
 
 # ==============================================================================

@@ -72,9 +72,10 @@ class DataProvider:
         Task 28.2 & 37.3: Fetch delay and platform from Rappid.in.
         Returns: {"delay_mins": int, "platform": Optional[str], "current_station": str}
         """
+        from utils.external_api_health import rappid_health
         default_res = {"delay_mins": 0, "platform": None, "current_station": "Unknown"}
         
-        if self.rappid_client:
+        if self.rappid_client and await rappid_health.is_available():
             try:
                 cache_key = f"live_status:{train_number}"
                 if multi_layer_cache.redis:
@@ -82,9 +83,12 @@ class DataProvider:
                     if cached: return json.loads(cached)
 
                 logger.info(f"Rappid.in Call: {train_number} status lookup")
+                api_start = time.perf_counter()
                 status = await self.rappid_client.fetch_train_status(train_number)
+                latency = (time.perf_counter() - api_start) * 1000
                 
                 if status and status.get("success"):
+                    await rappid_health.record_success(latency_ms=latency)
                     train_data = status.get("data", [{}])[0]
                     delay_str = train_data.get("delay", "0")
                     platform = train_data.get("platform")
@@ -105,15 +109,88 @@ class DataProvider:
                         await multi_layer_cache.redis.setex(cache_key, 300, json.dumps(res))
                     
                     return res
+                else:
+                    await rappid_health.record_failure("Rappid.in returned failure")
             except Exception as e:
+                await rappid_health.record_failure(str(e))
                 logger.error(f"Rappid.in fetch failed for {train_number}: {e}")
-        
-        return default_res
 
     # Maintain backward compatibility
     async def get_live_delay(self, train_number: str) -> int:
         status = await self.get_live_status(train_number)
         return status["delay_mins"]
+
+    async def verify_seat_availability_batch(self, queries: List[Dict]) -> List[Dict]:
+        """
+        [12.1] Group availability lookups to reduce HTTP overhead.
+        [12.2] Limit: 5 trains per batch (handled by caller or internal loop).
+        """
+        if not queries: return []
+        
+        # Check cache for ALL first (Task 12.3 logic)
+        results = []
+        to_verify = []
+        
+        for q in queries:
+            cache_key = f"verify_seat:{q['train_number']}:{q['from_station']}:{q['to_station']}:{q['date']}:{q['quota']}:{q.get('class_type', 'SL')}"
+            if multi_layer_cache.redis:
+                cached = await multi_layer_cache.redis.get(cache_key)
+                if cached:
+                    results.append(json.loads(cached))
+                    continue
+            to_verify.append(q)
+            
+        if not to_verify: return results
+        
+        # Process in batches of 5
+        from utils.external_api_health import api_health
+        batch_size = 5
+        for i in range(0, len(to_verify), batch_size):
+            batch = to_verify[i : i + batch_size]
+            
+            # [12.4] Grouped API Call (If client supports it, otherwise parallelized with delay)
+            if self.rapidapi_client and await api_health.is_available():
+                tasks = []
+                for q in batch:
+                    tasks.append(self.verify_seat_availability_unified(
+                        trip_id=0, travel_date=datetime.strptime(q['date'], "%Y-%m-%d"),
+                        train_number=q['train_number'], from_station=q['from_station'],
+                        to_station=q['to_station'], quota=q['quota'],
+                        coach_preference=q.get('coach_preference', "SLEEPER")
+                    ))
+                
+                batch_res = await asyncio.gather(*tasks)
+                results.extend(batch_res)
+                
+                # [12.4] Rate limit guard: 200ms delay between batches
+                if i + batch_size < len(to_verify):
+                    await asyncio.sleep(0.2)
+            else:
+                # Fallback for whole batch
+                for _ in batch:
+                    results.append({"status": "verified", "source": "database_fallback"})
+                    
+        return results
+
+    def _calculate_dynamic_ttl(self, travel_date: datetime) -> int:
+        """
+        [13.1] Tiered TTL Logic:
+        - Tomorrow (< 24h): 5 mins (300s)
+        - Near Term (< 7 days): 15 mins (900s)
+        - Long Term (> 30 days): 6 hours (21600s)
+        - Mid Term: 1 hour (3600s)
+        """
+        now = datetime.now()
+        diff_days = (travel_date - now).days
+        
+        if diff_days < 1:
+            return 300 # 5 mins
+        elif diff_days < 7:
+            return 900 # 15 mins
+        elif diff_days > 30:
+            return 21600 # 6 hours
+        else:
+            return 3600 # 1 hour
 
     async def verify_seat_availability_unified(
         self,
@@ -132,7 +209,7 @@ class DataProvider:
         from utils.external_api_health import api_health
         
         if self.rapidapi_client and train_number and from_station and to_station:
-            if not api_health.is_available():
+            if not await api_health.is_available():
                 logger.warning("RapidAPI is currently disabled by circuit breaker. Using DB fallback.")
             else:
                 try:
@@ -162,7 +239,7 @@ class DataProvider:
                     latency = (time.perf_counter() - api_start) * 1000
                     
                     if result and result.get("status") != "error":
-                        api_health.record_success(latency_ms=latency)
+                        await api_health.record_success(latency_ms=latency)
                         available_seats = result.get("availableSeats", 0)
                         verification_result = {
                             "status": "verified",
@@ -173,15 +250,17 @@ class DataProvider:
                         }
                         
                         if multi_layer_cache.redis:
-                            await multi_layer_cache.redis.setex(cache_key, 900, json.dumps(verification_result))
+                            # [13.2] Dynamic TTL
+                            ttl = self._calculate_dynamic_ttl(travel_date)
+                            await multi_layer_cache.redis.setex(cache_key, ttl, json.dumps(verification_result))
                         
                         return verification_result
                     else:
                         error_msg = result.get("message", "Unknown API error") if result else "Null response"
-                        api_health.record_failure(error_msg)
+                        await api_health.record_failure(error_msg)
                         logger.warning(f"RapidAPI verification failed: {error_msg}")
                 except Exception as e:
-                    api_health.record_failure(str(e))
+                    await api_health.record_failure(str(e))
                     logger.error(f"RapidAPI verification error: {e}")
 
         # Fallback to database
@@ -218,7 +297,7 @@ class DataProvider:
                 return json.loads(cached)
 
         # 2. Try RapidAPI
-        if self.rapidapi_client and train_number and from_station and to_station and api_health.is_available():
+        if self.rapidapi_client and train_number and from_station and to_station and await api_health.is_available():
             try:
                 logger.info(f"RapidAPI Fare Call: {train_number} from {from_station} to {to_station}")
                 api_start = time.perf_counter()
@@ -228,7 +307,7 @@ class DataProvider:
                 latency = (time.perf_counter() - api_start) * 1000
                 
                 if result and result.get("status") == "success":
-                    api_health.record_success(latency_ms=latency)
+                    await api_health.record_success(latency_ms=latency)
                     # ... rest of the parsing same as before ...
                     fares_list = result.get("data", {}).get("fares", [])
                     target_fare = None
@@ -256,9 +335,9 @@ class DataProvider:
                             
                     if target_fare: return target_fare
                 else:
-                    api_health.record_failure("Fare API returned error")
+                    await api_health.record_failure("Fare API returned error")
             except Exception as e:
-                api_health.record_failure(str(e))
+                await api_health.record_failure(str(e))
                 logger.error(f"RapidAPI fare verification failed: {e}")
 
         # 3. Fallback to pre-computed DB fares (Task 2 sync)

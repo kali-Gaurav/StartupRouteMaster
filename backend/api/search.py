@@ -6,24 +6,19 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from database import get_db
-from schemas import SearchRequestSchema
+from schemas import SearchRequestSchema, LoadMoreRequestSchema
 from core.route_engine import route_engine
 from database.models import Stop, Disruption
 from services.station_service import StationService
 from services.search_service import SearchService
 from database.config import Config
 from utils.limiter import limiter
-from utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
-from utils.validation import validate_date_string
-from fastapi_cache.decorator import cache
-from api.websockets import manager as websocket_manager
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
 @router.post("/")
 @limiter.limit("60/minute")
-@cache(expire=300) # 5 minute cache
 async def search_routes_endpoint(
     request: Request, 
     search_request: SearchRequestSchema, 
@@ -33,51 +28,54 @@ async def search_routes_endpoint(
     limit: int = Query(15, ge=1, le=50)
 ):
     """
-    Search for routes using the unified Stop (GTFS) model.
+    Search for routes with session-based pagination.
     """
     start_time = time.time()
-    status_label = "failure"
-
     try:
         travel_date_str = search_request.date or datetime.now().strftime("%Y-%m-%d")
-        if not validate_date_string(travel_date_str):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid travel date format. Use YYYY-MM-DD."
-            )
-
-        # Unified SearchService handles the engine call
         service = SearchService(db)
 
-        # --- DRY RUN MODE (Topic 3) ---
         if dry_run:
             from utils.station_utils import resolve_stations
             src_stop, dst_stop = resolve_stations(db, search_request.source, search_request.destination)
-            
-            return {
-                "dry_run": True,
-                "resolved": {
-                    "source": {"code": src_stop.code, "name": src_stop.name} if src_stop else None,
-                    "destination": {"code": dst_stop.code, "name": dst_stop.name} if dst_stop else None
-                },
-                "validation": {
-                    "source_resolved": src_stop is not None,
-                    "destination_resolved": dst_stop is not None,
-                    "date_valid": True
-                },
-                "status": "ready" if (src_stop and dst_stop) else "incomplete"
-            }
+            return {"dry_run": True, "resolved": {"source": src_stop.code if src_stop else None, "destination": dst_stop.code if dst_stop else None}}
 
         result = await service.search_routes(
             source=search_request.source,
             destination=search_request.destination,
             travel_date=travel_date_str,
             budget_category=search_request.budget,
-            multi_modal=search_request.multi_modal,
-            women_safety_mode=search_request.women_safety_mode,
-            offset=offset,
-            limit=limit
+            limit=limit,
+            session_id=search_request.session_id,
+            client_ip=request.client.host
         )
+        return result
+
+    except Exception as e:
+        logger.error(f"Search endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/load-more")
+@limiter.limit("60/minute")
+async def load_more_endpoint(
+    request: Request,
+    load_request: LoadMoreRequestSchema,
+    db: Session = Depends(get_db)
+):
+    """
+    Subtask 1.3: Load the next batch of verified routes for a session.
+    """
+    try:
+        service = SearchService(db)
+        result = await service.load_more_routes(
+            session_id=load_request.session_id,
+            limit=load_request.limit,
+            quota=load_request.quota
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Load more error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load more routes")
 
         if not result or not result.get("journeys"):
             # Task 34: Alternative Hub-Route Suggestion

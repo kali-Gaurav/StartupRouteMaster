@@ -2,27 +2,35 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
+import hmac
+import hashlib
+import logging
 
-from schemas import TokenData
+from schemas.base import TokenData
 from database.config import Config
 
+logger = logging.getLogger(__name__)
 
-# Password Hashing
+# ==============================================================================
+# 1. PASSWORD SECURITY (RESTORED)
+# ==============================================================================
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# JWT Configuration
-# NOTE: the application now uses Supabase to issue and verify tokens.  Most
-# endpoints should not call these helpers directly.  They remain here for
-# legacy support / internal tokens (e.g. scheduled jobs) that may still rely
-# on `Config.JWT_SECRET_KEY`.
-#
-# The Supabase JWT secret and/or anon API key is sometimes reused here when
-# the legacy utilities are exercised, but new authentication should always be
-# performed through the Supabase client (see `supabase_client.py`).
-SECRET_KEY = Config.JWT_SECRET_KEY or Config.SUPABASE_KEY or "a_very_secret_key_that_is_long_and_secure"
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verifies a plain password against a hashed one."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Hashes a plain password."""
+    return pwd_context.hash(password)
+
+
+# ==============================================================================
+# 2. JWT UTILITIES (RESTORED)
+# ==============================================================================
+SECRET_KEY = Config.JWT_SECRET_KEY or Config.SUPABASE_JWT_SECRET or "a_very_secret_key"
 ALGORITHM = "HS256"
-# expiration can still be configured via Config or env if needed later
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 credentials_exception = HTTPException(
@@ -30,16 +38,6 @@ credentials_exception = HTTPException(
     detail="Could not validate credentials",
     headers={"WWW-Authenticate": "Bearer"},
 )
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a plain password against a hashed one."""
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def get_password_hash(password: str) -> str:
-    """Hashes a plain password."""
-    return pwd_context.hash(password)
-
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Creates a new JWT access token."""
@@ -52,7 +50,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def decode_access_token(token: str) -> TokenData:
+def decode_access_token(token: str) -> Optional[TokenData]:
     """Decodes a JWT access token and returns the payload."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -62,3 +60,55 @@ def decode_access_token(token: str) -> TokenData:
         return TokenData(email=email)
     except JWTError:
         raise credentials_exception
+
+
+# ==============================================================================
+# 3. WEBHOOK SECURITY (TASK 30 - ADDED)
+# ==============================================================================
+# [30.1] Shared Secret for Webhooks
+WEBHOOK_SECRET = Config.JWT_SECRET_KEY 
+
+def verify_webhook_signature(payload_bytes: bytes, signature: str) -> bool:
+    """[30.2] HMAC-SHA256 Signature Validation."""
+    if not signature: return False
+    
+    expected_signature = hmac.new(
+        WEBHOOK_SECRET.encode(),
+        payload_bytes,
+        hashlib.sha256
+    ).hexdigest()
+    
+    return hmac.compare_digest(expected_signature, signature)
+
+async def signature_guard(request: Request):
+    """
+    Subtask 30.3: Dependency guard for FastAPI routes.
+    Expects 'X-RM-Signature' header.
+    """
+    signature = request.headers.get("X-RM-Signature")
+    if not signature:
+        logger.warning("Webhook received without signature header.")
+        raise HTTPException(status_code=401, detail="Missing signature.")
+        
+    body = await request.body()
+    if not verify_webhook_signature(body, signature):
+        logger.error("Invalid webhook signature detected! Potential spoofing attempt.")
+        raise HTTPException(status_code=401, detail="Invalid signature.")
+        
+    return True
+
+def sanitize_string(text: str, length_limit: int = 100) -> str:
+    """
+    [38.1] Sanitizes user input to prevent XSS/Injection.
+    - Strips HTML tags.
+    - Removes non-alphanumeric except spaces and commas.
+    - Truncates to limit.
+    """
+    if not text: return ""
+    import re
+    # 1. Strip HTML tags
+    clean = re.sub(r'<.*?>', '', text)
+    # 2. Keep only safe characters: A-Z, 0-9, space, comma
+    clean = re.sub(r'[^a-zA-Z0-9\s,]', '', clean)
+    # 3. Truncate
+    return clean[:length_limit].strip()

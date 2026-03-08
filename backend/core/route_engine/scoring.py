@@ -16,12 +16,29 @@ class RouteScorer:
         reliability_scores = reliability_scores or {}
         passengers = passengers or [Passenger()]
         
+        # [3.1] Risk Thresholds
+        MIN_SAFE_TRANSFER = 30
+        MAX_COMFORT_TRANSFER = 360 # 6 hours
+        
         # 1. Base Components (Time & Cost)
         time_score = route.total_duration * w.time
         cost_score = route.total_cost * w.cost
         
-        # 2. Transfer Penalty
+        # 2. Advanced Transfer Penalty (Subtasks 3.3, 3.4)
         base_transfer_p = (len(route.transfers) ** 1.5) * w.transfer
+        smart_transfer_penalty = 0
+        
+        for tr in route.transfers:
+            dur = tr.duration_minutes
+            # [3.3] Quadratic Penalty for Short Transfers (< 30m)
+            if dur < MIN_SAFE_TRANSFER:
+                diff = MIN_SAFE_TRANSFER - dur
+                smart_transfer_penalty += (diff ** 2) * 10 # Exponential risk increase
+            
+            # [3.4] Linear Penalty for Long Transfers (> 6h)
+            if dur > MAX_COMFORT_TRANSFER:
+                extra_hours = (dur - MAX_COMFORT_TRANSFER) / 60.0
+                smart_transfer_penalty += extra_hours * 200 # Linear fatigue penalty
         
         # [39.2] Passenger Persona Adjustments
         has_senior = any(p.age >= 60 for p in passengers)
@@ -100,7 +117,7 @@ class RouteScorer:
                 risk_penalty = 500
                 risk_warnings.append("Passing through high-congestion zones")
 
-        final_score = time_score + cost_score + transfer_penalty + comfort_adjustments + gn_penalty + survival_penalty + avail_penalty + risk_penalty
+        final_score = time_score + cost_score + transfer_penalty + smart_transfer_penalty + comfort_adjustments + gn_penalty + survival_penalty + avail_penalty + risk_penalty
         
         # [34.6] Scorer Integration: Enriched Metadata
         if not hasattr(route, 'metadata') or route.metadata is None:
@@ -110,6 +127,7 @@ class RouteScorer:
             "time_mins": route.total_duration,
             "cost_val": route.total_cost,
             "transfers": len(route.transfers),
+            "smart_transfer_penalty": smart_transfer_penalty,
             "survival_prob": round(survival_prob, 2),
             "avail_prob": round(route.availability_probability, 2),
             "comfort_penalty": comfort_adjustments,
@@ -118,8 +136,13 @@ class RouteScorer:
             "risk_level": risk_level
         }
         
-        # Human readable summary for UI
+        # Human readable summary for UI (Subtask 3.6)
         reasons = []
+        if any(tr.duration_minutes < 30 for tr in route.transfers):
+            reasons.append("Tight Connection")
+        if any(tr.duration_minutes > 360 for tr in route.transfers):
+            reasons.append("Long Wait")
+            
         if len(route.segments) == 1: reasons.append("Direct journey")
         if survival_prob > 0.9: reasons.append("Excellent connection timing")
         if route.availability_probability > 0.8: reasons.append("High seat availability")

@@ -27,7 +27,8 @@ export function configureApiClient(config: {
 
 export async function fetchWithAuth(
   pathOrUrl: string,
-  init?: RequestInit
+  init?: RequestInit,
+  retryCount: number = 0 // [34.3]
 ): Promise<Response> {
   const url = pathOrUrl.startsWith("http") ? pathOrUrl : ensureSlash(pathOrUrl);
   const { data: { session } } = await supabase.auth.getSession();
@@ -52,8 +53,8 @@ export async function fetchWithAuth(
     throw await normalizeApiError(null, cause);
   }
 
-  if (res.status === 401) {
-    // Attempt token refresh
+  if (res.status === 401 && retryCount < 1) {
+    // [34.3] Attempt token refresh ONLY ONCE
     try {
       const { data, error } = await supabase.auth.refreshSession();
       if (error || !data?.session?.access_token) {
@@ -62,9 +63,9 @@ export async function fetchWithAuth(
         throw new AuthError("Session expired", 401);
       }
       
-      // Retry with new token
+      // Retry with new token and increment counter
       headers.set("Authorization", `Bearer ${data.session.access_token}`);
-      res = await fetch(url, { ...init, headers });
+      return fetchWithAuth(pathOrUrl, init, retryCount + 1);
     } catch {
       on401();
       throw new AuthError("Session expired", 401);

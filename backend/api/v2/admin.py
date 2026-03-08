@@ -171,8 +171,8 @@ async def reject_payment(booking_id: str, payload: BookingFailRequest, db: Sessi
         entity_type="Booking",
         entity_id=booking.id,
         action="MANUAL_PAYMENT_REJECT",
-        old_value=old_status,
-        new_value="FAILED",
+        old_status=old_status,
+        new_status="FAILED",
         performed_by="SUPER_ADMIN",
         reason=payload.reason
     )
@@ -180,6 +180,42 @@ async def reject_payment(booking_id: str, payload: BookingFailRequest, db: Sessi
     db.commit()
     
     return {"success": True, "message": f"Booking {booking_id} rejected: {payload.reason}"}
+
+@router.post("/payments/{booking_id}/revert-rejection")
+async def revert_payment_rejection(booking_id: str, db: Session = Depends(get_db)):
+    """
+    [39.1] Undo an accidental rejection.
+    [39.2] Transitions state from FAILED back to UTR_SUBMITTED.
+    """
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+        
+    if booking.escrow_status != EscrowStatus.FAILED:
+        raise HTTPException(status_code=400, detail="Only FAILED bookings can be reverted.")
+
+    # Apply Reversion
+    old_status = booking.escrow_status.value
+    booking.escrow_status = EscrowStatus.UTR_SUBMITTED
+    booking.escrow_message = "Rejection reverted by admin. Re-verifying..."
+    
+    # Audit log
+    audit = AuditLog(
+        entity_type="Booking",
+        entity_id=booking.id,
+        action="MANUAL_REJECTION_REVERT",
+        old_value=old_status,
+        new_value="UTR_SUBMITTED",
+        performed_by="SUPER_ADMIN",
+        reason="Accidental rejection correction"
+    )
+    db.add(audit)
+    db.commit()
+    
+    # Real-time Broadcast
+    await ws_manager.broadcast_log(booking_id, "Admin reverted the rejection. Re-verifying...", "UTR_SUBMITTED")
+    
+    return {"success": True, "message": f"Rejection for {booking_id} has been reverted."}
 
 # ==============================================================================
 # MERCHANT MANAGEMENT (Task 18)
@@ -210,6 +246,31 @@ async def bulk_activate_vpas(db: Session = Depends(get_db)):
     db.query(MerchantVPA).update({MerchantVPA.is_active: True})
     db.commit()
     return {"success": True, "message": "All merchants activated."}
+
+# ==============================================================================
+# OPERATIONS (Task 8)
+# ==============================================================================
+
+@router.post("/ops/cancel-train")
+async def cancel_train(
+    train_no: str = Query(...),
+    date: str = Query(..., description="YYYY-MM-DD"),
+    reason: str = "Unspecified",
+    db: Session = Depends(get_db)
+):
+    """
+    Subtask 8.2: Admin endpoint to mark a train as cancelled for a specific date.
+    """
+    from sqlalchemy import text
+    from database.session import engine_transit
+    
+    with engine_transit.connect() as conn:
+        conn.execute(text(
+            "INSERT OR REPLACE INTO cancelled_trains (train_no, travel_date, reason) VALUES (:tno, :dt, :r)"
+        ), {"tno": train_no, "dt": date, "r": reason})
+        conn.commit()
+        
+    return {"success": True, "message": f"Train {train_no} cancelled for {date}."}
 
 # ==============================================================================
 # OPERATIONS & PRODUCTIVITY

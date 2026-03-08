@@ -9,7 +9,7 @@ from schemas.booking import BookingResponseSchema, SubmitUtrSchema
 import time
 import uuid
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/booking", tags=["booking"])
@@ -82,14 +82,18 @@ async def initiate_service(
     if not journey:
         raise HTTPException(status_code=400, detail="Journey expired or invalid. Please search again.")
 
-    # 2. Determine Amount
+    # 2. Determine Amount (Subtask 25.3: Dynamic Fees)
+    from services.platform_config_service import PlatformConfigService
+    unlock_fee = PlatformConfigService.get_fee(db, "UNLOCK_FEE")
+    agent_fee = PlatformConfigService.get_fee(db, "AGENT_BOOKING_FEE")
+
     if service_type == "UNLOCK":
-        base_fee = 49.00
-        escrow_msg = "Awaiting payment to UNLOCK route details."
+        base_fee = unlock_fee
+        escrow_msg = f"Awaiting payment to UNLOCK route details (Fee: ₹{unlock_fee})."
     else:
-        # AGENT_BOOKING logic: Ticket + 49 (Unlock) + 19 (Agent) = Ticket + 68
+        # AGENT_BOOKING logic: Ticket + Unlock + Agent assist
         fare = journey.get("total_fare", 0.0)
-        base_fee = fare + 68.00
+        base_fee = fare + unlock_fee + agent_fee
         escrow_msg = "Awaiting payment for AGENT-ASSISTED booking."
 
     # 3. Generate UPI URI
@@ -145,6 +149,63 @@ async def initiate_service(
         "service_type": service_type
     }
 
+@router.post("/{booking_id}/regenerate")
+async def regenerate_payment(
+    booking_id: str = Path(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    [22.2] Regenerate QR/VPA for an expired payment session.
+    [22.3] Auto-assigns new Merchant VPA.
+    """
+    from database.models import PaymentSession
+    from utils.payments import generate_upi_uri
+    
+    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found.")
+        
+    if booking.escrow_status != EscrowStatus.CREATED:
+        raise HTTPException(status_code=400, detail="Only CREATED bookings can be regenerated.")
+
+    # 1. Select new VPA
+    merchant = merchant_vpa_service.get_next_vpa()
+    upi_id = merchant["vpa"]
+    
+    # 2. Update Booking
+    booking.merchant_vpa = upi_id
+    
+    # 3. Create new PaymentSession record
+    session_code = f"RM_{uuid.uuid4().hex[:8].upper()}"
+    new_session = PaymentSession(
+        user_id=user.id,
+        booking_id=booking.id,
+        session_code=session_code,
+        amount=booking.amount_paid,
+        expires_at=datetime.utcnow() + timedelta(minutes=15)
+    )
+    db.add(new_session)
+    
+    # 4. Generate Link
+    txn_note = f"RM_{booking.id[:8].upper()}"
+    upi_link, upi_tx_id = generate_upi_uri(
+        merchant_vpa=upi_id,
+        merchant_name=merchant["name"],
+        amount=booking.amount_paid,
+        transaction_note=txn_note
+    )
+    
+    db.commit()
+    
+    return {
+        "status": "success",
+        "message": "New payment session generated.",
+        "upi_url": upi_link,
+        "vpa": upi_id,
+        "expires_at": new_session.expires_at.isoformat()
+    }
+
 @router.get("/{booking_id}", response_model=BookingResponseSchema)
 async def get_booking_status(
     booking_id: str = Path(...),
@@ -170,53 +231,65 @@ async def submit_utr(
 ):
     """
     Submits a UTR for verification.
-    Task 9: UTR Length & Format Validation
-    Task 10: Duplicate UTR Prevention
     """
-    from utils.payments import validate_utr
+    # [23.2] Initialize cache for distributed lock
+    await multi_layer_cache.initialize()
     
-    if not validate_utr(payload.utr_number):
-        raise HTTPException(status_code=400, detail="Invalid UTR format. Must be 12 digits.")
+    # [23.3] Distributed Lock using UTR number (Moved to top)
+    lock_key = f"lock:utr:{payload.utr_number}"
+    if multi_layer_cache.redis:
+        acquired = await multi_layer_cache.redis.set(lock_key, "locked", ex=60, nx=True)
+        if not acquired:
+            logger.warning(f"Lock already held for {lock_key}")
+            raise HTTPException(status_code=429, detail="Processing already in progress for this UTR.")
 
-    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
+    try:
+        from utils.payments import validate_utr
+        if not validate_utr(payload.utr_number):
+            raise HTTPException(status_code=400, detail="Invalid UTR format. Must be 12 digits.")
+        booking = db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found")
 
-    # Task 10: Duplicate UTR Prevention
-    existing_utr = db.query(Booking).filter(Booking.utr_number == payload.utr_number).first()
-    if existing_utr:
-        if existing_utr.id == booking.id:
-            return {"status": "UTR_SUBMITTED", "message": "UTR already submitted for this booking."}
-        raise HTTPException(status_code=409, detail="This UTR has already been used.")
+        # Task 10: Duplicate UTR Prevention
+        existing_utr = db.query(Booking).filter(Booking.utr_number == payload.utr_number).first()
+        if existing_utr:
+            if existing_utr.id == booking.id:
+                return {"status": "UTR_SUBMITTED", "message": "UTR already submitted for this booking."}
+            raise HTTPException(status_code=409, detail="This UTR has already been used.")
 
-    old_status = booking.escrow_status.value if hasattr(booking.escrow_status, 'value') else str(booking.escrow_status)
-    booking.utr_number = payload.utr_number
-    booking.escrow_status = EscrowStatus.UTR_SUBMITTED
-    booking.escrow_message = "UTR received. Verifying with bank..."
-    db.commit()
-    
-    # Task 17: Audit Log
-    from services.audit_service import log_audit
-    log_audit(db, "Booking", booking.id, "UTR_SUBMISSION", old_value=old_status, new_value="UTR_SUBMITTED", performed_by=f"USER_{user.id}", reason=f"UTR: {payload.utr_number}")
+        # [26.3] Centralized State Transition with Validation
+        booking.update_escrow_status(
+            db, 
+            EscrowStatus.UTR_SUBMITTED, 
+            message="UTR received. Verifying with bank...",
+            performed_by=f"USER_{user.id}",
+            reason=f"UTR: {payload.utr_number}"
+        )
+        db.commit()
 
-    # Task 20: Admin Notification (Telegram)
-    from services.telegram_service import telegram_service
-    from database.config import Config
-    if Config.TELEGRAM_CHAT_ID:
-        asyncio.create_task(telegram_service.send_message(
-            Config.TELEGRAM_CHAT_ID,
-            f"💳 *New UTR Submitted*\n\n"
-            f"Booking ID: `{booking.id}`\n"
-            f"UTR: `{payload.utr_number}`\n"
-            f"Amount: ₹{booking.amount_paid}\n"
-            f"User: {user.email or user.phone_number}\n\n"
-            f"Please verify in bank app."
-        ))
+        # Task 20: Admin Notification (Telegram)
 
-    # Trigger background mock processing
-    background_tasks.add_task(mock_escrow_pipeline, booking.id)
+        from services.telegram_service import telegram_service
+        from database.config import Config
+        if Config.TELEGRAM_CHAT_ID:
+            asyncio.create_task(telegram_service.send_message(
+                Config.TELEGRAM_CHAT_ID,
+                f"💳 *New UTR Submitted*\n\n"
+                f"Booking ID: `{booking.id}`\n"
+                f"UTR: `{payload.utr_number}`\n"
+                f"Amount: ₹{booking.amount_paid}\n"
+                f"User: {user.email or user.phone_number}\n\n"
+                f"Please verify in bank app."
+            ))
 
-    return {"status": "UTR_SUBMITTED", "message": "Verification in progress."}
+        # Trigger background mock processing
+        background_tasks.add_task(mock_escrow_pipeline, booking.id)
+
+        return {"status": "UTR_SUBMITTED", "message": "Verification in progress."}
+    except Exception as e:
+        # Re-raise to let FastAPI handle
+        raise e
 
 @router.post("/{booking_id}/captcha")
 async def submit_captcha(

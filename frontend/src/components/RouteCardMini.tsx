@@ -3,7 +3,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Train, Lock, Loader2, MapPin, Route as RouteIcon } from "lucide-react";
+import { Train, Lock, Loader2, MapPin, Route as RouteIcon, ChevronDown, ChevronUp, Info } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface MiniLeg {
   train_no: string;
@@ -26,6 +28,8 @@ interface MiniRoute {
   fare?: number | null;
   availability?: string | null;
   legs?: MiniLeg[];
+  highlight_label?: string; // [49.1]
+  highlight_reason?: string; // [49.1]
 }
 
 interface RouteCardMiniProps {
@@ -77,21 +81,40 @@ export const RouteCardMini = memo(function RouteCardMini({
                 <p className="text-xs text-gray-500 mt-1">
                   {route.transfers === 0 ? "Direct" : `${route.transfers} Transfer${route.transfers > 1 ? 's' : ''}`}
                 </p>
+                
+                {/* [49.2] Dynamic Highlights & Tooltips */}
+                {route.highlight_label && (
+                  <div className="flex items-center gap-1.5 mt-2">
+                    <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 border-amber-200 text-[10px] py-0 px-2 h-5 font-bold uppercase">
+                      {route.highlight_label}
+                    </Badge>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="w-3.5 h-3.5 text-slate-400 cursor-help" />
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="max-w-[200px] text-xs">
+                          <p>{route.highlight_reason || "Selected based on your preferences."}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                )}
               </div>
             </div>
             
-            <div className="flex gap-1.5 flex-shrink-0">
-              <Button variant="ghost" size="icon" onClick={() => onSave(route)} className="h-8 w-8">
-                <Train className="h-4 w-4 text-gray-400" />
+            <div className="flex gap-2 flex-shrink-0 items-center">
+              <Button variant="ghost" size="icon" onClick={() => onSave(route)} className="h-11 w-11 rounded-full">
+                <Train className="h-5 w-5 text-gray-400" />
               </Button>
               {!isUnlocked ? (
-                <Button size="sm" onClick={() => onUnlock(route)} disabled={isProcessing} className="h-8 px-2.5 text-xs font-semibold">
-                  {isProcessing ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Lock className="h-3 w-3 mr-1" />}
+                <Button size="sm" onClick={() => onUnlock(route)} disabled={isProcessing} className="h-11 px-4 text-xs font-bold uppercase tracking-wider">
+                  {isProcessing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Lock className="h-4 w-4 mr-2" />}
                   Unlock
                 </Button>
               ) : (
-                <Button size="sm" onClick={() => onBook(route)} className="h-8 px-2.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700">
-                  Book
+                <Button size="sm" onClick={() => onBook(route)} className="h-11 px-5 text-xs font-bold uppercase tracking-wider bg-blue-600 hover:bg-blue-700">
+                  Book Now
                 </Button>
               )}
             </div>
@@ -141,25 +164,40 @@ export const RouteCardMini = memo(function RouteCardMini({
 
               {route.legs && route.legs.length > 1 && (
                 <div className="mt-2">
-                  <Button variant="ghost" size="sm" onClick={() => setShowSegments(!showSegments)} className="w-full text-blue-600 text-xs">
-                    <RouteIcon className="w-3 h-3 mr-1" />
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setShowSegments(!showSegments)} 
+                    className="w-full text-blue-600 text-xs flex items-center justify-center gap-1"
+                  >
+                    <RouteIcon className="w-3 h-3" />
                     {showSegments ? "Hide Segments" : "Show Segments"}
+                    {showSegments ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                   </Button>
-                  {showSegments && (
-                    <div className="mt-2 space-y-2">
-                      {route.legs.map((leg, i) => (
-                        <div key={i} className="text-[10px] p-2 bg-slate-50 rounded">
-                          <div className="flex justify-between font-bold">
-                            <span>Train {leg.train_no}</span>
-                            <span className="text-green-600">₹{leg.fare}</span>
+                  
+                  <AnimatePresence>
+                    {showSegments && (
+                      <motion.div 
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.3, ease: "easeInOut" }}
+                        className="overflow-hidden mt-2 space-y-2"
+                      >
+                        {route.legs.map((leg, i) => (
+                          <div key={i} className="text-[10px] p-2 bg-slate-50 border border-slate-100 rounded-lg">
+                            <div className="flex justify-between font-bold text-slate-700">
+                              <span>Train {leg.train_no} - {leg.train_name}</span>
+                              {leg.fare && <span className="text-green-600">₹{Math.round(leg.fare)}</span>}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1.5 text-slate-500 font-medium">
+                              <MapPin className="w-2.5 h-2.5 text-blue-500" /> {leg.departure} → {leg.arrival}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <MapPin className="w-2 h-2 text-blue-500" /> {leg.departure} → {leg.arrival}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               )}
             </>

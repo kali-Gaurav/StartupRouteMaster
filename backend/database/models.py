@@ -226,6 +226,7 @@ class BankTransaction(UserBase):
     __tablename__ = "bank_transactions"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     utr_number = Column(String(50), unique=True, index=True)
+    event_id = Column(String(100), unique=True, index=True, nullable=True) # [21.1]
     amount = Column(Float, nullable=False)
     bank_name = Column(String(50))
     raw_sms = Column(Text)
@@ -242,6 +243,7 @@ class MerchantVPA(UserBase):
     daily_limit = Column(Float, default=100000.0)
     current_daily_volume = Column(Float, default=0.0)
     is_active = Column(Boolean, default=True)
+    last_reset_at = Column(DateTime, default=datetime.utcnow) # Added
     last_volume_update = Column(DateTime, default=datetime.utcnow)
 
 class MerchantVPAVolumeSnapshot(UserBase):
@@ -394,6 +396,7 @@ class PaymentSession(UserBase):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"))
     route_id = Column(String(36), nullable=True)
+    booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=True) # [22.1]
     session_code = Column(String(20), unique=True, index=True)
     amount = Column(Float, nullable=False)
     status = Column(String(50), default="PENDING")

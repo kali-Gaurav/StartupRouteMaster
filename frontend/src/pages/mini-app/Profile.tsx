@@ -21,7 +21,13 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "@/hooks/use-toast";
 import { getRailwayApiUrl } from "@/lib/utils";
 
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch"; // [50.2]
+import { useTheme } from "@/context/ThemeContext"; // [50.2]
+import { Moon, Sun } from "lucide-react"; // [50.2]
+
 interface UserProfile {
+// ...
   id: number;
   first_name: string;
   last_name?: string;
@@ -56,6 +62,7 @@ interface Badge {
 
 const MiniAppProfile = () => {
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme(); // [50.2]
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -159,13 +166,55 @@ const MiniAppProfile = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 flex items-center justify-center">
-        <Card className="shadow-lg">
-          <CardContent className="p-8 flex flex-col items-center">
-            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-4" />
-            <p className="text-gray-600">Loading profile...</p>
-          </CardContent>
-        </Card>
+      <div className="min-h-screen bg-slate-50 p-4">
+        <div className="max-w-md mx-auto space-y-6">
+          {/* Header Skeleton */}
+          <div className="flex items-center space-x-3">
+            <Skeleton className="h-10 w-10 rounded-full" />
+            <div className="space-y-2">
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-4 w-48" />
+            </div>
+          </div>
+
+          {/* Info Card Skeleton */}
+          <Card className="shadow-lg border-0 overflow-hidden">
+            <div className="bg-slate-200 h-20" />
+            <CardContent className="p-6 -mt-12 relative flex flex-col items-center">
+              <Skeleton className="h-24 w-24 rounded-full border-4 border-white shadow-lg mb-4" />
+              <div className="space-y-2 flex flex-col items-center">
+                <Skeleton className="h-8 w-48" />
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-6 w-20 rounded-full mt-2" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Stats Skeleton */}
+          <div className="grid grid-cols-3 gap-3">
+            {[1, 2, 3].map((i) => (
+              <Card key={i}>
+                <CardContent className="p-4 flex flex-col items-center space-y-2">
+                  <Skeleton className="h-6 w-6 rounded-full" />
+                  <Skeleton className="h-8 w-12" />
+                  <Skeleton className="h-3 w-16" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* Progress Skeleton */}
+          <Card>
+            <CardContent className="p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <Skeleton className="h-5 w-24" />
+                <Skeleton className="h-5 w-12" />
+              </div>
+              <Skeleton className="h-3 w-full rounded-full" />
+              <Skeleton className="h-3 w-48" />
+            </CardContent>
+          </Card>
+        </div>
       </div>
     );
   }
@@ -371,6 +420,29 @@ const MiniAppProfile = () => {
                 </div>
               </>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Theme Settings [50.2] */}
+        <Card className="shadow-sm border-0">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Settings className="h-5 w-5 text-blue-600" />
+              Appearance
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {theme === "dark" ? <Moon className="h-5 w-5 text-indigo-400" /> : <Sun className="h-5 w-5 text-amber-500" />}
+              <div>
+                <p className="text-sm font-semibold">Dark Mode</p>
+                <p className="text-xs text-slate-500">Easier on the eyes at night</p>
+              </div>
+            </div>
+            <Switch 
+              checked={theme === "dark"} 
+              onCheckedChange={toggleTheme} 
+            />
           </CardContent>
         </Card>
 

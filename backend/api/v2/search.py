@@ -22,13 +22,14 @@ async def unified_search(
     budget: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(15, ge=1, le=50),
+    cursor: Optional[float] = Query(None, description="Score cursor for pagination"),
     quota: str = "GN",
     db: Session = Depends(get_db)
 ):
     """
     Primary production endpoint for route search.
     Flow: Redis Cache -> Turbo (Direct) -> FastRouter -> RAPTOR.
-    [40.2] Support for page/limit pagination.
+    [1.1] Support for cursor-based pagination.
     """
     # Subtask 5.2: Geo-location Capture
     client_ip = request.headers.get("x-forwarded-for") or request.client.host
@@ -45,6 +46,11 @@ async def unified_search(
             logger.info(f"Surge active (Level: {surge.get('surge_intensity')}). Throttling {client_ip}")
     except: pass
 
+    # [38.2] Payload Sanitization
+    from utils.security import sanitize_string
+    source = sanitize_string(source, length_limit=10)
+    destination = sanitize_string(destination, length_limit=10)
+
     search_svc = SearchService(db)
     result = await search_svc.search_routes(
         source=source,
@@ -53,6 +59,7 @@ async def unified_search(
         budget_category=budget,
         page=page,
         limit=limit,
+        cursor=cursor,
         quota=quota,
         client_ip=client_ip,
         geo_state=geo_state
@@ -78,6 +85,21 @@ async def streaming_search(
             await asyncio.sleep(0.01)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@router.get("/re-rank")
+async def re_rank_search(
+    session_id: str = Query(...),
+    persona: str = Query(..., description="budget, comfort, emergency, family"),
+    quota: str = Query("GN", description="GN, TQ, PT"),
+    db: Session = Depends(get_db)
+):
+    """
+    [10.5] Fast re-ranking of existing session results.
+    [18.3] Now supports quota-segmented pools.
+    """
+    search_svc = SearchService(db)
+    result = await search_svc.re_rank_routes(session_id, persona, quota=quota)
+    return result
 
 @router.get("/explain")
 async def explain_routing(

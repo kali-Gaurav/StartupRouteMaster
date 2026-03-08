@@ -203,5 +203,26 @@ class CacheService:
         self._in_memory.pop(versioned_key, None)
         logger.debug(f"IN-MEM CACHE DELETE for key: {versioned_key}")
 
+    # [32.1] Brute-Force Rate Limiting
+    def record_failed_login(self, ip: str):
+        """Increments failure count for an IP. Sets 5-min TTL."""
+        if not self.is_available(): return
+        key = f"login_fails:{ip}"
+        try:
+            count = self.redis.incr(key)
+            if count == 1:
+                self.redis.expire(key, 300) # 5 minutes
+            return count
+        except: return 0
+
+    def is_ip_blocked(self, ip: str) -> bool:
+        """Checks if an IP has exceeded 10 failures."""
+        if not self.is_available(): return False
+        key = f"login_fails:{ip}"
+        try:
+            count = int(self.redis.get(key) or 0)
+            return count >= 10
+        except: return False
+
 # Global instance to be used across the application
 cache_service = CacheService()

@@ -20,6 +20,7 @@ import { getRailwayApiUrl } from "@/lib/utils";
 import { searchRoutesApi, unlockJourneyDetailsApi } from "@/services/railwayBackApi";
 import { RouteCardMini } from "@/components/RouteCardMini";
 import { TrainCardSkeleton } from "@/components/TrainCardSkeleton";
+import { HighlightedText } from "@/components/HighlightedText"; // [47.2]
 import { useVirtualizer } from "@tanstack/react-virtual";
 import RouteSorterWorker from "@/workers/route-sorter.worker?worker";
 import { useSearchCache } from "@/hooks/useSearchCache";
@@ -75,10 +76,12 @@ const MiniAppSearch = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
   const [openPopover, setOpenPopover] = useState<"origin" | "destination" | null>(null);
+  const [stationSearchQuery, setStationSearchQuery] = useState(""); // [47.2]
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>();
   
   const [searchResults, setSearchResults] = useState<RouteResult[]>([]);
   const [showResults, setShowResults] = useState(false);
+  const [searchHistory, setSearchHistory] = useState<any[]>([]); // [46.1]
   const [searchError, setSearchError] = useState<string | null>(null);
   const [unlockedJourneys, setUnlockedJourneys] = useState<Record<string, unknown>>({});
   const [isUnlocking, setIsUnlocking] = useState<string | null>(null);
@@ -102,7 +105,27 @@ const MiniAppSearch = () => {
     loadStations();
     const today = new Date().toISOString().split('T')[0];
     setFormData(prev => ({ ...prev, date: today }));
+    
+    // [46.1] Load search history from local storage
+    const saved = localStorage.getItem("rm_search_history");
+    if (saved) {
+      try {
+        setSearchHistory(JSON.parse(saved));
+      } catch (e) {
+        console.error("Failed to parse search history", e);
+      }
+    }
   }, []);
+
+  const saveToHistory = (origin: Station, destination: Station) => {
+    const newEntry = { origin, destination, timestamp: Date.now() };
+    const filtered = searchHistory.filter(h => 
+      h.origin.code !== origin.code || h.destination.code !== destination.code
+    );
+    const updated = [newEntry, ...filtered].slice(0, 3);
+    setSearchHistory(updated);
+    localStorage.setItem("rm_search_history", JSON.stringify(updated));
+  };
 
   const loadStations = async () => {
     try {
@@ -132,6 +155,7 @@ const MiniAppSearch = () => {
   };
 
   const handleStationSearch = (query: string) => {
+    setStationSearchQuery(query); // [47.2]
     if (!query.trim()) {
       setFilteredStations(stations);
       return;
@@ -214,6 +238,7 @@ const MiniAppSearch = () => {
 
       setSearchResults(results);
       saveToCache(formData.origin.code, formData.destination.code, useDate, results);
+      saveToHistory(formData.origin, formData.destination); // [46.1]
       
       if (results.length > 30) {
         sorterWorker.onmessage = (e) => setSearchResults(e.data.sorted);
@@ -257,6 +282,11 @@ const MiniAppSearch = () => {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const minDate = new Date().toISOString().split('T')[0];
+  
+  // [48.2] IRCTC 120-day booking window
+  const maxDateObj = new Date();
+  maxDateObj.setDate(maxDateObj.getDate() + 120);
+  const maxDate = maxDateObj.toISOString().split('T')[0];
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -284,21 +314,22 @@ const MiniAppSearch = () => {
               <CardContent className="p-6 space-y-5">
                 <div className="space-y-4">
                   <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold">From</Label>
+                    <Label className="text-xs uppercase text-slate-500 font-bold mb-1.5 block">From</Label>
                     <Popover open={openPopover === "origin"} onOpenChange={(open) => setOpenPopover(open ? "origin" : null)}>
                       <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left h-12">
-                          <MapPin className="h-4 w-4 mr-2 text-blue-600" />
+                        <Button variant="outline" className="w-full justify-start text-left h-12 px-4 text-base">
+                          <MapPin className="h-5 w-5 mr-3 text-blue-600" />
                           {formData.origin ? formData.origin.name : "Select origin"}
                         </Button>
                       </PopoverTrigger>
-                      <PopoverContent className="w-80 p-0" align="start">
+                      <PopoverContent className="w-[calc(100vw-2rem)] max-w-md p-0" align="start">
                         <Command>
-                          <CommandInput placeholder="Search..." onValueChange={handleStationSearch} />
-                          <CommandGroup className="max-h-64 overflow-auto">
+                          <CommandInput placeholder="Search station..." className="h-12 text-base" onValueChange={handleStationSearch} />
+                          <CommandGroup className="max-h-80 overflow-auto">
                             {filteredStations.map((s) => (
-                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "origin")}>
-                                {s.name} ({s.code})
+                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "origin")} className="h-12 text-base px-4">
+                                <HighlightedText text={s.name} highlight={stationSearchQuery} />
+                                <span className="ml-2 text-slate-400">(<HighlightedText text={s.code} highlight={stationSearchQuery} />)</span>
                               </CommandItem>
                             ))}
                           </CommandGroup>
@@ -307,28 +338,29 @@ const MiniAppSearch = () => {
                     </Popover>
                   </div>
 
-                  <div className="flex justify-center">
-                    <Button variant="ghost" size="icon" onClick={swapStations} className="rounded-full bg-slate-100">
-                      <ArrowLeftRight className="h-4 w-4" />
+                  <div className="flex justify-center -my-2 relative z-10">
+                    <Button variant="ghost" size="icon" onClick={swapStations} className="h-11 w-11 rounded-full bg-white shadow-md border border-slate-100 hover:bg-slate-50">
+                      <ArrowLeftRight className="h-5 w-5 text-blue-600" />
                     </Button>
                   </div>
 
                   <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold">To</Label>
+                    <Label className="text-xs uppercase text-slate-500 font-bold mb-1.5 block">To</Label>
                     <Popover open={openPopover === "destination"} onOpenChange={(open) => setOpenPopover(open ? "destination" : null)}>
                       <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left h-12">
-                          <MapPin className="h-4 w-4 mr-2 text-green-600" />
+                        <Button variant="outline" className="w-full justify-start text-left h-12 px-4 text-base">
+                          <MapPin className="h-5 w-5 mr-3 text-green-600" />
                           {formData.destination ? formData.destination.name : "Select destination"}
                         </Button>
                       </PopoverTrigger>
-                      <PopoverContent className="w-80 p-0" align="start">
+                      <PopoverContent className="w-[calc(100vw-2rem)] max-w-md p-0" align="start">
                         <Command>
-                          <CommandInput placeholder="Search..." onValueChange={handleStationSearch} />
-                          <CommandGroup className="max-h-64 overflow-auto">
+                          <CommandInput placeholder="Search station..." className="h-12 text-base" onValueChange={handleStationSearch} />
+                          <CommandGroup className="max-h-80 overflow-auto">
                             {filteredStations.map((s) => (
-                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "destination")}>
-                                {s.name} ({s.code})
+                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "destination")} className="h-12 text-base px-4">
+                                <HighlightedText text={s.name} highlight={stationSearchQuery} />
+                                <span className="ml-2 text-slate-400">(<HighlightedText text={s.code} highlight={stationSearchQuery} />)</span>
                               </CommandItem>
                             ))}
                           </CommandGroup>
@@ -346,6 +378,7 @@ const MiniAppSearch = () => {
                       value={formData.date}
                       onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
                       min={minDate}
+                      max={maxDate} // [48.2]
                       className="w-full h-12 px-3 border rounded-md"
                     />
                   </div>
@@ -371,6 +404,33 @@ const MiniAppSearch = () => {
                 </Button>
               </CardContent>
             </Card>
+          )}
+
+          {/* [46.2] Recent Searches Chips */}
+          {!showResults && searchHistory.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-xs uppercase text-slate-500 font-bold px-1">Recent Searches</h3>
+              <div className="flex flex-wrap gap-2">
+                {searchHistory.map((h, i) => (
+                  <Button
+                    key={i}
+                    variant="outline"
+                    size="sm"
+                    className="h-10 px-4 rounded-full bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                    onClick={() => {
+                      setFormData(prev => ({ ...prev, origin: h.origin, destination: h.destination }));
+                      // Trigger search immediately
+                      handleSearch(false);
+                    }}
+                  >
+                    <RefreshCw className="h-3 w-3 mr-2 text-slate-400" />
+                    <span className="font-bold">{h.origin.code}</span>
+                    <ArrowLeftRight className="h-3 w-3 mx-2 text-slate-300" />
+                    <span className="font-bold">{h.destination.code}</span>
+                  </Button>
+                ))}
+              </div>
+            </div>
           )}
 
           {showResults && (

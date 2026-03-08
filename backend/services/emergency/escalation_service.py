@@ -53,8 +53,17 @@ class EscalationService:
         scrubbed_count = 0
         
         for event in all_events:
-            triggered_at = datetime.fromisoformat(event.get("triggered_at"))
-            eid = event["id"]
+            if not event or not isinstance(event, dict): continue
+            
+            try:
+                triggered_at_str = event.get("triggered_at")
+                if not triggered_at_str: continue
+                triggered_at = datetime.fromisoformat(triggered_at_str)
+            except (ValueError, TypeError):
+                continue
+
+            eid = event.get("id")
+            if not eid: continue
             
             # 1. Hard Delete (> 30 days) - Task 42
             if triggered_at < hard_delete_threshold:
@@ -63,28 +72,30 @@ class EscalationService:
                 # A. Redis Cleanup
                 if _redis:
                     try:
-                        _redis.delete(f"{SOS_KEY_PREFIX}{eid}")
-                        _redis.srem(SOS_INDEX_KEY, eid)
+                        await _redis.delete(f"{SOS_KEY_PREFIX}{eid}")
+                        await _redis.srem(SOS_INDEX_KEY, eid)
                         # Clear PNR registry
                         trip = event.get("trip")
-                        if trip and trip.get("pnr_number"):
+                        if trip and isinstance(trip, dict) and trip.get("pnr_number"):
                             from api.sos import PNR_REGISTRY_KEY
-                            _redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
-                    except Exception: pass
+                            await _redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
+                    except Exception as e:
+                        logger.error(f"Redis cleanup failed for {eid}: {e}")
                 
                 # B. Media Cleanup (Task 35)
                 from api.sos import MEDIA_DIR
-                media_path = os.path.join(MEDIA_DIR, eid)
+                media_path = os.path.join(MEDIA_DIR, str(eid))
                 if os.path.exists(media_path):
-                    shutil.rmtree(media_path)
-                    logger.info(f"🗑️ [MEDIA] Deleted media folder for {eid}")
+                    try:
+                        shutil.rmtree(media_path)
+                        logger.info(f"🗑️ [MEDIA] Deleted media folder for {eid}")
+                    except Exception as e:
+                        logger.error(f"Media deletion failed for {eid}: {e}")
                 
-                # C. Local Memory cleanup
+                # C. Local Memory cleanup (Safe filter instead of pop)
                 from api.sos import _local_events
-                for i, e in enumerate(_local_events):
-                    if e['id'] == eid:
-                        _local_events.pop(i)
-                        break
+                # We update the list by filtering out the ID
+                _local_events[:] = [e for e in _local_events if e.get('id') != eid]
                 purged_count += 1
                 
             # 2. Soft Scrub (> 24 hours) - Task 41

@@ -36,14 +36,27 @@ def create_admin_token(username: str):
 @router.post("/login", response_model=AdminTokenResponse)
 async def admin_login(payload: AdminLoginRequest, request: Request):
     """
-    Secure Admin Login using strong credentials from Config.
+    Secure Admin Login with [32.2] Brute-Force Protection.
     """
-    if payload.username != Config.ADMIN_DASHBOARD_USERNAME:
-        logger.warning(f"Failed admin login attempt: Invalid username {payload.username}")
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    from services.cache_service import cache_service
+    client_ip = request.client.host
+    
+    # 1. Check if IP is blocked
+    if cache_service.is_ip_blocked(client_ip):
+        logger.error(f"BLOCKED: Brute-force attempt from {client_ip}")
+        raise HTTPException(status_code=429, detail="Too many failed attempts. Try again in 5 minutes.")
 
-    if not pbkdf2_sha256.verify(payload.password, Config.ADMIN_DASHBOARD_PASSWORD_HASH):
-        logger.warning(f"Failed admin login attempt: Invalid password for {payload.username}")
+    # 2. Credential Check
+    is_valid = True
+    if payload.username != Config.ADMIN_DASHBOARD_USERNAME:
+        is_valid = False
+    elif not pbkdf2_sha256.verify(payload.password, Config.ADMIN_DASHBOARD_PASSWORD_HASH):
+        is_valid = False
+
+    if not is_valid:
+        # Record failure
+        fails = cache_service.record_failed_login(client_ip)
+        logger.warning(f"Failed admin login ({fails}/10) from {client_ip}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Success - Create session

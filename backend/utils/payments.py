@@ -113,6 +113,20 @@ def validate_utr(utr: str) -> bool:
     """Task 16: Validates if a string is a valid 12-digit UPI UTR."""
     return bool(re.match(r"^\d{12}$", utr))
 
+def standardize_utr(utr: str) -> str:
+    """
+    [24.1] Standardizes UTR by:
+    - Stripping whitespace.
+    - Converting 'O' -> '0', 'I' -> '1', 'L' -> '1'.
+    - Keeping only alpha-numeric.
+    """
+    if not utr: return ""
+    utr = utr.strip().upper()
+    utr = utr.replace("O", "0").replace("I", "1").replace("L", "1")
+    # Remove any non-numeric if it's supposed to be purely numeric (most UPI UTRs are)
+    # But some bank refs might have letters, let's stick to simple replacements first
+    return utr
+
 def get_unique_paisa_amount(base_amount: float, db_session, vpa: str) -> float:
     """
     Task 2: cent-matching.

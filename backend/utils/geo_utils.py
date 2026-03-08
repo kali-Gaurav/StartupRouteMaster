@@ -3,7 +3,7 @@ import numpy as np
 import requests
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,53 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
     c = 2 * np.arcsin(np.sqrt(a))
     return c * 6371
+
+class StationGeoIndex:
+    """
+    [7.2] High-speed Station Geo Index.
+    Caches all stations in memory as NumPy arrays for sub-ms proximity scanning.
+    """
+    def __init__(self):
+        self.station_codes = []
+        self.coords = np.empty((0, 2))
+        self.is_initialized = False
+
+    def initialize(self, db):
+        """[7.2] Load from SQLite to NumPy."""
+        from sqlalchemy import text
+        rows = db.execute(text("SELECT code, latitude, longitude FROM stops WHERE latitude IS NOT NULL")).fetchall()
+        
+        self.station_codes = [r[0] for r in rows]
+        self.coords = np.array([[r[1], r[2]] for r in rows], dtype=np.float32)
+        self.is_initialized = True
+        logger.info(f"StationGeoIndex initialized with {len(self.station_codes)} stations.")
+
+    def find_nearby_stations(self, lat: float, lon: float, radius_km: float = 50.0) -> List[Dict]:
+        """
+        [7.3] Sub-ms Proximity Search using Vectorized NumPy scanning.
+        """
+        if not self.is_initialized: return []
+        
+        # Calculate distances to ALL stations at once
+        dists = haversine_vectorized(lat, lon, self.coords[:, 0], self.coords[:, 1])
+        
+        # Mask by radius
+        mask = dists <= radius_km
+        indices = np.where(mask)[0]
+        
+        results = []
+        for idx in indices:
+            results.append({
+                "code": self.station_codes[idx],
+                "distance": float(dists[idx])
+            })
+        
+        # Sort by distance
+        results.sort(key=lambda x: x["distance"])
+        return results
+
+# Singleton instance
+station_geo_index = StationGeoIndex()
 
 def is_tatkal_window() -> bool:
     """

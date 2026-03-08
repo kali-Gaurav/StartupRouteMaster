@@ -65,12 +65,17 @@ class RouteSegmentSchema(BaseModel):
 
 
 class SearchRequestSchema(BaseModel):
+    # ... existing fields ...
     source: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     destination: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}(T|\s)?.*$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
     women_safety_mode: bool = Field(False, description="Prioritize safer routes and avoid night layovers")
+
+    # Pagination & Session (Task 1.1)
+    session_id: Optional[str] = Field(None, description="Unique session ID for paginated discovery")
+    cursor: Optional[str] = Field(None, description="Last seen score/ID for deep pagination")
 
     # New fields for advanced features
     journey_type: Optional[str] = Field(None, pattern="^(single|connecting|circular|multi_city)$")
@@ -84,6 +89,25 @@ class SearchRequestSchema(BaseModel):
         if "source" in values and v.strip().upper() == values["source"].strip().upper():
             raise ValueError("Source and destination cannot be the same")
         return v
+
+class LoadMoreRequestSchema(BaseModel):
+    session_id: str = Field(..., description="The session ID returned in the initial search")
+    limit: int = Field(15, ge=1, le=50)
+    cursor: Optional[str] = None
+    quota: str = Field("GN")
+
+class PaginationMetadataSchema(BaseModel):
+    total_results: int
+    current_page: int
+    limit: int
+    has_next: bool
+    total_pages: int
+    session_id: Optional[str] = None
+
+class SearchResponseDataSchema(BaseModel):
+    journeys: List[Dict[str, Any]]
+    grouped_journeys: Dict[str, List[Dict[str, Any]]]
+    pagination: PaginationMetadataSchema
 
     class Config:
         json_schema_extra = {

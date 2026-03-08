@@ -13,6 +13,7 @@ from .turbo_router import TurboRouter
 from .raptor import OptimizedRAPTOR
 from .fast_router import FastPathRouter
 from .scoring import RouteScorer
+from core.pricing.fare_calculator import calculate_fare
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,9 @@ class UnifiedRoutingOrchestrator:
         all_routes.extend(raptor_res)
         
         # 5. UNIVERSAL FARE HYDRATION & SCORING
-        unique_routes = self._global_deduplicate(all_routes)
+        # [8.3] Graph Pruning: Filter out cancelled trains
+        unique_routes = await self._filter_cancelled_trains(all_routes, departure_date, db)
+        unique_routes = self._global_deduplicate(unique_routes)
         await self._hydrate_fares_and_score(unique_routes, constraints, graph, db)
         
         unique_routes.sort(key=lambda x: x.score)
@@ -85,6 +88,42 @@ class UnifiedRoutingOrchestrator:
         logger.info(f"Orchestrator: Found {len(unique_routes)} unified routes in {latency:.2f}ms")
         
         return unique_routes[:limit]
+
+    async def _filter_cancelled_trains(self, routes: List[Route], date: datetime, db) -> List[Route]:
+        """[8.3] Filters out routes containing trains marked as cancelled."""
+        try:
+            date_str = date.strftime("%Y-%m-%d")
+            # Use connection if db is Engine
+            if hasattr(db, 'connect'):
+                with db.connect() as conn:
+                    rows = conn.execute(text(
+                        "SELECT train_no FROM cancelled_trains WHERE travel_date = :dt"
+                    ), {"dt": date_str}).fetchall()
+            else:
+                # Assume it's a Session
+                rows = db.execute(text(
+                    "SELECT train_no FROM cancelled_trains WHERE travel_date = :dt"
+                ), {"dt": date_str}).fetchall()
+            
+            cancelled_nos = {str(r[0]) for r in rows}
+            if not cancelled_nos: return routes
+            
+            filtered = []
+            for r in routes:
+                is_cancelled = False
+                for s in r.segments:
+                    if str(s.train_number) in cancelled_nos:
+                        is_cancelled = True
+                        break
+                if not is_cancelled:
+                    filtered.append(r)
+            
+            if len(filtered) < len(routes):
+                logger.warning(f"Pruned {len(routes) - len(filtered)} routes due to active cancellations on {date_str}.")
+            return filtered
+        except Exception as e:
+            logger.error(f"Error filtering cancellations: {e}")
+            return routes
 
     def _search_tier_0_hubs(self, src_id: int, dst_id: int, date: datetime, db) -> List[Route]:
         """Task 18: Instant Hub-to-Hub lookup."""
@@ -250,19 +289,23 @@ class UnifiedRoutingOrchestrator:
             return datetime.now()
 
     def _global_deduplicate(self, routes: List[Route]) -> List[Route]:
-        """[33.6] Tuned multi-dimensional Pareto deduplication."""
+        """[33.6] Tuned Pareto + [5.9] Strict Deduplication."""
         if not routes: return []
+        
+        # 1. Apply Strict Sequence & Window Dedup (Task 5)
+        from utils.route_utils import RouteDedupFilter
+        strict_routes = RouteDedupFilter.apply_strict_dedup(routes)
         
         import numpy as np
         from utils.algo_utils import find_pareto_frontier
         
-        # 1. First Pass: Hard Unique (Train Sequence + Time)
+        # 2. Second Pass: Hard Unique (ID based)
         unique_map = {}
-        for r in routes:
+        for r in strict_routes:
             if not r.segments: continue
-            path_key = tuple((s.train_number or s.trip_id, s.departure_time.isoformat()) for s in r.segments)
-            if path_key not in unique_map or r.score < unique_map[path_key].score:
-                unique_map[path_key] = r
+            jid = r.journey_id
+            if jid not in unique_map or r.score < unique_map[jid].score:
+                unique_map[jid] = r
         
         initial_list = list(unique_map.values())
         
