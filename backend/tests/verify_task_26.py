@@ -1,51 +1,74 @@
 import asyncio
-import os
 import sys
-import logging
-from unittest.mock import MagicMock, AsyncMock
-
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from core.data_structures import Route, RouteSegment
-from services.search_service import SearchService
-from database.session import SessionLocal
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify_task_26")
+import os
+from datetime import datetime
+from database.session import SessionLocal, SessionTransit
+from sqlalchemy import text
+from database.models import User, SeatInventory
+from api.v2.unlock import initiate_unlock
+from unittest.mock import MagicMock
 
 async def verify_task_26():
-    print("\n>>> Verifying Task 26: Quota-Specific Searching (Tatkal)")
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 26 (AUTO SEAT LOCK)")
     
-    db = SessionLocal()
-    service = SearchService(db)
+    db_user = SessionLocal()
+    db_transit = SessionTransit()
+    db_transit.execute(text("PRAGMA foreign_keys = OFF"))
     
-    # 1. Mock DataProvider to capture the 'quota' argument
-    # We want to see if 'TQ' reaches the verify_seat_availability_unified method
-    captured_quota = None
+    user_id = "u26"
+    trip_id = 12625
+    travel_date = datetime.utcnow().date()
+    coach = "SL"
     
-    async def mock_verify_seat(*args, **kwargs):
-        nonlocal captured_quota
-        captured_quota = kwargs.get('quota')
-        return {"status": "verified", "available_seats": 5}
-        
-    service.data_provider.verify_seat_availability_unified = AsyncMock(side_effect=mock_verify_seat)
-    service.data_provider.verify_fare_unified = AsyncMock(return_value={"total_fare": 1200.0})
+    # 0. Setup User and Inventory
+    u = User(id=user_id, email="u26@ex.com")
+    db_user.merge(u)
+    db_user.commit()
     
-    # 2. Run a search with 'TQ' quota
-    source, dest, date_str = "PGT", "KOTA", "2026-03-08"
-    print(f"  Searching {source}->{dest} with quota='TQ'...")
+    inv = db_transit.query(SeatInventory).filter(
+        SeatInventory.trip_id == trip_id,
+        SeatInventory.travel_date == travel_date,
+        SeatInventory.coach_type == coach
+    ).first()
     
-    await service.search_routes(source, dest, date_str, quota="TQ")
-    
-    print(f"  Captured Quota in DataProvider: '{captured_quota}'")
-    
-    if captured_quota == "TQ":
-        print("\n✅ TASK 26 VERIFIED: Quota parameter successfully threaded to verification layer.")
-        return True
+    if not inv:
+        inv = SeatInventory(
+            trip_id=trip_id, travel_date=travel_date, coach_type=coach,
+            total_seats=100, available_seats=1, stop_time_id=99926
+        )
+        db_transit.add(inv)
     else:
-        print(f"❌ FAILURE: Quota mismatch. Expected 'TQ', got '{captured_quota}'")
-        return False
+        inv.available_seats = 1
+        inv.locked_by_booking_id = None
+    db_transit.commit()
+    
+    print("  Initial Inventory: 1 seat.")
+    
+    # 1. Initiate Unlock (Should trigger lock)
+    print("  Initiating unlock request (calling API logic)...")
+    request = MagicMock()
+    res = await initiate_unlock(request, journey_id="J26", user_id=user_id, db=db_user)
+    
+    booking_id = res["data"]["booking_id"]
+    print(f"    Booking ID created: {booking_id}")
+    
+    # 2. Verify Lock
+    db_transit.refresh(inv)
+    print(f"    Available Seats after init: {inv.available_seats}")
+    print(f"    Locked by: {inv.locked_by_booking_id}")
+    
+    assert inv.available_seats == 0
+    assert inv.locked_by_booking_id == booking_id
+    
+    # 3. Cleanup
+    from database.models import Booking, PaymentSession, AuditLog
+    db_user.query(PaymentSession).filter(PaymentSession.user_id == user_id).delete()
+    db_user.query(Booking).filter(Booking.id == booking_id).delete()
+    db_user.commit()
+    db_transit.delete(inv)
+    db_transit.commit()
+    
+    print("\n✅ TASK 26 FULLY VERIFIED: Seat is automatically reserved upon payment initiation.")
 
 if __name__ == "__main__":
     asyncio.run(verify_task_26())

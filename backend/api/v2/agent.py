@@ -1,91 +1,131 @@
-from fastapi import APIRouter, Depends, HTTPException, Body, Path, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from database.session import get_db
-from database.models import User, Booking, EscrowStatus, BookingStatus
-from api.dependencies import get_current_user
-import os
-import uuid
+from database.models import Booking, EscrowStatus, AuditLog, User
+from services.agent_booking_service import AgentBookingService
+from services.ws_manager import ws_manager
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/agent", tags=["agent"])
+router = APIRouter(prefix="/agent", tags=["Agent Operations"])
 
-def verify_agent_role(user: User):
-    if user.role != "agent" and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied. Agent role required.")
-
-@router.get("/tasks")
-async def get_pending_tasks(
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
+@router.get("/bookings/queue")
+async def get_agent_queue(
+    page: int = 1,
+    limit: int = 20,
+    db: Session = Depends(get_db)
 ):
-    """List all verified bookings awaiting agent action."""
-    verify_agent_role(user)
+    """
+    Subtask 21.1: Fetch the prioritized queue of verified bookings.
+    [21.2] Sorted by Priority (0 is highest) and then age.
+    """
+    offset = (page - 1) * limit
     
-    tasks = db.query(Booking).filter(
-        Booking.service_type == "AGENT_BOOKING",
+    # Filter for VERIFIED bookings that are either unclaimed or active for agents
+    bookings = db.query(Booking).filter(
         Booking.escrow_status == EscrowStatus.VERIFIED,
+        Booking.service_type == "AGENT_BOOKING",
         Booking.agent_id == None
-    ).all()
+    ).order_by(
+        Booking.priority.asc(), 
+        Booking.created_at.asc()
+    ).offset(offset).limit(limit).all()
     
-    return tasks
+    return bookings
 
-@router.post("/{booking_id}/claim")
-async def claim_task(
-    booking_id: str = Path(...),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
+@router.post("/availability/toggle")
+async def toggle_agent_availability(
+    agent_id: str = Query(...), 
+    db: Session = Depends(get_db)
 ):
-    """Assign an agent to a specific booking."""
-    verify_agent_role(user)
+    """
+    Subtask 30.2: Toggle online/offline status for agents.
+    [30.7] Records shift logs in AuditLog.
+    """
+    agent = db.query(User).filter(User.id == agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+        
+    old_status = agent.is_available
+    agent.is_available = not agent.is_available
+    agent.last_heartbeat = datetime.utcnow()
     
-    booking = db.query(Booking).filter(Booking.id == booking_id).first()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not found")
-    
-    if booking.agent_id:
-        raise HTTPException(status_code=400, detail="Task already claimed by another agent")
-
-    booking.agent_id = user.id
-    booking.escrow_message = f"Agent {user.profile.name if user.profile else 'Guide'} has started working on your booking."
+    # [30.7] Shift Logging
+    action = "SHIFT_START" if agent.is_available else "SHIFT_END"
+    audit = AuditLog(
+        entity_type="Agent",
+        entity_id=agent_id,
+        action=action,
+        old_value="OFFLINE" if not old_status else "ONLINE",
+        new_value="ONLINE" if agent.is_available else "OFFLINE",
+        performed_by=agent_id,
+        reason="Manual toggle via dashboard."
+    )
+    db.add(audit)
     db.commit()
     
-    return {"message": "Task claimed successfully", "booking_id": booking_id}
+    return {
+        "status": "success", 
+        "is_available": agent.is_available,
+        "last_heartbeat": agent.last_heartbeat
+    }
+    """
+    [22.1] Atomic Claim Logic: Uses SELECT FOR UPDATE.
+    [22.2] Capacity Guard: Limits agent to 3 active bookings.
+    [22.6] Conflict Handling: Returns 409 if already claimed.
+    """
+    # 1. Capacity Check
+    active_claims = db.query(Booking).filter(
+        Booking.agent_id == agent_id,
+        Booking.escrow_status == EscrowStatus.BOOKING_INITIATED
+    ).count()
+    
+    if active_claims >= 3:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Limit reached. Complete your {active_claims} active bookings before claiming more."
+        )
 
-@router.post("/{booking_id}/fulfill")
-async def fulfill_task(
-    booking_id: str = Path(...),
-    pnr: str = Body(..., embed=True),
-    ticket_file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
-):
-    """Complete the booking by uploading the final ticket PDF."""
-    verify_agent_role(user)
-    
-    booking = db.query(Booking).filter(Booking.id == booking_id, Booking.agent_id == user.id).first()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking not assigned to you")
+    # 2. Atomic Transaction for Claiming
+    try:
+        # Use with_for_update to lock the row for the duration of this block
+        booking = db.query(Booking).filter(Booking.id == booking_id).with_for_update().first()
+        
+        if not booking:
+            raise HTTPException(status_code=404, detail="Booking not found.")
+            
+        if booking.agent_id:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Conflict: Already claimed by Agent {booking.agent_id}"
+            )
+            
+        if booking.escrow_status != EscrowStatus.VERIFIED:
+            raise HTTPException(status_code=400, detail="Booking must be VERIFIED before claiming.")
 
-    # 1. Save Ticket PDF
-    upload_dir = "media/tickets/confirmed"
-    os.makedirs(upload_dir, exist_ok=True)
-    file_path = f"{upload_dir}/{booking_id}.pdf"
-    
-    with open(file_path, "wb") as f:
-        f.write(await ticket_file.read())
-
-    # 2. Update Booking Status
-    booking.pnr_number = pnr
-    booking.escrow_status = EscrowStatus.COMPLETED
-    booking.booking_status = BookingStatus.CONFIRMED.value
-    booking.escrow_message = "Ticket confirmed by RouteMaster Agent. Safe journey!"
-    
-    # Update transaction history
-    details = dict(booking.booking_details or {})
-    details['ticket_path'] = file_path
-    booking.booking_details = details
-    
-    db.commit()
-    
-    return {"message": "Booking fulfilled!", "pnr": pnr}
+        # 3. Perform Claim
+        success = AgentBookingService.claim_booking(db, booking_id, agent_id)
+        
+        if success:
+            # [22.4] WebSocket Broadcast to all Agents
+            await ws_manager.broadcast_log(
+                booking_id, 
+                f"Claimed by {agent_id}", 
+                "CLAIMED"
+            )
+            
+            return {
+                "status": "success", 
+                "message": "Booking claimed. You have 15 minutes to fulfill.",
+                "booking_id": booking_id
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to persist claim.")
+            
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException): raise e
+        logger.error(f"Concurrency error in claim: {e}")
+        raise HTTPException(status_code=500, detail="System busy. Try again.")

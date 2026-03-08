@@ -37,20 +37,15 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
 def is_tatkal_window() -> bool:
     """
-    Subtask 13.1: Tatkal Window Detection.
-    Returns True if current IST time is within the peak Tatkal windows.
+    [27.2] Checks if current time is within IRCTC Tatkal booking window (IST).
+    Broader window (10 AM to 1 PM) to account for payment delays and processing.
     """
     try:
         import pytz
         ist = pytz.timezone('Asia/Kolkata')
         now = datetime.now(ist)
         
-        # AC Window: 10:00 AM - 10:30 AM
-        if now.hour == 10 and 0 <= now.minute <= 30:
-            return True
-        
-        # Non-AC Window: 11:00 AM - 11:30 AM
-        if now.hour == 11 and 0 <= now.minute <= 30:
+        if 10 <= now.hour <= 12:
             return True
     except: pass
     return False

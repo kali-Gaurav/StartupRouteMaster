@@ -1,53 +1,51 @@
+import asyncio
 import sys
 import os
-import asyncio
-from datetime import datetime
-import logging
-from sqlalchemy import text
+from datetime import datetime, timedelta
+from database.session import SessionLocal
+from database.models import User, AdminSession
+from api.v2.admin import get_session_history
 
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.route_engine.engine import RailwayRouteEngine
-from database.session import SessionTransit
-
-logging.basicConfig(level=logging.INFO)
-
-async def verify_task_15_debug():
-    print("\n>>> Verifying Task 15: Transfer Graph Debug")
-    engine = RailwayRouteEngine()
-    db = SessionTransit()
+async def verify_task_15():
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 15 (SESSION HISTORY)")
     
-    target_date = datetime(2026, 3, 8)
-    graph = await engine._get_current_graph(target_date)
+    db = SessionLocal()
+    session_id = "S15_TEST"
     
-    # 1. Print some sample keys from transfer_graph
-    tg = graph.snapshot.transfer_graph
-    sample_keys = list(tg.keys())[:10]
-    print(f"  Sample Keys in transfer_graph: {sample_keys}")
+    # 0. Setup test data
+    u = User(id="admin15", email="a15@ex.com", role="admin")
+    db.merge(u)
     
-    # 2. Check PGTN ID
-    pgt_row = db.execute(text("SELECT id, code FROM stops WHERE code = 'PGT'")).fetchone()
-    pgtn_row = db.execute(text("SELECT id, code FROM stops WHERE code = 'PGTN'")).fetchone()
+    now = datetime.utcnow()
+    # 1 hour session
+    s1 = AdminSession(
+        id=session_id, admin_id="admin15", 
+        created_at=now - timedelta(hours=1),
+        expires_at=now,
+        is_revoked=False
+    )
+    db.merge(s1)
+    db.commit()
     
-    if pgt_row and pgtn_row:
-        pgt_id, pgt_code = pgt_row
-        pgtn_id, pgtn_code = pgtn_row
-        print(f"  DB Check: PGT ID={pgt_id}, PGTN ID={pgtn_id}")
-        
-        # Check transfer from 142 specifically
-        tr_list = tg.get(pgt_id, [])
-        print(f"  Transfers for ID {pgt_id}: {[t.station_id for t in tr_list]}")
-        
-        # Check if 143 (PGTN) is reachable from 142
-        reachable = any(t.station_id == pgtn_id for t in tr_list)
-        print(f"  Is PGTN ({pgtn_id}) reachable from PGT ({pgt_id})? {reachable}")
-        
-        if not reachable:
-            # Check the DB table content for this ID
-            row = db.execute(text("SELECT * FROM transfers WHERE from_stop_id = :fid AND to_stop_id = :tid"), {"fid": pgt_id, "tid": pgtn_id}).fetchone()
-            print(f"  DB Table record for {pgt_id}->{pgtn_id}: {row}")
-
-    db.close()
+    # 1. Fetch History
+    print("  Fetching session history...")
+    history = await get_session_history(db=db)
+    
+    # 2. Verify Logic
+    matching = [s for s in history if s["id"] == session_id]
+    assert len(matching) > 0
+    
+    s = matching[0]
+    print(f"    Session ID: {s['id']}")
+    print(f"    Duration Mins: {s['duration_mins']}")
+    
+    assert s["duration_mins"] == 60.0
+    
+    # 3. Cleanup
+    db.query(AdminSession).filter(AdminSession.id == session_id).delete()
+    db.commit()
+    
+    print("\n✅ TASK 15 FULLY VERIFIED: Admin session history accurately calculates durations.")
 
 if __name__ == "__main__":
-    asyncio.run(verify_task_15_debug())
+    asyncio.run(verify_task_15())

@@ -1,67 +1,58 @@
-import asyncio
-import os
 import sys
-import time
-import logging
-from unittest.mock import MagicMock, AsyncMock
-
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from core.data_structures import Route, RouteSegment
-from services.search_service import SearchService
+import os
 from database.session import SessionLocal
+from database.models import User, Booking, EscrowStatus
+from services.payment_vpa_service import PaymentVPAService
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify_task_24")
-
-async def verify_task_24():
-    print("\n>>> Verifying Task 24: Parallel Leg Verification")
+def verify_task_24():
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 24 (SPLIT PAYMENTS)")
     
     db = SessionLocal()
-    service = SearchService(db)
+    booking_id = "B24_SPLIT_TEST"
     
-    # 1. Create a 2-transfer route (3 legs)
-    route = Route()
-    for i in range(3):
-        seg = RouteSegment(
-            trip_id=i, train_number=f"T{i}", 
-            departure_stop_id=i, arrival_stop_id=i+1,
-            departure_code=f"S{i}", arrival_code=f"S{i+1}",
-            departure_time=datetime.now(), arrival_time=datetime.now(),
-            duration_minutes=100, distance_km=100.0
-        )
-        route.add_segment(seg)
+    # 0. Setup test data
+    u = User(id="u24", email="u24@ex.com")
+    db.merge(u)
     
-    # 2. Mock DataProvider with artificial delay (500ms per call)
-    async def mock_call(*args, **kwargs):
-        await asyncio.sleep(0.5)
-        return {"status": "verified", "available_seats": 10, "total_fare": 1000.0}
-        
-    service.data_provider.verify_seat_availability_unified = AsyncMock(side_effect=mock_call)
-    service.data_provider.verify_fare_unified = AsyncMock(side_effect=mock_call)
+    # Required Total: ₹100
+    b1 = Booking(
+        id=booking_id, user_id="u24", 
+        amount_paid=100.0, 
+        escrow_status=EscrowStatus.CREATED,
+        transaction_history=[],
+        booking_details={}
+    )
+    db.merge(b1)
+    db.commit()
     
-    # 3. Test Sequential (Theoretical)
-    # A 3-leg route has 6 calls (3 seats + 3 fares)
-    # Sequential would take 6 * 0.5 = 3.0s
-    print("  Testing Parallel Verification for a 3-leg route (6 total API calls)...")
+    # 1. First Transaction (Partial)
+    print("  Adding partial transaction: ₹40...")
+    PaymentVPAService.add_transaction(db, booking_id, "UTR24_1", 40.0)
     
-    start = time.perf_counter()
-    await service._verify_single_route(route, datetime.now())
-    parallel_latency = (time.perf_counter() - start) * 1000
+    b1 = db.query(Booking).filter(Booking.id == booking_id).first()
+    print(f"    Current Status: {b1.escrow_status.value}")
+    print(f"    History Length: {len(b1.transaction_history)}")
     
-    print(f"  Parallel Latency: {parallel_latency:.2f}ms")
-    print(f"  Theoretical Sequential Latency: 3000ms")
+    assert b1.escrow_status == EscrowStatus.CREATED
+    assert len(b1.transaction_history) == 1
     
-    # In parallel, it should take ~500ms (the max of any single task)
-    if parallel_latency < 1000: # Allow some overhead
-        print(f"  Speedup: {3000 / parallel_latency:.1f}x")
-        print("\n✅ TASK 24 VERIFIED: Parallel leg verification is highly efficient.")
-        return True
-    else:
-        print(f"❌ FAILURE: Parallel verification took too long ({parallel_latency:.2f}ms).")
-        return False
+    # 2. Second Transaction (Completes the total)
+    print("\n  Adding completing transaction: ₹60...")
+    PaymentVPAService.add_transaction(db, booking_id, "UTR24_2", 60.0)
+    
+    b1 = db.query(Booking).filter(Booking.id == booking_id).first()
+    print(f"    Current Status: {b1.escrow_status.value}")
+    print(f"    History Length: {len(b1.transaction_history)}")
+    
+    # Sum is 100, should be VERIFIED
+    assert b1.escrow_status == EscrowStatus.VERIFIED
+    assert len(b1.transaction_history) == 2
+    
+    # 3. Cleanup
+    db.delete(b1)
+    db.commit()
+    
+    print("\n✅ TASK 24 FULLY VERIFIED: Multiple transactions are aggregated correctly for verification.")
 
 if __name__ == "__main__":
-    from datetime import datetime
-    asyncio.run(verify_task_24())
+    verify_task_24()

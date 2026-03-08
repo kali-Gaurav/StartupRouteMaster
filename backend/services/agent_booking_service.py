@@ -4,6 +4,7 @@ Handles manual agent fulfillment requests and state enforcement.
 """
 
 import logging
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from database.models import Booking, EscrowStatus, PassengerDetails, AuditLog
@@ -36,21 +37,28 @@ class AgentBookingService:
         if not unlock_exists:
             raise ValueError("Route must be unlocked (₹49) before requesting agent booking.")
 
-        # [42.7] Fee Aggregation
+        # [42.7] & [3.1] Fee Aggregation with strict rounding
         agent_fee = 10.0
-        total_amount = ticket_fare + agent_fee # The ₹49 was already paid
+        # [3.9] Round to 2 decimals for bank accuracy
+        total_amount = round(float(ticket_fare) + agent_fee, 2)
+        
+        # [27.3] Tatkal Auto-Priority
+        from utils.geo_utils import is_tatkal_window
+        priority = 0 if is_tatkal_window() else 10
         
         booking = Booking(
             user_id=user_id,
             route_id=route_id,
-            amount_paid=total_amount,
+            amount_paid=total_amount, # This is the LOCKED amount for payment
             service_type="AGENT_BOOKING",
             escrow_status=EscrowStatus.CREATED,
+            priority=priority, # [27.3]
             escrow_message="Agent booking requested. Awaiting payment verification.",
             booking_details={
-                "ticket_fare": ticket_fare,
-                "agent_fee": agent_fee,
-                "total_checkout": total_amount
+                "ticket_fare": round(float(ticket_fare), 2),
+                "agent_fee": round(agent_fee, 2),
+                "total_checkout": total_amount,
+                "locked_at": datetime.utcnow().isoformat() # [3.5] Price snapshot
             }
         )
         db.add(booking)

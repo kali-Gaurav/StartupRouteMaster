@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from typing import Dict, List, Any, Optional
 from services.multi_layer_cache import multi_layer_cache
 from dependencies import get_route_engine, get_db
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func
 import time
@@ -97,6 +97,121 @@ async def update_config(payload: ConfigUpdateRequest, db: Session = Depends(get_
     return {"success": True, "key": payload.key, "value": payload.value}
 
 # ==============================================================================
+# PAYMENT VERIFICATION (Tasks 11 & 13)
+# ==============================================================================
+
+@router.get("/payments/pending")
+async def get_pending_verifications(db: Session = Depends(get_db)):
+    """
+    Subtask 11.1: Fetch all bookings awaiting manual UTR verification.
+    """
+    return db.query(Booking).filter(
+        Booking.escrow_status == EscrowStatus.UTR_SUBMITTED
+    ).order_by(Booking.created_at.desc()).all()
+
+@router.post("/payments/{booking_id}/verify")
+async def verify_payment(booking_id: str, db: Session = Depends(get_db)):
+    """
+    Subtask 13.1: Manually mark a payment as verified.
+    Transitions state from UTR_SUBMITTED -> VERIFIED.
+    """
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+        
+    old_status = booking.escrow_status.value
+    booking.escrow_status = EscrowStatus.VERIFIED
+    
+    # [13.6] Post-Verification logic for UNLOCK
+    if booking.service_type == "UNLOCK":
+        booking.is_unlocked = True
+        booking.escrow_status = EscrowStatus.COMPLETED # Auto-complete for unlock
+        
+    booking.escrow_message = "Payment verified by Admin."
+    
+    # [13.8] Audit log
+    audit = AuditLog(
+        entity_type="Booking",
+        entity_id=booking.id,
+        action="MANUAL_PAYMENT_VERIFY",
+        old_value=old_status,
+        new_value=booking.escrow_status.value,
+        performed_by="SUPER_ADMIN",
+        reason="Manual admin verification via dashboard."
+    )
+    db.add(audit)
+    db.commit()
+    
+    # [19.3] Real-time Broadcast
+    await ws_manager.broadcast_log(booking_id, f"Payment verified by Admin. Status: {booking.escrow_status.value}", booking.escrow_status.value)
+    
+    # [25.2] Merchant Limit Tracking: Increment volume
+    if booking.merchant_vpa:
+        from services.payment_vpa_service import PaymentVPAService
+        PaymentVPAService.increment_volume(db, booking.merchant_vpa, booking.amount_paid)
+    
+    return {"success": True, "message": f"Booking {booking_id} verified successfully."}
+
+@router.post("/payments/{booking_id}/reject")
+async def reject_payment(booking_id: str, payload: BookingFailRequest, db: Session = Depends(get_db)):
+    """
+    Subtask 14.2: Mark a payment as rejected/failed.
+    Transitions state to FAILED and stores reason.
+    """
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+        
+    old_status = booking.escrow_status.value
+    booking.escrow_status = EscrowStatus.FAILED
+    booking.escrow_message = f"Payment Rejected: {payload.reason}"
+    
+    # [14.6] Audit log
+    audit = AuditLog(
+        entity_type="Booking",
+        entity_id=booking.id,
+        action="MANUAL_PAYMENT_REJECT",
+        old_value=old_status,
+        new_value="FAILED",
+        performed_by="SUPER_ADMIN",
+        reason=payload.reason
+    )
+    db.add(audit)
+    db.commit()
+    
+    return {"success": True, "message": f"Booking {booking_id} rejected: {payload.reason}"}
+
+# ==============================================================================
+# MERCHANT MANAGEMENT (Task 18)
+# ==============================================================================
+
+from database.models import MerchantVPA
+
+@router.post("/payments/vpa/{vpa_id}/toggle")
+async def toggle_vpa_status(vpa_id: str, db: Session = Depends(get_db)):
+    """Subtask 18.2: Toggle is_active for a single VPA."""
+    merchant = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa_id).first()
+    if not merchant:
+        raise HTTPException(status_code=404, detail="Merchant not found")
+        
+    # [18.3] Safety: Don't allow deactivating the last active VPA
+    if merchant.is_active:
+        active_count = db.query(MerchantVPA).filter(MerchantVPA.is_active == True).count()
+        if active_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot deactivate the last active merchant.")
+            
+    merchant.is_active = not merchant.is_active
+    db.commit()
+    return {"success": True, "vpa": merchant.vpa, "is_active": merchant.is_active}
+
+@router.post("/payments/vpa/bulk-activate")
+async def bulk_activate_vpas(db: Session = Depends(get_db)):
+    """Subtask 18.1: Activate all merchants."""
+    db.query(MerchantVPA).update({MerchantVPA.is_active: True})
+    db.commit()
+    return {"success": True, "message": "All merchants activated."}
+
+# ==============================================================================
 # OPERATIONS & PRODUCTIVITY
 # ==============================================================================
 
@@ -151,6 +266,48 @@ async def get_booking_details(booking_id: str, db: Session = Depends(get_db)):
 # ==============================================================================
 # FINANCIAL SUITE
 # ==============================================================================
+
+@router.get("/finance/breakdown")
+async def get_finance_breakdown(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Subtask 20.1: Detailed revenue and commission breakdown.
+    """
+    if not start_date: start_date = date.today() - timedelta(days=7)
+    if not end_date: end_date = date.today()
+    
+    # Range handling
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+    
+    # 1. Total Revenue by Service Type
+    stats = db.query(
+        Booking.service_type,
+        func.sum(Booking.amount_paid).label("total")
+    ).filter(
+        Booking.created_at.between(start_dt, end_dt),
+        Booking.escrow_status.in_([EscrowStatus.VERIFIED, EscrowStatus.COMPLETED])
+    ).group_by(Booking.service_type).all()
+    
+    revenue_map = {s[0]: float(s[1]) for s in stats}
+    total_rev = sum(revenue_map.values())
+    
+    # 2. Total Commissions
+    total_comm = db.query(func.sum(CommissionTracking.amount)).filter(
+        CommissionTracking.created_at.between(start_dt, end_dt)
+    ).scalar() or 0.0
+    
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_revenue": round(total_rev, 2),
+        "total_commissions": round(total_comm, 2),
+        "net_profit": round(total_rev - total_comm, 2),
+        "breakdown": revenue_map
+    }
 
 @router.get("/finance/overview")
 async def get_finance_overview(db: Session = Depends(get_db)):
@@ -339,6 +496,36 @@ async def get_karma_leaderboard():
 @router.get("/audit/logs")
 async def get_audit_logs(db: Session = Depends(get_db)):
     return db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(20).all()
+
+@router.get("/sessions/history")
+async def get_session_history(
+    page: int = Query(1, ge=1), 
+    limit: int = Query(20, ge=1), 
+    db: Session = Depends(get_db)
+):
+    """
+    Subtask 15.1: Fetch paginated admin session history.
+    """
+    offset = (page - 1) * limit
+    sessions = db.query(AdminSession).order_by(AdminSession.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # [15.4] Calculate durations and return hydrated
+    results = []
+    for s in sessions:
+        duration = 0
+        if s.expires_at and s.created_at:
+            duration = (s.expires_at - s.created_at).total_seconds() / 60
+            
+        results.append({
+            "id": s.id,
+            "admin_id": s.admin_id,
+            "created_at": s.created_at,
+            "expires_at": s.expires_at,
+            "duration_mins": round(duration, 1),
+            "is_revoked": s.is_revoked,
+            "ip_address": s.ip_address
+        })
+    return results
 
 @router.get("/sessions")
 async def get_active_sessions(db: Session = Depends(get_db)):

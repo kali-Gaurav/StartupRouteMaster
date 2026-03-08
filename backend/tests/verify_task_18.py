@@ -1,56 +1,45 @@
+import asyncio
 import sys
 import os
-from datetime import datetime
-import time
-from sqlalchemy import text
+from database.session import SessionLocal
+from database.models import MerchantVPA
+from api.v2.admin import toggle_vpa_status, bulk_activate_vpas
+from fastapi import HTTPException
 
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
-from database.session import SessionTransit
-
-def verify_task_18():
-    print("\n>>> Verifying Task 18: Hub Connectivity Index (Tier 0)")
-    db = SessionTransit()
+async def verify_task_18():
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 18 (VPA STATUS CONTROL)")
     
-    # NDLS (ID 110) to BCT (Mumbai Central ID 1) - typical major hub pair
-    # We need to find their actual IDs in the DB
-    ndls = db.execute(text("SELECT id FROM stops WHERE code = 'NDLS'")).fetchone()
-    bct = db.execute(text("SELECT id FROM stops WHERE code = 'BCT'")).fetchone()
+    db = SessionLocal()
+    vpa1 = "anthonynagar1122-1@oksbi"
+    vpa2 = "8529841981@ptsbi"
     
-    if not ndls or not bct:
-        # Fallback to whatever hubs we have
-        row = db.execute(text("SELECT src_hub_id, dst_hub_id FROM hub_connectivity_index LIMIT 1")).fetchone()
-        if not row:
-            print("❌ FAILURE: hub_connectivity_index is empty.")
-            return False
-        src_id, dst_id = row
-    else:
-        src_id, dst_id = ndls[0], bct[0]
-
-    orchestrator = UnifiedRoutingOrchestrator(None)
+    # 0. Ensure both active
+    await bulk_activate_vpas(db)
+    print("  Ensured all VPAs are active.")
     
-    start = time.perf_counter()
-    routes = orchestrator._search_tier_0_hubs(src_id, dst_id, datetime.now(), db)
-    latency = (time.perf_counter() - start) * 1000
+    # 1. Test Single Toggle
+    print("  Toggling VPA 1 off...")
+    res = await toggle_vpa_status(vpa1, db)
+    assert res["is_active"] == False
     
-    print(f"  Hub Lookup ({src_id} -> {dst_id}) found {len(routes)} routes in {latency:.2f}ms")
+    # 2. Test Safety Lock (Subtask 18.3)
+    print("  Attempting to toggle VPA 2 off (Last Active)...")
+    try:
+        await toggle_vpa_status(vpa2, db)
+        print("    ❌ FAILURE: Allowed deactivating last VPA!")
+        assert False
+    except HTTPException as e:
+        print(f"    ✅ SUCCESS: Blocked last VPA deactivation: {e.detail}")
+        assert e.status_code == 400
+        
+    # 3. Test Bulk Activate
+    print("  Bulk activating all...")
+    await bulk_activate_vpas(db)
+    m1 = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa1).first()
+    assert m1.is_active == True
+    print("    Success: All VPAs active again.")
     
-    if len(routes) == 0:
-        print("⚠️ WARNING: No direct hub routes found for this pair (might be expected for PGT corridor).")
-        # Try finding ANY pair that has routes
-        row = db.execute(text("SELECT src_hub_id, dst_hub_id FROM hub_connectivity_index LIMIT 1")).fetchone()
-        if row:
-             src_id, dst_id = row
-             routes = orchestrator._search_tier_0_hubs(src_id, dst_id, datetime.now(), db)
-             print(f"  Alternative Pair ({src_id} -> {dst_id}) found {len(routes)} routes.")
-
-    if latency > 10.0:
-        print(f"❌ FAILURE: Tier 0 lookup too slow ({latency:.2f}ms). Expected < 5ms.")
-        return False
-
-    print("\n✅ TASK 18 VERIFIED: Hub Tier 0 is lightning fast.")
-    return True
+    print("\n✅ TASK 18 FULLY VERIFIED: VPA status control and safety locks are functional.")
 
 if __name__ == "__main__":
-    verify_task_18()
+    asyncio.run(verify_task_18())

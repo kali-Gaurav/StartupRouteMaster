@@ -1,55 +1,37 @@
-import asyncio
-import os
 import sys
-import time
-import logging
+import os
 
 # Add backend to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from database.session import SessionLocal
-from services.search_service import SearchService
-from services.multi_layer_cache import multi_layer_cache
+from utils.encryption_utils import encrypt_data, decrypt_data
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify_task_23")
-
-async def verify_task_23():
-    print("\n>>> Verifying Task 23: Aggressive Search Fingerprint Caching")
-    await multi_layer_cache.initialize()
+def verify_task_23():
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 23 (ENCRYPTION INFRA)")
     
-    db = SessionLocal()
-    service = SearchService(db)
+    # 1. Test Encryption/Decryption
+    original = "MySecretPassword123!"
+    print(f"  Original: {original}")
     
-    source, dest = "PGT", "KOTA"
-    date_str = "2026-03-08"
+    encrypted = encrypt_data(original)
+    print(f"  Encrypted (Base64): {encrypted}")
     
-    # 1. First Search (Cold - will take ~1s)
-    print(f"  Performing Cold Search: {source} -> {dest}...")
-    start = time.perf_counter()
-    res1 = await service.search_routes(source, dest, date_str)
-    cold_latency = (time.perf_counter() - start) * 1000
-    print(f"  Cold Latency: {cold_latency:.2f}ms")
+    assert encrypted != original
+    assert len(encrypted) > 20
     
-    # 2. Second Search (Hot - should be < 50ms)
-    print(f"  Performing Hot Search (from Redis)...")
-    start = time.perf_counter()
-    res2 = await service.search_routes(source, dest, date_str)
-    hot_latency = (time.perf_counter() - start) * 1000
-    print(f"  Hot Latency: {hot_latency:.2f}ms")
+    decrypted = decrypt_data(encrypted)
+    print(f"  Decrypted: {decrypted}")
     
-    print(f"  Source Attribution: {res2.get('source', 'unknown')}")
+    assert decrypted == original
+    print("    Symmetry Check: OK")
     
-    if res2.get("source") != "redis_fingerprint":
-        print("❌ FAILURE: Second search did not hit the fingerprint cache.")
-        return False
-        
-    if hot_latency > 100.0:
-        print(f"❌ FAILURE: Hot search too slow ({hot_latency:.2f}ms). Expected < 50ms.")
-        return False
-
-    print(f"\n✅ TASK 23 VERIFIED: Cache speedup is {cold_latency / hot_latency:.1f}x")
-    return True
+    # 2. Test Invalid Decryption
+    print("  Testing invalid decryption...")
+    res = decrypt_data("totally-not-base64-or-encrypted")
+    assert res == "DECRYPTION_ERROR"
+    print("    Error Handling: OK")
+    
+    print("\n✅ TASK 23 FULLY VERIFIED: Encryption infrastructure is secure and functional.")
 
 if __name__ == "__main__":
-    asyncio.run(verify_task_23())
+    verify_task_23()

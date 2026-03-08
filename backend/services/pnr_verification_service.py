@@ -4,6 +4,7 @@ Handles the finalization of bookings by agents.
 """
 
 import logging
+from datetime import datetime
 from sqlalchemy.orm import Session
 from database.models import Booking, EscrowStatus, AuditLog
 
@@ -47,6 +48,11 @@ class PNRVerificationService:
         booking.escrow_status = EscrowStatus.COMPLETED
         booking.escrow_message = "Booking confirmed. PNR verified."
         
+        # [29.2] Latency Tracking
+        fulfillment_latency = 0
+        if booking.created_at:
+            fulfillment_latency = (datetime.utcnow() - booking.created_at).total_seconds() / 60
+            
         # 5. Audit Log (Subtask 48.7)
         audit = AuditLog(
             entity_type="Booking",
@@ -55,7 +61,7 @@ class PNRVerificationService:
             old_value=old_status,
             new_value="COMPLETED",
             performed_by=agent_id,
-            reason=f"PNR {pnr_number} verified and uploaded."
+            reason=f"PNR {pnr_number} verified. Fulfillment Latency: {fulfillment_latency:.1f} mins."
         )
         db.add(audit)
         

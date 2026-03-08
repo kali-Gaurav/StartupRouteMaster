@@ -1,31 +1,58 @@
+import asyncio
 import sys
 import os
-from datetime import datetime
-import logging
+from database.session import SessionLocal
+from database.models import User, Booking, EscrowStatus, AuditLog
+from api.v2.admin import reject_payment, BookingFailRequest
 
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.route_engine.turbo_router import TurboRouter
-
-logging.basicConfig(level=logging.INFO)
-
-def verify_task_14():
-    print("\n>>> Verifying Task 14: City Cluster Expansion")
-    router = TurboRouter()
+async def verify_task_14():
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 14 (REJECT UTR ACTION)")
     
-    # Test Cluster Lookup directly
-    pgt_cluster = router._get_city_cluster("PGT")
-    print(f"  PGT Cluster: {pgt_cluster}")
+    db = SessionLocal()
+    booking_id = "B14_REJECT_TEST"
     
-    expected = ["PGT", "PGTN", "OTP"]
-    is_ok = all(code in pgt_cluster for code in expected)
+    # 0. Setup test data
+    u = User(id="u14", email="u14@ex.com")
+    db.merge(u)
     
-    if is_ok:
-        print("\n✅ TASK 14 VERIFIED: City Clusters are working and expanding correctly.")
-        return True
-    else:
-        print("\n❌ TASK 14 FAILED: Cluster expansion missing expected stations.")
-        return False
+    b1 = Booking(
+        id=booking_id, user_id="u14", 
+        service_type="AGENT_BOOKING",
+        escrow_status=EscrowStatus.UTR_SUBMITTED, 
+        utr_number="141414141414",
+        amount_paid=1510.0,
+        booking_details={}
+    )
+    db.merge(b1)
+    db.commit()
+    
+    # 1. Execute Manual Reject
+    print("  Rejecting payment via admin endpoint...")
+    reason = "Fake UTR submitted."
+    payload = BookingFailRequest(reason=reason)
+    res = await reject_payment(booking_id, payload, db)
+    print(f"    API Response: {res}")
+    
+    # 2. Verify State and Audit
+    b1 = db.query(Booking).filter(Booking.id == booking_id).first()
+    print(f"    Final Status: {b1.escrow_status.value}")
+    print(f"    Escrow Message: {b1.escrow_message}")
+    
+    assert b1.escrow_status == EscrowStatus.FAILED
+    assert reason in b1.escrow_message
+    
+    # Check Audit Log
+    log = db.query(AuditLog).filter(AuditLog.entity_id == booking_id, AuditLog.action == "MANUAL_PAYMENT_REJECT").first()
+    assert log is not None
+    assert log.reason == reason
+    print(f"    Audit Log Reason: {log.reason}")
+    
+    # 3. Cleanup
+    db.delete(b1)
+    db.query(AuditLog).filter(AuditLog.entity_id == booking_id).delete()
+    db.commit()
+    
+    print("\n✅ TASK 14 FULLY VERIFIED: Payment rejection correctly updates status and logs reason.")
 
 if __name__ == "__main__":
-    verify_task_14()
+    asyncio.run(verify_task_14())

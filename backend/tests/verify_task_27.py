@@ -1,67 +1,50 @@
 import asyncio
-import os
 import sys
-import logging
-from unittest.mock import MagicMock, patch
-
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from core.data_structures import Route, RouteSegment
-from services.search_service import SearchService
+import os
+from unittest.mock import patch
 from database.session import SessionLocal
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify_task_27")
+from database.models import User, Booking, EscrowStatus
+from services.agent_booking_service import AgentBookingService
 
 async def verify_task_27():
-    print("\n>>> Verifying Task 27: Predictive Availability & ML Ranking")
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 27 (TATKAL PRIORITY)")
     
     db = SessionLocal()
-    service = SearchService(db)
+    user_id = "user27"
+    route_id = "route27"
     
-    # 1. Create two mock routes
-    # Route A: High CNF Prob
-    # Route B: Low CNF Prob (< 20%)
+    # 0. Setup
+    u = User(id=user_id, email="u27@ex.com")
+    db.merge(u)
     
-    # Use patch to mock the heuristic result
-    with patch('services.ml.availability_heuristic.availability_heuristic.get_route_availability_score') as mock_ml:
-        # First call: 0.9 (Safe), Second call: 0.1 (Risky)
-        mock_ml.side_effect = [0.9, 0.1]
+    # Need an UNLOCK record first
+    unlock = Booking(id="U27", user_id=user_id, route_id=route_id, service_type="UNLOCK", is_unlocked=True, booking_details={})
+    db.merge(unlock)
+    db.commit()
+    
+    # 1. Test Priority Assignment during Tatkal Window
+    print("  Mocking Tatkal Window = TRUE...")
+    with patch('utils.geo_utils.is_tatkal_window', return_value=True):
+        booking = AgentBookingService.create_booking_request(db, user_id, route_id, [], 500.0)
         
-        # We need to mock the Orchestrator to return 2 routes
-        from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
-        with patch.object(UnifiedRoutingOrchestrator, 'search_all_tiers', new_callable=AsyncMock) as mock_search:
-            r1 = Route(segments=[RouteSegment(1, 1, 2, datetime.now(), datetime.now(), 100, 100.0, "S1", "S2", 500.0, "T1", "12345")])
-            r2 = Route(segments=[RouteSegment(2, 3, 4, datetime.now(), datetime.now(), 100, 100.0, "S3", "S4", 500.0, "T2", "67890")])
-            mock_search.return_value = [r1, r2]
-            
-            # Disable real verification for this test
-            service._verify_routes_parallel = AsyncMock(side_effect=lambda routes, dt, quota: routes)
-            
-            print("  Running search with ML pruning active...")
-            res = await service.search_routes("NDLS", "BCT", "2026-03-08")
-            
-            journeys = res.get("journeys", [])
-            print(f"  Total journeys after pruning: {len(journeys)}")
-            
-            # Verify Pruning (Task 27.4)
-            if len(journeys) != 1:
-                print(f"❌ FAILURE: Expected 1 journey (pruned the 10% one), got {len(journeys)}")
-                return False
-            
-            # Verify Ranking (Task 27.5)
-            best_jid = journeys[0].get("journey_id")
-            print(f"  Best Journey: {best_jid} (Prob: {journeys[0].get('availability_prob')})")
-            
-            if "12345" in best_jid:
-                print("\n✅ TASK 27 VERIFIED: ML Pruning and Ranking are operational.")
-                return True
-            else:
-                print("❌ FAILURE: Ranked the wrong route as best.")
-                return False
+        print(f"    Booking Priority: {booking.priority}")
+        assert booking.priority == 0
+        print("    Priority 0 Assignment: OK")
+        
+    # 2. Test Priority Assignment OUTSIDE Tatkal Window
+    print("\n  Mocking Tatkal Window = FALSE...")
+    with patch('utils.geo_utils.is_tatkal_window', return_value=False):
+        booking2 = AgentBookingService.create_booking_request(db, user_id, route_id, [], 500.0)
+        
+        print(f"    Booking Priority: {booking2.priority}")
+        assert booking2.priority == 10
+        print("    Priority 10 Assignment: OK")
+        
+    # 3. Cleanup
+    db.query(Booking).filter(Booking.id.in_([booking.id, booking2.id, "U27"])).delete()
+    db.commit()
+    
+    print("\n✅ TASK 27 FULLY VERIFIED: Tatkal priority is automatically injected based on window logic.")
 
 if __name__ == "__main__":
-    from datetime import datetime
-    from unittest.mock import AsyncMock
     asyncio.run(verify_task_27())

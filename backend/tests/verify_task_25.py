@@ -1,53 +1,54 @@
 import asyncio
-import os
 import sys
-import logging
-from unittest.mock import MagicMock, AsyncMock
-
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from core.route_engine.data_provider import DataProvider
-from utils.external_api_health import api_health
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("test_task_25")
+import os
+from database.session import SessionLocal
+from database.models import User, Booking, EscrowStatus, MerchantVPA
+from api.v2.admin import verify_payment
 
 async def verify_task_25():
-    print("\n>>> Verifying Task 25: Fallback Synchronization & Circuit Breaker")
+    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 25 (DAILY LIMIT TRACKING)")
     
-    dp = DataProvider()
+    db = SessionLocal()
+    vpa = "anthonynagar1122-1@oksbi"
     
-    # 1. Mock RapidAPI to FAIL consistently
-    mock_client = MagicMock()
-    mock_client.get_seat_availability = AsyncMock(return_value={"status": "error", "message": "API Down"})
-    dp.rapidapi_client = mock_client
+    # 0. Get initial volume
+    m = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa).first()
+    initial_vol = m.current_daily_volume
+    print(f"  Initial Volume for {vpa}: ₹{initial_vol}")
     
-    # 2. Trigger failures to trip the circuit breaker (Window size is 20, threshold 0.5)
-    print("  Simulating 25 API failures...")
-    for _ in range(25):
-        await dp.verify_seat_availability_unified(1, datetime.now(), train_number="12625", from_station="PGT", to_station="KOTA")
+    # 1. Create a booking linked to this VPA
+    u = User(id="u25", email="u25@ex.com")
+    db.merge(u)
     
-    status = api_health.get_status()
-    print(f"  Circuit Status: {status}")
+    booking_id = "B25_LIMIT_TEST"
+    b1 = Booking(
+        id=booking_id, user_id="u25", 
+        service_type="UNLOCK",
+        escrow_status=EscrowStatus.UTR_SUBMITTED,
+        merchant_vpa=vpa,
+        amount_paid=49.0,
+        booking_details={}
+    )
+    db.merge(b1)
+    db.commit()
     
-    if not status["is_disabled"]:
-        print("❌ FAILURE: Circuit breaker did not trip as expected.")
-        return False
+    # 2. Verify Payment (Should trigger increment)
+    print("  Verifying payment of ₹49...")
+    await verify_payment(booking_id, db)
     
-    # 3. Verify Fallback Source
-    print("  Verifying source attribution during outage...")
-    res = await dp.verify_seat_availability_unified(1, datetime.now(), train_number="12625", from_station="PGT", to_station="KOTA")
+    # 3. Check final volume
+    db.refresh(m)
+    final_vol = m.current_daily_volume
+    print(f"  Final Volume for {vpa}: ₹{final_vol}")
     
-    print(f"  Result Source: {res.get('source')}")
+    assert final_vol == initial_vol + 49.0
+    print("    Increment Check: OK")
     
-    if res.get("source") != "database_fallback":
-        print(f"❌ FAILURE: Expected source 'database_fallback', got '{res.get('source')}'")
-        return False
-
-    print("\n✅ TASK 25 VERIFIED: Circuit breaker and Database Fallback are robust.")
-    return True
+    # 4. Cleanup
+    db.query(Booking).filter(Booking.id == booking_id).delete()
+    db.commit()
+    
+    print("\n✅ TASK 25 FULLY VERIFIED: Merchant daily volumes are tracked in real-time.")
 
 if __name__ == "__main__":
-    from datetime import datetime
     asyncio.run(verify_task_25())

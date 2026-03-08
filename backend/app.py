@@ -49,6 +49,10 @@ async def lifespan(app: FastAPI):
     
     asyncio.create_task(worker_pool.start_manager())
     
+    # [28.3] Start Cleanup Worker
+    from workers.cleanup_worker import cleanup_loop
+    asyncio.create_task(cleanup_loop())
+    
     udp_listener = UDPSafetyListener()
     asyncio.create_task(udp_listener.start())
     

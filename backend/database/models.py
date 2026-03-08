@@ -46,6 +46,10 @@ class User(UserBase):
     encrypted_irctc_creds = Column(LargeBinary, nullable=True)
     creds_iv = Column(LargeBinary, nullable=True)
     opt_in_persistent_creds = Column(Boolean, default=False)
+    
+    # [30.1] Agent State
+    is_available = Column(Boolean, default=False)
+    last_heartbeat = Column(DateTime, nullable=True)
 
     bookings = relationship("Booking", back_populates="user", foreign_keys="[Booking.user_id]")
     profile = relationship("Profile", back_populates="user", uselist=False)
