@@ -7,7 +7,7 @@ from api.sos import _load_event, _save_event
 from api.websockets import manager
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/safety", tags=["Safety Resilience"])
+router = APIRouter(prefix="/safety", tags=["Safety Resilience"])
 
 class BatteryStatusPayload(BaseModel):
     battery_level: float # 0.0 to 1.0

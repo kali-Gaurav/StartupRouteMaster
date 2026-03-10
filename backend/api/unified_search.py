@@ -12,7 +12,7 @@ from services.search_service import SearchService
 from core.redis import async_redis_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v2/search", tags=["unified"])
+router = APIRouter(prefix="/v2/search", tags=["unified"])
 
 @router.post("/unified", response_model=UnifiedSearchResponse)
 async def unified_search_endpoint(request: Request, req: UnifiedSearchRequest, db: Session = Depends(get_db)):

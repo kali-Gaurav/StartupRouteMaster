@@ -15,7 +15,7 @@ from services.unlock_service import UnlockService
 from services.search_service import SearchService
 from core.redis import async_redis_client # Added for async cache access
 
-router = APIRouter(prefix="/api/routes", tags=["routes"])
+router = APIRouter(prefix="/routes", tags=["routes"])
 logger = logging.getLogger(__name__)
 
 

@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Request
 import logging
 from utils.limiter import limiter
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 # All authentication is now handled by Supabase.  The backend no longer

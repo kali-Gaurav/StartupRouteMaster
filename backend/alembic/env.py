@@ -52,7 +52,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = Config.DATABASE_URL
+    url = Config.GET_SQLALCHEMY_URL("user")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -72,7 +72,7 @@ def run_migrations_online() -> None:
 
     """
     # this line is required for 'autogenerate' support
-    config.set_main_option('sqlalchemy.url', Config.DATABASE_URL)
+    config.set_main_option('sqlalchemy.url', Config.GET_SQLALCHEMY_URL("user"))
 
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),

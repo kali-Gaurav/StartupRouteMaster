@@ -1,55 +1,40 @@
+# Task 21: Exact Replica Docker Compose
+# Use this to test the full production stack locally (Postgres + Redis + Backend)
 version: '3.8'
 
 services:
-  # Main Backend API (Consolidated)
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: routemaster
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: routemaster_prod
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
-    container_name: routemaster_backend
-    restart: unless-stopped
-    ports:
-      - "8000:8000" # Main API & Gateway
+      dockerfile: backend/Dockerfile.prod
     environment:
       - ENVIRONMENT=production
+      - DATABASE_URL=postgresql://routemaster:password@db:5432/routemaster_prod
       - REDIS_URL=redis://redis:6379/0
-      - SUPABASE_URL=${VITE_SUPABASE_URL}
-      - SUPABASE_KEY=${VITE_SUPABASE_ANON_KEY}
-      - PYTHONPATH=/app
-    depends_on:
-      redis:
-        condition: service_healthy
-    networks:
-      - routemaster_network
-
-  redis:
-    image: redis/redis-stack:latest
-    container_name: routemaster_redis
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-prod_fallback_secret}
     ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - routemaster_network
-
-  # Frontend
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: routemaster_frontend
-    ports:
-      - "5173:5173"
-    environment:
-      - RAILWAY_BACKEND_URL=http://localhost:8000
+      - "8000:8000"
     depends_on:
-      - backend
-    networks:
-      - routemaster_network
+      - db
+      - redis
 
-networks:
-  routemaster_network:
-    driver: bridge
+volumes:
+  postgres_prod_data:

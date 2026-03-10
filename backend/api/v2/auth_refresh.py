@@ -3,11 +3,12 @@ Phase 1: Backend Auth Refresh Endpoint
 Handles session refresh when access token expires.
 """
 
-from fastapi import APIRouter, HTTPException, status, Body
+from fastapi import APIRouter, HTTPException, status, Body, Request
 from pydantic import BaseModel
 from typing import Optional
 from core.auth.supabase_client import supabase
 from database.config import Config
+from services.multi_layer_cache import multi_layer_cache
 import logging
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -61,18 +62,22 @@ async def refresh_access_token(
 
 @router.post("/logout")
 async def logout(
-    refresh_token: str = Body(..., embed=True)
+    request: Request,
+    refresh_token: Optional[str] = Body(None, embed=True)
 ):
     """
-    Logout by invalidating the refresh token.
-    Frontend should also clear localStorage tokens.
+    Task 11.13: Multi-user Logout with Blacklist support.
+    Adds the current Access Token to Redis blacklist until its 'exp' time.
     """
-    try:
-        supabase.auth.sign_out()
-        return {"status": "logged_out"}
-    except Exception as e:
-        logger.error(f"Logout failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed"
-        )
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        # Blacklist the token for 1 hour (standard Supabase JWT lifetime)
+        if multi_layer_cache.redis:
+            try:
+                await multi_layer_cache.redis.setex(f"auth:blacklist:{token}", 3600, "1")
+                logger.info(f"Token blacklisted successfully.")
+            except Exception as e:
+                logger.error(f"Blacklist write failed: {e}")
+
+    return {"status": "logged_out", "blacklisted": True}

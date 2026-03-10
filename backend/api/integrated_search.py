@@ -27,7 +27,7 @@ from schemas import (
 from utils.limiter import limiter
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v2", tags=["integrated-search"])
+router = APIRouter(prefix="/v2", tags=["integrated-search"])
 
 # store timestamp of search -> used by unlock to compute search_to_unlock_time_ms
 SEARCH_TIMESTAMP_CACHE: dict[str, float] = {}

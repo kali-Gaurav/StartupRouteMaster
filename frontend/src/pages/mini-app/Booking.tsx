@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, ArrowLeft, ArrowRight, Loader2, Train, IndianRupee, Info, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, Train, IndianRupee, Info, ShieldCheck } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { BookingPaymentStep } from "@/components/booking/BookingPaymentStep";
 import { BookingFlowProvider, useBookingFlowContext } from "@/context/BookingFlowContext";

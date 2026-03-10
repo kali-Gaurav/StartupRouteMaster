@@ -28,13 +28,16 @@ class EscalationService:
         logger.info("🛑 SOS Escalation Monitor Stopped")
 
     async def _monitor_loop(self):
+        # Task 58: Initial startup delay to allow system to stabilize
+        # Prevents heavy PII scrubbing immediately on restart
+        await asyncio.sleep(15)
         while self.running:
             try:
                 await self.check_all_active_incidents()
                 await self.purge_old_incidents() # Task 42
             except Exception as e:
                 logger.error(f"Error in escalation monitor: {e}")
-            await asyncio.sleep(300) # Check every 5 minutes
+            await asyncio.sleep(1800) # Check every 30 minutes (Task 42 optimization)
 
     async def purge_old_incidents(self, days: int = 30):
         """
@@ -55,6 +58,10 @@ class EscalationService:
         for event in all_events:
             if not event or not isinstance(event, dict): continue
             
+            # Skip if already scrubbed and not old enough for hard delete
+            eid = event.get("id")
+            if not eid: continue
+
             try:
                 triggered_at_str = event.get("triggered_at")
                 if not triggered_at_str: continue
@@ -62,9 +69,6 @@ class EscalationService:
             except (ValueError, TypeError):
                 continue
 
-            eid = event.get("id")
-            if not eid: continue
-            
             # 1. Hard Delete (> 30 days) - Task 42
             if triggered_at < hard_delete_threshold:
                 logger.info(f"♻️ [HARD DELETE] Decisively wiping all data for incident {eid}")
@@ -99,7 +103,10 @@ class EscalationService:
                 purged_count += 1
                 
             # 2. Soft Scrub (> 24 hours) - Task 41
-            elif triggered_at < soft_scrub_threshold and event.get("privacy_status") != "scrubbed":
+            elif triggered_at < soft_scrub_threshold:
+                if event.get("privacy_status") == "scrubbed":
+                    continue # Already done, skip noise
+                
                 logger.info(f"🛡️ [SOFT SCRUB] Redacting PII for incident {eid}")
                 import hashlib
                 

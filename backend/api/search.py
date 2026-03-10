@@ -13,8 +13,11 @@ from services.station_service import StationService
 from services.search_service import SearchService
 from database.config import Config
 from utils.limiter import limiter
+from fastapi_cache.decorator import cache
+from utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
+from api.websockets import manager as websocket_manager
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
 
 @router.post("/")
@@ -31,6 +34,7 @@ async def search_routes_endpoint(
     Search for routes with session-based pagination.
     """
     start_time = time.time()
+    status_label = "success"
     try:
         travel_date_str = search_request.date or datetime.now().strftime("%Y-%m-%d")
         service = SearchService(db)
@@ -49,33 +53,6 @@ async def search_routes_endpoint(
             session_id=search_request.session_id,
             client_ip=request.client.host
         )
-        return result
-
-    except Exception as e:
-        logger.error(f"Search endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/load-more")
-@limiter.limit("60/minute")
-async def load_more_endpoint(
-    request: Request,
-    load_request: LoadMoreRequestSchema,
-    db: Session = Depends(get_db)
-):
-    """
-    Subtask 1.3: Load the next batch of verified routes for a session.
-    """
-    try:
-        service = SearchService(db)
-        result = await service.load_more_routes(
-            session_id=load_request.session_id,
-            limit=load_request.limit,
-            quota=load_request.quota
-        )
-        return result
-    except Exception as e:
-        logger.error(f"Load more error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to load more routes")
 
         if not result or not result.get("journeys"):
             # Task 34: Alternative Hub-Route Suggestion
@@ -99,12 +76,13 @@ async def load_more_endpoint(
                 "is_hub_fallback": True
             }
 
-        status_label = "success"
         return result
 
     except HTTPException:
+        status_label = "http_error"
         raise
     except Exception as e:
+        status_label = "error"
         logger.error(f"Search endpoint error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -115,6 +93,28 @@ async def load_more_endpoint(
         SEARCH_LATENCY_SECONDS.labels(endpoint="/api/search").observe(duration)
         SEARCH_REQUESTS_TOTAL.labels(endpoint="/api/search", status=status_label).inc()
         ROUTE_LATENCY_MS.observe(duration * 1000)
+
+@router.post("/load-more")
+@limiter.limit("60/minute")
+async def load_more_endpoint(
+    request: Request,
+    load_request: LoadMoreRequestSchema,
+    db: Session = Depends(get_db)
+):
+    """
+    Subtask 1.3: Load the next batch of verified routes for a session.
+    """
+    try:
+        service = SearchService(db)
+        result = await service.load_more_routes(
+            session_id=load_request.session_id,
+            limit=load_request.limit,
+            quota=load_request.quota
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Load more error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load more routes")
 
 @router.get("/stations")
 @limiter.limit("120/minute")

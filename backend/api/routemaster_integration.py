@@ -38,7 +38,7 @@ from database.config import Config
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/admin/routemaster", tags=["routemaster-integration"])
+router = APIRouter(prefix="/v1/admin/routemaster", tags=["routemaster-integration"])
 
 # Graph mutation engine for real-time updates
 # graph_mutation_engine = GraphMutationEngine()

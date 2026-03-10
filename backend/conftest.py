@@ -25,7 +25,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base, get_db
-from models import StationMaster
+from database.models import Stop
 
 # Any shared pytest fixtures can be added here later (db, client, test data)
 
@@ -59,16 +59,16 @@ def db():
 
     # Seed a small set of stations required by tests (keeps test fast)
     stations = [
-        {"station_code": "KOTA", "station_name": "Kota Junction", "city": "Kota", "state": "Rajasthan", "is_junction": True},
-        {"station_code": "PALAK", "station_name": "PALAKKAD JN", "city": "Palakkad", "state": "Kerala", "is_junction": True},
-        {"station_code": "JP", "station_name": "Jaipur Junction", "city": "Jaipur", "state": "Rajasthan", "is_junction": True},
-        {"station_code": "NDLS", "station_name": "New Delhi Railway Station", "city": "Delhi", "state": "Delhi", "is_junction": True},
-        {"station_code": "BCT", "station_name": "Mumbai Central", "city": "Mumbai", "state": "Maharashtra", "is_junction": True},
-        {"station_code": "MUM", "station_name": "Mumbai", "city": "Mumbai", "state": "Maharashtra", "is_junction": False},
+        {"code": "KOTA", "name": "Kota Junction", "city": "Kota", "state": "Rajasthan", "latitude": 0.0, "longitude": 0.0},
+        {"code": "PALAK", "name": "PALAKKAD JN", "city": "Palakkad", "state": "Kerala", "latitude": 0.0, "longitude": 0.0},
+        {"code": "JP", "name": "Jaipur Junction", "city": "Jaipur", "state": "Rajasthan", "latitude": 0.0, "longitude": 0.0},
+        {"code": "NDLS", "name": "New Delhi Railway Station", "city": "Delhi", "state": "Delhi", "latitude": 0.0, "longitude": 0.0},
+        {"code": "BCT", "name": "Mumbai Central", "city": "Mumbai", "state": "Maharashtra", "latitude": 0.0, "longitude": 0.0},
+        {"code": "MUM", "name": "Mumbai", "city": "Mumbai", "state": "Maharashtra", "latitude": 0.0, "longitude": 0.0},
     ]
 
     for s in stations:
-        session.add(StationMaster(**s))
+        session.add(Stop(**s))
     session.commit()
 
     # Override FastAPI dependency so endpoints use this test session

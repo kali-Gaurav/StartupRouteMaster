@@ -8,7 +8,7 @@ from services.review_service import ReviewService
 from database.models import User, Review
 from api.dependencies import get_current_user
 
-router = APIRouter(prefix="/api/reviews", tags=["reviews"])
+router = APIRouter(prefix="/reviews", tags=["reviews"])
 
 
 @router.post("/", response_model=ReviewRead, status_code=status.HTTP_201_CREATED)

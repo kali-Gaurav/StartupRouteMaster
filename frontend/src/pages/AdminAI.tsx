@@ -1,17 +1,11 @@
 import { useState, useEffect } from "react";
-import { 
-  BrainCircuit, 
-  Smile, 
-  Meh, 
-  Frown, 
-  MessageSquare, 
-  Zap, 
-  Activity,
+import {
+  BrainCircuit,
+  Smile,
+  Meh,
+  Frown,
   Target,
-  AlertCircle,
-  ChevronRight,
-  TrendingUp,
-  Search
+  AlertCircle
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

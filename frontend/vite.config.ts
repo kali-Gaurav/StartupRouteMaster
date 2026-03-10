@@ -1,3 +1,4 @@
+import { visualizer } from 'rollup-plugin-visualizer';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -31,6 +32,12 @@ export default defineConfig({
           }
         ]
       }
+    }),
+    visualizer({
+      open: true,
+      filename: "bundle-report.html",
+      gzipSize: true,
+      brotliSize: true,
     })
   ],
   envPrefix: ['VITE_', 'RAILWAY_'],
@@ -40,12 +47,13 @@ export default defineConfig({
     },
   },
   server: {
-    // Proxy API calls to backend when running dev server
+    // Proxy API calls to backend when running dev server (including WebSockets)
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
+        ws: true, // ensures websocket traffic (e.g. live chat / streaming) is proxied too
       },
     },
   },
@@ -53,8 +61,5 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './src/__tests__/setup.ts',
-  },
-  optimizeDeps: {
-    exclude: ['lucide-react'],
   },
 });

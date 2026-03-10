@@ -1,42 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { 
-  Shield, 
-  CheckCircle2, 
-  XCircle, 
-  Clock, 
-  CreditCard, 
-  Database, 
-  Activity, 
-  LayoutDashboard, 
-  Ticket, 
-  AlertCircle,
-  ExternalLink,
-  Copy,
-  ChevronRight,
+import {
+  Shield,
+  CreditCard,
+  Activity,
+  LayoutDashboard,
   TrendingUp,
-  User as UserIcon,
   Zap,
-  MapPin,
-  RefreshCw,
-  Search,
-  Server,
-  Lock,
-  Loader2,
-  BarChart3,
-  PieChart,
   BrainCircuit,
-  MessageSquare,
-  Smile,
-  Frown,
-  Meh,
   Activity as Pulse,
-  ZapOff,
-  Flame,
-  Globe,
-  Grid,
   Zap as Power
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";
+import { getRailwayWsUrl } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -196,9 +171,8 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     // WebSocket Metrics Feed
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "localhost:8000" : window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}/api/v2/admin/ws/metrics`);
+    const wsUrl = getRailwayWsUrl("/api/v2/admin/ws/metrics");
+    const ws = new WebSocket(wsUrl);
     ws.onmessage = (e) => setMetrics(JSON.parse(e.data));
 
     refreshAll();

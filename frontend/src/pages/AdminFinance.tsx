@@ -1,21 +1,12 @@
 import { useState, useEffect } from "react";
-import { 
-  CreditCard, 
-  TrendingUp, 
-  IndianRupee, 
-  ArrowUpRight, 
-  ArrowDownRight,
-  Activity,
+import {
+  CreditCard,
+  TrendingUp,
+  ArrowUpRight,
   CheckCircle2,
   RefreshCw,
-  PieChart,
-  Calendar,
   Wallet,
-  ArrowRightLeft,
-  Search,
-  Lock,
-  Globe,
-  Database
+  ArrowRightLeft
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

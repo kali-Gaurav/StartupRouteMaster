@@ -3,9 +3,9 @@ from typing import Optional, Dict, Any
 
 # Regex Patterns for Instant Intent Recognition
 PATTERNS = {
-    'pnr': r'\b\d{10}\b', # Matches 10-digit PNR
-    'search': r'(?i)\b([A-Z]{2,5})\s+(?:to|->|—)\s+([A-Z]{2,5})\b', # Matches "NDLS to BCT"
-    'sos': r'(?i)\b(sos|emergency|help me|save me)\b',
+    'pnr': r'(?i)(?:pnr|number|#)?\s*[:=\-]?\s*\b(\d{3}[\-\s]?\d{7}|\d{10})\b', # Matches 10-digit PNR with optional noise
+    'search': r'(?i)(?:from\s+)?([A-Z]{2,5}|[a-zA-Z\s]{4,})?\s*(?:to|->|—)\s+([A-Z]{2,5}|[a-zA-Z\s]{4,})', # Matches "NDLS to BCT" or "new delhi to bombai" or "to BCT"
+    'sos': r'(?i)\b(sos|emergency|help me|save me|danger|heart attack|mujhe help chahiye|bachao|chot lagi hai)\b',
     'help': r'(?i)\b(help|commands|what can you do|guide)\b',
     'greet': r'(?i)\b(hi|hello|hey|hola|namaste)\b'
 }
@@ -22,9 +22,11 @@ def get_local_intent(message: str) -> Optional[Dict[str, Any]]:
     # 2. Check PNR
     pnr_match = re.search(PATTERNS['pnr'], message)
     if pnr_match:
+        # Clean PNR
+        pnr_clean = re.sub(r'[\-\s]', '', pnr_match.group(1))
         return {
             "intent": "pnr_status", 
-            "entities": {"pnr": pnr_match.group(0)},
+            "entities": {"pnr": pnr_clean},
             "confidence": 1.0
         }
 
@@ -34,8 +36,8 @@ def get_local_intent(message: str) -> Optional[Dict[str, Any]]:
         return {
             "intent": "search",
             "entities": {
-                "source": search_match.group(1).upper(),
-                "destination": search_match.group(2).upper()
+                "source": search_match.group(1).upper().strip(),
+                "destination": search_match.group(2).upper().strip()
             },
             "confidence": 0.95
         }

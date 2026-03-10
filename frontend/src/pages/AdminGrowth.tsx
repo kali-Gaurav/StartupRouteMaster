@@ -1,19 +1,11 @@
 import { useState, useEffect } from "react";
-import { 
-  TrendingUp, 
-  User as UserIcon, 
-  MapPin, 
-  Zap, 
-  Search,
-  ArrowRight,
-  BarChart3,
+import {
+  TrendingUp,
+  User as UserIcon,
+  Zap,
   Users,
   Target,
-  Globe,
-  Repeat,
-  ZapOff,
   MessageSquare,
-  Activity,
   Smartphone,
   Monitor,
   Layout,

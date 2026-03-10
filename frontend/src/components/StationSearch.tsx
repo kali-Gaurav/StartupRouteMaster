@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { Search, MapPin, Loader2, Landmark, X } from "lucide-react";
+import { Search, MapPin, Loader2, X } from "lucide-react";
 import React from "react";
 import { cn } from "@/lib/utils";
 import { Station as StationType, addStationsToCache, searchStations as searchStationsLocal } from "@/data/stations";

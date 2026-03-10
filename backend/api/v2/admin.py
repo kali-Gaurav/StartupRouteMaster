@@ -30,10 +30,17 @@ from database.models import (
 from services.ws_manager import ws_manager
 from pydantic import BaseModel
 
+from api.dependencies import require_role
+
 logger = logging.getLogger(__name__)
 start_time = time.time()
 
-router = APIRouter(prefix="/admin", tags=["System Administration"])
+# Enforce Admin Role at the Router Level
+router = APIRouter(
+    prefix="/admin", 
+    tags=["System Administration"],
+    dependencies=[Depends(require_role(["admin"]))]
+)
 
 class BookingCompleteRequest(BaseModel):
     pnr_number: str
@@ -453,10 +460,13 @@ def get_uptime_string():
     if days > 0: return f"{int(days)}d {int(hours)}h {int(minutes)}m"
     return f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
 
+from database.config import Config
+
 @router.get("/system/health")
 async def get_system_health():
     """Subtask 26.4: Storage & Uptime."""
-    usage = psutil.disk_usage(os.path.abspath("backend/database"))
+    # Use current working directory to avoid path resolution errors on different environments
+    usage = psutil.disk_usage(".")
     from utils.geo_utils import is_tatkal_window
     return {"cpu_usage_percent": psutil.cpu_percent(), "uptime_human": get_uptime_string(), "disk_free_gb": round(usage.free / (1024**3), 2), "is_tatkal_window": is_tatkal_window(), "process_id": os.getpid()}
 
@@ -568,20 +578,20 @@ async def get_session_history(
     Subtask 15.1: Fetch paginated admin session history.
     """
     offset = (page - 1) * limit
-    sessions = db.query(AdminSession).order_by(AdminSession.created_at.desc()).offset(offset).limit(limit).all()
+    sessions = db.query(AdminSession).order_by(AdminSession.login_at.desc()).offset(offset).limit(limit).all()
     
     # [15.4] Calculate durations and return hydrated
     results = []
     for s in sessions:
         duration = 0
-        if s.expires_at and s.created_at:
-            duration = (s.expires_at - s.created_at).total_seconds() / 60
+        if s.login_at:
+            # Assuming sessions last at least a bit, or use last_active_at
+            duration = (datetime.utcnow() - s.login_at).total_seconds() / 60
             
         results.append({
             "id": s.id,
             "admin_id": s.admin_id,
-            "created_at": s.created_at,
-            "expires_at": s.expires_at,
+            "created_at": s.login_at,
             "duration_mins": round(duration, 1),
             "is_revoked": s.is_revoked,
             "ip_address": s.ip_address

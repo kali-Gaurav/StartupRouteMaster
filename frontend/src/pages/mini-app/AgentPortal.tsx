@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Loader2, ClipboardCheck, User, Train, ExternalLink, Upload, CheckCircle } from "lucide-react";
+import { Loader2, ClipboardCheck, User, Train, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "@/hooks/use-toast";
@@ -20,7 +20,7 @@ export default function AgentPortal() {
     setLoading(true);
     try {
       const token = localStorage.getItem("auth_token");
-      const res = await fetch("http://localhost:8000/api/v2/agent/tasks", {
+      const res = await fetch("/api/v2/agent/tasks", {
         headers: { "Authorization": `Bearer ${token}` }
       });
       const data = await res.json();
@@ -38,7 +38,7 @@ export default function AgentPortal() {
     setClaiming(id);
     try {
       const token = localStorage.getItem("auth_token");
-      await fetch(`http://localhost:8000/api/v2/agent/${id}/claim`, {
+      await fetch(`/api/v2/agent/${id}/claim`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
@@ -63,7 +63,7 @@ export default function AgentPortal() {
       formData.append("pnr", pnr);
       formData.append("ticket_file", file);
 
-      const res = await fetch(`http://localhost:8000/api/v2/agent/${id}/fulfill`, {
+      const res = await fetch(`/api/v2/agent/${id}/fulfill`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` },
         body: formData

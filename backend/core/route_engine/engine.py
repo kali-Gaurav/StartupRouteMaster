@@ -55,6 +55,20 @@ class RailwayRouteEngine:
         self.hybrid_engine = HybridRouteEngine(timetable_path)
         self._initialized = True
 
+    def is_loaded(self) -> bool:
+        """Check if the graph is loaded and ready."""
+        return self.current_graph is not None
+
+    def get_total_routes_count(self) -> int:
+        """Get total number of routes/patterns in the graph."""
+        if not self.current_snapshot: return 0
+        return len(self.current_snapshot.route_patterns)
+
+    def get_total_trains_count(self) -> int:
+        """Get total number of trips in the graph."""
+        if not self.current_snapshot: return 0
+        return len(self.current_snapshot.trip_segments)
+
     async def _get_current_graph(self, date: datetime) -> TimeDependentGraph:
         async with self._lock:
             if self.current_graph and self.current_snapshot.date.date() == date.date():

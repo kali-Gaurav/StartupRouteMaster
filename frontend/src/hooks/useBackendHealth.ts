@@ -9,7 +9,7 @@ export function useBackendHealth() {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
-        
+        console.log("BACKEND URL:", getRailwayApiUrl('/health'))
         const res = await fetch(getRailwayApiUrl('/health'), { 
           signal: controller.signal,
           headers: { 'Cache-Control': 'no-cache' }

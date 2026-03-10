@@ -11,12 +11,13 @@ logger = logging.getLogger(__name__)
 
 class TurboRouter:
     def __init__(self, db_session=None):
-        self.db = db_session if db_session else SessionLocal()
+        # Store the session factory if possible, or just the reference
+        self.db_factory = SessionLocal
 
-    def _get_city_cluster(self, station_code: str) -> List[str]:
+    def _get_city_cluster(self, db, station_code: str) -> List[str]:
         """Expand a station code into all stations in its city cluster."""
         try:
-            row = self.db.execute(text("""
+            row = db.execute(text("""
                 SELECT station_codes_json FROM city_clusters 
                 WHERE station_codes_json LIKE :like_code
             """), {"like_code": f'%"{station_code}"%'}).fetchone()
@@ -27,30 +28,35 @@ class TurboRouter:
         return [station_code]
 
     def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
-        src_cluster = self._get_city_cluster(source_code.upper())
-        dst_cluster = self._get_city_cluster(dest_code.upper())
-        
-        day_mask = (1 << departure_date.weekday())
-        all_routes = []
-
-        # 1. Direct Search (Binary Optimized)
-        for src in src_cluster:
-            for dst in dst_cluster:
-                if len(all_routes) >= limit: break
-                direct = self._search_direct_binary(src, dst, day_mask, limit - len(all_routes))
-                all_routes.extend(direct)
-        
-        # 2. 1-Transfer Search (Binary Optimized)
-        if len(all_routes) < 5:
-            transfer_routes = self._search_one_transfer_binary(source_code.upper(), dest_code.upper(), day_mask, limit - len(all_routes))
-            all_routes.extend(transfer_routes)
+        # Task 3.11: Thread-safe session management
+        db = self.db_factory()
+        try:
+            src_cluster = self._get_city_cluster(db, source_code.upper())
+            dst_cluster = self._get_city_cluster(db, dest_code.upper())
             
-        return all_routes[:limit]
+            day_mask = (1 << departure_date.weekday())
+            all_routes = []
 
-    def _search_direct_binary(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
+            # 1. Direct Search (Binary Optimized)
+            for src in src_cluster:
+                for dst in dst_cluster:
+                    if len(all_routes) >= limit: break
+                    direct = self._search_direct_binary(db, src, dst, day_mask, limit - len(all_routes))
+                    all_routes.extend(direct)
+            
+            # 2. 1-Transfer Search (Binary Optimized)
+            if len(all_routes) < 5:
+                transfer_routes = self._search_one_transfer_binary(db, source_code.upper(), dest_code.upper(), day_mask, limit - len(all_routes))
+                all_routes.extend(transfer_routes)
+                
+            return all_routes[:limit]
+        finally:
+            db.close()
+
+    def _search_direct_binary(self, db, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
         """Fastest binary intersection for direct routes."""
         try:
-            res = self.db.execute(text(
+            res = db.execute(text(
                 "SELECT station_code, trains_binary FROM station_transit_index WHERE station_code IN (:src, :dst)"
             ), {"src": src, "dst": dst}).fetchall()
             
@@ -76,7 +82,7 @@ class TurboRouter:
             return results[:limit]
         except: return []
 
-    def _search_one_transfer_binary(self, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
+    def _search_one_transfer_binary(self, db, src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
         """Binary intersection via pre-defined Hubs (Strategic Junctions)."""
         HUBS = [
             'NDLS', 'BCT', 'MS', 'HWH', 'KGP', 'ET', 'NGP', 'BSL', 'DR', 'KYN', 'PNVL', 
@@ -86,7 +92,7 @@ class TurboRouter:
         
         try:
             placeholders = ",".join([f"'{h}'" for h in HUBS])
-            res = self.db.execute(text(f"""
+            res = db.execute(text(f"""
                 SELECT station_code, trains_binary 
                 FROM station_transit_index 
                 WHERE station_code IN (:src, :dst, {placeholders})
@@ -98,6 +104,9 @@ class TurboRouter:
             
             results = []
             for hub_code in HUBS:
+                if hub_code == source_code or hub_code == dest_code:
+                    continue # Task 3.1.1: Prevent obvious loops
+                
                 hub_trains = data.get(hub_code)
                 if not hub_trains: continue
                 
@@ -108,11 +117,20 @@ class TurboRouter:
                     s_data, h1_data = src_trains[tid1], hub_trains[tid1]
                     if not (s_data['mask'] & mask) or s_data['seq'] >= h1_data['seq']: continue
                     
+                    # Task 3.4: Handle next-day bitmask for long-distance arrivals
+                    arrival_day_offset = h1_data['arr'] // 1440
+                    target_mask = mask
+                    if arrival_day_offset > 0:
+                        target_mask = ((mask << arrival_day_offset) | (mask >> (7 - arrival_day_offset))) & 0x7F
+
                     for tid2 in t2_options:
-                        h2_data, d_data = hub_trains[tid2], dst_trains[tid2]
-                        if not (h2_data['mask'] & mask) or h2_data['seq'] >= d_data['seq']: continue
+                        if tid1 == tid2: continue # Prevent same-train loop
                         
-                        if h2_data['dep'] > h1_data['arr'] + 30:
+                        h2_data, d_data = hub_trains[tid2], dst_trains[tid2]
+                        if not (h2_data['mask'] & target_mask) or h2_data['seq'] >= d_data['seq']: continue
+                        
+                        # Task 3.2: Minimum Connection Time logic
+                        if h2_data['dep'] > h1_data['arr'] + 45: 
                             results.append({
                                 "type": "1-transfer",
                                 "hub": hub_code,

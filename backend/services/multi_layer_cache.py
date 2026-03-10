@@ -15,10 +15,18 @@ import hashlib
 import pickle
 import zlib
 
-import redis.asyncio as redis
-
 from database.config import Config
 from database.session import SessionLocal
+
+_redis_lib = None
+
+def _get_redis_module():
+    """Lazily import redis.asyncio to avoid startup overhead when Redis isn't used."""
+    global _redis_lib
+    if _redis_lib is None:
+        import redis.asyncio as redis
+        _redis_lib = redis
+    return _redis_lib
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +98,7 @@ class LRUCache:
 
 class MultiLayerCache:
     def __init__(self):
-        self.redis: Optional[redis.Redis] = None
+        self.redis: Optional[Any] = None
         self.lru = LRUCache(capacity=500)
         self.metrics = {
             'query_cache': CacheMetrics(),
@@ -104,7 +112,22 @@ class MultiLayerCache:
         if self._initialized: return
         try:
             redis_url = Config.REDIS_URL
-            self.redis = redis.Redis.from_url(redis_url, decode_responses=False, ssl_cert_reqs=None)
+            if not redis_url:
+                logger.warning("REDIS_URL not set; running in RAM-ONLY mode.")
+                self._initialized = True
+                return
+
+            # Task 7: Robust Connection Settings for Cloud (Upstash/GCP/AWS)
+            redis_lib = _get_redis_module()
+            self.redis = redis_lib.Redis.from_url(
+                redis_url, 
+                decode_responses=False, 
+                ssl_cert_reqs=None,
+                socket_timeout=5.0,
+                socket_connect_timeout=5.0,
+                retry_on_timeout=True,
+                health_check_interval=30
+            )
             await self.redis.ping()
             
             # Suggestion #26: Memory Policies
@@ -116,9 +139,9 @@ class MultiLayerCache:
             from services.event_bus import platform_bus
             platform_bus.subscribe("CACHE_INVALIDATE", self._handle_cluster_invalidation)
             
-            logger.info(f"Multi-layer cache initialized (Instance: {PROCESS_ID})")
+            logger.info(f"✅ Task 7: Multi-layer cache initialized (Instance: {PROCESS_ID})")
         except Exception as e:
-            logger.warning(f"Redis unavailable: {e}")
+            logger.error(f"❌ Task 7: Redis unavailable: {e}. Falling back to RAM-ONLY.")
             self.redis = None
         self._initialized = True
 

@@ -1,22 +1,20 @@
 import React, { useState, useEffect } from "react";
 import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
-import { 
-  Shield, 
-  LayoutDashboard, 
-  Ticket, 
-  CreditCard, 
-  TrendingUp, 
-  BrainCircuit, 
-  Server, 
-  History, 
+import {
+  Shield,
+  LayoutDashboard,
+  Ticket,
+  CreditCard,
+  TrendingUp,
+  BrainCircuit,
+  Server,
+  History,
   LogOut,
   Bell,
   ChevronRight,
   Search,
-  Activity,
   Database,
   Settings,
-  Cpu,
   Zap
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";

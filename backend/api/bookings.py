@@ -32,7 +32,7 @@ UNLOCK_PRICE = 39.0  # ₹39 unlock fee
 # bumping the prefix keeps both sides aligned.  If other code still relies on the
 # old path we could mount the router twice, but most references were internal
 # so this change is safe for the integration phase.
-router = APIRouter(prefix="/api/v1/booking", tags=["bookings"])
+router = APIRouter(prefix="/v1/booking", tags=["bookings"])
 logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel

@@ -1,16 +1,10 @@
 import { useState, useEffect } from "react";
-import { 
-  Settings, 
-  Zap, 
-  Lock, 
-  IndianRupee, 
-  Save, 
-  RefreshCw, 
-  AlertTriangle,
+import {
+  Settings,
+  IndianRupee,
+  Save,
   Power,
   Shield,
-  TrendingUp,
-  CreditCard,
   Target
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";

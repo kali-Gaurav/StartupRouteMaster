@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { runStateInvariants } from "./lib/stateInvariants";
 import App from "./App.tsx";
 import "./index.css";

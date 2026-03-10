@@ -117,5 +117,44 @@ class ExternalAPIHealth:
 rapid_api_health = ExternalAPIHealth("RapidAPI")
 rappid_health = ExternalAPIHealth("RappidIn")
 
+# ---------------------------------------------------------------------------
+# Legacy / convenience helpers
+# ---------------------------------------------------------------------------
+# These helpers are used by the health endpoint and tests. They intentionally
+# avoid making any async/redis calls so the health check remains lightweight.
+
+from datetime import datetime, timedelta
+
+STALE_THRESHOLD = timedelta(minutes=5)
+_last_success: datetime | None = None
+
+
+def record_success(latency_ms: float = 0.0) -> None:
+    """Mark that an external API call succeeded.
+
+    This is used by the `/api/health` endpoint and unit tests to determine
+    whether external APIs have recently been reached successfully.
+    """
+    global _last_success
+    _last_success = datetime.utcnow()
+
+
+def get_last_success() -> datetime | None:
+    """Return the timestamp of the last successful external API call."""
+    return _last_success
+
+
+def is_fresh(threshold: timedelta | None = None) -> bool:
+    """Return True if the last success is within the freshness threshold."""
+    if threshold is None:
+        threshold = STALE_THRESHOLD
+
+    last = get_last_success()
+    if not last:
+        return False
+
+    return (datetime.utcnow() - last) <= threshold
+
+
 # Maintenance for existing code imports
 api_health = rapid_api_health 

@@ -1,57 +1,45 @@
 from sqlalchemy import create_engine, event, MetaData, Engine
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 import logging
 import os
 
+from .config import Config
+
 logger = logging.getLogger(__name__)
 
-# Optimization for SQLite
-def _enable_sqlite_optimizations(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    
-    # 10X PERFORMANCE: Memory-Mapped I/O (2GB)
-    # This allows SQLite to bypass read() syscalls and use OS page cache directly.
-    cursor.execute("PRAGMA mmap_size = 2147483648")
-    
-    # Concurrency: Write-Ahead Logging (WAL)
-    cursor.execute("PRAGMA journal_mode = WAL")
-    
-    # Performance: Normal sync is enough for WAL safety
-    cursor.execute("PRAGMA synchronous = NORMAL")
-    
-    # Speed: Increase page cache to 20MB
-    cursor.execute("PRAGMA cache_size = -20000")
-    
-    # Integrity
-    cursor.execute("PRAGMA foreign_keys = ON")
-    
-    cursor.close()
+_BASE_DIR = Config.BASE_DIR
 
-
-# --- Engines ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-user_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'user_store.db')}"
-transit_db_path = f"sqlite:///{os.path.join(BASE_DIR, 'transit_graph.db')}"
-
-# We use check_same_thread=False for FastAPI concurrency
-engine_user = create_engine(user_db_path, connect_args={"check_same_thread": False})
-engine_transit = create_engine(transit_db_path, connect_args={"check_same_thread": False})
-
-event.listen(engine_user, "connect", _enable_sqlite_optimizations)
-event.listen(engine_transit, "connect", _enable_sqlite_optimizations)
-
-# Specific naming for internal use
-engine_write = engine_user
-engine_read = engine_transit
-
-# --- Metadata & Bases ---
+# --- Metadata & Bases (Define these FIRST before engines) ---
 UserBase = declarative_base()
 TransitBase = declarative_base()
 Base = UserBase
 
-# --- Session Factories ---
+# --- Engines (Legacy Sync) ---
+user_db_url_sync = Config.GET_SQLALCHEMY_URL("user", is_async=False)
+transit_db_url_sync = Config.GET_SQLALCHEMY_URL("transit", is_async=False)
+
+engine_user = create_engine(user_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in user_db_url_sync else {})
+engine_transit = create_engine(transit_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in transit_db_url_sync else {})
+
+# --- Engines (Modern Async) ---
+user_db_url_async = Config.GET_SQLALCHEMY_URL("user", is_async=True)
+transit_db_url_async = Config.GET_SQLALCHEMY_URL("transit", is_async=True)
+
+async_engine_user = create_async_engine(user_db_url_async, echo=False) # Echoing off for cleaner logs
+async_engine_transit = create_async_engine(transit_db_url_async, echo=False)
+
+# --- Session Factories (Sync) ---
 SessionUser = sessionmaker(autocommit=False, autoflush=False, bind=engine_user)
 SessionTransit = sessionmaker(autocommit=False, autoflush=False, bind=engine_transit)
+
+# --- Session Factories (Async) ---
+AsyncSessionUser = sessionmaker(
+    async_engine_user, class_=AsyncSession, expire_on_commit=False
+)
+AsyncSessionTransit = sessionmaker(
+    async_engine_transit, class_=AsyncSession, expire_on_commit=False
+)
 
 # Defaults
 SessionLocal = SessionUser
@@ -67,16 +55,38 @@ def get_transit_db():
     try: yield db
     finally: db.close()
 
+async def get_async_db():
+    async with AsyncSessionUser() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+async def get_async_transit_db():
+    async with AsyncSessionTransit() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
 async def init_db():
-    """Create tables in their respective physical databases."""
-    from .models import User, Stop 
-    UserBase.metadata.create_all(bind=engine_user)
-    TransitBase.metadata.create_all(bind=engine_transit)
-    logger.info("Dual-Database physical tables verified.")
+    """
+    ROOT FIX: Force model discovery by importing models.py
+    Ensures metadata is populated before create_all is called.
+    """
+    from . import models # This triggers model registration on TransitBase/UserBase
+    
+    async with async_engine_user.begin() as conn:
+        await conn.run_sync(UserBase.metadata.create_all)
+    
+    async with async_engine_transit.begin() as conn:
+        await conn.run_sync(TransitBase.metadata.create_all)
+        
+    logger.info("✅ Database physical tables initialized/verified.")
 
 def get_source_connection():
     import sqlite3
-    db_path = os.path.join(BASE_DIR, 'railway_data.db')
+    db_path = os.path.join(_BASE_DIR, 'railway_data.db')
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn

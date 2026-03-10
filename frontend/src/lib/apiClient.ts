@@ -9,7 +9,12 @@ import {
   AuthError,
 } from "./errors";
 
-const API_BASE = import.meta.env.VITE_API_URL || import.meta.env.RAILWAY_BACKEND_URL || "http://localhost:8000";
+// Task 4: Dynamic API Mapping
+// In development, we use relative paths to leverage the Vite proxy (/api -> localhost:8000)
+// In production, we can inject a specific API URL via environment variables.
+const API_BASE = import.meta.env.PROD 
+  ? (import.meta.env.VITE_API_URL || import.meta.env.RAILWAY_BACKEND_URL || "")
+  : ""; // Empty string in dev ensures we use the relative proxy path
 
 type On401 = () => void;
 type On429 = () => void;
@@ -30,7 +35,15 @@ export async function fetchWithAuth(
   init?: RequestInit,
   retryCount: number = 0 // [34.3]
 ): Promise<Response> {
-  const url = pathOrUrl.startsWith("http") ? pathOrUrl : ensureSlash(pathOrUrl);
+  // Task 4: Resolve the URL properly
+  let url = pathOrUrl;
+  if (!url.startsWith("http")) {
+    const p = pathOrUrl.startsWith("/") ? pathOrUrl : `/${pathOrUrl}`;
+    // Ensure we have the /api prefix if the backend expects it
+    const apiPath = p.startsWith("/api") ? p : `/api${p}`;
+    url = API_BASE ? `${API_BASE.replace(/\/$/, "")}${apiPath}` : apiPath;
+  }
+
   const { data: { session } } = await supabase.auth.getSession();
   
   const headers = new Headers(init?.headers);
@@ -79,12 +92,7 @@ export async function fetchWithAuth(
   return res;
 }
 
-function ensureSlash(path: string): string {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  const base = API_BASE.replace(/\/$/, "");
-  return base + (base.endsWith("/api") ? p : p.startsWith("/api") ? p : `/api${p}`);
-}
-
+// ensureSlash is replaced by the inline logic in fetchWithAuth for Task 4
 export function getApiBase(): string {
   return API_BASE.replace(/\/$/, "");
 }

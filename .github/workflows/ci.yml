@@ -1,0 +1,54 @@
+# Task 22: GitHub Actions CI
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+          
+      - name: Run PyTest
+        run: |
+          cd backend
+          # Run tests with mock database/redis
+          export ENVIRONMENT=testing
+          export OFFLINE_MODE=true
+          export SUPABASE_URL="http://localhost"
+          export SUPABASE_KEY="mock"
+          pytest
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm install
+          
+      - name: Verify build
+        run: |
+          cd frontend
+          npm run build

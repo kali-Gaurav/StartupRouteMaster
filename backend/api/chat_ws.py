@@ -15,7 +15,7 @@ from api.chat import (
 from utils.nlp_router import get_local_intent
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/chat/ws", tags=["chat_ws"])
+router = APIRouter(prefix="/chat/ws", tags=["chat_ws"])
 
 async def stream_openrouter_api(messages: list, websocket: WebSocket):
     """Streams response from OpenRouter and forwards to WebSocket."""

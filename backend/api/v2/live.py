@@ -25,15 +25,30 @@ async def get_train_tracking(
 
     # In real life, we fetch from external API here. 
     # For now, we use the graph overlay to see if we have ingested data.
-    delay = engine.current_graph.overlay.get_trip_delay_by_no(train_no)
+    snapshot = engine.current_snapshot
+    trip_id = None
+    if snapshot:
+        for tid, segments in snapshot.trip_segments.items():
+            if segments and segments[0].train_number == train_no:
+                trip_id = tid
+                break
     
-    return {
+    delay = engine.current_graph.overlay.get_trip_delay(trip_id) if trip_id else 0
+    
+    res = {
         "train_no": train_no,
         "status": "Running" if delay < 60 else "Delayed",
         "delay_minutes": delay,
         "last_updated": datetime.utcnow().isoformat(),
         "source": "Railway Graph Overlay"
     }
+    
+    # Cache for 1 minute
+    if multi_layer_cache.redis:
+        import json
+        await multi_layer_cache.redis.set(cache_key, json.dumps(res), ex=60)
+        
+    return res
 
 @router.get("/dead-zone")
 async def check_dead_zone(lat: float, lng: float, speed: float = 60.0):
@@ -55,30 +70,44 @@ async def get_station_board(
     station_code = station_code.upper()
     snapshot = engine.current_snapshot
     
-    # Resolve code to ID
-    # In production, we'd use a fast map.
+    # Task 4.1: O(1) Station Code to ID resolution
     sid = None
-    for stop_id, stop in snapshot.stop_cache.items():
-        if getattr(stop, 'code', '') == station_code:
-            sid = stop_id
-            break
+    if hasattr(snapshot, 'station_code_to_id'):
+        sid = snapshot.station_code_to_id.get(station_code)
+    else:
+        # Fallback for older snapshots (temporary)
+        for stop_id, stop in snapshot.stop_cache.items():
+            if getattr(stop, 'code', '') == station_code:
+                sid = stop_id
+                break
     
     if not sid:
         raise HTTPException(status_code=404, detail="Station not found")
+
+    if not engine.current_graph:
+        raise HTTPException(status_code=503, detail="Route engine is warming up")
 
     # Get departures for next 240 minutes (4 hours)
     now = datetime.now()
     departures = engine.current_graph.get_departures_from_stop(sid, now, lookahead_minutes=240)
     
     board = []
+    overlay = engine.current_graph.overlay
     for dep_time, trip_id in departures:
         path = snapshot.train_path.get(trip_id, [])
         dest = path[-1] if path else {}
+        
+        # Task 4.2: Integrated Delay Logic
+        real_delay = overlay.get_trip_delay(trip_id) if overlay else 0
+        actual_dep = dep_time + timedelta(minutes=real_delay)
+        
         board.append({
-            "time": dep_time.strftime("%H:%M"),
+            "scheduled_time": dep_time.strftime("%H:%M"),
+            "actual_time": actual_dep.strftime("%H:%M"),
+            "delay": real_delay,
             "train_no": snapshot.trip_segments.get(trip_id, [type('obj', (object,), {'train_number': '??'})])[0].train_number,
             "destination": snapshot.stop_cache.get(dest.get('station_id', 0), type('obj', (object,), {'name': 'Unknown'})).name,
-            "is_delayed": dep_time > now + timedelta(minutes=30) # Example logic
+            "status": "Delayed" if real_delay > 15 else "On Time"
         })
         
     return {

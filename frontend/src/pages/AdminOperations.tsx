@@ -1,25 +1,15 @@
 import { useState, useEffect } from "react";
-import { 
-  Ticket, 
-  RefreshCw, 
-  ExternalLink, 
-  CheckCircle2, 
-  XCircle, 
-  Clock, 
-  Database,
-  ChevronRight,
-  ShieldCheck,
+import {
+  Ticket,
+  ExternalLink,
+  CheckCircle2,
   User as UserIcon,
   Search,
-  Zap,
   Lock,
   LayoutDashboard,
-  TrendingUp,
   Activity as Pulse,
-  AlertTriangle,
   Flame,
-  ShieldAlert,
-  ZapOff
+  ShieldAlert
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

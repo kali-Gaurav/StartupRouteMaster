@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { format, addDays } from "date-fns";
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from "lucide-react";
+import { Calendar as CalendarIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface InteractiveDatePickerProps {

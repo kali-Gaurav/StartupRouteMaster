@@ -29,7 +29,7 @@ from services.cancellation_predictor import cancellation_predictor
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/revenue-mgmt", tags=["revenue-management"])
+router = APIRouter(prefix="/v1/revenue-mgmt", tags=["revenue-management"])
 
 
 # ============================================================================

@@ -1,7 +1,15 @@
 import { useState, useEffect, useRef } from "react";
-import { 
-  ShieldAlert, Activity, MapPin, PhoneCall, 
-  Siren, Users, CheckCircle, Clock, AlertTriangle, MessageCircle, Send
+import {
+  ShieldAlert,
+  Activity,
+  MapPin,
+  PhoneCall,
+  Siren,
+  Users,
+  CheckCircle,
+  AlertTriangle,
+  MessageCircle,
+  Send
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LiveIncidentMap } from "@/components/LiveIncidentMap";

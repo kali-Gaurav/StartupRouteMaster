@@ -13,7 +13,7 @@ from services.station_search_service import station_search_engine
 from utils.limiter import limiter
 from utils.metrics import STATION_SUGGEST_LATENCY_MS, STATION_SUGGEST_REQUESTS_TOTAL
 
-router = APIRouter(prefix="/api/stations", tags=["stations"])
+router = APIRouter(prefix="/stations", tags=["stations"])
 logger = logging.getLogger(__name__)
 
 

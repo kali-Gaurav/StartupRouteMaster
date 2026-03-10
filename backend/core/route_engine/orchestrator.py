@@ -15,6 +15,16 @@ from .fast_router import FastPathRouter
 from .scoring import RouteScorer
 from core.pricing.fare_calculator import calculate_fare
 
+from concurrent.futures import ThreadPoolExecutor
+import os
+
+# Task 10.18: High-capacity thread pool for CPU-bound binary routing
+# The default pool is too small for concurrent multi-threaded orchestration.
+ROUTING_POOL = ThreadPoolExecutor(
+    max_workers=min(64, (os.cpu_count() or 4) * 8),
+    thread_name_prefix="routing_worker"
+)
+
 logger = logging.getLogger(__name__)
 
 class UnifiedRoutingOrchestrator:
@@ -55,14 +65,15 @@ class UnifiedRoutingOrchestrator:
         graph = await self.engine._get_current_graph(departure_date)
         self.fast_router.graph = graph
 
-        # 3. RUN ALL ENGINES IN PARALLEL
+        # 3. RUN ALL ENGINES IN PARALLEL (Using High-Capacity Pool)
         logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code}")
+        loop = asyncio.get_running_loop()
         
         # Tier 1: Turbo (SQL)
-        t1_task = asyncio.to_thread(self.turbo_router.find_routes, source_code, destination_code, departure_date, limit=limit)
+        t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
         
         # Tier 2: FastPath (O(1) BFS)
-        t2_task = asyncio.to_thread(self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
+        t2_task = loop.run_in_executor(ROUTING_POOL, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
         
         # Tier 3: RAPTOR (Deep Discovery)
         t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)

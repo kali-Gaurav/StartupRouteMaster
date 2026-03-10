@@ -25,7 +25,7 @@ from core.monitoring import CHATBOT_MESSAGES_TOTAL, CHATBOT_ACTION_EXECUTED_TOTA
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 class MemorySync(BaseModel):
     memory: Dict[str, Any]
@@ -100,25 +100,45 @@ def calculate_confidence(intent: str, message: str) -> float:
 
 def _session_key(session_id: str) -> str: return f"{SESSION_KEY_PREFIX}{session_id}"
 
+def _get_redis():
+    from services.cache_service import cache_service
+    return cache_service.redis if cache_service and cache_service.is_available() else None
+
 def _load_session(session_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     session_data = {"created_at": datetime.utcnow().isoformat(), "messages": [], "context": {}, "extracted_entities": {}}
-    if _redis:
+    redis_client = _get_redis()
+    if redis_client:
         try:
-            raw = _redis.get(_session_key(session_id))
-            if raw: session_data = json.loads(raw)
-        except Exception: pass
-    elif session_id in _local_sessions:
+            raw = redis_client.get(_session_key(session_id))
+            if raw: 
+                session_data = json.loads(raw)
+                return session_data
+        except Exception as e:
+            logger.warning(f"Redis session load failed: {e}")
+    
+    if session_id in _local_sessions:
         session_data = _local_sessions[session_id]
     return session_data
 
 def _save_session(session_id: str, data: Dict[str, Any]) -> None:
     ttl = Config.REDIS_SESSION_EXPIRY_SECONDS
     messages = data.get("messages", [])
-    if len(messages) > 10: messages = messages[-10:]
-    compact_data = {"created_at": data.get("created_at"), "messages": messages, "extracted_entities": data.get("extracted_entities", {}), "context": data.get("context", {})}
-    if _redis:
-        try: _redis.set(_session_key(session_id), json.dumps(compact_data), ex=ttl)
-        except Exception: pass
+    if len(messages) > 20: messages = messages[-20:] # Increased history
+    
+    compact_data = {
+        "created_at": data.get("created_at"), 
+        "messages": messages, 
+        "extracted_entities": data.get("extracted_entities", {}), 
+        "context": data.get("context", {})
+    }
+    
+    redis_client = _get_redis()
+    if redis_client:
+        try: 
+            redis_client.set(_session_key(session_id), json.dumps(compact_data), ex=ttl)
+        except Exception as e:
+            logger.warning(f"Redis session save failed: {e}")
+            
     _local_sessions[session_id] = compact_data
 
 @openrouter_breaker
@@ -146,6 +166,9 @@ async def chat_message(
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_optional_user),
 ):
+    if len(chat_req.message) > 2000:
+        raise HTTPException(status_code=413, detail="Payload too large. Message exceeds 2000 characters.")
+
     start_time = time.time()
     session_id = chat_req.session_id or str(uuid.uuid4())
     session = _load_session(session_id)
@@ -168,23 +191,29 @@ async def chat_message(
     if intent == "unknown" and Config.OPENROUTER_API_KEY:
         llm_start = time.time()
         try:
-            # Simplified LLM call for brevity in this task
-            ai_res = await call_openrouter_api([{"role": "user", "content": chat_req.message}])
+            # Task 6.1: Include conversational context (History)
+            llm_messages = [{"role": "system", "content": "You are Diksha, the RouteMaster AI. Assist with train travel and safety."}]
+            for msg in session.get("messages", [])[-20:]:
+                llm_messages.append(msg)
+            llm_messages.append({"role": "user", "content": chat_req.message})
+            
+            ai_res = await call_openrouter_api(llm_messages)
             reply = ai_res["choices"][0]["message"]["content"]
             response_obj = ChatResponse(reply=reply, intent="llm_fallback", confidence=0.5)
             llm_latency = (time.time() - llm_start) * 1000
-        except:
+        except Exception as e:
+            logger.error(f"LLM Call failed: {e}")
             response_obj = generate_response("fallback", chat_req.message, session)
     else:
         response_obj = generate_response(intent, chat_req.message, session)
 
     # Subtask 8.4 & 8.7: Record Intent & Latency
     intent_log = AIIntentLog(
-        user_id=user.id if user else None,
-        query_text=chat_req.message,
+        query=chat_req.message,
         matched_intent=response_obj.intent,
-        confidence_score=response_obj.confidence,
-        latency_ms=intent_latency + llm_latency,
+        confidence=response_obj.confidence,
+        intent_latency_ms=int(intent_latency),
+        llm_latency_ms=int(llm_latency),
         timestamp=datetime.utcnow()
     )
     db.add(intent_log)

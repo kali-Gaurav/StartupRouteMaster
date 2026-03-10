@@ -1,4 +1,5 @@
-import { Train, Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut } from "lucide-react";
+import { TrainIcon } from "@/components/icons/TrainIcon";
+import { Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -33,7 +34,7 @@ export function Navbar() {
           {/* Logo */}
           <a href="/" className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl hero-gradient flex items-center justify-center">
-              <Train className="w-5 h-5 text-white" />
+              <TrainIcon className="w-5 h-5 text-white" />
             </div>
             <span className="text-xl font-bold text-foreground">
               Pareto<span className="text-gradient">Route</span>
@@ -46,7 +47,7 @@ export function Navbar() {
               Trains
             </a>
             <a href="/track/12002" className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
-              <Train className="w-4 h-4" />
+              <TrainIcon className="w-4 h-4" />
               Live Tracker
             </a>
             <a href="/sos" className="flex items-center gap-1.5 text-red-600 hover:text-red-700 font-medium">

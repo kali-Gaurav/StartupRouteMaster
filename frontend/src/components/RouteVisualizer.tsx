@@ -1,4 +1,4 @@
-import { MapPin, ArrowRight, Train } from "lucide-react";
+import { ArrowRight, Train } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface RouteVisualizerProps {

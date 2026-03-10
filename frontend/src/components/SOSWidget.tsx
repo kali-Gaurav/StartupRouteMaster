@@ -58,9 +58,14 @@ export function SOSWidget() {
   useEffect(() => {
     // Periodically sync directory if online
     if (navigator.onLine) {
-      LocationService.requestLocation().then(loc => {
-        if (loc) syncOfflineDirectory(loc.latitude, loc.longitude);
-      });
+      LocationService.requestLocation()
+        .then((loc) => {
+          if (loc) syncOfflineDirectory(loc.latitude, loc.longitude);
+        })
+        .catch((error) => {
+          // Location permission denied or unavailable; avoid unhandled promise errors.
+          console.warn("Location unavailable for offline directory sync:", error);
+        });
     }
   }, []);
 

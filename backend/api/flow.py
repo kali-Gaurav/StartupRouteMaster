@@ -6,7 +6,7 @@ import json
 
 from services.cache_service import cache_service
 
-router = APIRouter(prefix="/api/flow", tags=["flow"])
+router = APIRouter(prefix="/flow", tags=["flow"])
 
 _redis = cache_service.redis if cache_service and cache_service.is_available() else None
 _local_flow: Dict[str, Dict[str, Any]] = {}

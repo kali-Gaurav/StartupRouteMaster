@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/voice", tags=["Emergency Voice Intelligence"])
+router = APIRouter(prefix="/voice", tags=["Emergency Voice Intelligence"])
 
 class VoiceTriggerPayload(BaseModel):
     user_id: str

@@ -1,73 +1,84 @@
-/**
- * Enhanced Error Boundary (Suggestion #25)
- * Catches component-level failures and provides a resilient fallback UI.
- */
-import { Component, type ErrorInfo, type ReactNode } from "react";
-import { reportError } from "@/lib/observability";
+import React, { Component, ErrorInfo, ReactNode } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { Button } from "./ui/button";
-
+import { Button } from "@/components/ui/button";
 interface Props {
-  children: ReactNode;
-  name?: string; // Component name for logging
+  children?: ReactNode;
+  /** Optional component name shown in the fallback UI */
+  name?: string;
 }
 
 interface State {
   hasError: boolean;
-  error?: Error;
-  componentStack?: string;
+  error: Error | null;
 }
 
-export class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false };
+class ErrorBoundary extends Component<Props, State> {
+  public state: State = {
+    hasError: false,
+    error: null
+  };
 
-  static getDerivedStateFromError(error: Error): State {
+  public static getDerivedStateFromError(error: Error): State {
+    // Update state so the next render will show the fallback UI.
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    this.setState({ componentStack: errorInfo.componentStack ?? undefined });
-    reportError(error, {
-      component: this.props.name || "Unknown",
-      componentStack: errorInfo.componentStack ?? undefined,
-    });
+  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // Task 18: Telemetry Integration Placeholder
+    console.error("Uncaught error:", error, errorInfo);
+    
+    // Example: Sentry.captureException(error);
   }
 
-  render() {
+  public render() {
     if (this.state.hasError) {
       return (
-        <div className="p-6 border-2 border-dashed border-red-200 rounded-2xl bg-red-50 text-center space-y-4">
-          <AlertTriangle className="h-10 w-10 text-red-500 mx-auto" />
-          <div>
-            <h3 className="font-bold text-red-900">Component Failure</h3>
-            <p className="text-sm text-red-700">This part of the app failed to load.</p>
-          </div>
-          {this.state.error && (
-            <details className="text-left text-xs text-red-700 bg-red-100 p-3 rounded">
-              <summary className="cursor-pointer">Show error details</summary>
-              <div className="whitespace-pre-wrap break-words">
-                <strong>Error:</strong> {this.state.error.message}
-                {this.state.componentStack && (
-                  <>
-                    <br />
-                    <strong>Stack:</strong> {this.state.componentStack}
-                  </>
-                )}
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+          <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 text-center border border-slate-100">
+            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-6">
+              <AlertTriangle className="w-8 h-8 text-red-500" />
+            </div>
+            
+            <h1 className="text-2xl font-bold text-slate-900 mb-2">
+              Something went wrong{this.props.name ? ` in ${this.props.name}` : ''}
+            </h1>
+            
+            <p className="text-slate-600 mb-8">
+              We've encountered an unexpected error. Our team has been notified and we're working to fix it.
+            </p>
+
+            <div className="space-y-3">
+              <Button 
+                onClick={() => window.location.reload()}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-6 rounded-xl text-lg font-semibold"
+              >
+                <RefreshCw className="w-5 h-5 mr-2" />
+                Reload Page
+              </Button>
+              
+              <Button 
+                variant="ghost"
+                onClick={() => this.setState({ hasError: false, error: null })}
+                className="w-full text-slate-500"
+              >
+                Try to Recover
+              </Button>
+            </div>
+
+            {process.env.NODE_ENV === 'development' && (
+              <div className="mt-8 text-left p-4 bg-slate-900 rounded-lg overflow-auto max-h-40">
+                <pre className="text-xs text-red-400 font-mono">
+                  {this.state.error?.toString()}
+                </pre>
               </div>
-            </details>
-          )}
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={() => this.setState({ hasError: false, error: undefined, componentStack: undefined })}
-            className="border-red-300 text-red-700 hover:bg-red-100"
-          >
-            <RefreshCw className="h-3 w-3 mr-2" />
-            Try Again
-          </Button>
+            )}
+          </div>
         </div>
       );
     }
+
     return this.props.children;
   }
 }
+
+export default ErrorBoundary;

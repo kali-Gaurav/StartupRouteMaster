@@ -1,26 +1,17 @@
 import { useState, useEffect } from "react";
-import { 
-  Shield, 
-  History, 
-  ChevronRight, 
-  Search, 
-  Filter, 
+import {
+  History,
   User as UserIcon,
   Server,
   Lock,
   Clock,
   Eye,
   ArrowRightLeft,
-  XCircle,
   Activity,
-  MapPin,
-  Globe,
   LogOut,
-  Zap,
   ShieldAlert,
   AlertTriangle,
   Users,
-  Flame,
   LifeBuoy
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";

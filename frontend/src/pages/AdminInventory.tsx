@@ -1,19 +1,15 @@
 import { useState, useEffect } from "react";
-import { 
-  Database, 
-  RefreshCw, 
-  Activity, 
-  BarChart3, 
-  PieChart, 
-  AlertCircle, 
-  CheckCircle2, 
+import {
+  Database,
+  RefreshCw,
+  Activity,
+  PieChart,
+  AlertCircle,
+  CheckCircle2,
   Zap,
-  TrendingUp,
   Clock,
   Archive,
   Boxes,
-  MapPin,
-  Flame,
   LayoutGrid
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";

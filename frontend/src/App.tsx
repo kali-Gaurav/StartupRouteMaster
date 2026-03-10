@@ -16,8 +16,9 @@ import ProtectedRoute from "@/components/auth/ProtectedRoute";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
+import { useServerWarmup } from "@/hooks/useServerWarmup";
 import { IconSprite } from "./components/ui/IconSprite";
-import { ErrorBoundary } from "./components/ErrorBoundary";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { queryClient } from "./infrastructure/queryClient";
 
 // Lazy load pages
@@ -86,8 +87,33 @@ function ChatbotWrapper() {
   return <RailAssistantChatbot onSearchRequest={onSearch} onSortChange={onSort} onNavigate={onNavigate} />;
 }
 
+const ServerWarmupLoader = () => (
+  <div className="flex items-center justify-center min-h-screen bg-slate-900 text-white">
+    <div className="flex flex-col items-center gap-6 max-w-sm text-center px-6">
+      <div className="relative">
+        <div className="w-20 h-20 rounded-full border-4 border-blue-500/20 border-t-blue-500 animate-spin" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-10 h-10 bg-blue-500/10 rounded-full animate-pulse" />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <h2 className="text-xl font-bold tracking-tight">Waking up server</h2>
+        <p className="text-slate-400 text-sm leading-relaxed">
+          The application is starting up on the cloud. This usually takes 10-20 seconds on the first load.
+        </p>
+      </div>
+    </div>
+  </div>
+);
+
 const AppContent = () => {
   usePushNotifications();
+  const { isWakingUp } = useServerWarmup();
+
+  if (isWakingUp && import.meta.env.PROD) {
+    return <ServerWarmupLoader />;
+  }
+
   return (
     <TooltipProvider>
       <IconSprite />

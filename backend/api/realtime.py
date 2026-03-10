@@ -13,7 +13,7 @@ from database.models import LiveLocation, User
 from api.dependencies import get_current_user
 from utils.limiter import limiter
 
-router = APIRouter(prefix="/api/realtime", tags=["realtime"])
+router = APIRouter(prefix="/realtime", tags=["realtime"])
 logger = logging.getLogger(__name__)
 
 @router.get("/train/{train_number}/position")

@@ -56,6 +56,13 @@ class Config:
     ADMIN_DASHBOARD_PASSWORD_HASH = os.getenv("ADMIN_DASHBOARD_PASSWORD_HASH", "$pbkdf2-sha256$29000$BMD4n9O6NybkPIdwLsWYUw$m1EuhM4eB9.YKZojrFYbtDM1/0zHPgJp/p26sVwjKNY")
     GRAPH_HMAC_SECRET = os.getenv("GRAPH_HMAC_SECRET", "")
     
+    # Task 12: Strict CORS
+    # In production, this should be a comma-separated list of your frontend domains
+    CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
+    
+    # Task 13: API Rate Limiting
+    RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+    
     # Cache & Search Limits
     CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
     MAX_TRANSFERS = int(os.getenv("MAX_TRANSFERS", "3"))
@@ -103,8 +110,9 @@ class Config:
     FEASIBILITY_WEIGHT_DELAY = float(os.getenv("FEASIBILITY_WEIGHT_DELAY", "0.1"))
     ROUTE_RELIABILITY_WEIGHT = float(os.getenv("ROUTE_RELIABILITY_WEIGHT", "0.0"))
 
-    # ML Model paths (Resolved relative to backend root)
-    _base = Path(__file__).resolve().parent.parent
+    # Path Configuration (Resolved relative to backend root)
+    BASE_DIR = str(Path(__file__).resolve().parent.parent)
+    _base = Path(BASE_DIR)
     _ml_base = _base / "core" / "ml_models"
     ROUTE_RANKING_MODEL_PATH = str(_ml_base / os.getenv("ROUTE_RANKING_MODEL_PATH", "route_ranking_model.pkl"))
     DELAY_PREDICTOR_MODEL_PATH = str(_ml_base / os.getenv("DELAY_PREDICTOR_MODEL_PATH", "delay_predictor_model.pkl"))
@@ -166,7 +174,7 @@ class Config:
     BOOKING_ENABLED = os.getenv("BOOKING_ENABLED", "true").lower() in ("1", "true", "yes")
     
     # Environment
-    ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "production").lower()
     DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes") or ENVIRONMENT == "development"
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
@@ -188,6 +196,33 @@ class Config:
     PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS = tuple(os.getenv("PARTNER_CIRCUIT_BREAKER_EXPECTED_EXCEPTIONS", "httpx.RequestError,httpx.HTTPStatusError,httpx.TimeoutException").split(','))
 
     @classmethod
+    def GET_SQLALCHEMY_URL(cls, db_type: str = "user", is_async: bool = True) -> str:
+        """
+        Task 2 & 6: SQLite (Dev) vs. PostgreSQL (Prod) Toggle with Async Support.
+        Automatically use local SQLite when ENV=development or no DATABASE_URL is provided.
+        """
+        if cls.DATABASE_URL and cls.ENVIRONMENT == "production":
+            url = cls.DATABASE_URL
+            if is_async:
+                # Ensure an async driver is used for the configured database URL.
+                # Most deployments use Postgres, but local/test setups might still use SQLite.
+                if url.startswith("postgresql://"):
+                    url = url.replace("postgresql://", "postgresql+asyncpg://")
+                elif url.startswith("sqlite://") and "aiosqlite" not in url:
+                    # SQLAlchemy's asyncio extension requires an async driver.
+                    url = url.replace("sqlite://", "sqlite+aiosqlite://")
+            return url
+        
+        # Fallback to local SQLite for development
+        filename = "user_store.db" if db_type == "user" else "transit_graph.db"
+        db_path = cls._base / "database" / filename
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        
+        if is_async:
+            return f"sqlite+aiosqlite:///{db_path}"
+        return f"sqlite:///{db_path}"
+
+    @classmethod
     def get_mode(cls) -> str:
         """Get current system mode: OFFLINE, HYBRID, or ONLINE"""
         if cls.OFFLINE_MODE:
@@ -205,26 +240,77 @@ class Config:
             return "OFFLINE"
 
     @classmethod
-    def validate(cls):
-        """Validate critical configuration presence."""
-        if not cls.SUPABASE_URL or not cls.SUPABASE_KEY:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set (for Auth)")
+    def load_cloud_secrets(cls):
+        """
+        Task 5: Cloud Secrets Management Prep.
+        Placeholder for integrating with AWS Secrets Manager or GCP Secret Manager.
+        This will be fully implemented once AWS/GCP credits are active.
+        """
+        if cls.ENVIRONMENT != "production":
+            return
             
-        if not cls.SUPABASE_JWT_SECRET:
-             # Warning only for now to allow local dev startup, but critical for auth
-             logger = logging.getLogger(__name__)
-             logger.warning("SUPABASE_JWT_SECRET not set; JWT validation will fail.")
-        
-        if not cls.DATABASE_URL:
-            if cls.OFFLINE_MODE:
-                logger = logging.getLogger(__name__)
-                logger.warning("DATABASE_URL not set but OFFLINE_MODE enabled.")
-            else:
-                raise ValueError("DATABASE_URL must be set (Railway Postgres)")
+        # Example Logic for AWS/GCP:
+        # try:
+        #     from utils.cloud_secrets import get_secret
+        #     secrets = get_secret("routemaster-prod-secrets")
+        #     for key, val in secrets.items():
+        #         setattr(cls, key, val)
+        # except Exception as e:
+        #     logging.getLogger(__name__).warning(f"Could not load cloud secrets: {e}")
+        pass
 
-        if not cls.REDIS_URL and not cls.OFFLINE_MODE:
-            raise ValueError("REDIS_URL must be set (Upstash Redis)")
+    @classmethod
+    def validate(cls):
+        """
+        Task 1: Unified Config Validation.
+        Implement strict validation for environment variables on startup.
+        If a critical production key is missing in production, the app should fail instantly.
+        """
+        # First attempt to load cloud secrets if in production
+        cls.load_cloud_secrets()
         
-        if not cls.SUPABASE_SERVICE_KEY:
-            logger = logging.getLogger(__name__)
-            logger.warning("SUPABASE_SERVICE_KEY not provided; using anon key.")
+        logger = logging.getLogger(__name__)
+        critical_missing = []
+
+        # 1. Environment Check
+        if cls.ENVIRONMENT not in ["development", "production", "testing"]:
+            logger.warning(f"⚠️ Unknown ENVIRONMENT '{cls.ENVIRONMENT}'. Defaulting to production-safe behaviors.")
+
+        # 2. Supabase (Auth & Realtime)
+        if not cls.SUPABASE_URL: critical_missing.append("SUPABASE_URL")
+        if not cls.SUPABASE_KEY: critical_missing.append("SUPABASE_KEY")
+        if not cls.SUPABASE_JWT_SECRET:
+            if cls.ENVIRONMENT == "production":
+                critical_missing.append("SUPABASE_JWT_SECRET")
+            else:
+                logger.warning("⚠️ SUPABASE_JWT_SECRET not set; JWT validation will fail.")
+
+        # 3. Database
+        if not cls.DATABASE_URL and not cls.OFFLINE_MODE:
+            if cls.ENVIRONMENT == "production":
+                critical_missing.append("DATABASE_URL")
+            else:
+                logger.info("ℹ️ DATABASE_URL not set. Defaulting to local SQLite for development.")
+
+        # 4. Redis
+        if not cls.REDIS_URL and not cls.OFFLINE_MODE:
+            if cls.ENVIRONMENT == "production":
+                critical_missing.append("REDIS_URL")
+            else:
+                logger.warning("⚠️ REDIS_URL not set. Falling back to local memory cache.")
+
+        # 5. Security (Prod Only)
+        if cls.ENVIRONMENT == "production":
+            if cls.JWT_SECRET_KEY == "changeme":
+                critical_missing.append("JWT_SECRET_KEY (must be changed in production)")
+            if not cls.ADMIN_API_TOKEN or cls.ADMIN_API_TOKEN == "default_token_change_me":
+                critical_missing.append("ADMIN_API_TOKEN")
+
+        if critical_missing:
+            error_msg = f"❌ CRITICAL CONFIG MISSING: {', '.join(critical_missing)}"
+            if cls.ENVIRONMENT == "production":
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            else:
+                logger.error(error_msg)
+                logger.warning("⚠️ System may not function correctly without these variables.")

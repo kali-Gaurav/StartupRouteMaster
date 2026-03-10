@@ -123,7 +123,7 @@ class BankWebhookService:
 
         # Save to BankTransaction
         txn = BankTransaction(
-            utr=utr,
+            utr_number=utr,
             amount=amount or 0.0,
             bank_name=payload.sender,
             raw_payload=sms_body,

@@ -1,21 +1,12 @@
 import { useState, useEffect } from "react";
-import { 
-  Server, 
-  Activity, 
-  Database, 
-  Cpu, 
-  Lock, 
-  Pulse, 
-  ZapOff,
-  AlertCircle,
+import {
+  Server,
+  Activity,
   HardDrive,
-  Clock,
   Terminal,
   RefreshCw,
-  Flame,
   ShieldCheck,
   Archive,
-  ChevronRight,
   BrainCircuit,
   LayoutGrid,
   ShieldAlert,
@@ -25,6 +16,7 @@ import {
   Power
 } from "lucide-react";
 import { fetchWithAuth } from "@/lib/apiClient";
+import { getRailwayWsUrl } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -118,9 +110,8 @@ export default function AdminSystem() {
 
   useEffect(() => {
     // WebSocket Metrics Feed
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "localhost:8000" : window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}/api/v2/admin/ws/metrics`);
+    const wsUrl = getRailwayWsUrl("/api/v2/admin/ws/metrics");
+    const ws = new WebSocket(wsUrl);
     ws.onmessage = (e) => setMetrics(JSON.parse(e.data));
 
     refreshSystem();

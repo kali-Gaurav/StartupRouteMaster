@@ -184,13 +184,7 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
   useEffect(() => {
     if (!booking?.id) return;
     
-    // Determine WS URL based on current origin
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" 
-                 ? "localhost:8000" 
-                 : window.location.host;
-    const wsUrl = `${protocol}//${host}/api/v2/booking/ws/${booking.id}`;
-    
+    const wsUrl = getRailwayWsUrl(`/api/v2/booking/ws/${booking.id}`);
     const ws = new WebSocket(wsUrl);
     
     ws.onmessage = (event) => {
@@ -217,7 +211,7 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
     setCaptchaSubmitting(true);
     try {
       const tokenStr = localStorage.getItem("auth_token");
-      await fetch(`http://localhost:8000/api/v2/booking/${booking.id}/captcha`, {
+      await fetch(`/api/v2/booking/${booking.id}/captcha`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -1,0 +1,222 @@
+# RouteMaster V2 Production Readiness - 200 Task Master Plan
+
+## Epic 1: Core System & Network Resilience
+- [ ] Subtask 1.1: [HARD] Simulate 50% packet loss during state transition
+- [ ] Subtask 1.2: [HARD] Verify Background Polling recovery when app is minimized
+- [ ] Subtask 1.3: [HARD] Frontend Offline banner persistence across page reloads
+- [ ] Subtask 1.4: [HARD] Atomic update of LocalStorage when backend returns 503
+- [ ] Subtask 1.5: [HARD] Latency-induced Slow Connection UI trigger (RTT > 2000ms)
+- [ ] Subtask 1.6: [HARD] Verify 3-retry sequence with exponential backoff
+- [ ] Subtask 1.7: [HARD] Confirm Random Jitter to prevent thundering herd
+- [ ] Subtask 1.8: [HARD] Test retry behavior on 502/504 vs 400 (No retry on 400)
+- [ ] Subtask 1.9: [HARD] WebSocket failover when primary API is throttled
+- [ ] Subtask 1.10: [HARD] 1000 concurrent SQL queries via connection pool
+- [ ] Subtask 1.11: [HARD] Redis memory eviction policy consistency
+- [ ] Subtask 1.12: [HARD] Deadlock detection under heavy write load (SOS triggers)
+- [ ] Subtask 1.13: [HARD] IP-based blocking bypass attempts (X-Forwarded-For spoofing)
+- [ ] Subtask 1.14: [HARD] User-based budget tracking (Token bucket)
+- [ ] Subtask 1.15: [HARD] Global Panic Switch (Kill all non-essential traffic)
+- [ ] Subtask 1.16: [HARD] Connection drainage logic for rolling updates
+- [ ] Subtask 1.17: [HARD] Payload size limits & protection against Slowloris-style body streaming
+- [ ] Subtask 1.18: [HARD] Redis cluster split-brain simulation and recovery
+- [ ] Subtask 1.19: [HARD] CORS wildcard vs. explicit origin security audit
+- [ ] Subtask 1.20: [HARD] Zombie process cleanup on unexpected server crashes
+
+## Epic 2: Authentication, JWT & Sessions
+- [ ] Subtask 2.1: [HARD] Token theft simulation (old refresh token use)
+- [ ] Subtask 2.2: [HARD] Refresh token revocation propagation (latency < 1s)
+- [ ] Subtask 2.3: [HARD] Auto-logout when Supabase session heartbeats fail
+- [ ] Subtask 2.4: [HARD] Accessing /admin/ via user token - strict 403
+- [ ] Subtask 2.5: [HARD] SQL Row-Level Security bypass attempts
+- [ ] Subtask 2.6: [HARD] PII Masking in Debug logs for non-PII roles
+- [ ] Subtask 2.7: [HARD] Timing attack protection on token comparison
+- [ ] Subtask 2.8: [HARD] Large-scale JWT blacklist performance (O(1) lookup)
+- [ ] Subtask 2.9: [HARD] Scoped token validation (Admin vs User edge cases)
+- [ ] Subtask 2.10: [HARD] Refresh token reuse detection (RTR)
+- [ ] Subtask 2.11: [HARD] Anonymous Session Migration to Authenticated State
+- [ ] Subtask 2.12: [HARD] Session Hijacking Protection (IP/UA fingerprinting)
+- [ ] Subtask 2.13: [HARD] OAuth2 Callback security & CSRF state verification
+- [ ] Subtask 2.14: [HARD] User Data Privacy (GDPR/DPD) - PII Encryption at rest
+- [ ] Subtask 2.15: [HARD] Database row-level security (RLS) bypass attempts
+- [ ] Subtask 2.16: [HARD] Malformed token payload injection
+- [ ] Subtask 2.17: [HARD] Token signature stripping attack
+- [ ] Subtask 2.18: [HARD] Expired token handling on long-running WebSocket
+- [ ] Subtask 2.19: [HARD] Concurrent login from 5 different geographic IPs
+- [ ] Subtask 2.20: [HARD] Password Reset Flow & MFA Challenge Bridge Verification
+
+## Epic 3: Route Engine & Search Intelligence
+- [ ] Subtask 3.1: [HARD] Infinite transfer loop detection (A -> B -> A)
+- [ ] Subtask 3.2: [HARD] Multi-day masking for 48h+ journeys
+- [ ] Subtask 3.3: [HARD] Impossible Transfer rejection (Arrival 10:00 -> Departure 10:01)
+- [ ] Subtask 3.4: [HARD] RAPTOR Algorithm Edge Case Audit (Loops & Dead-ends)
+- [ ] Subtask 3.5: [HARD] Transfer Intelligence: Minimum Connection Time (MCT) Logic
+- [ ] Subtask 3.6: [HARD] ML Ranking Model: Input Feature Normalization & Drift Check
+- [ ] Subtask 3.7: [HARD] Search Latency: P99 Optimization for 1000+ Station Graphs
+- [ ] Subtask 3.8: [HARD] Result Deduplication & Route Grouping Logic Accuracy
+- [ ] Subtask 3.9: [HARD] Multimodal Pathfinding (Train + Foot/Local) Accuracy
+- [ ] Subtask 3.10: [HARD] Station Alias & Typo Tolerance (Levenshtein) Verification
+- [ ] Subtask 3.11: [HARD] Direct Index O(1) Lookup Performance for Major Hubs
+- [ ] Subtask 3.12: [HARD] Service Masking: Bitmask calculation for Seasonal Trains
+- [ ] Subtask 3.13: [HARD] Alternative Route Suggestion (Diversion) Logic Audit
+- [ ] Subtask 3.14: [HARD] Graph connectivity audit: isolated clusters check
+- [ ] Subtask 3.15: [HARD] Over-optimization check: ensuring pruning doesnt skip fast routes
+- [ ] Subtask 3.16: [HARD] Memory-resident graph persistence consistency
+- [ ] Subtask 3.17: [HARD] Dynamic pricing impact on route sorting
+- [ ] Subtask 3.18: [HARD] Hub-station saturation handling (congestion modeling)
+- [ ] Subtask 3.19: [HARD] Cross-operator transfer logic (Metro to IR)
+- [ ] Subtask 3.20: [HARD] Stress test: 50 concurrent random path searches
+
+## Epic 4: Live Train Tracking & Station Boards
+- [ ] Subtask 4.1: [HARD] 10,000 live updates/sec processing latency
+- [ ] Subtask 4.2: [HARD] Interpolation accuracy when GPS is missing for 5 stations
+- [ ] Subtask 4.3: [HARD] Crossover 12AM handling for late-night trains
+- [ ] Subtask 4.4: [HARD] Live Delay Propagation across downstream segments
+- [ ] Subtask 4.5: [HARD] Station Departure Board: Time-window pruning logic
+- [ ] Subtask 4.6: [HARD] Real-time Cancellation (Overlay) consistency check
+- [ ] Subtask 4.7: [HARD] Live Data Source Failover (Multiple Scrapers/APIs)
+- [ ] Subtask 4.8: [HARD] Train Platform Prediction Accuracy & Source Conflict
+- [ ] Subtask 4.9: [HARD] Historical Delay Analysis Integration for Probabilities
+- [ ] Subtask 4.10: [HARD] Coach Position Mapping Accuracy for Major Expresses
+- [ ] Subtask 4.11: [HARD] Stale data purge (ensuring old live pings dont stick)
+- [ ] Subtask 4.12: [HARD] Feed jitter smoothing (ignoring oscillating delay pings)
+- [ ] Subtask 4.13: [HARD] Multi-language station name support in live boards
+- [ ] Subtask 4.14: [HARD] Delta compression for live updates (sending only changed fields)
+- [ ] Subtask 4.15: [HARD] Geographic proximity alerting for live trains
+- [ ] Subtask 4.16: [HARD] API response structure consistency across different tracking sources
+- [ ] Subtask 4.17: [HARD] Handling of malformed external API responses
+- [ ] Subtask 4.18: [HARD] Rate limit backoff on external data sources
+- [ ] Subtask 4.19: [HARD] Caching strategy for highly requested trains
+- [ ] Subtask 4.20: [HARD] WebSocket live tracking push latency under load
+
+## Epic 5: SOS & Emergency Escalation
+- [ ] Subtask 5.1: [HARD] Standard SOS Trigger with full payload
+- [ ] Subtask 5.2: [HARD] Boundary - Missing GPS (Fallback logic)
+- [ ] Subtask 5.3: [HARD] Boundary - Extreme Battery Values (-10%, 150%)
+- [ ] Subtask 5.4: [HARD] Same-User Concurrency Spam (Idempotency holding)
+- [ ] Subtask 5.5: [HARD] Event Data Integrity on Retrieval
+- [ ] Subtask 5.6: [HARD] Family View Token Generation & Validation
+- [ ] Subtask 5.7: [HARD] Offline Mesh Sync Array Processing (Data merge)
+- [ ] Subtask 5.8: [HARD] PNR SOS Linkage Validation
+- [ ] Subtask 5.9: [HARD] Remote Battery Update via high-frequency pings
+- [ ] Subtask 5.10: [HARD] Responder Handshake & Claiming Logic
+- [ ] Subtask 5.11: [HARD] Escalation Acknowledgement (Multi-party)
+- [ ] Subtask 5.12: [HARD] End-to-End Resolution Transition
+- [ ] Subtask 5.13: [HARD] Confirm Safe Endpoint (Token invalidation)
+- [ ] Subtask 5.14: [HARD] Real-time Geo Risk Check (Critical/Night hours)
+- [ ] Subtask 5.15: [HARD] Concurrency & Backpressure Hard Testing (50 hits)
+- [ ] Subtask 5.16: [HARD] Panic Score & Priority Jump (Context-Aware)
+- [ ] Subtask 5.17: [HARD] Nearest Authority Spatial Lookup (O(1) Geohash)
+- [ ] Subtask 5.18: [HARD] Prolonged Stillness Heuristic (Unconscious Threat)
+- [ ] Subtask 5.19: [HARD] Last Breath Sync (Going Offline logic)
+- [ ] Subtask 5.20: [HARD] Voice Note Upload & Binary Payload Handling
+
+## Epic 6: AI Chatbot & Voice Triage
+- [ ] Subtask 6.1: [HARD] Sanity Check - Basic Greeting Routing
+- [ ] Subtask 6.2: [HARD] Hindi/Hinglish Intent Parsing (SOS vs Search)
+- [ ] Subtask 6.3: [HARD] Intent Collision (Search + SOS in same message)
+- [ ] Subtask 6.4: [HARD] PNR Extraction with high background noise/formatting
+- [ ] Subtask 6.5: [HARD] Station Typo Correction (Levenshtein distance)
+- [ ] Subtask 6.6: [HARD] Empty Message Payload Handling
+- [ ] Subtask 6.7: [HARD] XSS/HTML Injection in Chat Input
+- [ ] Subtask 6.8: [HARD] ReDoS Attempt (Massive spacing/regex lock)
+- [ ] Subtask 6.9: [HARD] Massive Payload Rejection (1MB text)
+- [ ] Subtask 6.10: [HARD] Memory Sync Get (Cross-session retrieval)
+- [ ] Subtask 6.11: [HARD] Memory Sync Post (State update)
+- [ ] Subtask 6.12: [HARD] Context Window Eviction (Capping at 20 turns)
+- [ ] Subtask 6.13: [HARD] Invalid Session ID Format Handling
+- [ ] Subtask 6.14: [HARD] Voice Note Path Injection/Traversal attempt
+- [ ] Subtask 6.15: [HARD] Concurrent Chat Session Generation (50 active)
+- [ ] Subtask 6.16: [HARD] Fallback Schema Compliance on API Timeout
+- [ ] Subtask 6.17: [HARD] Null Byte Injection in text payload
+- [ ] Subtask 6.18: [HARD] Exact 20 Turns Persistence Check
+- [ ] Subtask 6.19: [HARD] NLP Relative Date Parsing (Tomorrow, next week)
+- [ ] Subtask 6.20: [HARD] NLP Confidence Calculation & Thresholding
+
+## Epic 7: Booking Flow & State Machine
+- [ ] Subtask 7.1: [HARD] Idempotent Booking Creation (Prevent double-charge)
+- [ ] Subtask 7.2: [HARD] Seat Locking TTL expiry & automatic release
+- [ ] Subtask 7.3: [HARD] Passenger Validation (IRCTC-standard rules)
+- [ ] Subtask 7.4: [HARD] Quota Handling (Tatkal vs General logic)
+- [ ] Subtask 7.5: [HARD] Booking State Machine Finality & Deadlock detection
+- [ ] Subtask 7.6: [HARD] Partial Failure Recovery (Rollback on IRCTC timeout)
+- [ ] Subtask 7.7: [HARD] Captcha Solver Integration Latency & Success rate
+- [ ] Subtask 7.8: [HARD] Ticket PDF Generation (Font rendering & QR integrity)
+- [ ] Subtask 7.9: [HARD] Auto-retry Loop (Smart handling of transient IRCTC errors)
+- [ ] Subtask 7.10: [HARD] Booking History Pagination & SQL index performance
+- [ ] Subtask 7.11: [HARD] Missing Auth Header Rejection on Booking Init
+- [ ] Subtask 7.12: [HARD] Missing/Invalid Journey ID Handling
+- [ ] Subtask 7.13: [HARD] Expired/Fake Journey ID Rejection
+- [ ] Subtask 7.14: [HARD] Invalid UTR Format Validation (11 vs 12 digits)
+- [ ] Subtask 7.15: [HARD] UTR Concurrency Lock (nx=True race condition test)
+- [ ] Subtask 7.16: [HARD] Dynamic Fee Calculation (Unlock vs Agent)
+- [ ] Subtask 7.17: [HARD] UPI URI Generation Validation (Format & Note)
+- [ ] Subtask 7.18: [HARD] Transaction History Append Integrity
+- [ ] Subtask 7.19: [HARD] Regenerate Payment Session logic & VPA assignment
+- [ ] Subtask 7.20: [HARD] Admin Alert Generation on Agent Booking Request
+
+## Epic 8: Payment Gateway & Webhooks
+- [ ] Subtask 8.1: [HARD] Valid SMS Webhook Processing & Signature verification
+- [ ] Subtask 8.2: [HARD] Missing Webhook Signature Rejection
+- [ ] Subtask 8.3: [HARD] Invalid Webhook Signature Rejection
+- [ ] Subtask 8.4: [HARD] Unauthorized Bank CSV Upload block
+- [ ] Subtask 8.5: [HARD] Webhook Concurrency Race Condition handling
+- [ ] Subtask 8.6: [HARD] Payment Status Polling (Fallback vs Webhook)
+- [ ] Subtask 8.7: [HARD] UTR Submission Flow (Image OCR/Validation accuracy)
+- [ ] Subtask 8.8: [HARD] Escrow Management (Safe release on confirmed booking)
+- [ ] Subtask 8.9: [HARD] Refund Queue (Automated vs Manual approval threshold)
+- [ ] Subtask 8.10: [HARD] Merchant VPA Rotation (Load-balancing & limit tracking)
+- [ ] Subtask 8.11: [HARD] Fraud Detection (Velocity checks on small transactions)
+- [ ] Subtask 8.12: [HARD] Ledger Integrity (Double-entry accounting consistency)
+- [ ] Subtask 8.13: [HARD] Payment Analytics (Conversion funnel drop-off audit)
+- [ ] Subtask 8.14: [HARD] UPI Intent Deep-linking cross-app stability
+- [ ] Subtask 8.15: [HARD] Handling delayed webhook arrivals (out of order)
+- [ ] Subtask 8.16: [HARD] Idempotency on identical webhook payloads
+- [ ] Subtask 8.17: [HARD] Database transaction isolation during payment update
+- [ ] Subtask 8.18: [HARD] Handling of partial payment amounts
+- [ ] Subtask 8.19: [HARD] Automatic retry on failed refund initiation
+- [ ] Subtask 8.20: [HARD] Audit trail generation for manual payment verification
+
+## Epic 9: Admin Dashboards & Reconciliation
+- [ ] Subtask 9.1: [HARD] High-volume Audit Logs (Partitioning & Query speed)
+- [ ] Subtask 9.2: [HARD] Financial Dashboard (Real-time Profit/Loss calculation)
+- [ ] Subtask 9.3: [HARD] User Karma System (Calculation accuracy & leaderboard)
+- [ ] Subtask 9.4: [HARD] System Sentinel (Cluster-wide resource monitoring)
+- [ ] Subtask 9.5: [HARD] Inventory Sentinel (Data staleness by station/zone)
+- [ ] Subtask 9.6: [HARD] Admin Action Auditing (Critical path change tracking)
+- [ ] Subtask 9.7: [HARD] Role Escalation (Super-admin approval for bulk refunds)
+- [ ] Subtask 9.8: [HARD] Data Quality Audit (Automated transit graph repair)
+- [ ] Subtask 9.9: [HARD] Scraper Control (Real-time throttle & proxy rotation)
+- [ ] Subtask 9.10: [HARD] Snapshots (One-click rollback of graph/config state)
+- [ ] Subtask 9.11: [HARD] Strict RBAC on all Admin read endpoints
+- [ ] Subtask 9.12: [HARD] Strict RBAC on all Admin write endpoints
+- [ ] Subtask 9.13: [HARD] Data masking for lower-tier admin roles
+- [ ] Subtask 9.14: [HARD] Concurrent admin operations deadlock test
+- [ ] Subtask 9.15: [HARD] Large dataset export performance (CSV/PDF)
+- [ ] Subtask 9.16: [HARD] Websocket metric stream stability
+- [ ] Subtask 9.17: [HARD] Cache clearing propagation across nodes
+- [ ] Subtask 9.18: [HARD] Forced system restart handling
+- [ ] Subtask 9.19: [HARD] Alert generation for anomalous system behavior
+- [ ] Subtask 9.20: [HARD] Session revocation for specific user by admin
+
+## Epic 10: PWA, Caching & Performance
+- [ ] Subtask 10.1: [HARD] Service Worker Background sync for offline search
+- [ ] Subtask 10.2: [HARD] L1/L2 Cache (Memory vs Redis hit-ratio optimization)
+- [ ] Subtask 10.3: [HARD] Bundle Size (Tree-shaking & Lazy-loading verification)
+- [ ] Subtask 10.4: [HARD] Image Optimization (WebP conversion & CDN edge cache)
+- [ ] Subtask 10.5: [HARD] IndexDB (Large station dataset storage & query speed)
+- [ ] Subtask 10.6: [HARD] Hydration (React SSR/Client consistency check)
+- [ ] Subtask 10.7: [HARD] Memory Leaks (WebSocket/Event listener cleanup audit)
+- [ ] Subtask 10.8: [HARD] Gzip/Brotli Compression efficiency across all APIs
+- [ ] Subtask 10.9: [HARD] Prefetching (Smart prediction of next-page data)
+- [ ] Subtask 10.10: [HARD] Lighthouse Audit (95+ score verification)
+- [ ] Subtask 10.11: [HARD] PWA Installability criteria verification
+- [ ] Subtask 10.12: [HARD] Offline fallback page rendering
+- [ ] Subtask 10.13: [HARD] Push Notification registration & delivery speed
+- [ ] Subtask 10.14: [HARD] Cache invalidation on new app version release
+- [ ] Subtask 10.15: [HARD] Client-side state persistence across hard reloads
+- [ ] Subtask 10.16: [HARD] API response caching strategy (Stale-while-revalidate)
+- [ ] Subtask 10.17: [HARD] Third-party script loading impact analysis
+- [ ] Subtask 10.18: [HARD] Critical rendering path optimization
+- [ ] Subtask 10.19: [HARD] Web Vitals (LCP, FID, CLS) regression testing
+- [ ] Subtask 10.20: [HARD] Handling of intermittent network connectivity drops
+

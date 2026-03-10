@@ -158,32 +158,26 @@ class SearchService:
         expansion_triggered = False
         if len(all_unique_routes) < 5:
             expansion_triggered = True
-            logger.info(f"Low yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search radius (+/- 1 day).")
-            
-            # [2.6] Parallel Expansion (+1 and -1 day)
-            tasks = [
-                orchestrator.search_all_tiers(source, destination, dt + timedelta(days=1), c, 50, self.transit_db),
-                orchestrator.search_all_tiers(source, destination, dt - timedelta(days=1), c, 50, self.transit_db)
-            ]
-            exp_results = await asyncio.gather(*tasks)
-            
+            logger.info(f"Low yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search serially.")
+
             # Day +1
-            for r in exp_results[0]:
+            res_plus = await orchestrator.search_all_tiers(source, destination, dt + timedelta(days=1), c, 50, self.transit_db)
+            for r in res_plus:
                 if r.journey_id not in all_unique_routes:
                     r.metadata["day_offset"] = 1
                     r.metadata["alt_reason"] = f"Alternative: Available on {(dt + timedelta(days=1)).strftime('%b %d')}"
                     all_unique_routes[r.journey_id] = r
-            
-            # Day -1
-            for r in exp_results[1]:
-                # Don't suggest past dates if searching for today
-                if (dt - timedelta(days=1)).date() < datetime.utcnow().date():
-                    continue
-                if r.journey_id not in all_unique_routes:
-                    r.metadata["day_offset"] = -1
-                    r.metadata["alt_reason"] = f"Alternative: Available on {(dt - timedelta(days=1)).strftime('%b %d')}"
-                    all_unique_routes[r.journey_id] = r
 
+            # Day -1 (Only if still low yield)
+            if len(all_unique_routes) < 5:
+                # Don't suggest past dates if searching for today
+                if (dt - timedelta(days=1)).date() >= datetime.utcnow().date():
+                    res_minus = await orchestrator.search_all_tiers(source, destination, dt - timedelta(days=1), c, 50, self.transit_db)
+                    for r in res_minus:
+                        if r.journey_id not in all_unique_routes:
+                            r.metadata["day_offset"] = -1
+                            r.metadata["alt_reason"] = f"Alternative: Available on {(dt - timedelta(days=1)).strftime('%b %d')}"
+                            all_unique_routes[r.journey_id] = r
         # [6.2] Hub-Only Routing Fallback (Zero Yield)
         if len(all_unique_routes) == 0:
             logger.info(f"Zero yield for {source}->{destination}. Triggering Hub Fallback [6.4].")

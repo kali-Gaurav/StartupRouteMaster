@@ -10,16 +10,20 @@ import httpx
 import zlib
 import base64
 import shutil
+import asyncio
 
 # create logger for this module
 logger = logging.getLogger(__name__)
 
 from database.models import User
+from database.config import Config
 from api.dependencies import get_optional_user
 from services.multi_layer_cache import multi_layer_cache
 from api.websockets import manager
 from services.emergency.alert_manager import EmergencyAlertManager
 from utils.limiter import limiter
+
+import threading
 
 router = APIRouter(prefix="/sos", tags=["sos"])
 
@@ -30,24 +34,38 @@ SOS_KEY_PREFIX = "sos:event:"
 SOS_INDEX_KEY = "sos:events"
 SOS_STREAM_KEY = "sos:stream:priority" # Task 7
 PNR_REGISTRY_KEY = "sos:registry:pnr" # Task 3: O(1) PNR lookup
-EMERGENCY_FILE_CACHE = "emergency_cache.json"
-MEDIA_DIR = os.path.join("media", "sos")
+
+# Task 22: Persistent storage for SOS events in case of server restart
+# Ensure path is absolute for Windows stability
+_BASE_DIR = Config.BASE_DIR
+EMERGENCY_FILE_CACHE = os.path.join(_BASE_DIR, "emergency_cache.json")
+MEDIA_DIR = os.path.join(_BASE_DIR, "media", "sos")
+
+_save_lock = threading.Lock()
 
 def _save_to_file():
-    try:
-        with open(EMERGENCY_FILE_CACHE, 'w') as f:
-            json.dump(_local_events, f)
-    except Exception as e:
-        logger.error(f"Failed to save emergency cache to file: {e}")
+    global _local_events
+    with _save_lock:
+        try:
+            # Atomic write to prevent corruption on Windows
+            temp_file = EMERGENCY_FILE_CACHE + ".tmp"
+            with open(temp_file, 'w') as f:
+                json.dump(_local_events, f)
+            if os.path.exists(EMERGENCY_FILE_CACHE):
+                os.remove(EMERGENCY_FILE_CACHE)
+            os.rename(temp_file, EMERGENCY_FILE_CACHE)
+        except Exception as e:
+            logger.error(f"Failed to save emergency cache to file: {e}")
 
 def _load_from_file():
     global _local_events
     if os.path.exists(EMERGENCY_FILE_CACHE):
-        try:
-            with open(EMERGENCY_FILE_CACHE, 'r') as f:
-                _local_events = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load emergency cache from file: {e}")
+        with _save_lock:
+            try:
+                with open(EMERGENCY_FILE_CACHE, 'r') as f:
+                    _local_events = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load emergency cache from file: {e}")
 
 # Initial load
 _load_from_file()
@@ -353,12 +371,6 @@ async def get_sos_by_pnr(pnr: str):
                 return _map_event_to_res(e)
     raise HTTPException(status_code=404, detail="No active SOS for this PNR.")
 
-@router.get('/{event_id}')
-async def get_sos_by_id(event_id: str):
-    event = _load_event(event_id)
-    if not event: raise HTTPException(status_code=404, detail="Incident not found.")
-    return _map_event_to_res(event)
-
 @router.get('/all')
 async def get_all_sos():
     ids = []
@@ -381,6 +393,12 @@ async def get_all_sos():
 async def check_location_risk(lat: float, lng: float):
     from services.emergency.risk_service import risk_service
     return risk_service.check_area_risk(lat, lng)
+
+@router.get('/{event_id}')
+async def get_sos_by_id(event_id: str):
+    event = _load_event(event_id)
+    if not event: raise HTTPException(status_code=404, detail="Incident not found.")
+    return _map_event_to_res(event)
 
 @router.post('/mesh-sync')
 async def sync_mesh_alert(payload: MeshRelayPayload):
@@ -658,38 +676,33 @@ async def update_battery_status(event_id: str, battery_level: float = Body(...),
     event = _load_event(event_id)
     if not event: raise HTTPException(status_code=404)
     
-    # Task 55: Prolonged Stillness Heuristic
-    if event.get("status") in ["active", "responding"]:
-        last_motion = event.get("last_motion_level", 1.0)
-        if motion_level == 0.0 and last_motion == 0.0:
-            # Two pings of zero motion = Unconscious Threat
-            event["priority"] = "critical"
-            event["extra"] = f"{event.get('extra', '')} | 💀 ALERT: PROLONGED STILLNESS (Potential Unconsciousness)"
-            logger.warning(f"🆘 [STILLNESS] Auto-escalating incident {event_id} due to zero movement.")
-        event["last_motion_level"] = motion_level
-
-    if is_last_breath or battery_level < 0.02:
-        event["extra"] = f"{event.get('extra', '')} | 💀 LAST BREATH SYNC (Going Offline)"
-        event["status"] = "active"
-        event["priority"] = "critical"
-        event["last_breath_lat"] = lat
-        event["last_breath_lng"] = lng
-        event["last_breath_ts"] = datetime.utcnow().isoformat()
-        
-        # Notify Admin via WebSocket immediately
-        _save_event(event)
-        await manager.broadcast_sos(event)
-        
-        # Task 44: Final Confirmation Pulse
-        return {
-            "status": "last_breath_acknowledged",
-            "vibration_pattern": [1000] # Long 1s pulse
-        }
+    # Task 5.16: High-frequency state update (Zero overhead)
     event["lat"], event["lng"], event["battery_level"] = lat, lng, battery_level
-    alert_mgr = EmergencyAlertManager()
-    enriched = await alert_mgr.process_sos_alert(event)
-    _save_event(enriched)
-    await manager.broadcast_sos(enriched)
+    event["last_motion_level"] = motion_level
+    
+    if is_last_breath or battery_level < 0.02:
+        event["priority"] = "critical"
+        event["extra"] = f"{event.get('extra', '')} | 💀 LAST BREATH SYNC"
+
+    # Task 5.17: Throttled Enrichment (Max once every 10 seconds)
+    now_ts = datetime.utcnow().timestamp()
+    last_sync = event.get("_last_background_sync", 0)
+    
+    if now_ts - last_sync > 10: # 10s throttle
+        event["_last_background_sync"] = now_ts
+        async def background_update():
+            try:
+                from services.emergency.alert_manager import EmergencyAlertManager
+                alert_mgr = EmergencyAlertManager()
+                await alert_mgr.process_sos_alert(event)
+            except Exception as e:
+                logger.error(f"Background battery update failed: {e}")
+        asyncio.create_task(background_update())
+    else:
+        # Just broadcast the raw update immediately for UI smoothness
+        await manager.broadcast_sos(event)
+
+    _save_event(event)
     return {"status": "ok", "auto_dim_screen": battery_level < 0.15}
 
 @router.post("/{event_id}/voice-note")

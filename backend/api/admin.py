@@ -12,7 +12,7 @@ from services.booking_service import BookingService
 from database.models import Disruption, CommissionTracking, Booking, User, Payment, EscrowStatus
 from database.config import Config
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
 
 # Constants for file storage
