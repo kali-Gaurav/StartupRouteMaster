@@ -34,16 +34,14 @@ class RapidAPIClient:
             self.preferred_version = "v1"
             
         self._semaphore = asyncio.Semaphore(max_concurrent)
-        self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self.headers)
-        return self._session
+        from ...utils.http_client import HttpClientManager
+        return await HttpClientManager.get_session()
 
     async def close(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """No-op as session is managed globally."""
+        pass
 
     def _format_date(self, date_str: str) -> str:
         if not date_str or "-" not in date_str:
@@ -67,7 +65,7 @@ class RapidAPIClient:
             }
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, timeout=15) as response:
+                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
                     if response.status == 200: return await response.json()
                     elif response.status == 429: return {"status": "error", "message": "Rate limit exceeded"}
                     return None
@@ -81,7 +79,7 @@ class RapidAPIClient:
             params = {"trainNo": train_no, "fromStationCode": from_stn, "toStationCode": to_stn}
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, timeout=10) as response:
+                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
                     if response.status == 200: return await response.json()
                     return None
             except Exception as e:
@@ -95,7 +93,7 @@ class RapidAPIClient:
             params = {"trainNo": train_no}
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, timeout=10) as response:
+                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
                     if response.status == 200: return await response.json()
                     return None
             except Exception as e:

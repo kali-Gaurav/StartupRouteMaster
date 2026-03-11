@@ -516,6 +516,7 @@ class StopTime(TransitBase):
     arrival_time = Column(Time, nullable=False)
     departure_time = Column(Time, nullable=False)
     stop_sequence = Column(Integer, nullable=False)
+    shape_dist_traveled = Column(Float, nullable=True)
     trip = relationship("Trip", back_populates="stop_times")
     stop = relationship("Stop", back_populates="stop_times")
 

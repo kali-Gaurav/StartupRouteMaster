@@ -179,7 +179,7 @@
     * 10.1 Define 15 verification points covering hub-spoke correctness, layover rules, and fare approximation accuracy.
 
 
-    
+
     * 10.2 Implement unit tests for hub intersection generation and alias normalization.
     * 10.3 Add integration tests exercising the full fast-path and hub-spoke engine end-to-end.
     * 10.4 Add performance and correctness regression tests for hub-spoke query latencies.

@@ -166,23 +166,17 @@ class AsyncRappidAPIClient:
         self.cache_enabled = cache_enabled
         self.cache: Dict[str, tuple] = {}
         self.max_concurrent = max_concurrent
-        self.session: Optional[aiohttp.ClientSession] = None
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create aiohttp session."""
-        if self.session is None:
-            timeout = aiohttp.ClientTimeout(total=self.TIMEOUT)
-            connector = aiohttp.TCPConnector(limit_per_host=self.max_concurrent)
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector,
-                headers={
-                    "User-Agent": "Routemaster-RailwayRouteEngine/1.0",
-                    "Accept": "application/json"
-                }
-            )
-        return self.session
+        """Get the global shared aiohttp session."""
+        from ...utils.http_client import HttpClientManager
+        return await HttpClientManager.get_session()
     
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError))
+    )
     async def fetch_train_status(self, train_number: str) -> Optional[Dict[str, Any]]:
         """
         Asynchronously fetch live status for a train.
@@ -252,15 +246,14 @@ class AsyncRappidAPIClient:
         return {tn: result for tn, result in zip(train_numbers, results)}
     
     async def close(self):
-        """Close aiohttp session."""
-        if self.session:
-            await self.session.close()
+        """No-op as session is managed globally."""
+        pass
     
     async def __aenter__(self):
         return self
     
     async def __aexit__(self, *args):
-        await self.close()
+        pass
 
 
 def get_active_trains(db_session) -> List[str]:

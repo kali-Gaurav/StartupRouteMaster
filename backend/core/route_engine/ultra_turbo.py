@@ -172,25 +172,6 @@ class UltraTurboDirectEngine:
         ) as cursor:
             cancelled_set = {str(r[0]) for r in await cursor.fetchall()}
 
-        duration_sql = """
-            ((CAST(substr(s2.arrival_time, 1, 2) AS INT) * 60 + CAST(substr(s2.arrival_time, 4, 2) AS INT)) - 
-             (CAST(substr(s1.departure_time, 1, 2) AS INT) * 60 + CAST(substr(s1.departure_time, 4, 2) AS INT)))
-        """
-        duration_sql_safe = f"CASE WHEN {duration_sql} < 0 THEN {duration_sql} + 1440 ELSE {duration_sql} END"
-
-        # [FIX] Better distance estimation: Average train speed 55 km/h
-        distance_est_sql = f"({duration_sql_safe} * 0.916)" 
-
-        # Subtask 1.6: Nonlinear Telescopic Piecewise Approximation
-        estimated_fare_sql = f"""
-            CASE 
-                WHEN {distance_est_sql} < 100 THEN (60 + ({distance_est_sql} * 0.6))
-                WHEN {distance_est_sql} < 500 THEN (150 + ({distance_est_sql} * 0.55))
-                WHEN {distance_est_sql} < 1500 THEN (300 + ({distance_est_sql} * 0.50))
-                ELSE (500 + ({distance_est_sql} * 0.45))
-            END
-        """
-
         query = f"""
             SELECT 
                 t.id as trip_id,
@@ -199,9 +180,8 @@ class UltraTurboDirectEngine:
                 s2.stop_id as dst_id,
                 s1.departure_time,
                 s2.arrival_time,
-                ({duration_sql_safe}) as duration,
-                ({distance_est_sql}) as distance,
-                ({estimated_fare_sql}) as estimated_fare
+                (SELECT SUM(duration_minutes) FROM segments WHERE trip_id = t.id AND source_stop_id >= s1.stop_id AND dest_station_id <= s2.stop_id) as total_duration,
+                (SELECT SUM(distance_km) FROM segments WHERE trip_id = t.id AND source_stop_id >= s1.stop_id AND dest_station_id <= s2.stop_id) as total_distance
             FROM stop_times s1 INDEXED BY idx_stop_times_stop_id
             JOIN stop_times s2 INDEXED BY idx_stop_times_trip_id ON s1.trip_id = s2.trip_id
             JOIN trips t ON s1.trip_id = t.id
@@ -236,7 +216,10 @@ class UltraTurboDirectEngine:
                         if row['train_number'] in cancelled_set:
                             continue
 
-                        dur = row['duration']
+                        # Accurate distance from our newly enriched segments table
+                        dist = row['total_distance'] or 0.0
+                        dur = row['total_duration'] or 0
+                        
                         if dur < 1 or dur > 2880: continue
 
                         rt = Route()
@@ -248,8 +231,8 @@ class UltraTurboDirectEngine:
                             departure_time=row['departure_time'],
                             arrival_time=row['arrival_time'],
                             duration_minutes=dur,
-                            distance_km=float(row['distance']),
-                            fare=float(row['estimated_fare'])
+                            distance_km=float(dist),
+                            fare=0.0 # Will be hydrated by Orchestrator using accurate distance
                         )
                         rt.add_segment(seg)
                         rt.metadata["engine"] = "ultra_turbo_direct"

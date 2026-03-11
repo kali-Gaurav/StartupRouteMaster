@@ -98,9 +98,18 @@ class ExternalAPIHealth:
             await self._set_state(CircuitState.OPEN)
 
     async def is_available(self) -> bool:
-        """Helper for DataProvider to check if API should be called."""
+        """
+        Helper for DataProvider to check if API should be called.
+        [2.4] Implements Half-Open probabilistic check.
+        """
         state = await self.get_state()
-        return state != CircuitState.OPEN
+        if state == CircuitState.OPEN:
+            return False
+        if state == CircuitState.HALF_OPEN:
+            # Allow only 10% of requests or 1 request per 10 seconds
+            import random
+            return random.random() < 0.1
+        return True
 
     async def get_status(self) -> Dict[str, Any]:
         r = await self._get_redis()

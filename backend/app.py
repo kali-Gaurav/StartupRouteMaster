@@ -65,6 +65,10 @@ async def lifespan(app: FastAPI):
     from database.session import run_pool_scaler, run_connection_reaper
     from core.ml_models.loader import model_loader
     from services.multi_layer_cache import multi_layer_cache
+    from utils.http_client import HttpClientManager
+    
+    # 0. Global Http Client
+    await HttpClientManager.get_session()
     
     prediction_hub.start()
     app.state.feedback_task = asyncio.create_task(feedback_loop.run_punishment_cycle())
@@ -84,6 +88,9 @@ async def lifespan(app: FastAPI):
     
     # Clean Shutdown
     prediction_hub.stop()
+    from utils.http_client import HttpClientManager
+    await HttpClientManager.close_session()
+    
     if hasattr(app.state, "feedback_task"): app.state.feedback_task.cancel()
     if hasattr(app.state, "behavior_task"): app.state.behavior_task.cancel()
     if multi_layer_cache.redis: await multi_layer_cache.redis.close()
@@ -156,6 +163,12 @@ async def unified_jit_middleware(request: Request, call_next):
                 status_code=503,
                 content={"error": True, "message": "System is still initializing. Please retry in 5 seconds."}
             )
+        # For WebSockets, we can't return JSON after upgrade starts, but we haven't 'yield'ed yet
+        # Returning a response will prevent the server from hanging
+        return JSONResponse(
+            status_code=503,
+            content={"error": True, "message": "WebSocket failed: System initializing."}
+        )
 
     # 3. Proceed to next handler
     try:

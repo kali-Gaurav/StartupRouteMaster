@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Loader2, ShieldCheck, AlertCircle, ArrowLeft } from 'lucide-react';
+import { Loader2, ShieldCheck, AlertCircle, ArrowLeft, Mail } from 'lucide-react';
 import { toast } from 'sonner';
 
 const VerifyOTPPage = () => {
@@ -16,14 +16,13 @@ const VerifyOTPPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const phone = searchParams.get('phone');
   const email = searchParams.get('email');
 
   useEffect(() => {
-    if (!phone && !email) {
+    if (!email) {
       navigate('/login');
     }
-  }, [phone, email, navigate]);
+  }, [email, navigate]);
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,22 +34,21 @@ const VerifyOTPPage = () => {
     setLoading(true);
     setError(null);
     try {
-      let result;
-      if (phone) {
-        result = await supabase.auth.verifyOtp({
-          phone: phone,
-          token: otp,
-          type: 'sms',
-        });
-      } else if (email) {
-        result = await supabase.auth.verifyOtp({
-          email: email,
-          token: otp,
-          type: 'magiclink', // or 'signup' depending on flow
-        });
-      }
+      const { error: verifyError } = await supabase.auth.verifyOtp({
+        email: email!,
+        token: otp,
+        type: 'signup', // Try signup type first, then magiclink
+      });
 
-      if (result?.error) throw result.error;
+      if (verifyError) {
+        // Try fallback type
+        const { error: fallbackError } = await supabase.auth.verifyOtp({
+          email: email!,
+          token: otp,
+          type: 'magiclink',
+        });
+        if (fallbackError) throw fallbackError;
+      }
 
       toast.success("Verified!", {
         description: "Your account has been successfully verified.",
@@ -67,17 +65,9 @@ const VerifyOTPPage = () => {
   const handleResend = async () => {
     setLoading(true);
     try {
-      let error;
-      if (phone) {
-        const { error: resendError } = await supabase.auth.signInWithOtp({ phone });
-        error = resendError;
-      } else if (email) {
-        const { error: resendError } = await supabase.auth.signInWithOtp({ email });
-        error = resendError;
-      }
-
-      if (error) throw error;
-      toast.success("Code Resent", { description: "A new verification code has been sent." });
+      const { error: resendError } = await supabase.auth.signInWithOtp({ email: email! });
+      if (resendError) throw resendError;
+      toast.success("Code Resent", { description: "A new verification code has been sent to your email." });
     } catch (err: any) {
       toast.error("Failed to resend code", { description: err.message });
     } finally {
@@ -91,12 +81,12 @@ const VerifyOTPPage = () => {
         <CardHeader className="space-y-1">
           <div className="flex justify-center mb-2">
             <div className="p-3 bg-primary/10 rounded-full">
-              <ShieldCheck className="h-8 w-8 text-primary" />
+              <Mail className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-2xl font-bold text-center">Verify Your Account</CardTitle>
+          <CardTitle className="text-2xl font-bold text-center">Verify Your Email</CardTitle>
           <CardDescription className="text-center">
-            Enter the 6-digit code sent to <span className="font-semibold text-foreground">{phone || email}</span>
+            Enter the 6-digit code sent to <span className="font-semibold text-foreground">{email}</span>
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -9,8 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Mail, Lock, User, Phone, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Mail, Lock, User, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const signupSchema = z.object({
@@ -23,13 +22,7 @@ const signupSchema = z.object({
   path: ["confirmPassword"],
 });
 
-const phoneSignupSchema = z.object({
-  fullName: z.string().min(2, { message: "Full name must be at least 2 characters" }),
-  phone: z.string().min(10, { message: "Phone number must be at least 10 digits" }).regex(/^\+?[1-9]\d{1,14}$/, { message: "Invalid phone number format (e.g. +919876543210)" }),
-});
-
 type SignupFormValues = z.infer<typeof signupSchema>;
-type PhoneSignupFormValues = z.infer<typeof phoneSignupSchema>;
 
 const SignupPage = () => {
   const navigate = useNavigate();
@@ -37,12 +30,8 @@ const SignupPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  const { register: registerEmail, handleSubmit: handleSubmitEmail, formState: { errors: emailErrors } } = useForm<SignupFormValues>({
+  const { register, handleSubmit, formState: { errors } } = useForm<SignupFormValues>({
     resolver: zodResolver(signupSchema),
-  });
-
-  const { register: registerPhone, handleSubmit: handleSubmitPhone, formState: { errors: phoneErrors } } = useForm<PhoneSignupFormValues>({
-    resolver: zodResolver(phoneSignupSchema),
   });
 
   const onEmailSubmit = async (data: SignupFormValues) => {
@@ -55,7 +44,8 @@ const SignupPage = () => {
         options: {
           data: {
             full_name: data.fullName,
-          }
+          },
+          emailRedirectTo: `${window.location.origin}/dashboard`,
         }
       });
 
@@ -69,35 +59,6 @@ const SignupPage = () => {
         console.error("Signup failed:", err);
         setError(err.message || "Failed to create account. Please try again.");
         toast.error("Signup failed", { description: err.message || "Please try again." });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const onPhoneSubmit = async (data: PhoneSignupFormValues) => {
-    setLoading(true);
-    setError(null);
-    try {
-      // For phone, we use OTP directly for registration
-      const { error: authError } = await supabase.auth.signInWithOtp({
-        phone: data.phone,
-        options: {
-          data: {
-            full_name: data.fullName,
-          }
-        }
-      });
-
-      if (authError) throw authError;
-
-      toast.success("OTP Sent!", {
-        description: `A verification code has been sent to ${data.phone}.`,
-      });
-      navigate(`/verify-otp?phone=${encodeURIComponent(data.phone)}`);
-    } catch (err: any) {
-        console.error("Phone registration failed:", err);
-        setError(err.message || "Failed to start phone registration. Please try again.");
-        toast.error("Registration failed", { description: err.message || "Please try again." });
     } finally {
       setLoading(false);
     }
@@ -147,117 +108,69 @@ const SignupPage = () => {
             </Alert>
           )}
 
-          <Tabs defaultValue="email" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 mb-8">
-              <TabsTrigger value="email">Email</TabsTrigger>
-              <TabsTrigger value="phone">Phone</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="email">
-              <form onSubmit={handleSubmitEmail(onEmailSubmit)} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="emailFullName">Full Name</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="emailFullName"
-                      placeholder="John Doe"
-                      className="pl-9"
-                      {...registerEmail("fullName")}
-                      disabled={loading}
-                    />
-                  </div>
-                  {emailErrors.fullName && <p className="text-xs text-destructive mt-1">{emailErrors.fullName.message}</p>}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="email"
-                      type="email"
-                      placeholder="m@example.com"
-                      className="pl-9"
-                      {...registerEmail("email")}
-                      disabled={loading}
-                    />
-                  </div>
-                  {emailErrors.email && <p className="text-xs text-destructive mt-1">{emailErrors.email.message}</p>}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="password"
-                      type="password"
-                      className="pl-9"
-                      {...registerEmail("password")}
-                      disabled={loading}
-                    />
-                  </div>
-                  {emailErrors.password && <p className="text-xs text-destructive mt-1">{emailErrors.password.message}</p>}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirm Password</Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="confirmPassword"
-                      type="password"
-                      className="pl-9"
-                      {...registerEmail("confirmPassword")}
-                      disabled={loading}
-                    />
-                  </div>
-                  {emailErrors.confirmPassword && <p className="text-xs text-destructive mt-1">{emailErrors.confirmPassword.message}</p>}
-                </div>
-                <Button type="submit" className="w-full py-6 text-lg font-semibold" disabled={loading}>
-                  {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-                  {loading ? "Creating account..." : "Sign Up with Email"}
-                </Button>
-              </form>
-            </TabsContent>
-
-            <TabsContent value="phone">
-              <form onSubmit={handleSubmitPhone(onPhoneSubmit)} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="phoneFullName">Full Name</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="phoneFullName"
-                      placeholder="John Doe"
-                      className="pl-9"
-                      {...registerPhone("fullName")}
-                      disabled={loading}
-                    />
-                  </div>
-                  {phoneErrors.fullName && <p className="text-xs text-destructive mt-1">{phoneErrors.fullName.message}</p>}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Phone Number</Label>
-                  <div className="relative">
-                    <Phone className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="phone"
-                      type="tel"
-                      placeholder="+919876543210"
-                      className="pl-9"
-                      {...registerPhone("phone")}
-                      disabled={loading}
-                    />
-                  </div>
-                  <p className="text-[10px] text-muted-foreground">Enter number with country code (e.g. +91 for India)</p>
-                  {phoneErrors.phone && <p className="text-xs text-destructive mt-1">{phoneErrors.phone.message}</p>}
-                </div>
-                <Button type="submit" className="w-full py-6 text-lg font-semibold" disabled={loading}>
-                  {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-                  {loading ? "Sending OTP..." : "Sign Up with Phone"}
-                </Button>
-              </form>
-            </TabsContent>
-          </Tabs>
+          <form onSubmit={handleSubmit(onEmailSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="fullName">Full Name</Label>
+              <div className="relative">
+                <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="fullName"
+                  placeholder="John Doe"
+                  className="pl-9"
+                  {...register("fullName")}
+                  disabled={loading}
+                />
+              </div>
+              {errors.fullName && <p className="text-xs text-destructive mt-1">{errors.fullName.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="m@example.com"
+                  className="pl-9"
+                  {...register("email")}
+                  disabled={loading}
+                />
+              </div>
+              {errors.email && <p className="text-xs text-destructive mt-1">{errors.email.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="password"
+                  type="password"
+                  className="pl-9"
+                  {...register("password")}
+                  disabled={loading}
+                />
+              </div>
+              {errors.password && <p className="text-xs text-destructive mt-1">{errors.password.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="confirmPassword"
+                  type="password"
+                  className="pl-9"
+                  {...register("confirmPassword")}
+                  disabled={loading}
+                />
+              </div>
+              {errors.confirmPassword && <p className="text-xs text-destructive mt-1">{errors.confirmPassword.message}</p>}
+            </div>
+            <Button type="submit" className="w-full py-6 text-lg font-semibold" disabled={loading}>
+              {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
+              {loading ? "Creating account..." : "Sign Up with Email"}
+            </Button>
+          </form>
         </CardContent>
         <CardFooter className="flex justify-center border-t p-6 bg-slate-50/50">
           <p className="text-sm text-muted-foreground">

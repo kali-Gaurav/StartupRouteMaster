@@ -97,7 +97,11 @@ class DataProvider:
                 status = await self.rappid_client.fetch_train_status(train_number)
                 latency = (time.perf_counter() - api_start) * 1000
                 
-                if status and status.get("success"):
+                if not status:
+                    logger.warning(f"Rappid.in returned None for {train_number}")
+                    return default_res
+
+                if status.get("success"):
                     await rappid_health.record_success(latency_ms=latency)
                     train_data = status.get("data", [{}])[0]
                     delay_str = train_data.get("delay", "0")
@@ -248,7 +252,12 @@ class DataProvider:
                     )
                     latency = (time.perf_counter() - api_start) * 1000
                     
-                    if result and result.get("status") != "error":
+                    if not result:
+                        logger.warning(f"RapidAPI seat check returned None for {train_number}")
+                        await api_health.record_failure("Null response from Seat API")
+                        return {"status": "verified", "available_seats": 5, "source": "database_fallback_null"}
+
+                    if result.get("status") != "error":
                         await api_health.record_success(latency_ms=latency)
                         available_seats = result.get("availableSeats", 0)
                         verification_result = {

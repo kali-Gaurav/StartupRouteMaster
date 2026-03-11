@@ -142,18 +142,27 @@ async def unlock_journey_details(
     try:
         from services.journey_cache import get_journey
         from services.seat_verification import SeatVerificationService
+        from services.fare_verification import FareVerificationService
         from services.unlock_service import UnlockService
         
         journey = await get_journey(journey_id)
         if not journey:
             raise HTTPException(status_code=404, detail="Journey expired. Please search again.")
 
-        # 1. Seat Verification
+        # 1. Concurrent Seat & Fare Verification (Task 2.8)
         seat_service = SeatVerificationService()
-        seats_ok = await seat_service.verify_journey(journey)
+        fare_service = FareVerificationService()
+        
+        seats_task = seat_service.verify_journey(journey)
+        fares_task = fare_service.verify_journey_fares(journey, coach_preference)
+        
+        seats_ok, fares_res = await asyncio.gather(seats_task, fares_task)
 
         if not seats_ok:
             return {"success": False, "message": "Seats not available for this route."}
+        
+        # Update journey cost with real-time fare
+        journey["total_cost"] = fares_res["total_fare"]
 
         # 2. Payment/Unlock Check
         is_unlocked = False
