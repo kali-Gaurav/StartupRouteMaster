@@ -131,7 +131,17 @@ class SearchService:
         from core.data_structures import Persona
         
         orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
-        persona = Persona(budget_category or "comfort")
+        
+        # [FIX] Handle 'all' or unexpected budget categories gracefully
+        safe_budget = budget_category.lower() if budget_category else "comfort"
+        if safe_budget == "all": safe_budget = "comfort"
+        
+        try:
+            persona = Persona(safe_budget)
+        except ValueError:
+            logger.warning(f"Invalid persona '{safe_budget}' requested. Falling back to COMFORT.")
+            persona = Persona.COMFORT
+
         c = ConstraintsEngine.initialize_constraints(
             persona_str=persona.value,
             travel_date=dt.date(),
@@ -352,6 +362,9 @@ class SearchService:
         log = RouteSearchLog(src=source, dst=destination, date=search_date, latency_ms=latency, ip_address=client_ip, geo_state=geo_state)
         self.db.add(log)
         self.db.commit()
+        
+        logger.info(f"SEARCH SUCCESS: Found {len(masked_journeys)} journeys for {source}->{destination}. JIDs: {[j['journey_id'] for j in masked_journeys]}")
+        
         return final_response
 
     async def load_more_routes(self, session_id: str, limit: int = 15, quota: str = "GN", cursor: Optional[float] = None) -> Dict[Any, Any]:
@@ -485,19 +498,30 @@ class SearchService:
         }
 
     async def _verify_routes_parallel(self, routes: List[Route], travel_date: datetime, quota: str = "GN") -> List[Route]:
-        """Subtask 12.3: Use batched verification logic."""
+        """
+        Subtask 12.3: Upgraded Multi-Tier Verification.
+        1. Deep Verification for top 3 (All segments).
+        2. Shallow Verification for remaining (Primary segment).
+        """
         if not routes: return []
         
-        to_verify = sorted(routes, key=lambda x: x.score)[:30] # Top 30
-        remaining = [r for r in routes if r not in to_verify]
+        # Sort by total duration to find the "Fastest" for deep verification
+        sorted_by_speed = sorted(routes, key=lambda x: x.total_duration)
+        top_fastest = sorted_by_speed[:3]
+        the_rest = sorted_by_speed[3:30]
+        remaining = sorted_by_speed[30:]
         
-        # [12.1] Prepare Batch Queries
-        queries = []
-        for r in to_verify:
-            # We assume single-leg for batching for now to keep it simple
-            # In multi-leg, we would flatten and batch all segments
+        # 1. Prepare Deep Queries (Every segment of top 3)
+        deep_tasks = []
+        for r in top_fastest:
+            deep_tasks.append(self._verify_single_route_logic(r, travel_date, quota))
+            
+        # 2. Prepare Shallow Queries (First segment of the rest for batching)
+        shallow_queries = []
+        for r in the_rest:
+            if not r.segments: continue
             s = r.segments[0]
-            queries.append({
+            shallow_queries.append({
                 "train_number": s.train_number,
                 "from_station": s.departure_code,
                 "to_station": s.arrival_code,
@@ -506,24 +530,26 @@ class SearchService:
                 "journey_id": r.journey_id
             })
             
-        # Execute Batch
-        batch_results = await self.data_provider.verify_seat_availability_batch(queries)
+        # Execute everything in parallel
+        # Deep checks are heavy, shallow are batched
+        deep_results, batch_results = await asyncio.gather(
+            asyncio.gather(*deep_tasks),
+            self.data_provider.verify_seat_availability_batch(shallow_queries)
+        )
         
-        # Map results back to routes
-        res_map = {queries[i]["journey_id"]: batch_results[i] for i in range(len(batch_results))}
+        # Map batch results back to 'the_rest'
+        res_map = {shallow_queries[i]["journey_id"]: batch_results[i] for i in range(len(batch_results))}
         
-        verified = []
-        for r in to_verify:
+        verified_rest = []
+        for r in the_rest:
             v_res = res_map.get(r.journey_id)
             if v_res:
-                r.availability_probability = v_res.get("available_seats", 0) / 100.0 if v_res.get("source") == "database_fallback" else 0.95
-                if "available_seats" in v_res:
-                    # Heuristic for prob
-                    r.availability_probability = 0.99 if v_res["available_seats"] > 0 else 0.4
+                r.availability_probability = 0.95 if v_res.get("available_seats", 0) > 0 else 0.4
                 r.metadata["is_verified"] = True
-            verified.append(r)
+            verified_rest.append(r)
             
-        return verified + remaining
+        # Combine: Deeply Verified Top 3 + Batched Rest + Unverified Remaining
+        return list(deep_results) + verified_rest + remaining
 
     async def _verify_single_route(self, route: Route, travel_date: datetime, quota: str = "GN") -> Route:
         """Subtask 1.9: Heuristic Fallback on Timeout (>3s)."""

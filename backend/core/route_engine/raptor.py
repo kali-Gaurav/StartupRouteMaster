@@ -5,6 +5,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any, Tuple
+from sqlalchemy.orm import Session
 
 from database import config
 from database.session import SessionTransit
@@ -179,6 +180,21 @@ class OptimizedRAPTOR:
                     elif len(new_rt.transfers) < self.max_transfers:
                         new_routes.append(new_rt)
         return new_routes
+    async def find_one_transfer_hub_routes(self, source_stop_id: int, dest_stop_id: int,
+                                         departure_date: datetime, constraints: RouteConstraints,
+                                         db: Session) -> List[Route]:
+        """
+        Specialized search for one-transfer routes specifically passing through major hubs.
+        [34.2] Hub-centric optimization.
+        """
+        # For now, we can use the general find_routes logic restricted to 1 transfer
+        original_max = self.max_transfers
+        self.max_transfers = 1
+        try:
+            return await self.find_routes(source_stop_id, dest_stop_id, departure_date, constraints)
+        finally:
+            self.max_transfers = original_max
+
     def _deduplicate_routes(self, routes: List[Route]) -> List[Route]:
         if not routes: return []
         

@@ -11,55 +11,41 @@ logger = logging.getLogger(__name__)
 
 class CategorizationEngine:
     """
-    Groups the top verified routes into buckets:
-    - top_3_highlight: Absolute best based on Persona.
-    - confirmed: High availability probability.
-    - fastest: Lowest total duration.
-    - cheapest: Lowest total cost.
-    - balanced: Optimal mix of speed/cost.
-    - direct: No transfers.
-    - one_transfer: Exactly one transfer.
+    Groups the top verified routes into highly specific utility buckets:
+    - top_3_confirmed_fastest: Absolute fastest with real-time verified seats across ALL segments.
+    - top_10_fastest_total: Top 10 by speed, regardless of current verification.
+    - top_5_optimal: The best 'Value Score' routes (Speed + Cost + Reliability).
+    - direct: Journeys with 0 transfers.
+    - one_transfer: Journeys with exactly 1 transfer.
+    - two_transfer: Journeys with exactly 2 transfers.
+    - three_plus_transfer: Journeys with 3 or more transfers.
+    - alternative_sorted: All remaining routes sorted strictly by travel time.
     """
 
     @staticmethod
     def categorize(routes: List[Route], persona: Persona = Persona.BUDGET) -> Dict[str, List[Dict]]:
         """
-        Takes a list of verified Route objects and returns a dictionary of grouped journey dictionaries.
-        [4.1] Calculates global stats for normalization.
+        [NEW] Advanced Categorization for Confirmed Arrival and Structural Preference.
         """
         if not routes:
             return {
-                "top_3_highlight": [],
-                "high_availability": [],
-                "fastest": [],
-                "cheapest": [],
+                "top_3_confirmed_fastest": [],
+                "top_10_fastest_total": [],
+                "top_5_optimal": [],
                 "direct": [],
                 "one_transfer": [],
-                "two_plus_transfer": []
+                "two_transfer": [],
+                "three_plus_transfer": [],
+                "alternative_sorted": []
             }
 
         import numpy as np
 
-        # 1. Global Statistics Engine [4.1]
-        costs = np.array([r.total_cost for r in routes])
-        durations = np.array([r.total_duration for r in routes])
-        
-        mean_cost = np.mean(costs)
-        std_cost = np.std(costs)
-        median_cost = np.median(costs)
-        
-        mean_dur = np.mean(durations)
-        std_dur = np.std(durations)
-        
-        # 2. Convert to dicts and Filter Outliers [4.6]
+        # 1. Hydrate and Filter
         hydrated = []
         for r in routes:
-            # Outlier Pruning: > 3x median cost unless it's 2x faster than mean
-            is_outlier = r.total_cost > (3 * median_cost) and r.total_duration > (0.5 * mean_dur)
-            if is_outlier: continue
-
             rd = r.to_dict()
-            # Inject pricing metadata
+            # Pricing logic injection
             base_fare = rd.get("total_fare", 0)
             rd["pricing"] = {
                 "view_only_fee": 49.0,
@@ -67,102 +53,53 @@ class CategorizationEngine:
                 "ticket_fare": base_fare,
                 "total_agent_checkout": round(base_fare + 49.0 + 10.0, 2)
             }
-            
-            # [4.5] Value Score Formula
-            # Normalize Cost and Duration (0 to 1, where 0 is best)
-            c_norm = (r.total_cost - np.min(costs)) / (np.max(costs) - np.min(costs)) if np.max(costs) != np.min(costs) else 0
-            d_norm = (r.total_duration - np.min(durations)) / (np.max(durations) - np.min(durations)) if np.max(durations) != np.min(durations) else 0
-            # Value = 0.4*D + 0.4*C + 0.2*(1-Prob)
-            rd["value_score"] = (0.4 * d_norm) + (0.4 * c_norm) + (0.2 * (1.0 - r.availability_probability))
-            
             hydrated.append(rd)
 
-        categories = {
-            "top_3_highlight": [],
-            "high_availability": [],
-            "fastest": [],
-            "cheapest": [],
-            "best_value": [], # [4.5]
-            "direct": [],
-            "one_transfer": [],
-            "two_plus_transfer": []
-        }
+        # 2. Bucket: Top 10 Fastest Total
+        sorted_by_speed = sorted(hydrated, key=lambda x: x.get("total_duration", 99999))
+        top_10_fastest = sorted_by_speed[:10]
 
-        # 3. Structural Grouping
+        # 3. Bucket: Top 3 Confirmed Fastest
+        confirmed = [rd for rd in hydrated if rd.get("metadata", {}).get("is_verified") == True]
+        top_3_confirmed = sorted(confirmed, key=lambda x: x.get("total_duration", 99999))[:3]
+
+        # 4. Bucket: Top 5 Optimal
+        sorted_optimal = sorted(hydrated, key=lambda x: x.get("score", 99999))
+        top_5_optimal = sorted_optimal[:5]
+
+        # 5. Structural Buckets (Transfers)
+        direct = []
+        one_transfer = []
+        two_transfer = []
+        three_plus_transfer = []
+
         for rd in hydrated:
-            num_segs = len(rd.get("segments", []))
-            if num_segs == 1:
-                categories["direct"].append(rd)
-            elif num_segs == 2:
-                categories["one_transfer"].append(rd)
+            transfer_count = len(rd.get("transfers", []))
+            if transfer_count == 0:
+                direct.append(rd)
+            elif transfer_count == 1:
+                one_transfer.append(rd)
+            elif transfer_count == 2:
+                two_transfer.append(rd)
             else:
-                categories["two_plus_transfer"].append(rd)
+                three_plus_transfer.append(rd)
 
-            if rd.get("availability_probability", 0) >= 0.8:
-                categories["high_availability"].append(rd)
+        # 6. Bucket: Alternative Sorted (Travel Time)
+        # Unique routes not already highlighted in the priority top buckets
+        top_ids = {r["journey_id"] for r in top_3_confirmed + top_10_fastest + top_5_optimal}
+        alternatives = [rd for rd in sorted_by_speed if rd["journey_id"] not in top_ids]
 
-        # 4. Ranked Buckets with Diversification [4.8]
-        sorted_fastest = sorted(hydrated, key=lambda x: x.get("total_duration", 99999))
-        sorted_cheapest = sorted(hydrated, key=lambda x: x.get("total_cost", 99999))
-        sorted_value = sorted(hydrated, key=lambda x: x.get("value_score", 1.0))
-
-        # [4.8] Ensure Fastest and Cheapest are distinct if possible
-        cheapest_winner = sorted_cheapest[0] if sorted_cheapest else None
-        
-        fastest_winner = None
-        for f in sorted_fastest:
-            if cheapest_winner and f["journey_id"] == cheapest_winner["journey_id"]:
-                continue
-            fastest_winner = f
-            break
-        if not fastest_winner and sorted_fastest: fastest_winner = sorted_fastest[0]
-
-        # [4.2] Relative Pricing Bounds Check for "Cheapest"
-        # Only include in cheapest bucket if within 1.5 std dev of global min
-        min_cost = np.min(costs)
-        categories["cheapest"] = [rd for rd in sorted_cheapest if rd["total_fare"] <= (min_cost + 1.5 * std_cost)][:5]
-        categories["fastest"] = sorted_fastest[:5]
-        categories["best_value"] = sorted_value[:5]
-        
-        # 5. Persona-based Highlighting
-        sorted_by_score = sorted(hydrated, key=lambda x: x.get("score", 99999))
-        min_duration = np.min(durations)
-        max_avail = np.max([r.get("availability_prob", 0) for r in hydrated]) if hydrated else 0
-
-        top_3 = []
-        seen_ids = set()
-        for rd in sorted_by_score:
-            jid = rd["journey_id"]
-            if jid not in seen_ids:
-                reason = ""
-                # Assign Tag and Reason [4.9]
-                if rd.get("total_duration") == min_duration:
-                    rd["highlight_label"] = "⚡ Lightning Fast"
-                    diff = int(mean_dur - min_duration)
-                    reason = f"Saves {diff} mins vs average journey." if diff > 30 else "Fastest available option."
-                elif rd.get("total_fare") == min_cost:
-                    rd["highlight_label"] = "💰 Cheapest"
-                    diff = int(mean_cost - min_cost)
-                    reason = f"Save ₹{diff} vs average fare." if diff > 100 else "Lowest fare found."
-                elif rd.get("journey_id") == (sorted_value[0]["journey_id"] if sorted_value else None):
-                    rd["highlight_label"] = "💎 Best Value"
-                    reason = "Perfect balance of speed, cost, and availability."
-                else:
-                    persona_tags = {
-                        Persona.BUDGET: ("📉 Economical", "Optimized for your budget constraints."),
-                        Persona.COMFORT: ("🛌 Premium Comfort", "Prioritizes luxury and reliable timing."),
-                        Persona.EMERGENCY: ("🚑 Critical", "Earliest possible arrival recommended."),
-                        Persona.FAMILY: ("👨‍👩‍👧‍👦 Family Safe", "Spacious transfers and high reliability.")
-                    }
-                    tag, p_reason = persona_tags.get(persona, ("⭐ Recommended", "Balanced route for your journey."))
-                    rd["highlight_label"] = tag
-                    reason = p_reason
-
-                rd["is_featured"] = True
-                rd["highlight_reason"] = reason
-                top_3.append(rd)
-                seen_ids.add(jid)
-            if len(top_3) >= 3: break
-            
-        categories["top_3_highlight"] = top_3
-        return categories
+        return {
+            "top_3_confirmed_fastest": top_3_confirmed,
+            "top_10_fastest_total": top_10_fastest,
+            "top_5_optimal": top_5_optimal,
+            "direct": sorted(direct, key=lambda x: x.get("total_duration", 99999))[:10],
+            "one_transfer": sorted(one_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
+            "two_transfer": sorted(two_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
+            "three_plus_transfer": sorted(three_plus_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
+            "alternative_sorted": alternatives[:20],
+            "metadata": {
+                "total_yield": len(hydrated),
+                "confirmed_yield": len(confirmed)
+            }
+        }

@@ -53,7 +53,7 @@ class UnifiedRoutingOrchestrator:
     ) -> List[Route]:
         start_time = time.perf_counter()
         from utils.station_utils import resolve_stations
-        
+
         # Resolve stations for all engines
         source_stop, dest_stop = resolve_stations(db, source_code, destination_code)
         if not source_stop or not dest_stop: return []
@@ -65,41 +65,45 @@ class UnifiedRoutingOrchestrator:
         graph = await self.engine._get_current_graph(departure_date)
         self.fast_router.graph = graph
 
-        # 3. RUN ALL ENGINES IN PARALLEL (Using High-Capacity Pool)
-        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code}")
+        # 3. Dynamic Depth Management (New Upgrade)
+        # We start with balanced transfers but push to 3 if Tier 0/1 are empty
+        max_t = 2 if len(hub_results) > 2 else 3
+        self.raptor.max_transfers = max_t
+
+        # 4. RUN ALL ENGINES IN PARALLEL (Using High-Capacity Pool)
+        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code} (Max Transfers: {max_t})")
         loop = asyncio.get_running_loop()
-        
+
         # Tier 1: Turbo (SQL)
         t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
-        
+
         # Tier 2: FastPath (O(1) BFS)
         t2_task = loop.run_in_executor(ROUTING_POOL, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
-        
+
         # Tier 3: RAPTOR (Deep Discovery)
         t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
-        
+
         turbo_raw, fast_res, raptor_res = await asyncio.gather(t1_task, t2_task, t3_task)
-        
-        # 4. CONSOLIDATE & UNION
+
+        # 5. CONSOLIDATE & UNION
         all_routes: List[Route] = []
         all_routes.extend(hub_results)
         all_routes.extend(self._hydrate_turbo_results(turbo_raw, source_code, destination_code))
         all_routes.extend(fast_res)
         all_routes.extend(raptor_res)
-        
-        # 5. UNIVERSAL FARE HYDRATION & SCORING
+
+        # 6. UNIVERSAL FARE HYDRATION & SCORING
         # [8.3] Graph Pruning: Filter out cancelled trains
         unique_routes = await self._filter_cancelled_trains(all_routes, departure_date, db)
         unique_routes = self._global_deduplicate(unique_routes)
         await self._hydrate_fares_and_score(unique_routes, constraints, graph, db)
-        
+
         unique_routes.sort(key=lambda x: x.score)
-        
+
         latency = (time.perf_counter() - start_time) * 1000
         logger.info(f"Orchestrator: Found {len(unique_routes)} unified routes in {latency:.2f}ms")
-        
-        return unique_routes[:limit]
 
+        return unique_routes[:limit]
     async def _filter_cancelled_trains(self, routes: List[Route], date: datetime, db) -> List[Route]:
         """[8.3] Filters out routes containing trains marked as cancelled."""
         try:
@@ -137,7 +141,7 @@ class UnifiedRoutingOrchestrator:
             return routes
 
     def _search_tier_0_hubs(self, src_id: int, dst_id: int, date: datetime, db) -> List[Route]:
-        """Task 18: Instant Hub-to-Hub lookup."""
+        """Task 18: Instant Hub-to-Hub lookup [Aggressive Multiplier]."""
         try:
             row = db.execute(text(
                 "SELECT trains_json FROM hub_connectivity_index WHERE src_hub_id = :src AND dst_hub_id = :dst"
@@ -147,7 +151,8 @@ class UnifiedRoutingOrchestrator:
             
             trains = json.loads(row[0])
             results = []
-            for t in trains:
+            # Increase candidate intake: Take more trains from the index
+            for t in trains[:20]: 
                 rt = Route()
                 seg = RouteSegment(
                     trip_id=t['tid'],
@@ -155,7 +160,7 @@ class UnifiedRoutingOrchestrator:
                     arrival_stop_id=dst_id,
                     departure_time=self._parse_turbo_time(t['dep']),
                     arrival_time=self._parse_turbo_time(t['arr']),
-                    duration_minutes=0,
+                    duration_minutes=0, # Will be hydrated
                     distance_km=0.0,
                     train_number=str(t['tid'])
                 )
@@ -188,14 +193,15 @@ class UnifiedRoutingOrchestrator:
 
         if train_nos:
             nos_str = ",".join([f"'{n}'" for n in train_nos])
+            # Join fares.trip_id (INT) with trips.id (INT) and filter by trips.trip_id (VARCHAR)
             rows = db.execute(text(f"""
                 SELECT t.trip_id, f.amount 
                 FROM fares f 
                 JOIN trips t ON f.trip_id = t.id 
                 WHERE t.trip_id IN ({nos_str})
             """)).fetchall()
-            for tno, amt in rows:
-                fare_map[str(tno)] = amt
+            for tcode, amt in rows:
+                fare_map[str(tcode)] = amt
 
         for r in routes:
             # [38.3] Multi-leg fare optimization

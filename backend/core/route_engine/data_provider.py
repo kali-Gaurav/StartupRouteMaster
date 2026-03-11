@@ -47,7 +47,7 @@ class DataProvider:
 
     def __init__(self, config=None):
         self.config = config
-        self.session = SessionLocal()
+        self.session = None # Lazy initialization
         
         # Initialize RapidAPI client
         self.rapidapi_client = None
@@ -66,6 +66,16 @@ class DataProvider:
         if RAPPID_AVAILABLE:
             self.rappid_client = AsyncRappidAPIClient()
             logger.info("Rappid.in client initialized successfully")
+
+    def _ensure_session(self):
+        """Lazy load session to avoid initialization timing issues."""
+        if not self.session:
+            from database import session as db_session
+            try:
+                self.session = db_session.SessionTransit()
+            except Exception as e:
+                logger.error(f"DataProvider: Session initialization failed: {e}")
+                raise e
 
     async def get_live_status(self, train_number: str) -> Dict[str, Any]:
         """
@@ -354,6 +364,7 @@ class DataProvider:
     def _get_database_fares(self, segment_id: Any) -> Dict[str, float]:
         """Get fares from database for a segment or trip."""
         try:
+            self._ensure_session()
             # Try segment-specific fares first
             fares = self.session.query(Fare).filter(Fare.segment_id == segment_id).all()
             

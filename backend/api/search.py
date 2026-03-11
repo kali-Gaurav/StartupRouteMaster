@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from database import get_db
+from database.session import SessionLocal, get_db
 from schemas import SearchRequestSchema, LoadMoreRequestSchema
 from core.route_engine import route_engine
 from database.models import Stop, Disruption

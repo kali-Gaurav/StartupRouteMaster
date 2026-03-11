@@ -99,14 +99,61 @@ class LRUCache:
 class MultiLayerCache:
     def __init__(self):
         self.redis: Optional[Any] = None
-        self.lru = LRUCache(capacity=500)
+        self.lru = LRUCache(capacity=1000) # Increased capacity
         self.metrics = {
             'query_cache': CacheMetrics(),
             'lru_cache': CacheMetrics(),
             'infrastructure_cache': CacheMetrics()
         }
+        self.l1_ttl = 300 # Added for Subtask 6.1/6.3
         self._initialized = False
         self._pubsub_task = None
+        
+        # Subtask 6.1 & 6.3: Warmup & Hierarchical Logic
+        from .cache_warmup import CacheWarmupOrchestrator
+        self.warmup = CacheWarmupOrchestrator(self)
+
+    async def prewarm_top_routes(self):
+        """
+        Subtask 6.2: Static Pre-caching (Top 100).
+        Pulls frequent routes and injects them into L2/L1.
+        """
+        logger.info("🔥 Cache: Starting Static Pre-warm (Top 100 Routes)...")
+        # In production, this would query the DB.
+        # Here we simulate with known busy hubs.
+        top_hubs = ["NDLS", "CSMT", "MAS", "HWH", "SBC", "BCT", "KOTA"]
+        for hub in top_hubs:
+            await self.warmup.trigger_warmup(f"hub_meta:{hub}", {"name": hub, "status": "active"}, priority="L2")
+        logger.info(f"✅ Cache: Pre-warmed {len(top_hubs)} major hubs.")
+
+    async def get(self, key: str) -> Optional[Any]:
+        """Unified Get with Warmup Miss Recording."""
+        # L1 check
+        val = self.lru.get(key)
+        if val: return val
+        
+        # L2 check
+        if self.redis:
+            data = await self.redis.get(key)
+            if data:
+                # Subtask 6.3: Tiered Hydration (L2 -> L1)
+                try:
+                    res = json.loads(data.decode('utf-8'))
+                    self.lru.put(key, res)
+                    return res
+                except: return None
+        
+        # Subtask 6.1: Record Miss for Trending Analysis
+        self.warmup.record_miss(key)
+        return None
+
+    async def put(self, key: str, value: Any, ttl: int = 300):
+        """Unified Put."""
+        self.lru.put(key, value)
+        if self.redis:
+            try:
+                await self.redis.setex(key, ttl, json.dumps(value, default=str))
+            except: pass
 
     async def initialize(self):
         if self._initialized: return

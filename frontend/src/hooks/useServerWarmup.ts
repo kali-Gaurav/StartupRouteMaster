@@ -10,8 +10,9 @@ export function useServerWarmup() {
     queryKey: ["server-warmup"],
     queryFn: async () => {
       try {
-        const res = await fetch("/api/status/health/live");
-        if (!res.ok) throw new Error("Server not responding");
+        // Use fetchWithAuth to ensure it hits the correct backend URL (8000)
+        // and uses the /api prefix correctly.
+        const res = await fetchWithAuth("/health/live");
         return res.json();
       } catch (e) {
         throw e;

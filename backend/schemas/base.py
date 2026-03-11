@@ -68,7 +68,7 @@ class SearchRequestSchema(BaseModel):
     # ... existing fields ...
     source: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     destination: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
-    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}(T|\s)?.*$")
+    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}.*$")
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
     women_safety_mode: bool = Field(False, description="Prioritize safer routes and avoid night layovers")

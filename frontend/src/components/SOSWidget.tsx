@@ -63,8 +63,11 @@ export function SOSWidget() {
           if (loc) syncOfflineDirectory(loc.latitude, loc.longitude);
         })
         .catch((error) => {
-          // Location permission denied or unavailable; avoid unhandled promise errors.
-          console.warn("Location unavailable for offline directory sync:", error);
+          // Task 19: Gracefully handle location rejection
+          // code 1 means PERMISSION_DENIED. We don't want to spam the console for a user choice.
+          if (error.code !== 1) {
+            console.warn("Location unavailable for offline directory sync:", error);
+          }
         });
     }
   }, []);

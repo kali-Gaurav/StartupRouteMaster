@@ -70,13 +70,13 @@ async def stream_openrouter_api(messages: list, websocket: WebSocket):
 async def chat_websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for real-time streaming chat.
-    Protocol:
-    - Client sends: {"message": "hello", "session_id": "optional-uuid"}
-    - Server sends: {"type": "token", "token": "..."}
-    - Server sends: {"type": "final", "reply": "...", "intent": "..."}
+    PROTOCOL:
+    1. Client connects.
+    2. Server accepts (no initial 403).
+    3. Client sends first message with optional session_id.
     """
     await websocket.accept()
-    logger.info("Chat WebSocket connected")
+    logger.info("Chat WebSocket connected and accepted.")
     
     try:
         while True:

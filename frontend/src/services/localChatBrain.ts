@@ -146,12 +146,21 @@ export function processLocalIntent(text: string): ProcessedIntent | null {
   const formatDateToISO = (): string | undefined => {
     if (dateEntities.length === 0) return undefined;
     
-    const dateObj = dateEntities.at(0);
+    const dateObj = dateEntities.first();
+    if (!dateObj || !dateObj.text()) return undefined;
+    
     try {
-      // Try to get the actual date object
-      const json = dateObj.toJSON?.();
+      // Try to get the actual date object if possible, otherwise use compromise's built-in parsing
+      const json = (dateObj as any).get(0);
       if (json && json.start) {
         const d = new Date(json.start);
+        return d.toISOString().split('T')[0];
+      }
+      
+      // Fallback: parse the text if it's a simple date
+      const text = dateObj.text();
+      const d = new Date(text);
+      if (!isNaN(d.getTime())) {
         return d.toISOString().split('T')[0];
       }
     } catch (e) {

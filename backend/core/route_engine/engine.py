@@ -106,12 +106,25 @@ class RailwayRouteEngine:
         if not source_stop or not dest_stop:
             return []
 
-        # 1. Fast Hybrid Search (100x Speedup)
-        # Using the CSA kernel to find optimal paths first
+        # 1. JIT Hierarchical Stitching (Epic 3.6)
+        from .stitcher import graph_stitcher
+        try:
+            stitched_data = await graph_stitcher.stitch_active_graph(source_stop.id, dest_stop.id)
+            if stitched_data.size > 0:
+                self.hybrid_engine.update_graph_jit(stitched_data)
+        except Exception as e:
+            logger.error(f"Stitching failed, using global fallback: {e}")
+            self.hybrid_engine.reset_graph()
+
+        # 2. Fast Hybrid Search (100x Speedup)
         logger.info(f"🚀 Performing high-speed hybrid search: {source_code} -> {destination_code}")
-        raw_results = await self.hybrid_engine.find_routes(
-            source_stop.id, dest_stop.id, departure_date, constraints
-        )
+        try:
+            raw_results = await self.hybrid_engine.find_routes(
+                source_stop.id, dest_stop.id, departure_date, constraints
+            )
+        finally:
+            # Always reset to global to prevent stale state in kernel
+            self.hybrid_engine.reset_graph()
         
         if not raw_results:
             # Fallback to legacy RAPTOR if hybrid engine has no data or no paths

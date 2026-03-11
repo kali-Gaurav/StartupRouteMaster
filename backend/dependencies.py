@@ -12,25 +12,20 @@ from jose import jwt, JWTError
 # Ensure correct pathing
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database.session import SessionUser
+from database.session import SessionUser, get_auth_db, get_db
 from database.models import User, Profile
 from config import Config
 from utils.crypto import encrypt_pii
 
 logger = logging.getLogger(__name__)
 
-def get_db():
-    db = SessionUser()
-    try: yield db
-    finally: db.close()
-
 # ============================================================================
-# AUTHENTICATION (Upgraded - Task 5)
+# AUTHENTICATION (Upgraded - Task 5 & Subtask 4.5)
 # ============================================================================
 
 async def get_current_user(
     authorization: Optional[str] = Header(None), 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_auth_db)
 ) -> User:
     """
     Upgraded Auth Sync Flow:

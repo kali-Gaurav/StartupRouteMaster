@@ -35,10 +35,13 @@ class SeatStatus(Enum):
 
 
 class Persona(str, Enum):
-    """Core Routing Personas."""
+    """Core Routing Personas aligned with SearchRequestSchema."""
     EMERGENCY = "emergency" # Speed > Comfort
     COMFORT = "comfort"     # No GN, AC only, min transfers
     BUDGET = "budget"       # Cheapest CNF
+    ECONOMY = "economy"     # Alias for budget
+    STANDARD = "standard"   # Balanced
+    PREMIUM = "premium"     # Alias for comfort
     FAMILY = "family"       # Reliable connections
 
 

@@ -341,11 +341,28 @@ const Index = () => {
       if (data.stations && Object.keys(data.stations).length > 0) {
         addStationsToCache(Object.values(data.stations));
       }
+      
+      // Map all standard results
       const allResults = mapBackendRoutesToRoutes(data, origCode, destCode);
-      setOptimalRoutes(allResults.slice(0, 10));
       setAllRoutes(allResults);
+      
+      // Use grouped journeys for the 'Optimal' view
+      if (data.data?.grouped_journeys) {
+        const gj = data.data.grouped_journeys;
+        // Merge top buckets into optimalRoutes
+        const optimal = [
+          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_3_confirmed_fastest } } as any, origCode, destCode),
+          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_5_optimal } } as any, origCode, destCode),
+          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_10_fastest_total } } as any, origCode, destCode)
+        ];
+        // Deduplicate optimal results by ID
+        const uniqueOptimal = Array.from(new Map(optimal.map(r => [r.id, r])).values());
+        setOptimalRoutes(uniqueOptimal);
+      } else {
+        setOptimalRoutes(allResults.slice(0, 10));
+      }
 
-          // Reconcile unlocked routes in bulk (keeps network calls consolidated)
+      // Reconcile unlocked routes in bulk
       reconcileUnlockedRoutes(allResults);
 
       setViewMode("optimal");

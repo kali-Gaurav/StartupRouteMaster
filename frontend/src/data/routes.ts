@@ -47,6 +47,10 @@ export const categoryIcons: Record<string, string> = {
   "CHEAP": "💰",
   "BALANCED": "⚖️",
   "ALTERNATIVE": "🔄",
+  "DIRECT": "🚂",
+  "1 TRANSFER": "🔄",
+  "2 TRANSFERS": "🔁",
+  "3 TRANSFERS": "🔜",
 };
 
 export const categoryColors: Record<string, string> = {
@@ -57,6 +61,10 @@ export const categoryColors: Record<string, string> = {
   "CHEAP": "bg-emerald-500",
   "BALANCED": "bg-purple-500",
   "ALTERNATIVE": "bg-slate-500",
+  "DIRECT": "bg-blue-600",
+  "1 TRANSFER": "bg-indigo-500",
+  "2 TRANSFERS": "bg-violet-500",
+  "3 TRANSFERS": "bg-fuchsia-500",
 };
 
 // Sample data from PGT to KOTA

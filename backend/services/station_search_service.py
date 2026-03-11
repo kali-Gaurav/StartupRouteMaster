@@ -147,14 +147,15 @@ class StationSearchEngine:
             score = 0.0
             scode, sname = s.code.lower(), s.name.lower()
             
-            if scode == q: score = 1000
-            elif scode.startswith(q): score = 800
-            elif sname == q: score = 900
-            elif any(p.startswith(q) for p in sname.split()): score = 600
+            if scode == q: score = 2000 # Exact code match is king
+            elif sname == q: score = 1800 # Exact name match is second
+            elif scode.startswith(q): score = 1200
+            elif any(p == q for p in sname.split()): score = 1500 # Exact word match in name
+            elif any(p.startswith(q) for p in sname.split()): score = 800
             else: score = 100
             
-            # Popularity boost (Connectivity Score)
-            score += min(200, s.popularity)
+            # Popularity boost (Connectivity Score) - Weight it more
+            score += min(500, s.popularity * 2)
             scored.append((score, s))
             
         scored.sort(key=lambda x: x[0], reverse=True)
