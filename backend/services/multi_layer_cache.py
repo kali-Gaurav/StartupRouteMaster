@@ -170,6 +170,7 @@ class MultiLayerCache:
                 redis_url, 
                 decode_responses=False, 
                 ssl_cert_reqs=None,
+                max_connections=20, # [2.11] Connection pooling limit
                 socket_timeout=5.0,
                 socket_connect_timeout=5.0,
                 retry_on_timeout=True,
@@ -349,8 +350,9 @@ class MultiLayerCache:
             logger.info(f"✅ Saved {len(compressed)/1024/1024:.2f}MB snapshot to Redis")
         except Exception: pass
 
-    def get_lock(self, name: str, timeout: int = 10):
-        return self.redis.lock(name, timeout=timeout) if self.redis else None
+    async def aclose(self):
+        if self.redis:
+            await self.redis.aclose()
 
     def set_sync(self, key: str, value: Any, ttl: int = 3600):
         if self.redis:

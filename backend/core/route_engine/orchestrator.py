@@ -88,7 +88,19 @@ class UnifiedRoutingOrchestrator:
         # Tier 3: RAPTOR (Deep Discovery)
         t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
 
-        turbo_raw, ultra_res, fast_res, raptor_res = await asyncio.gather(t1_task, t0_task, t2_task, t3_task)
+        results_gathered = await asyncio.gather(t1_task, t0_task, t2_task, t3_task, return_exceptions=True)
+        
+        # Unpack results safely (Task 2.10)
+        def safe_get(res, default):
+            if isinstance(res, Exception):
+                logger.error(f"Engine execution failed: {res}")
+                return default
+            return res
+
+        turbo_raw = safe_get(results_gathered[0], [])
+        ultra_res = safe_get(results_gathered[1], [])
+        fast_res = safe_get(results_gathered[2], [])
+        raptor_res = safe_get(results_gathered[3], [])
 
         # 5. CONSOLIDATE & UNION
         all_routes: List[Route] = []

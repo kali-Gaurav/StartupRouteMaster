@@ -93,7 +93,7 @@ async def lifespan(app: FastAPI):
     
     if hasattr(app.state, "feedback_task"): app.state.feedback_task.cancel()
     if hasattr(app.state, "behavior_task"): app.state.behavior_task.cancel()
-    if multi_layer_cache.redis: await multi_layer_cache.redis.close()
+    await multi_layer_cache.aclose()
 
 # --- APP INITIALIZATION ---
 
@@ -247,6 +247,16 @@ async def health_check():
         "status": "online",
         "jit_dag": jit_manager.get_status(),
         "jit_intelligence": jit_metrics.get_report(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/api/health/latency")
+async def get_api_latency_health():
+    """[2.15] System Health dashboard for API latency."""
+    from utils.external_api_health import rapid_api_health, rappid_health
+    return {
+        "rapid_api": await rapid_api_health.get_status(),
+        "rappid_in": await rappid_health.get_status(),
         "timestamp": datetime.utcnow().isoformat()
     }
 

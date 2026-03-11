@@ -169,7 +169,7 @@ class AsyncRappidAPIClient:
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get the global shared aiohttp session."""
-        from ...utils.http_client import HttpClientManager
+        from utils.http_client import HttpClientManager
         return await HttpClientManager.get_session()
     
     @retry(

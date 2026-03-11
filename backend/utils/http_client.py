@@ -13,8 +13,12 @@ class HttpClientManager:
         if cls._session is None or cls._session.closed:
             logger.info("Creating global aiohttp ClientSession")
             timeout = aiohttp.ClientTimeout(total=15)
-            # You can customize connector settings here if needed
-            cls._session = aiohttp.ClientSession(timeout=timeout)
+            headers = {
+                "User-Agent": "RouteMaster-Production/2.6 (RailwayRouting; EthicalScraping)",
+                "Accept": "application/json",
+                "Connection": "keep-alive"
+            }
+            cls._session = aiohttp.ClientSession(timeout=timeout, headers=headers)
         return cls._session
 
     @classmethod

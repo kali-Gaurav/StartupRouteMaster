@@ -7,9 +7,11 @@ from database.config import Config
 class JsonFormatter(logging.Formatter):
     """
     Task 15: Centralized Structured Logging.
-    Formats log records as JSON for cloud log ingestion (CloudWatch/GCP Logging).
+    Formats log records as JSON for cloud log ingestion.
+    [2.16] Uses orjson for non-ASCII safety.
     """
     def format(self, record):
+        import orjson
         log_record = {
             "timestamp": datetime.utcnow().isoformat(),
             "level": record.levelname,
@@ -22,7 +24,7 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_record)
+        return orjson.dumps(log_record).decode('utf-8')
 
 def setup_logging():
     """Configures logging based on the environment."""

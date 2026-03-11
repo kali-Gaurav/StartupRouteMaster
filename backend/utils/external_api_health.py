@@ -64,7 +64,14 @@ class ExternalAPIHealth:
             elif state == CircuitState.CLOSED:
                 await r.delete(self.key_failures)
             
-            logger.warning(f"🚨 CIRCUIT BREAKER [{self.name}]: State changed to {state.value}")
+            # [2.17] Prominent logging for state changes
+            logger.error(f"🚨 CIRCUIT BREAKER [{self.name}]: STATE CHANGE -> {state.value}")
+            if state == CircuitState.OPEN:
+                logger.error(f"🛑 Provider {self.name} is now offline due to multiple failures.")
+            elif state == CircuitState.HALF_OPEN:
+                logger.warning(f"⚠️ Provider {self.name} entering recovery (Half-Open).")
+            elif state == CircuitState.CLOSED:
+                logger.info(f"✅ Provider {self.name} is back online (Closed).")
 
     async def record_success(self, latency_ms: float = 0.0):
         """Handle success based on current state."""

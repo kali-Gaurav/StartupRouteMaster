@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 import logging
 import os
 
-from database import get_db
+from database import get_db, SessionTransit
 from api.dependencies import get_current_user
 from services.telegram_dispatcher import telegram_dispatcher
 from database.models import User, Booking
@@ -11,48 +11,57 @@ from database.models import User, Booking
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 logger = logging.getLogger(__name__)
 
-@router.post("/webhook")
-async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Task 33.1 & 33.9: Telegram Bot Webhook.
-    Handles commands like /last and /start.
-    """
-    data = await request.json()
+async def process_telegram_message(data: dict):
+    """Heavy logic for processing bot commands in background."""
     message = data.get("message", {})
     text = message.get("text", "")
     chat_id = message.get("chat", {}).get("id")
     
     if not text or not chat_id:
-        return {"ok": True}
+        return
 
-    if text == "/start":
-        await telegram_dispatcher.send_welcome(chat_id)
-        
-    elif text == "/last":
-        # Task 33.9: Bot command for "Last Booking"
-        # Find the user by telegram ID (assuming we stored it in User model)
-        user = db.query(User).filter(User.phone_number == str(chat_id)).first() # Placeholder logic
-        if not user:
-            await telegram_dispatcher._api_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "Your Telegram ID is not linked to a RouteMaster account. Please link it in the app settings."
-            })
-            return {"ok": True}
+    # Use a fresh session for background work
+    db = SessionTransit()
+    try:
+        if text == "/start":
+            await telegram_dispatcher.send_welcome(chat_id)
             
-        last_booking = db.query(Booking).filter(Booking.user_id == user.id).order_by(Booking.created_at.desc()).first()
-        if last_booking:
-            await telegram_dispatcher.send_booking_notification(
-                chat_id, 
-                str(last_booking.id), 
-                last_booking.pnr_number or "PENDING", 
-                "12626"
-            )
-        else:
-            await telegram_dispatcher._api_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": "No recent bookings found."
-            })
+        elif text == "/last":
+            # Find user by phone (Telegram ID is chat_id)
+            user = db.query(User).filter(User.phone_number == str(chat_id)).first()
+            if not user:
+                await telegram_dispatcher._api_request("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": "Your Telegram ID is not linked to a account. Link it in app settings."
+                })
+                return
+                
+            last_booking = db.query(Booking).filter(Booking.user_id == user.id).order_by(Booking.created_at.desc()).first()
+            if last_booking:
+                await telegram_dispatcher.send_booking_notification(
+                    chat_id, 
+                    str(last_booking.id), 
+                    last_booking.pnr_number or "PENDING", 
+                    "12626"
+                )
+            else:
+                await telegram_dispatcher._api_request("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": "No recent bookings found."
+                })
+    except Exception as e:
+        logger.error(f"Error in background telegram processing: {e}")
+    finally:
+        db.close()
 
+@router.post("/webhook")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Task 2.12: Telegram Bot Webhook.
+    Returns 200 OK immediately and processes in background.
+    """
+    data = await request.json()
+    background_tasks.add_task(process_telegram_message, data)
     return {"ok": True}
 
 @router.post("/link")

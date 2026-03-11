@@ -14,17 +14,16 @@ logger = logging.getLogger(__name__)
 class RapidAPIClient:
     """
     Async client for RapidAPI's IRCTC service with built-in concurrency control.
+    [2.19] Supports API key rotation.
     """
     
     BASE_URL = "https://irctc1.p.rapidapi.com/api/v1" 
     
-    def __init__(self, api_key: str, max_concurrent: int = 2):
-        self.api_key = api_key
+    def __init__(self, api_keys: str, max_concurrent: int = 2):
+        # Support comma-separated keys for rotation
+        self.api_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
+        self._key_index = 0
         self.host = "irctc1.p.rapidapi.com"
-        self.headers = {
-            "x-rapidapi-key": self.api_key,
-            "x-rapidapi-host": self.host
-        }
         
         try:
             from database.config import Config
@@ -35,8 +34,17 @@ class RapidAPIClient:
             
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
+    def _get_current_headers(self) -> Dict[str, str]:
+        """Rotates key and returns headers."""
+        key = self.api_keys[self._key_index]
+        self._key_index = (self._key_index + 1) % len(self.api_keys)
+        return {
+            "x-rapidapi-key": key,
+            "x-rapidapi-host": self.host
+        }
+
     async def _get_session(self) -> aiohttp.ClientSession:
-        from ...utils.http_client import HttpClientManager
+        from utils.http_client import HttpClientManager
         return await HttpClientManager.get_session()
 
     async def close(self):
@@ -65,12 +73,15 @@ class RapidAPIClient:
             }
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
+                async with session.get(endpoint, params=params, headers=self._get_current_headers(), timeout=5.0) as response:
                     if response.status == 200: return await response.json()
                     elif response.status == 429: return {"status": "error", "message": "Rate limit exceeded"}
-                    return None
+                    else:
+                        text = await response.text()
+                        logger.error(f"RapidAPI Error {response.status}: {text}")
+                        return None
             except Exception as e:
-                logger.error(f"Failed to fetch seat availability: {str(e)}")
+                logger.error(f"Failed to fetch seat availability: {repr(e)}")
                 return None
 
     async def get_fare(self, train_no: str, from_stn: str, to_stn: str) -> Optional[Dict[str, Any]]:
@@ -79,11 +90,14 @@ class RapidAPIClient:
             params = {"trainNo": train_no, "fromStationCode": from_stn, "toStationCode": to_stn}
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
+                async with session.get(endpoint, params=params, headers=self._get_current_headers(), timeout=5.0) as response:
                     if response.status == 200: return await response.json()
-                    return None
+                    else:
+                        text = await response.text()
+                        logger.error(f"RapidAPI Fare Error {response.status}: {text}")
+                        return None
             except Exception as e:
-                logger.error(f"Failed to fetch fare: {str(e)}")
+                logger.error(f"Failed to fetch fare: {repr(e)}")
                 return None
 
     async def get_live_status(self, train_no: str) -> Optional[Dict[str, Any]]:
@@ -93,9 +107,12 @@ class RapidAPIClient:
             params = {"trainNo": train_no}
             try:
                 session = await self._get_session()
-                async with session.get(endpoint, params=params, headers=self.headers, timeout=1.5) as response:
+                async with session.get(endpoint, params=params, headers=self._get_current_headers(), timeout=5.0) as response:
                     if response.status == 200: return await response.json()
-                    return None
+                    else:
+                        text = await response.text()
+                        logger.error(f"RapidAPI Live Error {response.status}: {text}")
+                        return None
             except Exception as e:
-                logger.error(f"Failed to fetch live status: {str(e)}")
+                logger.error(f"Failed to fetch live status: {repr(e)}")
                 return None

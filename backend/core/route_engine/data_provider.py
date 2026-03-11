@@ -15,7 +15,7 @@ import json
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time as time_obj
 import asyncio
-
+from sqlalchemy import text
 from database.models import Coach, Fare, Seat, SeatInventory, StopTime, Segment, Trip, TrainMaster
 from database.session import SessionTransit as SessionLocal
 from services.multi_layer_cache import multi_layer_cache
@@ -25,19 +25,27 @@ logger = logging.getLogger(__name__)
 
 # Import RapidAPI client
 try:
-    from services.booking.rapid_api_client import RapidAPIClient
+    from backend.services.booking.rapid_api_client import RapidAPIClient
     RAPIDAPI_AVAILABLE = True
 except (ImportError, ValueError):
-    RAPIDAPI_AVAILABLE = False
-    logger.warning("RapidAPIClient not available - verification will use database only")
+    try:
+        from services.booking.rapid_api_client import RapidAPIClient
+        RAPIDAPI_AVAILABLE = True
+    except:
+        RAPIDAPI_AVAILABLE = False
+        logger.warning("RapidAPIClient not available - verification will use database only")
 
 # Import Rappid client
 try:
-    from services.realtime_ingestion.api_client import AsyncRappidAPIClient
+    from backend.services.realtime_ingestion.api_client import AsyncRappidAPIClient
     RAPPID_AVAILABLE = True
 except (ImportError, ValueError):
-    RAPPID_AVAILABLE = False
-    logger.warning("AsyncRappidAPIClient not available")
+    try:
+        from services.realtime_ingestion.api_client import AsyncRappidAPIClient
+        RAPPID_AVAILABLE = True
+    except:
+        RAPPID_AVAILABLE = False
+        logger.warning("AsyncRappidAPIClient not available")
 
 
 class DataProvider:
@@ -259,11 +267,37 @@ class DataProvider:
 
                     if result.get("status") != "error":
                         await api_health.record_success(latency_ms=latency)
-                        available_seats = result.get("availableSeats", 0)
+                        
+                        # [NEW] Align with verified IRCTC RapidAPI response structure
+                        # The API usually returns a list in 'data'
+                        api_items = result.get("data", [])
+                        if not isinstance(api_items, list): api_items = [api_items]
+                        
+                        # Find the requested date in the response
+                        day_data = None
+                        for item in api_items:
+                            if item.get("date") == date_str or item.get("date") == travel_date.strftime("%d-%m-%Y"):
+                                day_data = item
+                                break
+                        
+                        if not day_data and api_items:
+                            day_data = api_items[0]
+                            
+                        available_seats = 0
+                        status_text = "UNKNOWN"
+                        fare_val = 0
+                        
+                        if day_data:
+                            available_seats = day_data.get("seat_avl", 0)
+                            status_text = day_data.get("current_status", "UNKNOWN")
+                            fare_val = day_data.get("total_fare", 0)
+
                         verification_result = {
                             "status": "verified",
                             "available_seats": available_seats,
-                            "message": "Seats available" if available_seats > 0 else "Waitlist",
+                            "status_text": status_text,
+                            "fare": fare_val,
+                            "message": status_text,
                             "source": "rapidapi",
                             "timestamp": datetime.utcnow().isoformat()
                         }
@@ -273,14 +307,25 @@ class DataProvider:
                             ttl = self._calculate_dynamic_ttl(travel_date)
                             await multi_layer_cache.redis.setex(cache_key, ttl, json.dumps(verification_result))
                         
+                        # [2.6] Save to local SQLite cache for long-term fallback (Async background task)
+                        asyncio.create_task(asyncio.to_thread(
+                            self._save_to_local_availability_cache,
+                            train_number, from_station, to_station, date_str, 
+                            rapidapi_class, quota, available_seats, status_text, fare_val, result
+                        ))
+                        
                         return verification_result
                     else:
                         error_msg = result.get("message", "Unknown API error") if result else "Null response"
                         await api_health.record_failure(error_msg)
                         logger.warning(f"RapidAPI verification failed: {error_msg}")
                 except Exception as e:
-                    await api_health.record_failure(str(e))
-                    logger.error(f"RapidAPI verification error: {e}")
+                    # [2.18] Suppress LocalProtocolError on client hangups
+                    if "LocalProtocolError" in str(e):
+                        logger.debug(f"Gracefully handled client hangup: {e}")
+                    else:
+                        await api_health.record_failure(str(e))
+                        logger.error(f"RapidAPI verification error: {e}")
 
         # Fallback to database
         return {
@@ -325,6 +370,11 @@ class DataProvider:
                 )
                 latency = (time.perf_counter() - api_start) * 1000
                 
+                if not result:
+                    logger.warning(f"RapidAPI fare check returned None for {train_number}")
+                    await api_health.record_failure("Null response from Fare API")
+                    return {"status": "verified", "total_fare": 1500.0, "source": "database_fallback_null"}
+
                 if result and result.get("status") == "success":
                     await api_health.record_success(latency_ms=latency)
                     # ... rest of the parsing same as before ...
@@ -349,6 +399,12 @@ class DataProvider:
                         if multi_layer_cache.redis:
                             await multi_layer_cache.redis.setex(cls_key, 900, json.dumps(cls_res))
                         
+                        # [2.6] Save Fare to local SQLite for long-term fallback
+                        asyncio.create_task(asyncio.to_thread(
+                            self._save_fare_to_local_cache,
+                            train_number, from_station, to_station, f_class, f_total, result
+                        ))
+
                         if f_class == rapidapi_class:
                             target_fare = cls_res
                             
@@ -391,6 +447,50 @@ class DataProvider:
         except Exception as e:
             logger.error(f"Database fare lookup failed: {e}")
             return {}
+
+    def _save_to_local_availability_cache(self, train_no, from_stn, to_stn, date_str, class_type, quota, seats, status, fare, raw):
+        """[2.6] Save RapidAPI response to SQLite for long-term fallback."""
+        try:
+            self._ensure_session()
+            import uuid
+            
+            sql = """
+                INSERT INTO train_availability_cache 
+                (id, train_number, from_station_code, to_station_code, journey_date, class_type, quota, seats_available, status_text, fare, raw_payload, last_updated_at, created_at)
+                VALUES (:id, :tn, :fs, :ts, :jd, :ct, :q, :sa, :st, :f, :rp, :lu, :ca)
+                ON CONFLICT(train_number, from_station_code, to_station_code, journey_date, class_type, quota) 
+                DO UPDATE SET seats_available=excluded.seats_available, status_text=excluded.status_text, fare=excluded.fare, last_updated_at=excluded.last_updated_at, raw_payload=excluded.raw_payload
+            """
+            now = datetime.utcnow().isoformat()
+            params = {
+                "id": str(uuid.uuid4()), "tn": train_no, "fs": from_stn, "ts": to_stn, 
+                "jd": date_str, "ct": class_type, "q": quota, "sa": seats, 
+                "st": status, "f": fare, "rp": json.dumps(raw), "lu": now, "ca": now
+            }
+            self.session.execute(text(sql), params)
+            self.session.commit()
+        except Exception as e:
+            logger.error(f"Failed to save to local availability cache: {e}")
+
+    def _save_fare_to_local_cache(self, train_no, from_stn, to_stn, class_type, amount, raw):
+        """[2.6] Save RapidAPI fare response to SQLite."""
+        try:
+            self._ensure_session()
+            import uuid
+            # We save to the main 'fares' table or a cache table
+            # Looking at schema, 'fares' is for actual segments. 
+            # We'll use it if we can find the trip_id.
+            trip = self.session.query(Trip).filter(Trip.trip_id == train_no).first()
+            if trip:
+                sql = """
+                    INSERT INTO fares (id, trip_id, class_type, amount, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(trip_id, class_type) DO UPDATE SET amount=excluded.amount, last_updated=excluded.last_updated
+                """
+                self.session.execute(text(sql), (str(uuid.uuid4()), trip.id, class_type, amount, datetime.utcnow().isoformat()))
+                self.session.commit()
+        except Exception as e:
+            logger.error(f"Failed to save fare to local cache: {e}")
 
     def close(self):
         if self.session:
