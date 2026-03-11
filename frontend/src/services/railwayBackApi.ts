@@ -6,7 +6,6 @@
 import { getRailwayApiUrl } from '@/lib/utils';
 import type { Route, RouteSegment } from '@/data/routes';
 import { type Station } from '@/data/stations';
-import { storageService } from './storageService';
 
 export interface FareRow {
   class_code: string;
@@ -207,8 +206,8 @@ function formatTime(t: string | undefined): string {
 
 export function mapBackendRoutesToRoutes(
   data: BackendRoutesResponse,
-  source: string,
-  destination: string
+  _source: string,
+  _destination: string
 ): Route[] {
   const routes: Route[] = [];
   const stationsMap = data.stations || {};
@@ -264,6 +263,39 @@ export function mapBackendRoutesToRoutes(
   });
 
   return routes;
+}
+
+export async function isBackendAvailable(): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout
+    const res = await fetch(getRailwayApiUrl('/health'), { 
+      signal: controller.signal,
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    clearTimeout(timeoutId);
+    return res.ok;
+  } catch (_err) {
+    return false;
+  }
+}
+
+/**
+ * Unlock full journey details after ₹49 fee.
+ */
+export async function unlockJourneyDetailsApi(
+  journeyId: string,
+  travelDate: string
+): Promise<any> {
+  const params = new URLSearchParams({ travel_date: travelDate });
+  const url = getRailwayApiUrl(`/v2/journey/${journeyId}/unlock-details?${params.toString()}`);
+  
+  const res = await fetch(url);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Unlock failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 export async function getTrainStatusApi(trainNumber: string): Promise<any> {

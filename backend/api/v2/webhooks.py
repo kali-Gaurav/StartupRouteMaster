@@ -49,6 +49,64 @@ def parse_bank_sms(text: str) -> Optional[Dict[str, Any]]:
         return {"utr": utr, "amount": amt}
     return None
 
+class SupabaseAuthPayload(BaseModel):
+    type: str # INSERT, UPDATE, DELETE
+    record: Optional[Dict[str, Any]] = None
+    old_record: Optional[Dict[str, Any]] = None
+
+@router.post("/supabase-auth")
+async def supabase_auth_webhook(
+    payload: SupabaseAuthPayload, 
+    db: Session = Depends(get_db),
+    client_ip: str = Depends(verify_ip)
+):
+    """
+    Supabase Auth Webhook listener.
+    Syncs verification status and profile data from auth.users.
+    """
+    from services.user_service import UserService
+    user_service = UserService(db)
+    
+    if payload.type in ("INSERT", "UPDATE"):
+        record = payload.record
+        sb_id = record.get("id")
+        email = record.get("email")
+        phone = record.get("phone")
+        # Supabase confirm fields
+        email_confirmed = record.get("email_confirmed_at") is not None
+        phone_confirmed = record.get("phone_confirmed_at") is not None
+        is_verified = email_confirmed or phone_confirmed
+        confirmed_at = record.get("email_confirmed_at") or record.get("phone_confirmed_at")
+        
+        user = user_service.get_user_by_supabase_id(sb_id)
+        if not user and email:
+            user = user_service.get_user_by_email(email)
+            if user:
+                user.supabase_id = sb_id
+        
+        if not user:
+            # Create new user if not exists (fail-safe sync)
+            user_data = {
+                "supabase_id": sb_id,
+                "email": email,
+                "phone_number": phone,
+                "is_verified": is_verified,
+                "verified_at": confirmed_at,
+                "role": record.get("raw_user_meta_data", {}).get("role", "user")
+            }
+            user = user_service.create_user_with_data(user_data)
+        else:
+            # Update verification status
+            user.is_verified = is_verified
+            user.verified_at = confirmed_at
+            if email: user.email = email
+            if phone: user.phone_number = phone
+        
+        db.commit()
+        logger.info(f"Synced Supabase user {sb_id} (Verified: {is_verified})")
+    
+    return {"status": "success"}
+
 @router.post("/bank-sms")
 async def bank_sms_webhook(payload: BankSMSPayload, db: Session = Depends(get_db)):
     """[12.2] Bank SMS Listener. Auto-verifies bookings if UTR matches."""

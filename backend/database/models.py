@@ -38,6 +38,8 @@ class User(UserBase):
     phone_number = Column(String(20), nullable=True)
     full_name = Column(String(255), nullable=True)
     role = Column(String(50), default="user")
+    is_verified = Column(Boolean, default=False)
+    verified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_active_at = Column(DateTime, default=datetime.utcnow)
     preferences = Column(JSON, nullable=True)
@@ -449,6 +451,7 @@ class Stop(TransitBase):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     platform_count = Column(Integer, nullable=True)
+    data_quality_score = Column(Integer, default=0)
     
     stop_times = relationship("StopTime", back_populates="stop")
     facilities = relationship("StationFacilities", back_populates="stop", uselist=False)
@@ -503,6 +506,7 @@ class Segment(TransitBase):
     fare = Column(Float, nullable=True)
     train_number = Column(String(50), index=True)
     train_name = Column(String(255))
+    data_quality_score = Column(Integer, default=0)
 
 class StopTime(TransitBase):
     __tablename__ = "stop_times"

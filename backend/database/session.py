@@ -1,5 +1,6 @@
 import asyncio
 import time
+import aiosqlite
 from sqlalchemy import create_engine, event, MetaData, Engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -18,39 +19,77 @@ UserBase = declarative_base()
 TransitBase = declarative_base()
 Base = UserBase
 
-# --- Global Engine Pointers (Subtask 4.1 & 4.5: Isolated Auth Pool) ---
+# --- Global Engine Pointers ---
 engine_user = None
 engine_transit = None
-engine_auth = None # Isolated Auth Pool
+engine_auth = None 
 
 async_engine_user = None
 async_engine_transit = None
-async_engine_auth = None # Isolated Auth Pool
+async_engine_auth = None 
 
-engine = None  # Backward compatibility alias
+engine = None  
+
+# --- Raw Async Pool (Subtask 1.1: Ultra-Turbo Decoupling) ---
+_raw_transit_pool: asyncio.Queue = asyncio.Queue(maxsize=20)
+_RAW_POOL_SIZE = 10
+
+async def init_raw_transit_pool():
+    """Initializes a raw aiosqlite pool independent of SQLAlchemy."""
+    db_path = Config.GET_SQLALCHEMY_URL("transit", is_async=False).replace("sqlite:///", "")
+    for _ in range(_RAW_POOL_SIZE):
+        conn = await aiosqlite.connect(db_path)
+        conn.row_factory = aiosqlite.Row
+        await _raw_transit_pool.put(conn)
+    logger.info(f"⚡ Ultra-Turbo Raw Pool Initialized (Size: {_RAW_POOL_SIZE})")
+
+import contextlib
+
+@contextlib.asynccontextmanager
+async def get_raw_transit_conn():
+    """Context manager for acquiring and releasing raw connections."""
+    if _raw_transit_pool.empty() and not _pools_initialized:
+        raise RuntimeError("Raw pool not initialized.")
+    conn = await _raw_transit_pool.get()
+    try:
+        yield conn
+    finally:
+        await _raw_transit_pool.put(conn)
 
 # factories will be assigned here
 _SessionUser = None
 _SessionTransit = None
 _SessionAuth = None
 
-# Stable pointers for external imports
-SessionUser = None
-SessionTransit = None
-SessionAuth = None
-SessionLocal = None
+class AtomicSessionFactoryProxy:
+    """
+    Subtask 4.8: Dynamic Factory Proxy.
+    Ensures that modules importing SessionLocal/SessionTransit at module-level
+    always get a callable that points to the latest initialized factory.
+    """
+    def __init__(self, internal_name):
+        self._internal_name = internal_name
+
+    def __call__(self, *args, **kwargs):
+        factory = globals().get(self._internal_name)
+        if factory is None:
+            raise RuntimeError(f"Database factory {self._internal_name} not initialized. JIT DAG may have skipped 'DATABASE' node.")
+        return factory(*args, **kwargs)
+
+# Stable pointers for external imports (Now Proxies)
+SessionUser = AtomicSessionFactoryProxy("_SessionUser")
+SessionTransit = AtomicSessionFactoryProxy("_SessionTransit")
+SessionAuth = AtomicSessionFactoryProxy("_SessionAuth")
+SessionLocal = AtomicSessionFactoryProxy("_SessionUser")
 
 def get_SessionUser():
-    if not _SessionUser: raise RuntimeError("Database session factory not initialized. Call initialize_database_pools first.")
-    return _SessionUser()
+    return SessionUser()
 
 def get_SessionTransit():
-    if not _SessionTransit: raise RuntimeError("Database transit factory not initialized. Call initialize_database_pools first.")
-    return _SessionTransit()
+    return SessionTransit()
 
 def get_SessionAuth():
-    if not _SessionAuth: raise RuntimeError("Database auth factory not initialized. Call initialize_database_pools first.")
-    return _SessionAuth()
+    return SessionAuth()
 
 _pools_initialized = False
 _db_lock = asyncio.Lock()
@@ -112,6 +151,9 @@ async def initialize_database_pools():
         AsyncSessionUser = sessionmaker(async_engine_user, class_=AsyncSession, expire_on_commit=False)
         AsyncSessionTransit = sessionmaker(async_engine_transit, class_=AsyncSession, expire_on_commit=False)
         AsyncSessionAuth = sessionmaker(async_engine_auth, class_=AsyncSession, expire_on_commit=False)
+        
+        # Trigger raw pool for Ultra-Turbo (Subtask 1.1)
+        await init_raw_transit_pool()
         
         _pools_initialized = True
         logger.info("✅ All Database pools active (Isolated Auth ready).")

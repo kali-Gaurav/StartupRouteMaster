@@ -65,14 +65,15 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
-    # this line is required for 'autogenerate' support
-    config.set_main_option('sqlalchemy.url', Config.GET_SQLALCHEMY_URL("user"))
+    """Run migrations in 'online' mode."""
+    # Ensure we use a synchronous URL for migrations
+    sync_url = Config.GET_SQLALCHEMY_URL("user", is_async=False)
+    if "aiosqlite" in sync_url:
+        sync_url = sync_url.replace("sqlite+aiosqlite:///", "sqlite:///")
+    if "asyncpg" in sync_url:
+        sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://")
+    
+    config.set_main_option('sqlalchemy.url', sync_url)
 
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),

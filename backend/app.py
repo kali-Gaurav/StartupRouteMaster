@@ -175,7 +175,8 @@ def register_routers(app: FastAPI):
     from api.v2 import (
         search as search_v2, live, monitoring, user as user_v2, 
         booking as booking_v2, booking_ws, debug, admin, 
-        admin_auth, agent, unlock, webhooks, auth_refresh
+        admin_auth, agent, unlock, webhooks, auth_refresh,
+        sessions
     )
     V2_PREFIX = "/api/v2"
     app.include_router(search_v2.router, prefix=V2_PREFIX)
@@ -191,12 +192,14 @@ def register_routers(app: FastAPI):
     app.include_router(unlock.router, prefix=V2_PREFIX)
     app.include_router(webhooks.router, prefix=V2_PREFIX)
     app.include_router(auth_refresh.router, prefix=V2_PREFIX)
+    app.include_router(sessions.router, prefix=V2_PREFIX)
 
     from api import (
         chat, chat_ws, sos, search, bookings, stations,
         payments, auth, users, flow, bank_webhooks,
         admin_refunds, admin_reconciliation, tatkal,
-        telegram_bot, vault, status, admin as admin_v1
+        telegram_bot, vault, status, admin as admin_v1,
+        integrated_search
     )
     V1_PREFIX = "/api"
     app.include_router(status.router, prefix=V1_PREFIX)
@@ -216,6 +219,7 @@ def register_routers(app: FastAPI):
     app.include_router(tatkal.router, prefix=V1_PREFIX)
     app.include_router(telegram_bot.router, prefix=V1_PREFIX)
     app.include_router(vault.router, prefix=V1_PREFIX)
+    app.include_router(integrated_search.router, prefix=V1_PREFIX)
     app.include_router(admin_v1.router, prefix="/api/v1")
 
 register_routers(app)

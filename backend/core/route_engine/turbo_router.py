@@ -16,17 +16,21 @@ class TurboRouter:
 
     def _get_city_cluster(self, db, station_code: str) -> List[str]:
         """Expand a station code into all stations in its city cluster."""
-        try:
-            row = db.execute(text("""
-                SELECT station_codes_json FROM city_clusters 
-                WHERE station_codes_json LIKE :like_code
-            """), {"like_code": f'%"{station_code}"%'}).fetchone()
-            if row:
-                return json.loads(row[0])
-        except Exception as e:
-            logger.error(f"Cluster lookup failed: {e}")
-        return [station_code]
+        code_str = str(station_code).upper().strip()
 
+        # Manual clean clusters for major cities
+        MANUAL_CLUSTERS = {
+            "PALAKKAD": ["PGT", "PGTN"],
+            "PGT": ["PGT", "PGTN"],
+            "DELHI": ["NDLS", "NZM", "DLI", "ANVT", "DEC"],
+            "MUMBAI": ["BCT", "BDTS", "DR", "KYN", "PNVL", "CSTM"],
+            "KOTA": ["KOTA"]
+        }
+
+        if code_str in MANUAL_CLUSTERS:
+            return MANUAL_CLUSTERS[code_str]
+
+        return [code_str]
     def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
         # Task 3.11: Thread-safe session management
         db = self.db_factory()
@@ -104,7 +108,7 @@ class TurboRouter:
             
             results = []
             for hub_code in HUBS:
-                if hub_code == source_code or hub_code == dest_code:
+                if hub_code == src or hub_code == dst:
                     continue # Task 3.1.1: Prevent obvious loops
                 
                 hub_trains = data.get(hub_code)

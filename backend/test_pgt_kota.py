@@ -8,6 +8,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("test_pgt_kota")
 
 async def test_search():
+    from database.session import init_db
+    await init_db()
+    
     db = SessionLocal()
     try:
         service = SearchService(db)
@@ -37,29 +40,32 @@ async def test_search():
             print(f"  Top Emergency Route: {top_emergency[0].get('journey_id')} | Fare: ₹{top_emergency[0].get('total_fare')} | Score: {top_emergency[0].get('score')}")
 
         # Comprehensive Output (using the latest request)
-        grouped = res_emergency.get("grouped_journeys", {})
+        res_data = res_emergency.get("data", {})
+        grouped = res_data.get("grouped_journeys", {})
         
         def print_category(name, routes):
             print(f"\n>>> CATEGORY: {name.upper()} ({len(routes)} routes)")
             for i, r in enumerate(routes[:3]):
-                print(f"  {i+1}. {r.get('journey_id')} | Fare: ₹{r.get('total_fare')} | Score: {r.get('score', 'N/A')}")
+                transfers = len(r.get("transfers", []))
+                print(f"  {i+1}. {r.get('journey_id')} | Fare: Rs.{r.get('total_fare')} | Transfers: {transfers} | Score: {r.get('score', 'N/A')}")
 
         print("\n=======================================================")
-        print("🚆 COMPREHENSIVE ROUTE REPORT (PALAKKAD TO KOTA)")
+        print("--- COMPREHENSIVE ROUTE REPORT (PALAKKAD TO KOTA) ---")
         print("=======================================================")
         
-        print_category("Top 3 Confirmed", grouped.get("top_3_confirmed", []))
+        print_category("Top 3 Confirmed", grouped.get("top_3_confirmed_fastest", []))
         print_category("Direct", grouped.get("direct", []))
         print_category("One Transfer", grouped.get("one_transfer", []))
-        print_category("Two+ Transfers", grouped.get("two_plus_transfer", []))
-        print_category("Fastest", grouped.get("fastest", []))
-        print_category("Most Optimal", grouped.get("most_optimal", []))
+        print_category("Two+ Transfers", grouped.get("two_transfer", []) + grouped.get("three_plus_transfer", []))
+        print_category("Fastest", grouped.get("top_10_fastest_total", []))
+        print_category("Most Optimal", grouped.get("top_5_optimal", []))
 
         # Check a specific route for pricing structure
-        if res_emergency.get("journeys"):
-            r = res_emergency["journeys"][0]
+        all_journeys = res_data.get("journeys", [])
+        if all_journeys:
+            r = all_journeys[0]
             p = r.get("pricing", {})
-            print(f"\n[Price Audit] Ticket: ₹{p.get('ticket_fare')} | View: ₹{p.get('view_only_fee')} | Agent: ₹{p.get('agent_booking_fee')} | Total: ₹{p.get('total_agent_checkout')}")
+            print(f"\n[Price Audit] Ticket: Rs.{p.get('ticket_fare')} | View: Rs.{p.get('view_only_fee')} | Agent: Rs.{p.get('agent_booking_fee')} | Total: Rs.{p.get('total_agent_checkout')}")
 
         
     except Exception as e:

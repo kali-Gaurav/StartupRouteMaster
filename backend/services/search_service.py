@@ -323,8 +323,18 @@ class SearchService:
         from services.unlock_service import UnlockService
         categories = CategorizationEngine.categorize(verified_routes, persona)
         
-        all_hydrated = verified_routes
-        masked_journeys = [UnlockService.mask_route(j.to_dict()) for j in all_hydrated]
+        # [NEW] Use the already-hydrated routes from CategorizationEngine to preserve pricing
+        # We'll pull from 'alternative_sorted' or combine all buckets to get the full list
+        all_hydrated_dicts = []
+        seen_jids = set()
+        for bucket_name, bucket_routes in categories.items():
+            if isinstance(bucket_routes, list):
+                for r_dict in bucket_routes:
+                    if r_dict["journey_id"] not in seen_jids:
+                        all_hydrated_dicts.append(r_dict)
+                        seen_jids.add(r_dict["journey_id"])
+
+        masked_journeys = [UnlockService.mask_route(rd) for rd in all_hydrated_dicts]
         
         # [1.1] Determine Next Cursor
         next_cursor = verified_routes[-1].score if verified_routes else None
@@ -346,7 +356,7 @@ class SearchService:
             "source": source, "destination": destination, "session_id": session_id,
             "data": {
                 "journeys": masked_journeys,
-                "grouped_journeys": {k: [UnlockService.mask_route(r) for r in v] for k, v in categories.items()},
+                "grouped_journeys": {k: ([UnlockService.mask_route(r) for r in v] if isinstance(v, list) else v) for k, v in categories.items()},
                 "pagination": pagination.to_dict(),
                 "next_cursor": next_cursor
             },
@@ -596,7 +606,7 @@ class SearchService:
             calc_fare = float(calc_fare_res.get("total_fare", 1200.0))
             api_total = float(fare_res.get("total_fare", 0))
             
-            if api_total > 0:
+            if api_total > 0 and calc_fare > 0:
                 deviation = abs(api_total - calc_fare) / calc_fare
                 if deviation > 0.3: # [15.2] 30% Threshold
                     logger.warning(f"Fare Anomaly detected for {seg.train_number}: API={api_total}, Calc={calc_fare}. Deviation={deviation:.1%}")

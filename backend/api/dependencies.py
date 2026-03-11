@@ -2,9 +2,9 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 
-
-from database.models import User
+from database.models import User, UserSession
 from database.session import get_db
 from database.config import Config
 from services.user_service import UserService
@@ -107,8 +107,6 @@ def get_current_user(
             db.commit()
 
     # 6. Session Tracking [31.8]
-    from database.models import UserSession
-    from datetime import datetime, timedelta
     now = datetime.utcnow()
     if not user.last_active_at or (now - user.last_active_at).total_seconds() > 300:
         client_ip = request.headers.get("x-forwarded-for") or request.client.host
@@ -119,6 +117,15 @@ def get_current_user(
         db.add(new_sess)
         db.commit()
         logger.info(f"Recorded new session for user {user.id}")
+
+    # 7. Verification Enforcement
+    # Allow bypass in dev if configured, otherwise require is_verified
+    if not user.is_verified and Config.ENVIRONMENT != "development":
+        logger.warning(f"Unverified access attempt by user {user.id}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account verification required. Please check your email or phone for the OTP."
+        )
 
     return user
 

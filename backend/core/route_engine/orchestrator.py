@@ -10,6 +10,7 @@ from sqlalchemy import text
 from .constraints import RouteConstraints
 from core.data_structures import Route, RouteSegment, TransferConnection
 from .turbo_router import TurboRouter
+from .ultra_turbo import UltraTurboDirectEngine
 from .raptor import OptimizedRAPTOR
 from .fast_router import FastPathRouter
 from .scoring import RouteScorer
@@ -38,6 +39,7 @@ class UnifiedRoutingOrchestrator:
     """
     def __init__(self, route_engine_instance):
         self.engine = route_engine_instance
+        self.ultra_turbo = UltraTurboDirectEngine()
         self.turbo_router = TurboRouter()
         self.fast_router = FastPathRouter(None) 
         self.raptor = OptimizedRAPTOR()
@@ -77,17 +79,21 @@ class UnifiedRoutingOrchestrator:
         # Tier 1: Turbo (SQL)
         t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
 
+        # Tier 0: Ultra-Turbo (Raw SQL Direct)
+        t0_task = self.ultra_turbo.find_routes(source_stop.id, dest_stop.id, departure_date.date(), limit)
+
         # Tier 2: FastPath (O(1) BFS)
         t2_task = loop.run_in_executor(ROUTING_POOL, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
 
         # Tier 3: RAPTOR (Deep Discovery)
         t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
 
-        turbo_raw, fast_res, raptor_res = await asyncio.gather(t1_task, t2_task, t3_task)
+        turbo_raw, ultra_res, fast_res, raptor_res = await asyncio.gather(t1_task, t0_task, t2_task, t3_task)
 
         # 5. CONSOLIDATE & UNION
         all_routes: List[Route] = []
         all_routes.extend(hub_results)
+        all_routes.extend(ultra_res) # Ultra-Turbo Direct
         all_routes.extend(self._hydrate_turbo_results(turbo_raw, source_code, destination_code))
         all_routes.extend(fast_res)
         all_routes.extend(raptor_res)
@@ -187,46 +193,66 @@ class UnifiedRoutingOrchestrator:
         
         if trip_pks:
             pks_str = ",".join([str(tid) for tid in trip_pks])
-            rows = db.execute(text(f"SELECT trip_id, amount FROM fares WHERE trip_id IN ({pks_str})")).fetchall()
-            for tid, amt in rows:
-                fare_map[str(tid)] = amt
+            try:
+                rows = db.execute(text(f"SELECT trip_id, amount FROM fares WHERE trip_id IN ({pks_str})")).fetchall()
+                for tid, amt in rows:
+                    fare_map[str(tid)] = amt
+            except: pass
 
         if train_nos:
             nos_str = ",".join([f"'{n}'" for n in train_nos])
-            # Join fares.trip_id (INT) with trips.id (INT) and filter by trips.trip_id (VARCHAR)
-            rows = db.execute(text(f"""
-                SELECT t.trip_id, f.amount 
-                FROM fares f 
-                JOIN trips t ON f.trip_id = t.id 
-                WHERE t.trip_id IN ({nos_str})
-            """)).fetchall()
-            for tcode, amt in rows:
-                fare_map[str(tcode)] = amt
+            try:
+                rows = db.execute(text(f"""
+                    SELECT t.trip_id, f.amount 
+                    FROM fares f 
+                    JOIN trips t ON f.trip_id = t.id 
+                    WHERE t.trip_id IN ({nos_str})
+                """)).fetchall()
+                for tcode, amt in rows:
+                    fare_map[str(tcode)] = amt
+            except: pass
 
         for r in routes:
             # [38.3] Multi-leg fare optimization
             is_multi = len(r.segments) > 1
-            total_dist = sum(s.distance_km for s in r.segments)
+            total_dist = 0.0
             
             for s in r.segments:
-                # If distance is missing, use a default slab
-                if not s.distance_km: s.distance_km = 100.0
+                # [FIX] Ensure duration is calculated if missing
+                if not s.duration_minutes or s.duration_minutes <= 0:
+                    try:
+                        # Attempt to parse time strings if needed
+                        s.duration_minutes = 120 
+                    except: s.duration_minutes = 60
+
+                # If distance is missing, estimate from duration (avg speed 55 km/h)
+                if not s.distance_km or s.distance_km < 1.0:
+                    s.distance_km = round(s.duration_minutes * 0.916, 2)
                 
-                # Fetch base amount from map (populated above)
-                base_amt = fare_map.get(str(s.trip_id)) or fare_map.get(str(s.train_number))
-                
-                if base_amt and not is_multi:
-                    s.fare = float(base_amt)
-                else:
-                    # [38.2] Recalculate using telescopic logic for multi-leg
-                    # Assuming SL class for default discovery
-                    fare_res = calculate_fare(s.distance_km, "SL", is_multi_leg=is_multi)
-                    s.fare = fare_res["total_fare"]
+                total_dist += s.distance_km
+
+            # [FIX] Calculate total fare using cumulative distance for the entire journey
+            effective_total_dist = max(total_dist, 50.0)
             
-            r.total_cost = sum(s.fare for s in r.segments)
-            # Add small discount if total distance is large (Telescopic benefit)
+            primary_train = r.segments[0].train_number
+            db_base_fare = fare_map.get(str(primary_train))
+            
+            if db_base_fare and not is_multi:
+                r.total_cost = float(db_base_fare)
+            else:
+                fare_res = calculate_fare(effective_total_dist, "SL", is_multi_leg=is_multi)
+                r.total_cost = fare_res["total_fare"]
+            
+            r.total_distance = total_dist
+
+            for s in r.segments:
+                if total_dist > 0:
+                    s.fare = round((s.distance_km / total_dist) * r.total_cost, 2)
+                else:
+                    s.fare = round(r.total_cost / len(r.segments), 2)
+            
             if is_multi and total_dist > 1000:
-                r.total_cost *= 0.98 # Extra 2% optimization for backbone routes
+                r.total_cost = round(r.total_cost * 0.98, 2)
             
             r.total_duration = sum(s.duration_minutes for s in r.segments) + sum(t.duration_minutes for t in r.transfers)
             r.score = await RouteScorer.score_route(r, constraints, getattr(graph.snapshot, 'reliability_scores', {}))

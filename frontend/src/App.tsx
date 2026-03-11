@@ -13,6 +13,7 @@ import { DevBootstrap } from "@/components/DevBootstrap";
 import { DevDebugPanel } from "@/components/DevDebugPanel";
 import { AuthProvider } from "@/context/AuthContext";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
+import VerificationGate from "@/components/auth/VerificationGate";
 import { BookingFlowProvider } from "@/context/BookingFlowContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
@@ -25,6 +26,7 @@ import { queryClient } from "./infrastructure/queryClient";
 const Index = lazy(() => import("./pages/Index"));
 const LoginPage = lazy(() => import("./pages/auth/LoginPage"));
 const SignupPage = lazy(() => import("./pages/auth/SignupPage"));
+const VerifyOTPPage = lazy(() => import("./pages/auth/VerifyOTPPage"));
 const SOS = lazy(() => import("./pages/SOS"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Bookings = lazy(() => import("./pages/Bookings"));
@@ -129,18 +131,23 @@ const AppContent = () => {
             <Route path="/" element={<ErrorBoundary name="Landing"><Index /></ErrorBoundary>} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
+            <Route path="/verify-otp" element={<VerifyOTPPage />} />
             
             <Route path="/sos" element={<ErrorBoundary name="SOS"><SOS /></ErrorBoundary>} />
             
             <Route path="/dashboard" element={
               <ProtectedRoute>
-                <ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>
+                <VerificationGate>
+                  <ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>
+                </VerificationGate>
               </ProtectedRoute>
             } />
             
             <Route path="/bookings" element={
               <ProtectedRoute>
-                <ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>
+                <VerificationGate>
+                  <ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>
+                </VerificationGate>
               </ProtectedRoute>
             } />
             
@@ -171,7 +178,9 @@ const AppContent = () => {
             {/* Mini App with Granular Resilience (Suggestion #25) */}
             <Route path="/mini-app" element={
               <ProtectedRoute>
-                <MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>
+                <VerificationGate>
+                  <MiniAppGate><ErrorBoundary name="MiniAppRoot"><Outlet /></ErrorBoundary></MiniAppGate>
+                </VerificationGate>
               </ProtectedRoute>
             }>
               <Route index element={<Navigate to="home" replace />} />

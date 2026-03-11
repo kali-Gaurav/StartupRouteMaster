@@ -42,7 +42,6 @@ class RailwayRouteEngine:
 
     def __init__(self):
         if self._initialized: return
-        from database.session import SessionTransit
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.snapshot_manager = SnapshotManager()
         self.graph_builder = GraphBuilder(self.executor, self.snapshot_manager)
@@ -184,7 +183,6 @@ class RailwayRouteEngine:
         db: Optional[Session] = None
     ) -> List[Route]:
         from utils.station_utils import resolve_stations
-        from database.session import SessionTransit
         
         # Always use SessionTransit for transit entities
         res_db = SessionTransit()

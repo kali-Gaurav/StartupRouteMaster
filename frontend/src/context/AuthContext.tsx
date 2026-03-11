@@ -17,6 +17,7 @@ export interface User {
   profile_photo_url?: string;
   created_at?: string;
   role?: string;
+  isVerified?: boolean;
   location_enabled?: boolean; // Added for production telemetry
   // legacy compatibility
   telegram_id?: number;
@@ -88,6 +89,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     last_name: u.user_metadata?.last_name || u.user_metadata?.full_name?.split(' ').slice(1).join(' '),
     profile_photo_url: u.user_metadata?.avatar_url,
     role: u.user_metadata?.role || 'user',
+    isVerified: !!(u.email_confirmed_at || u.phone_confirmed_at),
     created_at: u.created_at,
     telegram_id: u.user_metadata?.telegram_id
   });

@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260226_supabase'
-down_revision = 'ff2a3b4c5d6_add_station_departures_index'
+down_revision = 'ff2a3b4c5d6'
 branch_labels = None
 depends_on = None
 

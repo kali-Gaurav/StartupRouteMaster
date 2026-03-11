@@ -199,18 +199,17 @@ class Config:
     def GET_SQLALCHEMY_URL(cls, db_type: str = "user", is_async: bool = True) -> str:
         """
         Task 2 & 6: SQLite (Dev) vs. PostgreSQL (Prod) Toggle with Async Support.
-        Automatically use local SQLite when ENV=development or no DATABASE_URL is provided.
         """
-        if cls.DATABASE_URL and cls.ENVIRONMENT == "production":
+        # If in production or DATABASE_URL is explicitly set, use it.
+        if cls.DATABASE_URL and (cls.ENVIRONMENT == "production" or "postgresql" in cls.DATABASE_URL):
             url = cls.DATABASE_URL
             if is_async:
-                # Ensure an async driver is used for the configured database URL.
-                # Most deployments use Postgres, but local/test setups might still use SQLite.
-                if url.startswith("postgresql://"):
+                if url.startswith("postgresql://") and "asyncpg" not in url:
                     url = url.replace("postgresql://", "postgresql+asyncpg://")
-                elif url.startswith("sqlite://") and "aiosqlite" not in url:
-                    # SQLAlchemy's asyncio extension requires an async driver.
-                    url = url.replace("sqlite://", "sqlite+aiosqlite://")
+            else:
+                # Synchronous mode (for migrations)
+                if "asyncpg" in url:
+                    url = url.replace("postgresql+asyncpg://", "postgresql://")
             return url
         
         # Fallback to local SQLite for development
