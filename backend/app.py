@@ -106,25 +106,21 @@ app = FastAPI(
 
 # --- MIDDLEWARE (Order: Inner to Outer) ---
 
-# GZip
+# 1. GZip (Innermost)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# Observability
-from core.middleware.observability import ObservabilityMiddleware
-app.add_middleware(ObservabilityMiddleware)
-
-# DB Lifecycle
+# 2. DB Lifecycle
 from core.middleware.db_lifecycle import DatabaseLifecycleMiddleware
 app.add_middleware(DatabaseLifecycleMiddleware)
 
-# Rate Limiting
+# 3. Rate Limiting
 from core.middleware.rate_limit import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
 
-# Traffic Profiler (Moved to standard middleware chain)
+# 4. Traffic Profiler
 app.add_middleware(AsyncTrafficAnalyzer)
 
-# CORS (Outer-most)
+# 5. CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ALLOWED_ORIGINS", "*").split(","),
@@ -133,50 +129,91 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def unified_jit_middleware(request: Request, call_next):
+# 6. JIT (Outer)
+# (Defined below as UnifiedJITMiddleware)
+
+# 7. Observability (Outermost - ensures RID is set first)
+from core.middleware.observability import ObservabilityMiddleware
+app.add_middleware(ObservabilityMiddleware)
+
+from backend.utils.responses import SafeJSONResponse
+
+# --- Global Exception Handlers (Subtask 9.4) ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled Exception: {type(exc).__name__}: {exc}", exc_info=True)
+    return SafeJSONResponse(
+        status_code=500,
+        content={"error": True, "message": "A critical system error occurred.", "type": type(exc).__name__}
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return SafeJSONResponse(
+        status_code=exc.status_code,
+        content={"error": True, "message": exc.detail}
+    )
+
+class UnifiedJITMiddleware:
     """
-    Unified JIT Middleware:
+    Native ASGI JIT Middleware:
     1. Handles path-based eager loading (GRAPH vs DATABASE).
-    2. Supports WebSocket upgrade handshakes.
-    3. Ensures a response is ALWAYS returned to avoid TaskGroup errors.
+    2. Returns 503 if components are still initializing.
+    Eliminates BaseHTTPMiddleware overhead to prevent 'No response returned' errors.
     """
-    path = request.url.path
-    
-    # 1. Skip JIT for health, docs, and root
-    if "health" in path or path.startswith("/api/docs") or path == "/":
-        return await call_next(request)
+    def __init__(self, app):
+        self.app = app
 
-    # 2. Trigger JIT readiness
-    try:
-        if path.startswith("/api/search") or path.startswith("/api/v2/search") or "stats" in path:
-            await jit_manager.ensure_ready("GRAPH")
-        elif path.startswith("/api"):
-            await jit_manager.ensure_ready("DATABASE")
-            await jit_manager.ensure_ready("CACHE")
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        try:
+            path = scope.get("path", "")
             
-    except Exception as e:
-        logger.error(f"JIT Middleware Error: {e}")
-        # Only return JSON if it's NOT a WebSocket attempt
-        if request.headers.get("upgrade") != "websocket":
-            return JSONResponse(
-                status_code=503,
-                content={"error": True, "message": "System is still initializing. Please retry in 5 seconds."}
-            )
-        # For WebSockets, we can't return JSON after upgrade starts, but we haven't 'yield'ed yet
-        # Returning a response will prevent the server from hanging
-        return JSONResponse(
-            status_code=503,
-            content={"error": True, "message": "WebSocket failed: System initializing."}
-        )
+            # 1. Skip JIT for health, docs, and root
+            if "health" in path or path.startswith("/api/docs") or path == "/":
+                return await self.app(scope, receive, send)
 
-    # 3. Proceed to next handler
-    try:
-        response = await call_next(request)
-        return response
-    except Exception as e:
-        logger.error(f"Middleware call_next crash: {e}")
-        return JSONResponse(status_code=500, content={"error": True, "message": "Internal processing error."})
+            # 2. Trigger JIT readiness
+            try:
+                if path.startswith("/api/search") or path.startswith("/api/v2/search") or "stats" in path:
+                    await jit_manager.ensure_ready("GRAPH")
+                elif path.startswith("/api"):
+                    await jit_manager.ensure_ready("DATABASE")
+                    await jit_manager.ensure_ready("CACHE")
+                    
+            except Exception as e:
+                logger.error(f"JIT Initialization Delay: {e}")
+                
+                headers = dict(scope.get("headers", []))
+                is_websocket = headers.get(b"upgrade") == b"websocket"
+                
+                if not is_websocket:
+                    response = SafeJSONResponse(
+                        status_code=503,
+                        content={"error": True, "message": "System components are initializing. Please retry in a few seconds.", "retry_after": 5}
+                    )
+                    return await response(scope, receive, send)
+                else:
+                    response = SafeJSONResponse(
+                        status_code=503,
+                        content={"error": True, "message": "WebSocket failed: System initializing."}
+                    )
+                    return await response(scope, receive, send)
+
+            # 3. Proceed to next handler
+            return await self.app(scope, receive, send)
+            
+        except Exception as exc:
+            logger.error(f"CRITICAL: JIT Middleware Crash: {exc}", exc_info=True)
+            response = SafeJSONResponse(
+                status_code=500,
+                content={"error": True, "message": "Internal Middleware Error", "detail": str(exc)}
+            )
+            return await response(scope, receive, send)
+
+app.add_middleware(UnifiedJITMiddleware)
 
 # --- STATIC FILES ---
 os.makedirs("media/sos", exist_ok=True)

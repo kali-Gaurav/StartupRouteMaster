@@ -59,8 +59,14 @@ class TurboRouter:
             
             # 2. 1-Transfer Search
             if len(all_routes) < limit:
-                # [4.1] Use dynamic hubs from Task 1 analysis
-                HUBS = ['KYN', 'HWH', 'DDU', 'BZA', 'ET', 'MS', 'CNB', 'BRC', 'BSL', 'NDLS']
+                # [4.1] Use dynamic top 50 hubs from Task 1 analysis
+                HUBS = [
+                    'SDAH', 'KYN', 'HWH', 'MSB', 'DDU', 'BZA', 'TBM', 'ET', 'MS', 'CNB', 
+                    'BRC', 'BSL', 'MSF', 'DDJ', 'ST', 'MBM', 'BNXR', 'GDY', 'PNBE', 'MPK', 
+                    'CMP', 'STM', 'BWN', 'TLM', 'MKK', 'MN', 'MSC', 'NBK', 'PV', 'PZA', 
+                    'SP', 'TBMS', 'PER', 'VGLJ', 'BDC', 'NDLS', 'PRYJ', 'GZB', 'NGP', 'LKO', 
+                    'NH', 'KGP', 'GKP', 'PUNE', 'ARA', 'ASN', 'KPD', 'RTM', 'STA', 'BSB'
+                ]
                 transfer_routes = self._search_one_transfer_binary(db, src_codes, dst_codes, day_mask, limit - len(all_routes), HUBS)
                 all_routes.extend(transfer_routes)
                 
@@ -119,25 +125,32 @@ class TurboRouter:
         """[4.1-4.13] Refactored 1-transfer binary search with Metro Hub logic."""
         try:
             # [4.12] Use Hub Caching for performance
-            codes_to_fetch = set(src_codes + dst_codes + hubs)
-            res = db.execute(text(
-                "SELECT station_code, transit_blob FROM station_transit_index_bin WHERE station_code IN :codes"
-            ), {"codes": tuple(codes_to_fetch)}).fetchall()
+            codes_to_fetch = list(set(src_codes + dst_codes + hubs))
+            
+            # Fix: SQLite/SQLAlchemy IN clause requires individual placeholders
+            placeholders = ", ".join([f":c{i}" for i in range(len(codes_to_fetch))])
+            params = {f"c{i}": code for i, code in enumerate(codes_to_fetch)}
+            
+            query = f"SELECT station_code, transit_blob FROM station_transit_index_bin WHERE station_code IN ({placeholders})"
+            res = db.execute(text(query), params).fetchall()
             
             data = {row[0]: self._unpack_trains(row[1]) for row in res}
             
             # [4.7] Fetch Metro Hub station mapping (stations in same cluster)
             # This allows transferring from NDLS to NZM if they share a cluster
             metro_map = {}
-            cluster_query = """
+            hub_placeholders = ", ".join([f":h{i}" for i in range(len(hubs))])
+            hub_params = {f"h{i}": code for i, code in enumerate(hubs)}
+            
+            cluster_query = f"""
                 SELECT s1.code, s2.code 
                 FROM station_cluster_mapping scm1
                 JOIN station_cluster_mapping scm2 ON scm1.cluster_id = scm2.cluster_id
                 JOIN stops s1 ON scm1.station_id = s1.id
                 JOIN stops s2 ON scm2.station_id = s2.id
-                WHERE s1.code IN :hubs
+                WHERE s1.code IN ({hub_placeholders})
             """
-            metro_rows = db.execute(text(cluster_query), {"hubs": tuple(hubs)}).fetchall()
+            metro_rows = db.execute(text(cluster_query), hub_params).fetchall()
             for r1, r2 in metro_rows:
                 if r1 not in metro_map: metro_map[r1] = set()
                 metro_map[r1].add(r2)

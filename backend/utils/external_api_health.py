@@ -19,11 +19,11 @@ class ExternalAPIHealth:
     [11.3] Redis-backed for multi-worker consistency.
     [11.4] 3s Latency Trigger.
     """
-    def __init__(self, provider_name: str = "RapidAPI", failure_threshold: int = 5, recovery_timeout: int = 300):
+    def __init__(self, provider_name: str = "RapidAPI", failure_threshold: int = 7, recovery_timeout: int = 120):
         self.name = provider_name
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
-        self.latency_limit_ms = 3000 # [11.4] 3 seconds
+        self.latency_limit_ms = 5000 # [11.4] 5 seconds
         
         # Redis Keys
         self.key_state = f"health:state:{self.name}"

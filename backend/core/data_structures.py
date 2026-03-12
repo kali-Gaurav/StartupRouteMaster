@@ -7,8 +7,8 @@ through efficient serialization and type-safety.
 """
 
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, date
-from typing import Dict, List, Optional, Set, Any, Tuple
+from datetime import datetime, date, time
+from typing import Dict, List, Optional, Set, Any, Tuple, Union
 from enum import Enum
 
 
@@ -121,14 +121,32 @@ class PaginationMetadata:
         return asdict(self)
 
 
+def ensure_datetime(val: Any) -> datetime:
+    """Helper to ensure a value is a datetime object."""
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        # Handle common formats: HH:MM:SS, HH:MM, or ISO
+        try:
+            if ":" in val and "-" not in val:
+                # Time only, assume today or arbitrary date (needed for duration)
+                from datetime import date
+                t = time.fromisoformat(val)
+                return datetime.combine(date.today(), t)
+            return datetime.fromisoformat(val)
+        except (ValueError, TypeError):
+            return datetime.now() # Fallback
+    return datetime.now()
+
+
 @dataclass
 class RouteSegment:
     """Represents a single train journey segment (leg)."""
     trip_id: Any
     departure_stop_id: int
     arrival_stop_id: int
-    departure_time: datetime
-    arrival_time: datetime
+    departure_time: Union[datetime, str]
+    arrival_time: Union[datetime, str]
     duration_minutes: int
     distance_km: float
     departure_code: str = ""        # Station Code (e.g. NDLS)
@@ -145,14 +163,16 @@ class RouteSegment:
 
     def to_dict(self) -> Dict[str, Any]:
         """Unified API serialization."""
+        dep = self.departure_time
+        arr = self.arrival_time
         return {
             "trip_id": self.trip_id,
             "train_number": self.train_number,
             "train_name": self.train_name,
             "from_station": self.departure_code,
             "to_station": self.arrival_code,
-            "departure_time": self.departure_time.isoformat(),
-            "arrival_time": self.arrival_time.isoformat(),
+            "departure_time": dep.isoformat() if isinstance(dep, datetime) else dep,
+            "arrival_time": arr.isoformat() if isinstance(arr, datetime) else arr,
             "duration": self.duration_minutes,
             "distance": self.distance_km,
             "fare": self.fare,
@@ -160,7 +180,8 @@ class RouteSegment:
             "departure_platform": self.departure_platform,
             "arrival_platform": self.arrival_platform,
             "departure_stop_id": self.departure_stop_id,
-            "arrival_stop_id": self.arrival_stop_id
+            "arrival_stop_id": self.arrival_stop_id,
+            "metadata": self.metadata
         }
 
     @classmethod
@@ -266,7 +287,8 @@ class Route:
         # Format: T12625_20260308_T12626_20260309
         parts = []
         for s in self.segments:
-            dep_str = s.departure_time.strftime("%Y%m%d%H%M")
+            dep_dt = ensure_datetime(s.departure_time)
+            dep_str = dep_dt.strftime("%Y%m%d%H%M")
             parts.append(f"{s.train_number or s.trip_id}_{dep_str}")
         return "_".join(parts)
 

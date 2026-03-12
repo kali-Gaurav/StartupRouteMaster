@@ -286,12 +286,26 @@ class TimeDependentGraph:
         return sorted(adjusted, key=lambda x: x[0])
 
     def get_transfers_from_stop(self, stop_id: int, arrival_time: datetime,
-                               min_transfer_time: int = 15, incoming_trip_id: Optional[int] = None) -> List[TransferConnection]:
+                                min_transfer_time: int = 15, incoming_trip_id: Optional[int] = None) -> List[TransferConnection]:
         """Get feasible transfers from stop, honoring real-time state and Task 13 rake-linkage."""
         transfers = self.transfer_graph.get(stop_id, [])
         feasible = []
 
+        # [5.7] Always include a transfer to the SAME station (changing trains at junction)
+        if stop_id in self.stop_cache:
+            stop = self.stop_cache[stop_id]
+            feasible.append(TransferConnection(
+                station_id=stop_id,
+                arrival_time=datetime.min,
+                departure_time=datetime.max,
+                duration_minutes=max(min_transfer_time, 45), # Min 45m for train switch
+                station_name=stop.name,
+                facilities_score=100.0,
+                safety_score=100.0
+            ))
+
         # Task 13: Rake Linkage Awareness
+
         from .rake_linkage import RakeLinkageManager
         rl_manager = RakeLinkageManager()
 

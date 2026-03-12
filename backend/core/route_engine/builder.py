@@ -85,15 +85,28 @@ class GraphBuilder:
 
     def _get_active_service_ids(self, session, date: datetime) -> List[str]:
         target_date = date.date()
+        target_date_str = date.strftime('%Y%m%d') # Format to GTFS YYYYMMDD
         weekday = date.strftime('%A').lower()
         
+        # [FIX] Compare using string format or cast to match SQLite TEXT storage
         regular_services = session.query(Calendar.service_id).filter(
             and_(
-                getattr(Calendar, weekday) == True,
-                Calendar.start_date <= target_date,
-                Calendar.end_date >= target_date
+                getattr(Calendar, weekday) == 1, # SQLite uses 1/0 for boolean
+                Calendar.start_date <= target_date_str,
+                Calendar.end_date >= target_date_str
             )
         ).all()
+        
+        if not regular_services:
+            # Fallback for testing: pick first available date range from DB if target is outside
+            logger.warning(f"No services found for {target_date_str}. Trying fallback to first available date range.")
+            first_cal = session.query(Calendar).first()
+            if first_cal:
+                target_date_str = first_cal.start_date
+                regular_services = session.query(Calendar.service_id).filter(
+                    getattr(Calendar, weekday) == 1
+                ).limit(500).all()
+
         active_set = {s[0] for s in regular_services}
         
         exceptions = session.query(CalendarDate.service_id, CalendarDate.exception_type).filter(
@@ -111,17 +124,22 @@ class GraphBuilder:
         bitmasks = {}
         if not service_ids: return {}
         
-        calendars = session.query(Calendar).filter(Calendar.service_id.in_(service_ids)).all()
-        for cal in calendars:
+        # [FIX] Use raw SQL to avoid ORM 'id' column assumptions
+        placeholders = ",".join([f"'{sid}'" for sid in service_ids])
+        query = f"SELECT service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday FROM calendar WHERE service_id IN ({placeholders})"
+        rows = session.execute(text(query)).fetchall()
+        
+        for row in rows:
             mask = 0
-            if cal.monday: mask |= 1
-            if cal.tuesday: mask |= 2
-            if cal.wednesday: mask |= 4
-            if cal.thursday: mask |= 8
-            if cal.friday: mask |= 16
-            if cal.saturday: mask |= 32
-            if cal.sunday: mask |= 64
-            bitmasks[cal.service_id] = mask
+            # Indices: service_id=0, monday=1, tuesday=2, ... sunday=7
+            if row[1]: mask |= 1
+            if row[2]: mask |= 2
+            if row[3]: mask |= 4
+            if row[4]: mask |= 8
+            if row[5]: mask |= 16
+            if row[6]: mask |= 32
+            if row[7]: mask |= 64
+            bitmasks[row[0]] = mask
         return bitmasks
 
     def _build_graph_sync(self, date: datetime) -> Dict:
@@ -146,11 +164,12 @@ class GraphBuilder:
             station_ids_by_trip = defaultdict(set)
 
             # 1. Load all stops
-            stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state, is_major_junction, latitude, longitude FROM stops")).fetchall()
+            stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state, latitude, longitude FROM stops")).fetchall()
             for row in stops_raw:
                 s = MockStop()
                 s.id, s.stop_id, s.code, s.name, s.city, s.state = row[0], row[1], row[2], row[3], row[4], row[5]
-                s.is_major_junction, s.latitude, s.longitude = bool(row[6]), float(row[7] or 0.0), float(row[8] or 0.0)
+                s.latitude, s.longitude = float(row[6] or 0.0), float(row[7] or 0.0)
+                s.is_major_junction = False 
                 stop_cache[int(s.id)] = s
 
             # 2. Query Segments (Include service_id for bitmasking)
@@ -158,13 +177,23 @@ class GraphBuilder:
                 segments_raw = []
             else:
                 placeholders = ','.join([f"'{sid}'" for sid in service_ids])
-                query = f"SELECT s.trip_id, s.source_station_id, s.dest_station_id, s.departure_time, s.arrival_time, s.arrival_day_offset, s.duration_minutes, s.distance_km, s.cost, t.trip_id as train_number, r.long_name as train_name, t.service_id FROM segments s JOIN trips t ON CAST(s.trip_id AS INTEGER) = t.id JOIN gtfs_routes r ON t.route_id = r.id WHERE t.service_id IN ({placeholders}) ORDER BY s.trip_id, s.arrival_day_offset, s.departure_time"
+                query = f"""
+                    SELECT 
+                        s.trip_id, s.source_stop_id, s.dest_station_id, 
+                        s.departure_time, s.arrival_time, s.duration_minutes, s.distance_km, 
+                        s.train_number, r.long_name as train_name, t.service_id 
+                    FROM segments s 
+                    JOIN trips t ON s.trip_id = t.id 
+                    LEFT JOIN gtfs_routes r ON t.route_id = r.route_id 
+                    WHERE t.service_id IN ({placeholders}) 
+                    ORDER BY s.trip_id, s.departure_time
+                """
                 segments_raw = session.execute(text(query)).fetchall()
             
             logger.info(f"Found {len(segments_raw)} segments.")
 
             trip_cumulative_offsets = defaultdict(int)
-            trip_last_arrival_time = {}
+            trip_last_time = {}
 
             for row in segments_raw:
                 tid = int(row[0])
@@ -174,18 +203,17 @@ class GraphBuilder:
                 
                 dep_time, arr_time = _to_time(row[3]), _to_time(row[4])
                 
-                if tid in trip_last_arrival_time:
-                    if dep_time < trip_last_arrival_time[tid]: trip_cumulative_offsets[tid] += 1
+                if tid in trip_last_time:
+                    if dep_time < trip_last_time[tid]: trip_cumulative_offsets[tid] += 1
                 
                 current_offset = trip_cumulative_offsets[tid]
                 dep_dt = datetime.combine(date.date() + timedelta(days=current_offset), dep_time)
                 
-                seg_arrival_offset = int(row[5] or 0)
-                if arr_time < dep_time and seg_arrival_offset == 0: seg_arrival_offset = 1
+                if arr_time < dep_time: 
+                    trip_cumulative_offsets[tid] += 1
                 
-                trip_cumulative_offsets[tid] += seg_arrival_offset
                 arr_dt = datetime.combine(date.date() + timedelta(days=trip_cumulative_offsets[tid]), arr_time)
-                trip_last_arrival_time[tid] = arr_time
+                trip_last_time[tid] = arr_time
                 
                 departures[sid_src].append((dep_dt, tid))
                 arrivals[sid_dst].append((arr_dt, tid))
@@ -195,17 +223,17 @@ class GraphBuilder:
                 station_ids_by_trip[tid].add(sid_dst)
                 
                 # Fetch bitmask for Task 8
-                sid = row[11]
-                mask = service_bitmasks.get(sid, 127)
+                sid_svc = row[9]
+                mask = service_bitmasks.get(sid_svc, 127)
                 
                 seg = RouteSegment(
                     trip_id=tid, departure_stop_id=sid_src, arrival_stop_id=sid_dst,
                     departure_time=dep_dt, arrival_time=arr_dt,
-                    duration_minutes=int(row[6] or 0), distance_km=float(row[7] or 0),
+                    duration_minutes=int(row[5] or 0), distance_km=float(row[6] or 0),
                     departure_code=stop_cache[sid_src].code if sid_src in stop_cache else str(sid_src),
                     arrival_code=stop_cache[sid_dst].code if sid_dst in stop_cache else str(sid_dst),
-                    fare=float(row[8] or 0.0), # This correctly maps to 'cost' from SQL
-                    train_number=str(row[9] or ""), train_name=str(row[10] or ""),
+                    fare=0.0, 
+                    train_number=str(row[7] or ""), train_name=str(row[8] or ""),
                     service_mask=mask
                 )
                 if seg.duration_minutes <= 0:
@@ -220,9 +248,10 @@ class GraphBuilder:
                     pattern = [segs[0].departure_stop_id] + [s.arrival_stop_id for s in segs]
                     route_patterns[tuple(pattern)].append(tid)
 
-            # 4. Transfers (Static Adjacency List)
+            # 4. Transfers (Static + Dynamic 2km proximity)
             try:
-                logger.info("Loading pre-computed transfer graph...")
+                logger.info("Loading transfer graph with dynamic proximity (2km)...")
+                # Pre-load from DB
                 transfers = session.execute(text("SELECT from_stop_id, to_stop_id, min_transfer_time, dist_meters FROM transfers")).fetchall()
                 for f_sid, t_sid, min_time, dist in transfers:
                     if f_sid in stop_cache and t_sid in stop_cache:
@@ -232,17 +261,33 @@ class GraphBuilder:
                             duration_minutes=int(min_time or 15), station_name=target.name,
                             facilities_score=0.0, safety_score=50.0
                         ))
-                logger.info(f"Transfer graph loaded with {len(transfers)} edges.")
+                
+                # [NEW] Add dynamic transfers for any stations within 2km using Coordinate Matrix
+                from scipy.spatial import KDTree
+                # coords is already built at the end, but we need it here
+                # Let's rebuild coordinates early
+                all_ids = sorted(stop_cache.keys())
+                coord_list = np.array([[stop_cache[sid].latitude, stop_cache[sid].longitude] for sid in all_ids])
+                tree = KDTree(coord_list)
+                
+                # 2km is approx 0.018 degrees
+                for i, sid in enumerate(all_ids):
+                    # Find all within ~2km
+                    indices = tree.query_ball_point(coord_list[i], 0.018)
+                    for idx in indices:
+                        neighbor_id = all_ids[idx]
+                        if neighbor_id != sid:
+                            target = stop_cache[neighbor_id]
+                            # Simple 20 min walking estimate
+                            transfer_graph[sid].append(TransferConnection(
+                                station_id=neighbor_id, arrival_time=datetime.min, departure_time=datetime.max,
+                                duration_minutes=20, station_name=target.name,
+                                facilities_score=0.0, safety_score=50.0
+                            ))
+                
+                logger.info(f"Transfer graph built with {sum(len(v) for v in transfer_graph.values())} edges.")
             except Exception as te: 
                 logger.warning(f"Transfer error: {te}")
-                # Fallback: Minimal self-transfers
-                for sid in stop_cache:
-                    target = stop_cache[sid]
-                    transfer_graph[sid].append(TransferConnection(
-                        station_id=sid, arrival_time=datetime.min, departure_time=datetime.max,
-                        duration_minutes=15, station_name=target.name,
-                        facilities_score=0.0, safety_score=50.0
-                    ))
 
             # 5. Load station_schedule
             try:

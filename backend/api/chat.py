@@ -155,8 +155,24 @@ async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -> ChatResponse:
     reply = f"Detected intent: {intent}. How can I help?"
-    if intent == 'search': reply = "🔍 Where would you like to go?"
-    return ChatResponse(reply=reply, intent=intent, confidence=0.9)
+    actions = []
+    
+    if intent == 'search': 
+        reply = "🔍 Searching for your logistics... Where would you like to go?"
+    elif intent == 'bookings':
+        reply = "🎫 Retrieving your mission history... I've found your recent bookings. Would you like to view them in the dashboard?"
+        actions = [ChatAction(label="Open Bookings", type="navigate", value="/bookings")]
+    elif intent == 'dashboard':
+        reply = "📊 Accessing RouteMaster Central... Your dashboard is ready for review."
+        actions = [ChatAction(label="View Dashboard", type="navigate", value="/dashboard")]
+    elif intent == 'telegram':
+        reply = "📱 Establishing Telegram uplink... You can sync your profile to our secure Telegram bot for real-time tracking."
+        actions = [ChatAction(label="Sync Telegram", type="open_url", value="https://t.me/RoutemasternagarindustrisBot")]
+    elif intent == 'sos':
+        reply = "🚨 **EMERGENCY PROTOCOL INITIALIZED.** I am notifying emergency contacts and sharing your live telemetry. Stay calm."
+        actions = [ChatAction(label="View SOS Status", type="navigate", value="/sos")]
+
+    return ChatResponse(reply=reply, intent=intent, confidence=1.0, actions=actions)
 
 @router.post("", response_model=ChatResponse)
 @limiter.limit("10/minute")

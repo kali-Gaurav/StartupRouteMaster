@@ -51,15 +51,14 @@ class OptimizedRAPTOR:
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
-        # Task 3.11: Offload the entire heavy RAPTOR search to a thread pool to avoid event loop lag
+        # [5.18] Low Yield Trigger: Check for direct routes first (lightweight)
+        # For simplicity in this engine, we just use the existing thread pool logic
         return await asyncio.to_thread(self._find_routes_sync, source_stop_id, dest_stop_id, departure_date, constraints, graph)
 
     def _find_routes_sync(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         if graph is None:
-            # We need to bridge async to sync for snapshot loading
-            # In a thread, we can use a new event loop or a sync loader
             from .snapshot_manager import SnapshotManager
             sm = SnapshotManager()
             import asyncio
@@ -72,15 +71,27 @@ class OptimizedRAPTOR:
             else:
                 return []
 
-        # Use sync version of search
-        routes = self._search_single_departure_sync(graph, source_stop_id, dest_stop_id, departure_date, constraints)
+        # [5.18] Low Yield Detection: Check for direct routes first
+        # We simulate a "direct" search by setting max_transfers=0 temporarily
+        original_max = self.max_transfers
+        self.max_transfers = 0
+        direct_routes = self._search_single_departure_sync(graph, source_stop_id, dest_stop_id, departure_date, constraints)
+        
+        if len(direct_routes) < 3:
+            # TRIGGER: Increase depth and lookahead
+            logger.info(f"Low Yield detected for {source_stop_id}->{dest_stop_id}. Triggering Deep RAPTOR.")
+            self.max_transfers = original_max if original_max > 0 else 2
+            self.max_initial_departures = 200
+            routes = self._search_single_departure_sync(graph, source_stop_id, dest_stop_id, departure_date, constraints)
+        else:
+            routes = direct_routes
+            
+        self.max_transfers = original_max # Reset
 
-        # Batch scoring (Synchronous version)
+        # Batch scoring
         reliability = getattr(graph.snapshot, 'reliability_scores', {})
         for r in routes:
             if r.score == 0:
-                # Assuming score_route has a sync alternative or is light
-                # For now, keep it simple
                 r.score = r.total_duration
 
         routes.sort(key=lambda r: r.score)
@@ -91,16 +102,26 @@ class OptimizedRAPTOR:
         routes_by_round = defaultdict(list)
         weekday_bit = 1 << departure_dt.weekday()
 
+        # [5.1] Get initial departures from source
         source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt, lookahead_minutes=720)
+        
+        # [5.12] Multi-round earliest arrival with strict Dominance
+        # best_arrival[station] = earliest time seen so far across ANY round
+        global_best_arrival = defaultdict(lambda: datetime.max)
+        global_best_arrival[source_stop_id] = departure_dt
+
+        # round_best_arrival[round][station]
+        round_best_arrival = defaultdict(lambda: defaultdict(lambda: datetime.max))
+        round_best_arrival[0][source_stop_id] = departure_dt
 
         for dep_time, trip_id in source_departures[:self.max_initial_departures]:
             segments = graph.get_trip_segments(trip_id)
             if not segments: continue
-            if not (segments[0].service_mask & weekday_bit): continue
-
+            
             start_idx = -1
             for idx, s in enumerate(segments):
                 if s.departure_stop_id == source_stop_id and s.departure_time >= dep_time:
+                    if not (s.service_mask & weekday_bit): break
                     start_idx = idx
                     break
 
@@ -110,58 +131,71 @@ class OptimizedRAPTOR:
             for i in range(start_idx, len(segments)):
                 seg = segments[i]
                 current_segs.append(seg)
-
-                if seg.arrival_stop_id == dest_stop_id:
+                
+                arr_st = seg.arrival_stop_id
+                # [5.12] Dominance: Only keep if better than global best
+                if seg.arrival_time < global_best_arrival[arr_st]:
+                    global_best_arrival[arr_st] = seg.arrival_time
+                    round_best_arrival[0][arr_st] = seg.arrival_time
                     route = Route(segments=list(current_segs))
                     routes_by_round[0].append(route)
 
-        # Process Rounds
+        # Process Rounds (Transfers)
         for r in range(1, self.max_transfers + 1):
             if not routes_by_round[r-1]: break
-            # Prune previous round to top candidates to prevent exponential explosion
-            prev_routes = sorted(routes_by_round[r-1], key=lambda x: x.total_duration)[:30]
-            for pr in prev_routes:
-                new_found = self._process_route_transfers_sync(pr, graph, dest_stop_id, constraints)
+            
+            # [5.12] Prune current round candidates: only keep the best arrival per station from the PREVIOUS round
+            stations_to_explore = {}
+            for rt in routes_by_round[r-1]:
+                last_st = rt.segments[-1].arrival_stop_id
+                if last_st not in stations_to_explore or rt.segments[-1].arrival_time < stations_to_explore[last_st].segments[-1].arrival_time:
+                    stations_to_explore[last_st] = rt
+            
+            for pr in stations_to_explore.values():
+                if pr.segments[-1].arrival_stop_id == dest_stop_id: continue
+                
+                new_found = self._process_route_transfers_sync(pr, graph, dest_stop_id, constraints, global_best_arrival, r)
                 routes_by_round[r].extend(new_found)
+            
+            if not routes_by_round[r]: break
 
         all_results = []
-        for round_idx, r_list in routes_by_round.items():
-            for rt in r_list:
+        for r_idx in range(self.max_transfers + 1):
+            for rt in routes_by_round[r_idx]:
                 if rt.segments and rt.segments[-1].arrival_stop_id == dest_stop_id:
                     all_results.append(rt)
 
         return self._deduplicate_routes(all_results)
 
     def _process_route_transfers_sync(self, route: Route, graph: TimeDependentGraph,
-                                      dest_stop_id: int, constraints: RouteConstraints) -> List[Route]:
+                                      dest_stop_id: int, constraints: RouteConstraints,
+                                      round_earliest: Dict[int, datetime], round_num: int) -> List[Route]:
         new_routes = []
         last_seg = route.segments[-1]
+        weekday_bit = 1 << last_seg.arrival_time.weekday()
 
-        # Basic loop detection
-        visited = {s.departure_stop_id for s in route.segments} | {s.arrival_stop_id for s in route.segments}
-
-        from .buffer_logic import buffer_optimizer
-        dynamic_buffer = buffer_optimizer.calculate_required_buffer(
-            last_seg.arrival_stop_id, graph.stop_cache, last_seg.arrival_time
-        )
+        # [5.11] Cycle detection
+        visited_stations = {s.departure_stop_id for s in route.segments} | {s.arrival_stop_id for s in route.segments}
+        visited_trips = {s.trip_id for s in route.segments}
 
         transfers = graph.get_transfers_from_stop(
             last_seg.arrival_stop_id,
             last_seg.arrival_time,
-            dynamic_buffer,
+            min_transfer_time=45,
             incoming_trip_id=last_seg.trip_id
         )
 
         for tr in transfers:
-            onward = graph.get_departures_from_stop(tr.station_id, tr.departure_time)
+            onward = graph.get_departures_from_stop(tr.station_id, tr.departure_time, lookahead_minutes=1440)
 
             for dep_t, trip_id in onward[:self.max_onward_departures]:
-                if trip_id == last_seg.trip_id: continue # Same train
+                if trip_id in visited_trips: continue 
 
                 segments = graph.get_trip_segments(trip_id)
                 start_idx = -1
                 for idx, s in enumerate(segments):
                     if s.departure_stop_id == tr.station_id and s.departure_time >= dep_t:
+                        if not (s.service_mask & weekday_bit): break
                         start_idx = idx
                         break
                 if start_idx == -1: continue
@@ -169,16 +203,19 @@ class OptimizedRAPTOR:
                 onward_segs = []
                 for i in range(start_idx, len(segments)):
                     seg = segments[i]
-                    if seg.arrival_stop_id in visited: continue
+                    # [5.11] Prevent revisiting stations
+                    if seg.arrival_stop_id in visited_stations: continue
                     onward_segs.append(seg)
 
-                    new_rt = Route(segments=route.segments + list(onward_segs))
-                    new_rt.transfers = route.transfers + [tr]
+                    # [5.12] Multi-objective Dominance (simplified to time)
+                    if seg.arrival_time < round_earliest[seg.arrival_stop_id]:
+                        round_earliest[seg.arrival_stop_id] = seg.arrival_time
+                        
+                        new_rt = Route(segments=route.segments + list(onward_segs))
+                        new_rt.transfers = route.transfers + [tr]
 
-                    if seg.arrival_stop_id == dest_stop_id:
-                        new_routes.append(new_rt)
-                    elif len(new_rt.transfers) < self.max_transfers:
-                        new_routes.append(new_rt)
+                        if seg.arrival_stop_id == dest_stop_id or round_num < self.max_transfers:
+                            new_routes.append(new_rt)
         return new_routes
     async def find_one_transfer_hub_routes(self, source_stop_id: int, dest_stop_id: int,
                                          departure_date: datetime, constraints: RouteConstraints,

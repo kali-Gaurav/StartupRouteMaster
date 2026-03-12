@@ -3,6 +3,7 @@ import logging
 import orjson as json
 from typing import List, Dict, Optional, Any
 from sqlalchemy.orm import Session
+from fastapi import Request
 import time
 import hashlib
 import zlib
@@ -90,7 +91,7 @@ class SearchService:
                     await multi_layer_cache.redis.hincrby(f"metrics:engine_success:{today}", engine_name, 1)
         except: pass
 
-    async def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, page: int = 1, limit: int = 15, quota: str = "GN", client_ip: Optional[str] = None, geo_state: Optional[str] = None, session_id: Optional[str] = None, cursor: Optional[float] = None) -> Dict[Any, Any]:
+    async def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, page: int = 1, limit: int = 15, quota: str = "GN", client_ip: Optional[str] = None, geo_state: Optional[str] = None, session_id: Optional[str] = None, cursor: Optional[float] = None, request: Optional[Request] = None) -> Dict[Any, Any]:
         overall_start = time.time()
         
         # 1. Normalize and Prepare Fingerprint Cache
@@ -164,6 +165,11 @@ class SearchService:
             r.metadata["day_offset"] = 0
             all_unique_routes[r.journey_id] = r
             
+        # [Subtask 1.5] Disconnection Check 1
+        if request and await request.is_disconnected():
+            logger.warning(f"🛑 Search Aborted: Client disconnected during Phase 1 for {source}->{destination}")
+            return {"journeys": [], "aborted": True}
+
         # [2.2] Multi-Day Expansion Engine: If yield < 5, expansion is mandatory (Task 2.2)
         expansion_triggered = False
         if len(all_unique_routes) < 5:
@@ -178,6 +184,11 @@ class SearchService:
                     r.metadata["alt_reason"] = f"Alternative: Available on {(dt + timedelta(days=1)).strftime('%b %d')}"
                     all_unique_routes[r.journey_id] = r
 
+            # [Subtask 1.5] Disconnection Check 2
+            if request and await request.is_disconnected():
+                logger.warning(f"🛑 Search Aborted: Client disconnected during Expansion for {source}->{destination}")
+                return {"journeys": [], "aborted": True}
+
             # Day -1 (Only if still low yield)
             if len(all_unique_routes) < 5:
                 # Don't suggest past dates if searching for today
@@ -188,6 +199,11 @@ class SearchService:
                             r.metadata["day_offset"] = -1
                             r.metadata["alt_reason"] = f"Alternative: Available on {(dt - timedelta(days=1)).strftime('%b %d')}"
                             all_unique_routes[r.journey_id] = r
+        
+        # [Subtask 1.5] Disconnection Check 3
+        if request and await request.is_disconnected():
+            return {"journeys": [], "aborted": True}
+
         # [6.2] Hub-Only Routing Fallback (Zero Yield)
         if len(all_unique_routes) == 0:
             logger.info(f"Zero yield for {source}->{destination}. Triggering Hub Fallback [6.4].")

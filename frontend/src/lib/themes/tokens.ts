@@ -2,7 +2,7 @@
  * Design theme identifiers.
  * Add new theme ids here and define their CSS variables in index.css under [data-theme="<id>"].
  */
-export type ThemeId = "default" | "premium" | "trust";
+export type ThemeId = "premium" | "trust" | "default";
 
 export const THEME_IDS: readonly ThemeId[] = ["default", "premium", "trust"] as const;
 

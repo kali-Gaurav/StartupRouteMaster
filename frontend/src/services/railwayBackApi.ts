@@ -100,8 +100,11 @@ export interface BackendJourney {
   total_distance?: number;
   availability_status?: string;
   reliability_score?: number;
+  reliability_badge?: 'green' | 'yellow' | 'red';
   num_transfers: number;
+  is_locked?: boolean;
   legs?: BackendJourneyLeg[];
+  metadata?: Record<string, any>;
 }
 
 export interface BackendRoutesResponse {
@@ -258,6 +261,8 @@ export function mapBackendRoutesToRoutes(
       totalDistance: j.total_distance ?? 0,
       liveFareTotal: j.total_cost ?? 0,
       seatProbability: j.reliability_score ?? 0.85,
+      reliabilityBadge: j.reliability_badge, // [NEW]
+      isLocked: j.is_locked ?? true, // [NEW]
       safetyScore: 100,
     });
   });

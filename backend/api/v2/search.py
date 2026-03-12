@@ -68,6 +68,7 @@ async def unified_search(
 
 @router.get("/stream")
 async def streaming_search(
+    request: Request,
     source: str,
     destination: str,
     date: str,
@@ -75,14 +76,27 @@ async def streaming_search(
     db: Session = Depends(get_db)
 ):
     """
-    Server-Sent Events (SSE) endpoint for streaming search results.
+    [Subtask 1.6] Enhanced SSE endpoint with robust exception capturing.
     """
     search_svc = SearchService(db)
 
     async def event_generator():
-        async for chunk in search_svc.search_routes_stream(source, destination, date, budget):
-            yield f"data: {json.dumps(chunk)}\n\n"
-            await asyncio.sleep(0.01)
+        try:
+            async for chunk in search_svc.search_routes_stream(source, destination, date, budget):
+                # 1. Disconnection Check
+                if await request.is_disconnected():
+                    logger.info("🛑 Streaming aborted: Client disconnected.")
+                    break
+                
+                # 2. Emit Data
+                yield f"data: {json.dumps(chunk)}\n\n"
+                await asyncio.sleep(0.01)
+                
+        except Exception as e:
+            logger.error(f"❌ Streaming Error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+        finally:
+            logger.info(f"Stream closed for {source}->{destination}")
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

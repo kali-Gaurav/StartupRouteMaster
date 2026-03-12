@@ -142,11 +142,9 @@ async def initialize_database_pools():
         _SessionTransit = sessionmaker(autocommit=False, autoflush=False, bind=engine_transit)
         _SessionAuth = sessionmaker(autocommit=False, autoflush=False, bind=engine_auth)
         
-        # Public Pointers (For backward compatibility with sync imports)
-        SessionUser = _SessionUser
-        SessionTransit = _SessionTransit
-        SessionAuth = _SessionAuth
-        SessionLocal = _SessionUser
+        # [9.1] Public Pointers MUST remain as Proxies
+        # We do not overwrite SessionUser/SessionTransit here.
+        # They were already assigned to AtomicSessionFactoryProxy at module level.
 
         AsyncSessionUser = sessionmaker(async_engine_user, class_=AsyncSession, expire_on_commit=False)
         AsyncSessionTransit = sessionmaker(async_engine_transit, class_=AsyncSession, expire_on_commit=False)
@@ -200,27 +198,49 @@ async def run_pool_scaler():
 async def run_connection_reaper():
     """
     Subtask 4.7: Memory-Aware Connection Reaper.
-    Hardened: Only fires at 94% RAM to avoid premature pool clearing.
+    Hardened: Fires at 90% RAM to avoid system-wide OOM.
+    Also disposes idle connections every 10 minutes regardless of pressure.
     """
     import psutil
     last_reap = 0
+    last_periodic_clear = time.time()
+    
     while True:
         await asyncio.sleep(30)
         if not _pools_initialized: continue
         
         try:
             mem = psutil.virtual_memory()
-            # Only reap if critical and at least 5 mins since last time
-            if mem.percent > 94 and (time.time() - last_reap) > 300:
-                logger.warning(f"🚨 Memory Critical ({mem.percent}%). Reaping idle DB connections...")
-                if async_engine_user: await async_engine_user.dispose()
-                if async_engine_transit: await async_engine_transit.dispose()
-                if async_engine_auth: await async_engine_auth.dispose()
-                last_reap = time.time()
+            now = time.time()
+            
+            # 1. Critical Reap (OOM Prevention)
+            if mem.percent > 90 and (now - last_reap) > 120:
+                logger.warning(f"🚨 Memory Critical ({mem.percent}%). Reaping all DB pools...")
+                await _dispose_all_pools()
+                last_reap = now
                 from core.metrics import jit_metrics
                 jit_metrics.reaper_events += 1
+            
+            # 2. Periodic Maintenance (Hygiene)
+            elif (now - last_periodic_clear) > 600:
+                logger.info("🧹 Periodic Pool Maintenance: Disposing idle connections.")
+                await _dispose_all_pools()
+                last_periodic_clear = now
+                
         except Exception as e:
             logger.error(f"Reaper Error: {e}")
+
+async def _dispose_all_pools():
+    """Helper to dispose all active database engines."""
+    try:
+        if async_engine_user: await async_engine_user.dispose()
+        if async_engine_transit: await async_engine_transit.dispose()
+        if async_engine_auth: await async_engine_auth.dispose()
+        if engine_user: engine_user.dispose()
+        if engine_transit: engine_transit.dispose()
+        if engine_auth: engine_auth.dispose()
+    except Exception as e:
+        logger.error(f"Error during pool disposal: {e}")
 
 # --- Dependency Injectors ---
 

@@ -58,6 +58,7 @@ class AsyncTrafficAnalyzer:
         if self.worker_task is None or self.worker_task.done():
             self.worker_task = asyncio.create_task(self._telemetry_worker())
 
+        profile = None
         try:
             profile = TrafficProfile(scope)
             self.buffer.append(profile)
@@ -66,7 +67,13 @@ class AsyncTrafficAnalyzer:
         except Exception:
             pass
 
-        await self.app(scope, receive, send)
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # [9.6] We could capture status here if needed
+                pass
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
     async def _telemetry_worker(self):
         while True:

@@ -450,7 +450,6 @@ class Stop(TransitBase):
     state = Column(String(255))
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    platform_count = Column(Integer, nullable=True)
     data_quality_score = Column(Integer, default=0)
     
     stop_times = relationship("StopTime", back_populates="stop")
@@ -466,17 +465,16 @@ class Route(TransitBase):
 
 class Calendar(TransitBase):
     __tablename__ = "calendar"
-    id = Column(Integer, primary_key=True)
-    service_id = Column(String(100), unique=True, index=True)
-    monday = Column(Boolean, default=True)
-    tuesday = Column(Boolean, default=True)
-    wednesday = Column(Boolean, default=True)
-    thursday = Column(Boolean, default=True)
-    friday = Column(Boolean, default=True)
-    saturday = Column(Boolean, default=True)
-    sunday = Column(Boolean, default=True)
-    start_date = Column(Date)
-    end_date = Column(Date)
+    service_id = Column(String(100), primary_key=True, index=True)
+    monday = Column(Integer, default=1)
+    tuesday = Column(Integer, default=1)
+    wednesday = Column(Integer, default=1)
+    thursday = Column(Integer, default=1)
+    friday = Column(Integer, default=1)
+    saturday = Column(Integer, default=1)
+    sunday = Column(Integer, default=1)
+    start_date = Column(String(20))
+    end_date = Column(String(20))
 
 class CalendarDate(TransitBase):
     __tablename__ = "calendar_dates"

@@ -88,8 +88,8 @@ class UltraTurboDirectEngine:
 
     async def _find_routes_inner(
         self, 
-        source_code: str, 
-        dest_code: str, 
+        source_code: Any, 
+        dest_code: Any, 
         travel_date: date, 
         limit: int,
         start_ts: float
@@ -97,8 +97,10 @@ class UltraTurboDirectEngine:
         """
         [3.7, 3.11, 3.13] Optimized Direct Route Engine.
         """
-        # [3.13] Same Station Protection
-        if source_code.upper().strip() == dest_code.upper().strip():
+        # [3.13] Same Station Protection (Handle both str and int)
+        s_norm = str(source_code).upper().strip()
+        d_norm = str(dest_code).upper().strip()
+        if s_norm == d_norm:
             return []
 
         results = []

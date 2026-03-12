@@ -51,7 +51,8 @@ async def search_routes_endpoint(
             budget_category=search_request.budget,
             limit=limit,
             session_id=search_request.session_id,
-            client_ip=request.client.host
+            client_ip=request.client.host,
+            request=request
         )
 
         if not result or not result.get("journeys"):

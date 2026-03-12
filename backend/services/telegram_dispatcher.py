@@ -67,18 +67,29 @@ class TelegramDispatcher:
             return False
 
     async def send_welcome(self, chat_id: Union[str, int]):
-        """Task 33.6: Welcome message for new subscribers."""
+        """Task 33.6: Welcome message with suggestion buttons (Tony Stark Style)."""
         welcome = (
-            "🚀 <b>Welcome to RouteMaster V2!</b>\n\n"
-            "I will send you instant notifications for your bookings and PNR updates.\n\n"
-            "<b>Commands:</b>\n"
-            "/last - Fetch your most recent ticket\n"
-            "/help - Get usage guide"
+            "🚀 <b>J.A.R.V.I.S / Rail Assistant Online</b>\n\n"
+            "Systems operational. I am your advanced AI travel companion.\n\n"
+            "How can I assist you with your logistics today?"
         )
+        
+        # Mirroring web chatbot "Button Pattern" for Telegram
+        reply_markup = {
+            "keyboard": [
+                [{"text": "🎫 Book Ticket"}, {"text": "🔍 Search Trains"}],
+                [{"text": "📊 Dashboard"}, {"text": "📜 My Bookings"}],
+                [{"text": "🚨 SOS Emergency"}, {"text": "❓ Help"}]
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False
+        }
+        
         return await self._api_request("sendMessage", {
             "chat_id": chat_id,
             "text": welcome,
-            "parse_mode": "HTML"
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
         })
 
     async def _api_request(self, method: str, payload: Dict[str, Any]):

@@ -1,5 +1,5 @@
 import { TrainIcon } from "@/components/icons/TrainIcon";
-import { Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut } from "lucide-react";
+import { Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut, Sun, Moon } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -13,7 +13,7 @@ export function Navbar() {
   const [themeOpen, setThemeOpen] = useState(false);
   const themeRef = useRef<HTMLDivElement>(null);
   const { isAuthenticated, logout } = useAuth();
-  const { theme, setTheme, rotationDisabled, setRotationDisabled } = useTheme();
+  const { theme, setTheme, mode, setMode, rotationDisabled, setRotationDisabled } = useTheme();
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -98,7 +98,23 @@ export function Navbar() {
               </button>
               {themeOpen && (
                 <div className="absolute right-0 top-full mt-1 py-2 w-52 rounded-lg border border-border bg-card shadow-lg z-50 animate-fade-in">
-                  <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">Theme</div>
+                  <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">Appearance</div>
+                  <div className="px-2 py-1 flex gap-1">
+                    <button
+                      onClick={() => setMode("light")}
+                      className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-md text-sm transition-colors ${mode === "light" ? "bg-primary/10 text-primary" : "hover:bg-muted"}`}
+                    >
+                      <Sun className="w-4 h-4" /> Light
+                    </button>
+                    <button
+                      onClick={() => setMode("dark")}
+                      className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-md text-sm transition-colors ${mode === "dark" ? "bg-primary/10 text-primary" : "hover:bg-muted"}`}
+                    >
+                      <Moon className="w-4 h-4" /> Dark
+                    </button>
+                  </div>
+                  
+                  <div className="mt-2 px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider border-t border-border">Theme</div>
                   {THEME_IDS.map((id) => (
                     <button
                       key={id}
@@ -115,7 +131,7 @@ export function Navbar() {
                       checked={!rotationDisabled}
                       onChange={(e) => setRotationDisabled(!e.target.checked)}
                     />
-                    Rotate hourly
+                    Rotate theme hourly
                   </label>
                 </div>
               )}
@@ -163,20 +179,42 @@ export function Navbar() {
                 <LogOut className="w-4 h-4" /> Sign Out
               </button>
             )}
-            <div className="pt-2 border-t border-border">
-              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Theme</div>
-              <div className="flex flex-wrap gap-2">
-                {THEME_IDS.map((id) => (
+            
+            <div className="pt-2 border-t border-border space-y-4">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Appearance</div>
+                <div className="flex gap-2">
                   <button
-                    key={id}
-                    type="button"
-                    onClick={() => { setTheme(id as ThemeId); setRotationDisabled(true); }}
-                    className={`px-3 py-1.5 rounded-lg text-sm ${theme === id ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}
+                    onClick={() => setMode("light")}
+                    className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg text-sm border ${mode === "light" ? "bg-primary/10 border-primary text-primary" : "bg-muted border-transparent"}`}
                   >
-                    {THEME_LABELS[id]}
+                    <Sun className="w-4 h-4" /> Light
                   </button>
-                ))}
+                  <button
+                    onClick={() => setMode("dark")}
+                    className={`flex-1 flex items-center justify-center gap-2 p-2 rounded-lg text-sm border ${mode === "dark" ? "bg-primary/10 border-primary text-primary" : "bg-muted border-transparent"}`}
+                  >
+                    <Moon className="w-4 h-4" /> Dark
+                  </button>
+                </div>
               </div>
+
+              <div>
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Theme</div>
+                <div className="flex flex-wrap gap-2">
+                  {THEME_IDS.map((id) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => { setTheme(id as ThemeId); setRotationDisabled(true); }}
+                      className={`px-3 py-1.5 rounded-lg text-sm border ${theme === id ? "bg-primary border-primary text-primary-foreground" : "bg-muted border-transparent text-foreground"}`}
+                    >
+                      {THEME_LABELS[id]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <label className="flex items-center gap-2 mt-2 text-sm text-foreground">
                 <input
                   type="checkbox"

@@ -62,7 +62,7 @@ interface Badge {
 
 const MiniAppProfile = () => {
   const navigate = useNavigate();
-  const { theme, toggleTheme } = useTheme(); // [50.2]
+  const { theme, isDarkMode, toggleMode } = useTheme(); // [50.2]
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -433,15 +433,15 @@ const MiniAppProfile = () => {
           </CardHeader>
           <CardContent className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {theme === "dark" ? <Moon className="h-5 w-5 text-indigo-400" /> : <Sun className="h-5 w-5 text-amber-500" />}
+              {isDarkMode ? <Moon className="h-5 w-5 text-indigo-400" /> : <Sun className="h-5 w-5 text-amber-500" />}
               <div>
                 <p className="text-sm font-semibold">Dark Mode</p>
                 <p className="text-xs text-slate-500">Easier on the eyes at night</p>
               </div>
             </div>
             <Switch 
-              checked={theme === "dark"} 
-              onCheckedChange={toggleTheme} 
+              checked={isDarkMode} 
+              onCheckedChange={toggleMode} 
             />
           </CardContent>
         </Card>

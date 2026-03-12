@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 
 from .constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, TransferConnection
+from core.data_structures import Route, RouteSegment, TransferConnection, Persona
 from .turbo_router import TurboRouter
 from .ultra_turbo import UltraTurboDirectEngine
 from .raptor import OptimizedRAPTOR
@@ -67,33 +67,28 @@ class UnifiedRoutingOrchestrator:
         graph = await self.engine._get_current_graph(departure_date)
         self.fast_router.graph = graph
 
-        # 3. Dynamic Depth Management (New Upgrade)
-        # We start with balanced transfers but push to 3 if Tier 0/1 are empty
-        max_t = 2 if len(hub_results) > 2 else 3
+        # 3. Dynamic Depth Management
+        # [6.4] Enforce max_transfers constraint
+        max_t = min(constraints.max_transfers or 3, 3)
         self.raptor.max_transfers = max_t
 
-        # 4. RUN ALL ENGINES IN PARALLEL (Using High-Capacity Pool)
-        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code} (Max Transfers: {max_t})")
+        # 4. RUN ALL ENGINES IN PARALLEL
+        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code}")
         loop = asyncio.get_running_loop()
 
-        # Tier 1: Turbo (SQL)
+        # [6.1] Stable Worker Management
+        # Ensure TurboRouter uses the pool correctly
         t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
-
-        # Tier 0: Ultra-Turbo (Raw SQL Direct)
         t0_task = self.ultra_turbo.find_routes(source_stop.id, dest_stop.id, departure_date.date(), limit)
-
-        # Tier 2: FastPath (O(1) BFS)
         t2_task = loop.run_in_executor(ROUTING_POOL, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
-
-        # Tier 3: RAPTOR (Deep Discovery)
         t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
 
+        # [6.11] Graceful Exception Handling
         results_gathered = await asyncio.gather(t1_task, t0_task, t2_task, t3_task, return_exceptions=True)
         
-        # Unpack results safely (Task 2.10)
         def safe_get(res, default):
             if isinstance(res, Exception):
-                logger.error(f"Engine execution failed: {res}")
+                logger.error(f"Engine failure: {type(res).__name__}: {res}")
                 return default
             return res
 
@@ -105,23 +100,78 @@ class UnifiedRoutingOrchestrator:
         # 5. CONSOLIDATE & UNION
         all_routes: List[Route] = []
         all_routes.extend(hub_results)
-        all_routes.extend(ultra_res) # Ultra-Turbo Direct
+        all_routes.extend(ultra_res)
         all_routes.extend(self._hydrate_turbo_results(turbo_raw, source_code, destination_code))
         all_routes.extend(fast_res)
         all_routes.extend(raptor_res)
 
-        # 6. UNIVERSAL FARE HYDRATION & SCORING
-        # [8.3] Graph Pruning: Filter out cancelled trains
-        unique_routes = await self._filter_cancelled_trains(all_routes, departure_date, db)
-        unique_routes = self._global_deduplicate(unique_routes)
+        # [6.14] Filter Time-Travelers
+        all_routes = [r for r in all_routes if self._is_valid_route(r)]
+
+        # 6. DEDUPLICATE, HYDRATE & SCORE
+        # [6.3] Deep Deduplication inside this method
+        unique_routes = self._global_deduplicate(all_routes)
+        
+        # [6.5] Fixed Hydration Loop
         await self._hydrate_fares_and_score(unique_routes, constraints, graph, db)
 
-        unique_routes.sort(key=lambda x: x.score)
+        # [6.7] Multi-Persona Sorting
+        if constraints.persona == Persona.BUDGET or constraints.persona == Persona.ECONOMY:
+            unique_routes.sort(key=lambda x: (x.total_cost, x.total_duration))
+        elif constraints.persona == Persona.EMERGENCY:
+            unique_routes.sort(key=lambda x: (x.total_duration, x.total_cost))
+        else:
+            unique_routes.sort(key=lambda x: x.score)
 
         latency = (time.perf_counter() - start_time) * 1000
         logger.info(f"Orchestrator: Found {len(unique_routes)} unified routes in {latency:.2f}ms")
 
+        # [6.16] Cap Payload
         return unique_routes[:limit]
+
+    def _is_valid_route(self, route: Route) -> bool:
+        """[6.14] Filter out Time-Travel routes (Arrival < Departure)."""
+        if not route.segments: return False
+        for s in route.segments:
+            if s.arrival_time <= s.departure_time:
+                return False
+        return True
+
+    def _global_deduplicate(self, routes: List[Route]) -> List[Route]:
+        """[6.2, 6.3] Deep Sequence Dedup + Pareto."""
+        if not routes: return []
+        
+        # 1. Deep Sequence Deduplication (ID + Stop Sequence)
+        # Using a hash of train numbers and station codes
+        unique_paths = {}
+        for r in routes:
+            path_key = "|".join([f"{s.train_number}:{s.departure_stop_id}->{s.arrival_stop_id}" for s in r.segments])
+            if path_key not in unique_paths or r.total_duration < unique_paths[path_key].total_duration:
+                unique_paths[path_key] = r
+        
+        candidates = list(unique_paths.values())
+        if len(candidates) <= 1: return candidates
+
+        # 2. Pareto Frontier Pruning
+        import numpy as np
+        from utils.algo_utils import find_pareto_frontier
+        
+        # Dimensions: [Arrival Time, Score (lower better for Pareto), Cost, Transfers]
+        # Since score is 'higher is better' in Scorer, we negate it or use 100-score
+        data = np.array([
+            [
+                r.segments[-1].arrival_time.timestamp(),
+                100.0 - r.score,
+                r.total_cost,
+                len(r.transfers)
+            ]
+            for r in candidates
+        ], dtype=np.float64)
+        
+        mask = find_pareto_frontier(data)
+        final_list = [candidates[i] for i in range(len(candidates)) if mask[i]]
+        
+        return final_list
     async def _filter_cancelled_trains(self, routes: List[Route], date: datetime, db) -> List[Route]:
         """[8.3] Filters out routes containing trains marked as cancelled."""
         try:
@@ -183,7 +233,9 @@ class UnifiedRoutingOrchestrator:
                     train_number=str(t['tid'])
                 )
                 rt.add_segment(seg)
+                # [6.13] Inject engine-source metadata
                 rt.metadata["engine"] = "hub_tier_0"
+                rt.metadata["tier"] = 0
                 results.append(rt)
             return results
         except Exception as e:
@@ -228,43 +280,46 @@ class UnifiedRoutingOrchestrator:
             # [38.3] Multi-leg fare optimization
             is_multi = len(r.segments) > 1
             total_dist = 0.0
+            total_travel_dur = 0
             
             for s in r.segments:
-                # [FIX] Ensure duration is calculated if missing
+                # [6.9] Ensure segment duration is accurate
                 if not s.duration_minutes or s.duration_minutes <= 0:
-                    try:
-                        # Attempt to parse time strings if needed
-                        s.duration_minutes = 120 
-                    except: s.duration_minutes = 60
+                    s.duration_minutes = int((s.arrival_time - s.departure_time).total_seconds() / 60)
+                
+                total_travel_dur += s.duration_minutes
 
-                # If distance is missing, estimate from duration (avg speed 55 km/h)
+                # [6.6] Global Distance Lookup Fallback
                 if not s.distance_km or s.distance_km < 1.0:
-                    s.distance_km = round(s.duration_minutes * 0.916, 2)
+                    try:
+                        sql = "SELECT distance_km FROM segments WHERE source_stop_id = :s AND dest_station_id = :d LIMIT 1"
+                        dist_row = db.execute(text(sql), {"s": s.departure_stop_id, "d": s.arrival_stop_id}).fetchone()
+                        if dist_row: s.distance_km = float(dist_row[0])
+                        else: s.distance_km = round(s.duration_minutes * 0.916, 2)
+                    except:
+                        s.distance_km = round(s.duration_minutes * 0.916, 2)
                 
                 total_dist += s.distance_km
 
-            # [FIX] Calculate total fare using cumulative distance for the entire journey
+            # [6.9] Total Duration = inclusive of all wait times
+            if r.segments:
+                r.total_duration = int((r.segments[-1].arrival_time - r.segments[0].departure_time).total_seconds() / 60)
+            
+            # [7.2] Total journey distance for telescopic fare
             effective_total_dist = max(total_dist, 50.0)
             
-            primary_train = r.segments[0].train_number
-            db_base_fare = fare_map.get(str(primary_train))
-            
-            if db_base_fare and not is_multi:
-                r.total_cost = float(db_base_fare)
-            else:
-                fare_res = calculate_fare(effective_total_dist, "SL", is_multi_leg=is_multi)
-                r.total_cost = fare_res["total_fare"]
-            
+            # [7.13] Proportionally split telescopic fare
+            coach_pref = constraints.preferred_class or "SL"
+            fare_res = calculate_fare(effective_total_dist, coach_pref, is_tatkal=constraints.quota == "TQ", db=db)
+            r.total_cost = fare_res["total_fare"]
             r.total_distance = total_dist
 
             for s in r.segments:
                 if total_dist > 0:
+                    # Proportion based on distance (Standard Telescopic Distribution)
                     s.fare = round((s.distance_km / total_dist) * r.total_cost, 2)
                 else:
                     s.fare = round(r.total_cost / len(r.segments), 2)
-            
-            if is_multi and total_dist > 1000:
-                r.total_cost = round(r.total_cost * 0.98, 2)
             
             r.total_duration = sum(s.duration_minutes for s in r.segments) + sum(t.duration_minutes for t in r.transfers)
             r.score = await RouteScorer.score_route(r, constraints, getattr(graph.snapshot, 'reliability_scores', {}))
@@ -364,17 +419,25 @@ class UnifiedRoutingOrchestrator:
         
         initial_list = list(unique_map.values())
         
+        from core.data_structures import ensure_datetime
+        
         # 2. Second Pass: Pareto Optimization
         # Dimensions: [Arrival, Score, Cost, Transfers]
-        data = np.array([
-            [
-                r.segments[-1].arrival_time.timestamp() if r.segments else 0,
+        data = []
+        for r in initial_list:
+            if not r.segments:
+                data.append([0, r.score, r.total_cost, len(r.transfers)])
+                continue
+            
+            arrival_dt = ensure_datetime(r.segments[-1].arrival_time)
+            data.append([
+                arrival_dt.timestamp(),
                 r.score,
                 r.total_cost,
                 len(r.transfers)
-            ]
-            for r in initial_list
-        ], dtype=np.float64)
+            ])
+            
+        data = np.array(data, dtype=np.float64)
         
         mask = find_pareto_frontier(data)
         final_list = [initial_list[i] for i in range(len(initial_list)) if mask[i]]
