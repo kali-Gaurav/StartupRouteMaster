@@ -7,8 +7,9 @@ import asyncio
 import json
 import logging
 import uuid
+import time
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Any, Set, Tuple, Union
+from typing import Dict, List, Optional, Any, Set, Tuple, Union, Callable
 from dataclasses import dataclass, asdict
 from collections import OrderedDict
 import hashlib
@@ -85,10 +86,13 @@ class LRUCache:
         self.cache.move_to_end(key)
         return self.cache[key]
 
-    def put(self, key: str, value: Any):
+    def put(self, key: str, value: Any, dynamic_limit: Optional[int] = None):
         if key in self.cache: self.cache.move_to_end(key)
         self.cache[key] = value
-        if len(self.cache) > self.capacity: self.cache.popitem(last=False)
+        
+        limit = dynamic_limit or self.capacity
+        while len(self.cache) > limit:
+            self.cache.popitem(last=False)
 
     def delete(self, key: str):
         self.cache.pop(key, None)
@@ -99,19 +103,61 @@ class LRUCache:
 class MultiLayerCache:
     def __init__(self):
         self.redis: Optional[Any] = None
-        self.lru = LRUCache(capacity=1000) # Increased capacity
+        self.lru = LRUCache(capacity=1000) 
         self.metrics = {
             'query_cache': CacheMetrics(),
             'lru_cache': CacheMetrics(),
             'infrastructure_cache': CacheMetrics()
         }
-        self.l1_ttl = 300 # Added for Subtask 6.1/6.3
+        self.l1_ttl = 300 
         self._initialized = False
         self._pubsub_task = None
+        self._l2_latency_ms = 0.0
+        self._l2_disabled_until = 0.0
+        self._xfetch_beta = 1.0 # Subtask 3.3: Probabilistic recomputation
         
         # Subtask 6.1 & 6.3: Warmup & Hierarchical Logic
         from .cache_warmup import CacheWarmupOrchestrator
         self.warmup = CacheWarmupOrchestrator(self)
+
+    def _is_l2_available(self) -> bool:
+        """Subtask 3.2: Check if L2 (Redis) is healthy and fast enough."""
+        if not self.redis: return False
+        if time.time() < self._l2_disabled_until:
+            return False
+        return True
+
+    async def _measure_l2_latency(self):
+        """Measures Redis PING latency and disables L2 if too slow."""
+        if not self.redis: return
+        try:
+            start = time.perf_counter()
+            await self.redis.ping()
+            latency = (time.perf_counter() - start) * 1000
+            self._l2_latency_ms = (0.7 * self._l2_latency_ms) + (0.3 * latency)
+            
+            if self._l2_latency_ms > 50: # Threshold: 50ms
+                logger.warning(f"🐢 Redis Latency High ({self._l2_latency_ms:.2f}ms). Bypassing L2 for 30s.")
+                self._l2_disabled_until = time.time() + 30
+        except:
+            self._l2_disabled_until = time.time() + 10 # Disable briefly on error
+
+    def _get_l1_capacity(self) -> int:
+        """
+        Subtask 3.1: Dynamic L1 Capacity based on available VPS RAM.
+        """
+        import psutil
+        try:
+            available_mb = psutil.virtual_memory().available / 1024 / 1024
+            if available_mb < 200:
+                return 500 # RAM Critical
+            if available_mb < 500:
+                return 1000 # RAM Low
+            if available_mb > 1000:
+                return 5000 # Plenty of RAM
+            return 2000 # Standard
+        except:
+            return 1000 # Fallback
 
     async def prewarm_top_routes(self):
         """
@@ -126,33 +172,74 @@ class MultiLayerCache:
             await self.warmup.trigger_warmup(f"hub_meta:{hub}", {"name": hub, "status": "active"}, priority="L2")
         logger.info(f"✅ Cache: Pre-warmed {len(top_hubs)} major hubs.")
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Unified Get with Warmup Miss Recording."""
-        # L1 check
-        val = self.lru.get(key)
-        if val: return val
+    async def get(self, key: str, refresh_callback: Optional[Callable] = None) -> Optional[Any]:
+        """
+        Unified Get with Subtask 3.3: XFetch and Subtask 3.6: Stale-While-Revalidate.
+        Returns stale data during recomputation to eliminate latency.
+        """
+        import math
+        import random
+
+        # Layer 0: L1 check
+        cached_item = self.lru.get(key)
         
-        # L2 check
-        if self.redis:
-            data = await self.redis.get(key)
-            if data:
-                # Subtask 6.3: Tiered Hydration (L2 -> L1)
-                try:
-                    res = json.loads(data.decode('utf-8'))
-                    self.lru.put(key, res)
-                    return res
-                except: return None
-        
-        # Subtask 6.1: Record Miss for Trending Analysis
-        self.warmup.record_miss(key)
-        return None
+        # If not in L1, check L2 (Redis) with Subtask 3.2 latency protection
+        if not cached_item and self._is_l2_available():
+            try:
+                from utils.compression import PayloadCompressor
+                data = await self.redis.get(key)
+                if data:
+                    # [Subtask 3.4] Transparent Decompression
+                    cached_item = PayloadCompressor.decompress(data)
+                    if cached_item:
+                        self.lru.put(key, cached_item, dynamic_limit=self._get_l1_capacity())
+            except: pass
+
+        if cached_item and isinstance(cached_item, dict) and "xf_expiry" in cached_item:
+            # logger.debug(f"DEBUG SWR: Found envelope for {key}")
+            val = cached_item["value"]
+            expiry = cached_item["xf_expiry"]
+            delta = cached_item.get("xf_delta", 1.0)
+            
+            # XFetch Algorithm
+            if (time.time() - (delta * self._xfetch_beta * math.log(random.random()))) > expiry:
+                # [Subtask 3.6] Stale-While-Revalidate
+                if refresh_callback:
+                    logger.info(f"🔄 SWR: Triggering background refresh for {key}")
+                    asyncio.create_task(refresh_callback())
+                
+                # If not hard expired, return stale value
+                if time.time() < (expiry + 300): # Allow up to 5 min stale
+                    return val
+                return None # Hard expired
+            
+            return val
+
+        return cached_item
 
     async def put(self, key: str, value: Any, ttl: int = 300):
-        """Unified Put."""
-        self.lru.put(key, value)
-        if self.redis:
+        """Unified Put with dynamic L1 limit, XFetch envelope and compression."""
+        start = time.perf_counter()
+        
+        # 1. Wrap in XFetch envelope
+        xf_item = {
+            "value": value,
+            "xf_expiry": time.time() + ttl,
+            "xf_delta": 0.0 
+        }
+        
+        # 2. Store raw envelope in L1 (RAM is fast, no need to compress)
+        self.lru.put(key, xf_item, dynamic_limit=self._get_l1_capacity())
+        
+        # 3. Store compressed envelope in L2 (Redis)
+        if self._is_l2_available():
             try:
-                await self.redis.setex(key, ttl, json.dumps(value, default=str))
+                from utils.compression import PayloadCompressor
+                # Estimate generation time delta
+                xf_item["xf_delta"] = (time.perf_counter() - start) * 1000
+                
+                payload, was_compressed = PayloadCompressor.compress(xf_item)
+                await self.redis.setex(key, ttl + 60, payload)
             except: pass
 
     async def initialize(self):
@@ -164,13 +251,13 @@ class MultiLayerCache:
                 self._initialized = True
                 return
 
-            # Task 7: Robust Connection Settings for Cloud (Upstash/GCP/AWS)
+            # Task 7: Robust Connection Settings
             redis_lib = _get_redis_module()
             self.redis = redis_lib.Redis.from_url(
                 redis_url, 
                 decode_responses=False, 
                 ssl_cert_reqs=None,
-                max_connections=20, # [2.11] Connection pooling limit
+                max_connections=20,
                 socket_timeout=5.0,
                 socket_connect_timeout=5.0,
                 retry_on_timeout=True,
@@ -178,6 +265,13 @@ class MultiLayerCache:
             )
             await self.redis.ping()
             
+            # Start Latency Monitor (Subtask 3.2)
+            async def run_monitor():
+                while True:
+                    await self._measure_l2_latency()
+                    await asyncio.sleep(10)
+            asyncio.create_task(run_monitor())
+
             # Suggestion #26: Memory Policies
             try:
                 await self.redis.config_set("maxmemory-policy", "allkeys-lru")
@@ -245,7 +339,7 @@ class MultiLayerCache:
         data = await self.redis.get(key)
         if data:
             res = json.loads(data.decode('utf-8'))
-            self.lru.put(key, res)
+            self.lru.put(key, res, dynamic_limit=self._get_l1_capacity())
             self.metrics['query_cache'].hits += 1
             CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
             return res
@@ -269,7 +363,7 @@ class MultiLayerCache:
 
     async def set_route_query(self, query: RouteQuery, result: Dict, ttl_minutes: int = 5):
         key = query.cache_key()
-        self.lru.put(key, result)
+        self.lru.put(key, result, dynamic_limit=self._get_l1_capacity())
         from utils.metrics import CACHE_OPERATIONS_TOTAL
         CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='set', result='success').inc()
         
@@ -295,7 +389,7 @@ class MultiLayerCache:
         data = await self.redis.get(key)
         if data:
             res = json.loads(data.decode('utf-8'))
-            self.lru.put(key, res)
+            self.lru.put(key, res, dynamic_limit=self._get_l1_capacity())
             self.metrics['query_cache'].hits += 1
             CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
             return res
@@ -306,7 +400,7 @@ class MultiLayerCache:
 
     async def set_availability(self, query: AvailabilityQuery, result: Dict, ttl: int = 300):
         key = query.cache_key()
-        self.lru.put(key, result)
+        self.lru.put(key, result, dynamic_limit=self._get_l1_capacity())
         from utils.metrics import CACHE_OPERATIONS_TOTAL
         CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='set', result='success').inc()
         if self.redis:

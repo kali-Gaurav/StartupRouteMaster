@@ -2,6 +2,9 @@ import logging
 import sys
 import os
 import asyncio
+import secrets
+import time
+import anyio
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Dict, Any
@@ -10,6 +13,7 @@ from typing import Dict, Any
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, Request, HTTPException
+from starlette.types import ASGIApp, Scope, Receive, Send
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +22,7 @@ from starlette.responses import JSONResponse
 # --- JIT & Profiling Services ---
 from services.jit_manager import jit_manager
 from core.middleware.traffic_profiler import AsyncTrafficAnalyzer
+from core.orchestrator import orchestrator
 
 # --- Logging Setup ---
 from utils.structured_logging import setup_logging
@@ -52,50 +57,55 @@ async def load_ml_models():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. Register DAG
+    # 1. Register JIT Nodes
     jit_manager.register_node("DATABASE", [], load_database)
     jit_manager.register_node("CACHE", [], load_cache)
     jit_manager.register_node("GRAPH", ["DATABASE", "CACHE"], load_route_engine)
     jit_manager.register_node("ML_MODELS", ["DATABASE"], load_ml_models)
     
-    # 2. Start Background Services
+    # 2. Register Background Services with Orchestrator
     from services.feedback_loop import feedback_loop
     from services.behavior_tracker import behavior_tracker
-    from services.prediction_hub import prediction_hub
-    from database.session import run_pool_scaler, run_connection_reaper
+    from database.session import run_pool_scaler, run_connection_reaper, run_ghost_connection_killer
     from core.metrics import run_event_loop_monitor, run_hardware_monitor
     from core.ml_models.loader import model_loader
-
     from services.multi_layer_cache import multi_layer_cache
     from utils.http_client import HttpClientManager
     
-    # 0. Global Http Client
+    # Core Infrastructure
     await HttpClientManager.get_session()
     
-    prediction_hub.start()
-    app.state.feedback_task = asyncio.create_task(feedback_loop.run_punishment_cycle())
-    app.state.behavior_task = asyncio.create_task(behavior_tracker.cleanup_idle_states())
-    app.state.pool_scaler_task = asyncio.create_task(run_pool_scaler())
-    app.state.reaper_task = asyncio.create_task(run_connection_reaper())
-    app.state.event_loop_task = asyncio.create_task(run_event_loop_monitor())
-    app.state.ml_eviction_task = asyncio.create_task(model_loader.run_eviction_worker())
-    app.state.cache_warmup_task = asyncio.create_task(multi_layer_cache.warmup.run_trending_analyzer())
+    # Orchestrate Tasks (Advanced 24/7 Management)
+    # Priority 0: Critical Monitors
+    orchestrator.register_task("event_loop_monitor", run_event_loop_monitor, priority=0)
+    orchestrator.register_task("hardware_monitor", run_hardware_monitor, priority=0)
+    
+    # Priority 1: Infrastructure Maintenance
+    orchestrator.register_task("db_pool_scaler", run_pool_scaler, priority=1)
+    orchestrator.register_task("db_conn_reaper", run_connection_reaper, priority=1)
+    orchestrator.register_task("db_ghost_killer", run_ghost_connection_killer, priority=1)
+    
+    # Priority 2: Background Logic & Analytics
+    orchestrator.register_task("feedback_punishment", feedback_loop.run_punishment_cycle, priority=2)
+    orchestrator.register_task("behavior_cleanup", behavior_tracker.cleanup_idle_states, priority=2)
+    orchestrator.register_task("ml_eviction", model_loader.run_eviction_worker, priority=2)
+    orchestrator.register_task("trending_analyzer", multi_layer_cache.warmup.run_trending_analyzer, priority=2)
+    
+    # Start all managed services
+    await orchestrator.bootstrap()
     
     # 3. Trigger Foundation Warmup
     asyncio.create_task(jit_manager.ensure_ready("DATABASE"))
     asyncio.create_task(jit_manager.ensure_ready("CACHE"))
     asyncio.create_task(multi_layer_cache.prewarm_top_routes())
     
-    logger.info("🚀 RouteMaster V2 Backend Online. JIT DAG Active.")
+    logger.info("🚀 RouteMaster V2 Backend Online. Managed via SystemOrchestrator.")
     yield
     
     # Clean Shutdown
-    prediction_hub.stop()
     from utils.http_client import HttpClientManager
     await HttpClientManager.close_session()
-    
-    if hasattr(app.state, "feedback_task"): app.state.feedback_task.cancel()
-    if hasattr(app.state, "behavior_task"): app.state.behavior_task.cancel()
+    await orchestrator.shutdown()
     await multi_layer_cache.aclose()
 
 # --- APP INITIALIZATION ---
@@ -108,6 +118,8 @@ app = FastAPI(
 )
 
 # --- MIDDLEWARE DEFINITIONS ---
+
+from utils.responses import SafeJSONResponse
 
 class ResilientGZipMiddleware:
     """Wrapper around GZipMiddleware to catch disconnected client errors."""
@@ -235,6 +247,266 @@ class UnifiedJITMiddleware:
             )
             return await response(scope, receive, send)
 
+class ConnectionLimiterMiddleware:
+    """
+    Subtask 1.14: ASGI Connection Limiter.
+    Caps total concurrent HTTP connections to prevent OS descriptor exhaustion.
+    """
+    def __init__(self, app: ASGIApp, max_connections: int = 1000):
+        self.app = app
+        self.max_connections = max_connections
+        self.active_connections = 0
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "")
+        is_priority = any(p in path for p in ["/api/sos", "/api/health", "/api/admin"])
+        
+        if not is_priority and self.active_connections >= self.max_connections:
+            logger.error(f"🚫 Connection Limit Reached ({self.active_connections}). Rejecting {path}")
+            response = SafeJSONResponse(
+                status_code=503,
+                content={
+                    "error": True,
+                    "message": "System is at peak capacity. Please try again in a few minutes.",
+                    "retry_after": 60
+                }
+            )
+            return await response(scope, receive, send)
+
+        self.active_connections += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.active_connections = max(0, self.active_connections - 1)
+
+class DynamicBodySizeMiddleware:
+    """
+    Subtask 1.19: Adaptive Body Size Limits.
+    Restricts request body size dynamically based on system load.
+    Prevents memory-exhaustion via large payloads during surges.
+    """
+    def __init__(self, app: ASGIApp, max_size_bytes: int = 1024 * 1024): # 1MB Default
+        self.app = app
+        self.max_size_bytes = max_size_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        from core.metrics import jit_metrics
+        path = scope.get("path", "")
+        
+        # Determine effective limit
+        effective_limit = self.max_size_bytes
+        if jit_metrics.is_overloaded:
+            effective_limit = 10 * 1024 # 10KB during surge
+        
+        # Check Content-Length header
+        headers = dict(scope.get("headers", []))
+        content_length = int(headers.get(b"content-length", 0))
+        
+        if content_length > effective_limit:
+            logger.warning(f"🚫 Payload Too Large: {content_length} bytes exceeds limit of {effective_limit} on {path}")
+            response = SafeJSONResponse(
+                status_code=413,
+                content={
+                    "error": True,
+                    "message": f"Request payload too large for current system load ({effective_limit} bytes max)."
+                }
+            )
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+class DropAllMiddleware:
+    """
+    Subtask 1.17: Emergency Kill Switch.
+    Blocks all non-emergency traffic when active.
+    Highest priority middleware.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        from core.orchestrator import orchestrator
+        path = scope.get("path", "")
+        
+        # 1. Check if kill switch is active
+        if await orchestrator.is_kill_switch_active():
+            # 2. Allow absolute bypass for emergency services only
+            is_emergency = any(p in path for p in ["/api/sos", "/api/health", "/api/admin"])
+            
+            if not is_emergency:
+                response = SafeJSONResponse(
+                    status_code=503,
+                    content={
+                        "error": True,
+                        "message": "System is temporarily unavailable due to an emergency lockdown.",
+                        "retry_after": 600
+                    }
+                )
+                return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+class MaintenanceMiddleware:
+    """
+    Subtask 1.12: Maintenance Mode.
+    Intercepts all requests when system is in maintenance.
+    Allows bypass for /api/health and /api/admin.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        from core.orchestrator import orchestrator
+        path = scope.get("path", "")
+        
+        # 1. Check if maintenance is active
+        if await orchestrator.is_in_maintenance():
+            # 2. Allow bypass routes
+            is_bypass = any(p in path for p in ["/api/health", "/api/admin", "/api/v2/admin"])
+            
+            # 3. Allow session-based bypass (active users finish their flow)
+            headers = dict(scope.get("headers", []))
+            has_session = b"session-id" in headers or b"x-session-id" in headers
+            
+            if not is_bypass and not has_session:
+                response = SafeJSONResponse(
+                    status_code=503,
+                    content={
+                        "error": True,
+                        "message": "System is currently under maintenance. We'll be back shortly!",
+                        "retry_after": 300
+                    }
+                )
+                return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+class ConnectionSheddingMiddleware:
+    """
+    Subtask 1.7: Connection Shedding.
+    Monitors RAM usage and drops non-priority connections if RAM > 90%.
+    Ultimate protection against OOM on small VPS.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        from core.metrics import jit_metrics
+        path = scope.get("path", "")
+        
+        # Priority bypass
+        if any(p in path for p in ["/api/sos", "/api/health", "/api/admin"]):
+            return await self.app(scope, receive, send)
+
+        if jit_metrics.ram_usage_percent > 90:
+            logger.error(f"🚨 RAM CRITICAL ({jit_metrics.ram_usage_percent}%): Shedding connection to {path}")
+            response = SafeJSONResponse(
+                status_code=503,
+                content={
+                    "error": True,
+                    "message": "System resource limits reached. Connection shed to prevent crash.",
+                    "retry_after": 30
+                }
+            )
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+class PriorityQueueMiddleware:
+    """
+    Subtask 1.6: Priority Queue System.
+    Uses a semaphore to limit active concurrent heavy requests.
+    Prioritizes emergency (SOS) and health traffic.
+    """
+    def __init__(self, app: ASGIApp, max_concurrent: int = 20):
+        self.app = app
+        self.semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "")
+        # Priority 0: Emergency/Internal
+        # Priority 1: Auth/Critical
+        # Priority 2: Standard Search/Heavy
+        is_priority_0 = any(p in path for p in ["/api/sos", "/api/health", "/api/metrics"])
+        
+        if is_priority_0:
+            # Bypass queue entirely for ultra-priority
+            return await self.app(scope, receive, send)
+
+        # Standard requests must acquire semaphore
+        try:
+            # If loop is laggy, we wait less time for a slot (fail fast)
+            from core.metrics import jit_metrics
+            wait_timeout = 2.0 if jit_metrics.event_loop_latency_ms > 50 else 5.0
+            
+            async with asyncio.timeout(wait_timeout):
+                async with self.semaphore:
+                    return await self.app(scope, receive, send)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(f"⏳ Priority Queue: Slot timeout for {path}. System at capacity.")
+            response = SafeJSONResponse(
+                status_code=503,
+                content={
+                    "error": True, 
+                    "message": "System is at peak capacity. Please retry in a few seconds.",
+                    "retry_after": 5
+                }
+            )
+            return await response(scope, receive, send)
+
+class SoftScalingMiddleware:
+    """
+    Subtask 1.5: Soft Scaling Middleware.
+    Sheds load based on real-time VPS CPU/Latency metrics.
+    Ensures priority routes (SOS) stay alive while search is throttled.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        from core.metrics import jit_metrics
+        path = scope.get("path", "")
+        
+        # 1. Check for extreme overload
+        # If latency > 200ms or CPU > 95%, we drop NON-PRIORITY traffic
+        is_priority = any(p in path for p in ["/api/sos", "/api/health", "/api/auth"])
+        
+        if jit_metrics.cpu_usage_percent > 95 or jit_metrics.event_loop_latency_ms > 200:
+            if not is_priority:
+                logger.warning(f"🔥 Load Shedding: Dropping request to {path} due to extreme load.")
+                response = SafeJSONResponse(
+                    status_code=503,
+                    content={
+                        "error": True, 
+                        "message": "Server is under extreme load. Priority given to emergency services.",
+                        "retry_after": 10
+                    }
+                )
+                return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
 # --- MIDDLEWARE REGISTRATION (Order: Inner to Outer) ---
 
 # 1. GZip (Innermost)
@@ -266,6 +538,21 @@ app.add_middleware(UnifiedJITMiddleware)
 # 7. Observability (Outermost - RID Context is set here)
 from core.middleware.observability import ObservabilityMiddleware
 app.add_middleware(ObservabilityMiddleware)
+
+# 8. Soft Scaling (Absolute Outermost - fast load shedding)
+app.add_middleware(SoftScalingMiddleware)
+
+# 9. Priority Queue (Just inside soft scaling)
+app.add_middleware(PriorityQueueMiddleware, max_concurrent=5) # Max 5 concurrent heavy requests for testing
+
+# 10. Maintenance Mode (Absolute Outermost)
+app.add_middleware(MaintenanceMiddleware)
+
+# 11. Emergency Kill Switch (The Final Gate)
+app.add_middleware(DropAllMiddleware)
+
+# 12. Dynamic Body Size (Absolute Outermost)
+app.add_middleware(DynamicBodySizeMiddleware)
 
 # --- STATIC FILES ---
 os.makedirs("media/sos", exist_ok=True)
@@ -326,7 +613,50 @@ def register_routers(app: FastAPI):
 
 register_routers(app)
 
+# --- Global Exception Handlers (Subtask 9.4 / 20.7) ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Task 20.7: Fallback Safe Mode.
+    Catches all unhandled exceptions to prevent process crash.
+    """
+    error_id = secrets.token_hex(4).upper()
+    logger.error(f"🚨 SYSTEM PANIC [{error_id}]: {type(exc).__name__}: {exc}", exc_info=True)
+    
+    # Check if this is a recurring failure that might require a restart
+    # (Future logic: trigger orchestrator.request_restart() if error rate > X)
+    
+    return SafeJSONResponse(
+        status_code=500,
+        content={
+            "error": True, 
+            "message": "RouteMaster Protocol: Safe Mode Active.", 
+            "protocol_code": f"ERR_SYSTEM_PANIC_{error_id}",
+            "type": type(exc).__name__,
+            "recovery_hint": "Neural Link re-establishing. Please retry in 5 seconds."
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return SafeJSONResponse(
+        status_code=exc.status_code,
+        content={"error": True, "message": exc.detail}
+    )
+
 # --- CORE STATUS ENDPOINTS ---
+
+@app.post("/api/admin/kill-switch")
+async def toggle_kill_switch(active: bool):
+    """Toggle emergency kill switch."""
+    await orchestrator.set_kill_switch(active)
+    return {"status": "success", "kill_switch_active": active}
+
+@app.post("/api/admin/maintenance")
+async def toggle_maintenance(enabled: bool):
+    """Toggle system maintenance mode."""
+    await orchestrator.set_maintenance_mode(enabled)
+    return {"status": "success", "maintenance_mode": enabled}
 
 @app.get("/api/health")
 @app.get("/api/health/live")
@@ -334,30 +664,10 @@ async def health_check():
     from core.metrics import jit_metrics
     return {
         "status": "online",
+        "system": orchestrator.get_health_report(),
         "jit_dag": jit_manager.get_status(),
         "jit_intelligence": jit_metrics.get_report(),
         "timestamp": datetime.utcnow().isoformat()
-    }
-
-@app.get("/api/health/latency")
-async def get_api_latency_health():
-    """[2.15] System Health dashboard for API latency."""
-    from utils.external_api_health import rapid_api_health, rappid_health
-    return {
-        "rapid_api": await rapid_api_health.get_status(),
-        "rappid_in": await rappid_health.get_status(),
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-@app.get("/api/stats")
-async def get_stats_proxy():
-    """Proxy for monitoring stats to satisfy frontend expectations."""
-    from core.metrics import jit_metrics
-    return {
-        "active_users": 1,
-        "total_requests": jit_metrics.predictions_total,
-        "performance_score": 98.2,
-        "uptime": datetime.utcnow().isoformat()
     }
 
 @app.get("/api/test/mem-spike")
@@ -381,10 +691,21 @@ async def cpu_spike():
     import math
     import time
     start = time.time()
-    # Synchronous block for ~500ms
     while time.time() - start < 0.5:
         [math.sqrt(i) for i in range(10000)]
     return {"message": "CPU spike completed"}
+
+@app.post("/api/admin/recycle")
+async def recycle_system():
+    """Task 20.2: Clean system recycle via watchdog."""
+    logger.critical("♻️ SYSTEM RECYCLE REQUESTED. Shutting down worker...")
+    # Exit with non-zero to trigger watchdog restart
+    os._exit(1)
+
+@app.get("/api/test/panic")
+async def trigger_panic():
+    """Force an unhandled exception to test the global super-handler."""
+    raise RuntimeError("TEST_PANIC_PROTOCOL_V2")
 
 @app.get("/")
 async def root():

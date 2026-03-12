@@ -1,5 +1,5 @@
 import pytest
-import backend.seat_inventory_models  # ensure Coach model is registered with Base before DB mapper configuration
+import seat_inventory_models  # ensure Coach model is registered with Base before DB mapper configuration
 from datetime import datetime, date, time, timedelta
 
 from core.route_engine import RouteEngine, RouteConstraints

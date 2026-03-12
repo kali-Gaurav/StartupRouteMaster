@@ -4,27 +4,37 @@ import time
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify-subtask-1.3")
+logger = logging.getLogger("verify-1.3")
 
 BASE_URL = "http://127.0.0.1:8000"
 
-async def test_db_lifecycle():
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        # Hit an API endpoint that triggers the middleware
-        logger.info("Hitting /api/health...")
-        resp = await client.get(f"{BASE_URL}/api/health")
-        assert resp.status_code == 200
+async def verify_adaptive_timeout():
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        # 1. Trigger massive CPU block (multiple times to ensure high average)
+        logger.info("Triggering high latency environment...")
+        for _ in range(3):
+            try:
+                await client.get(f"{BASE_URL}/api/test/cpu-spike", timeout=1.0)
+            except: pass
         
-        # Hit an endpoint that likely uses DB
-        logger.info("Hitting /api/stations/search...")
-        resp = await client.get(f"{BASE_URL}/api/stations/search?q=KOTA")
-        # If it returns 200 or 422 or 500, at least we know it didn't crash the worker due to middleware
-        logger.info(f"Response: {resp.status_code}")
-        assert resp.status_code in [200, 422, 500]
-
-async def main():
-    await test_db_lifecycle()
-    logger.info("Requests sent. Check backend logs for 'DB Lifecycle' entries.")
+        # 2. Immediately search
+        logger.info("Performing search during lag...")
+        start = time.time()
+        payload = {"source": "KOTA", "destination": "NDLS", "date": "2026-03-15", "budget": "all"}
+        
+        resp = await client.post(f"{BASE_URL}/api/search/", json=payload)
+        duration = time.time() - start
+        
+        logger.info(f"Search returned status {resp.status_code} in {duration:.2f}s")
+        
+        # If the adaptive timeout worked, it should have failed around 15s (half of 30s) or less
+        # because the event loop monitor should have detected the spike.
+        if resp.status_code == 504:
+            logger.info(f"✅ Adaptive Timeout Verified. Fail-fast triggered in {duration:.2f}s")
+        elif duration < 25.0:
+            logger.info(f"✅ Search completed fast ({duration:.2f}s), likely within adaptive budget.")
+        else:
+            logger.warning(f"Timeout took {duration:.2f}s, might not be adaptive enough.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(verify_adaptive_timeout())

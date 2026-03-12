@@ -25,27 +25,19 @@ logger = logging.getLogger(__name__)
 
 # Import RapidAPI client
 try:
-    from backend.services.booking.rapid_api_client import RapidAPIClient
+    from services.booking.rapid_api_client import RapidAPIClient
     RAPIDAPI_AVAILABLE = True
 except (ImportError, ValueError):
-    try:
-        from services.booking.rapid_api_client import RapidAPIClient
-        RAPIDAPI_AVAILABLE = True
-    except:
-        RAPIDAPI_AVAILABLE = False
-        logger.warning("RapidAPIClient not available - verification will use database only")
+    RAPIDAPI_AVAILABLE = False
+    logger.warning("RapidAPIClient not available - verification will use database only")
 
 # Import Rappid client
 try:
-    from backend.services.realtime_ingestion.api_client import AsyncRappidAPIClient
+    from services.realtime_ingestion.api_client import AsyncRappidAPIClient
     RAPPID_AVAILABLE = True
 except (ImportError, ValueError):
-    try:
-        from services.realtime_ingestion.api_client import AsyncRappidAPIClient
-        RAPPID_AVAILABLE = True
-    except:
-        RAPPID_AVAILABLE = False
-        logger.warning("AsyncRappidAPIClient not available")
+    RAPPID_AVAILABLE = False
+    logger.warning("AsyncRappidAPIClient not available")
 
 
 class DataProvider:

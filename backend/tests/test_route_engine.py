@@ -280,7 +280,7 @@ class TestRouteEngine:
             pickle.dump(bogus, f)
 
         # monkeypatch module-level GRAPH_CACHE_FILE
-        import backend.services.route_engine as re_mod2
+        import services.route_engine as re_mod2
         re_mod2.GRAPH_CACHE_FILE = str(cache_file)
 
         re = re_mod2.route_engine

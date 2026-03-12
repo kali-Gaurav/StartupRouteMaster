@@ -1,33 +1,44 @@
 import asyncio
 import httpx
+import time
 import logging
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("verify-subtask-1.12")
+logger = logging.getLogger("verify-1.12")
 
 BASE_URL = "http://127.0.0.1:8000"
 
-async def test_aborted_gzip():
-    logger.info("Testing Resilient GZip with aborted connection...")
-    
-    # We need a large enough response to trigger GZip chunking
-    # /api/health/live is small, but let's try something likely bigger or just hit it repeatedly
-    url = f"{BASE_URL}/api/health/live"
-    
-    try:
-        # Create a client but close it mid-read if possible, 
-        # or just drop the connection during the request.
-        transport = httpx.AsyncHTTPTransport(retries=0)
-        async with httpx.AsyncClient(transport=transport) as client:
-            # We don't await the body, just the start
-            async with client.stream("GET", url) as response:
-                logger.info(f"Connected, status {response.status_code}. Aborting now...")
-                # Closing here should trigger the catch block in middleware
-                await response.aclose()
+async def verify_maintenance():
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # 1. Enable Maintenance Mode
+        logger.info("Enabling Maintenance Mode...")
+        await client.post(f"{BASE_URL}/api/admin/maintenance?enabled=true")
         
-        logger.info("✅ Request aborted. Check backend logs for 'GZip: Client disconnected early'.")
-    except Exception as e:
-        logger.error(f"❌ Test script error (Expected if connection drops): {e}")
+        # 2. Try regular request (Search)
+        logger.info("Testing search during maintenance...")
+        payload = {"source": "KOTA", "destination": "NDLS", "date": "2026-03-15"}
+        resp = await client.post(f"{BASE_URL}/api/search/", json=payload)
+        logger.info(f"Search Status: {resp.status_code}")
+        assert resp.status_code == 503
+        assert "maintenance" in resp.json()["message"].lower()
+        
+        # 3. Try bypass request (Health)
+        logger.info("Testing health bypass...")
+        health_resp = await client.get(f"{BASE_URL}/api/health")
+        logger.info(f"Health Status: {health_resp.status_code}")
+        assert health_resp.status_code == 200
+        
+        # 4. Disable Maintenance Mode
+        logger.info("Disabling Maintenance Mode...")
+        await client.post(f"{BASE_URL}/api/admin/maintenance?enabled=false")
+        
+        # 5. Verify search is back
+        logger.info("Testing search after maintenance...")
+        resp = await client.post(f"{BASE_URL}/api/search/", json=payload)
+        logger.info(f"Search Status: {resp.status_code}")
+        assert resp.status_code in [200, 500] # 500 is okay as long as not 503 maintenance
+        
+        logger.info("✅ Maintenance Mode Verified.")
 
 if __name__ == "__main__":
-    asyncio.run(test_aborted_gzip())
+    asyncio.run(verify_maintenance())

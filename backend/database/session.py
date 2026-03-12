@@ -19,14 +19,63 @@ UserBase = declarative_base()
 TransitBase = declarative_base()
 Base = UserBase
 
+import functools
+
+def with_db_retry(max_retries: int = 5, initial_delay: float = 0.05):
+    """
+    Subtask 2.8: Database Lock Recovery Decorator.
+    Catches 'database is locked' errors and retries with exponential backoff.
+    Essential for SQLite stability on VPS under concurrent writes.
+    """
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                retries = 0
+                delay = initial_delay
+                while True:
+                    try:
+                        return await func(*args, **kwargs)
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if ("locked" in err_str or "busy" in err_str) and retries < max_retries:
+                            retries += 1
+                            logger.warning(f"⏳ DB Locked (Async): Retrying {retries}/{max_retries} in {delay}s...")
+                            await asyncio.sleep(delay)
+                            delay *= 2 # Exponential backoff
+                        else:
+                            raise e
+            return async_wrapper
+        else:
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                retries = 0
+                delay = initial_delay
+                while True:
+                    try:
+                        return func(*args, **kwargs)
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if ("locked" in err_str or "busy" in err_str) and retries < max_retries:
+                            retries += 1
+                            logger.warning(f"⏳ DB Locked (Sync): Retrying {retries}/{max_retries} in {delay}s...")
+                            time.sleep(delay)
+                            delay *= 2
+                        else:
+                            raise e
+            return sync_wrapper
+    return decorator
+
 # --- Global Engine Pointers ---
 engine_user = None
 engine_transit = None
 engine_auth = None 
+engine_read = None # Subtask 2.7
 
 async_engine_user = None
 async_engine_transit = None
 async_engine_auth = None 
+async_engine_read = None # Subtask 2.7
 
 engine = None  
 
@@ -94,13 +143,48 @@ def get_SessionAuth():
 _pools_initialized = False
 _db_lock = asyncio.Lock()
 
+async def tune_db_performance(engine):
+    """
+    Subtask 2.3: Dynamic DB Performance Tuning.
+    Adjusts mmap and cache limits based on available VPS RAM.
+    """
+    import psutil
+    mem = psutil.virtual_memory()
+    # 256MB if > 1GB RAM, else 64MB
+    mmap_size = 256 * 1024 * 1024 if mem.total > 1024 * 1024 * 1024 else 64 * 1024 * 1024
+    
+    async with engine.connect() as conn:
+        await conn.execute(text(f"PRAGMA mmap_size = {mmap_size};"))
+        await conn.execute(text("PRAGMA cache_size = -64000;")) # 64MB cache
+        await conn.execute(text("PRAGMA synchronous = NORMAL;"))
+        await conn.execute(text("PRAGMA journal_mode = WAL;"))
+        await conn.commit()
+    
+    logger.debug(f"⚙️ DB Tuned: mmap={mmap_size//1024//1024}MB, sync=NORMAL, mode=WAL")
+
+async def tune_db_read_performance(engine):
+    """
+    Subtask 2.7: Read-Replica Optimization.
+    Enforces query_only mode for the read-pool.
+    """
+    async with engine.connect() as conn:
+        try:
+            await conn.execute(text("PRAGMA query_only = ON;"))
+            await conn.execute(text("PRAGMA mmap_size = 536870912;")) # 512MB for reads
+        except: pass
+        await conn.commit()
+    logger.debug("📖 Read-Replica Tuned: query_only=ON")
+
 async def initialize_database_pools():
     """
     Subtask 4.1 & 4.5: Lazy Engine Instantiation & Auth Isolation.
+    [Subtask 2.7] Read-Replica Pool initialization.
     """
-    global engine_user, engine_transit, engine_auth, async_engine_user, async_engine_transit, async_engine_auth
-    global _SessionUser, _SessionTransit, _SessionAuth, AsyncSessionUser, AsyncSessionTransit, AsyncSessionAuth
-    global SessionUser, SessionTransit, SessionAuth, SessionLocal
+    global engine_user, engine_transit, engine_auth, engine_read
+    global async_engine_user, async_engine_transit, async_engine_auth, async_engine_read
+    global _SessionUser, _SessionTransit, _SessionAuth, _SessionRead
+    global AsyncSessionUser, AsyncSessionTransit, AsyncSessionAuth, AsyncSessionRead
+    global SessionUser, SessionTransit, SessionAuth, SessionLocal, SessionRead
     global engine
     global _pools_initialized
     
@@ -111,7 +195,7 @@ async def initialize_database_pools():
         if _pools_initialized:
             return
 
-        logger.info("🗄️ JIT: Initializing database connection pools (including Isolated Auth)...")
+        logger.info("🗄️ JIT: Initializing database connection pools (including Isolated Auth/Read-Replica)...")
 
         # Connection args
         user_db_url_sync = Config.GET_SQLALCHEMY_URL("user", is_async=False)
@@ -121,34 +205,39 @@ async def initialize_database_pools():
 
         engine_user = create_engine(user_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in user_db_url_sync else {})
         engine_transit = create_engine(transit_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in transit_db_url_sync else {})
+        engine_read = create_engine(transit_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in transit_db_url_sync else {})
         
         auth_sync_kwargs = {"pool_size": 5, "max_overflow": 0} if "sqlite" not in user_db_url_sync else {}
         engine_auth = create_engine(user_db_url_sync, connect_args={"check_same_thread": False} if "sqlite" in user_db_url_sync else {}, **auth_sync_kwargs)
         
         engine = engine_user
 
-        # Async engines with appropriate pool sizes
-        is_sqlite = "sqlite" in user_db_url_async
-        pool_kwargs = {"pool_size": 20, "max_overflow": 10} if not is_sqlite else {}
-        auth_pool_kwargs = {"pool_size": 10, "max_overflow": 5} if not is_sqlite else {}
+        # Async engines
+        async_engine_user = create_async_engine(user_db_url_async, echo=False, pool_pre_ping=True)
+        async_engine_transit = create_async_engine(transit_db_url_async, echo=False, pool_pre_ping=True)
+        async_engine_auth = create_async_engine(user_db_url_async, echo=False, pool_pre_ping=True)
+        async_engine_read = create_async_engine(transit_db_url_async, echo=False, pool_pre_ping=True)
 
-        async_engine_user = create_async_engine(user_db_url_async, echo=False, pool_pre_ping=True, **pool_kwargs)
-        async_engine_transit = create_async_engine(transit_db_url_async, echo=False, pool_pre_ping=True, **pool_kwargs)
-        # Auth pool is small but guaranteed (Subtask 4.5)
-        async_engine_auth = create_async_engine(user_db_url_async, echo=False, pool_pre_ping=True, **auth_pool_kwargs)
-
-        # Factories (Assigned to private globals)
+        # Factories
         _SessionUser = sessionmaker(autocommit=False, autoflush=False, bind=engine_user)
         _SessionTransit = sessionmaker(autocommit=False, autoflush=False, bind=engine_transit)
         _SessionAuth = sessionmaker(autocommit=False, autoflush=False, bind=engine_auth)
+        _SessionRead = sessionmaker(autocommit=False, autoflush=False, bind=engine_read)
         
-        # [9.1] Public Pointers MUST remain as Proxies
-        # We do not overwrite SessionUser/SessionTransit here.
-        # They were already assigned to AtomicSessionFactoryProxy at module level.
+        # [2.3 / 2.7] Tune Async Engines
+        await tune_db_performance(async_engine_user)
+        await tune_db_performance(async_engine_transit)
+        await tune_db_performance(async_engine_auth)
+        await tune_db_read_performance(async_engine_read)
 
         AsyncSessionUser = sessionmaker(async_engine_user, class_=AsyncSession, expire_on_commit=False)
         AsyncSessionTransit = sessionmaker(async_engine_transit, class_=AsyncSession, expire_on_commit=False)
         AsyncSessionAuth = sessionmaker(async_engine_auth, class_=AsyncSession, expire_on_commit=False)
+        AsyncSessionRead = sessionmaker(async_engine_read, class_=AsyncSession, expire_on_commit=False)
+        
+        await init_raw_transit_pool()
+        _pools_initialized = True
+        logger.info("✅ All Database pools active (Isolated Auth/Read-Replica ready).")
         
         # Trigger raw pool for Ultra-Turbo (Subtask 1.1)
         await init_raw_transit_pool()
@@ -179,21 +268,57 @@ async def pre_warm_connections():
 
 async def run_pool_scaler():
     """
-    Subtask 4.6: Dynamic Pool Sizing via Telemetry.
-    Adjusts pool overflow based on predictions_total.
+    Subtask 2.1: Advanced Dynamic Pool Sizing.
+    Optimizes VPS RAM by disposing pools during idle periods
+    and pre-warming them during surge detection.
+    """
+    from core.metrics import jit_metrics
+    last_load_state = False # False = Idle, True = Surge
+    
+    while True:
+        await asyncio.sleep(15) # Check more frequently for scaling
+        if not _pools_initialized: continue
+        
+        current_load_state = jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20
+        
+        if current_load_state and not last_load_state:
+            # Transition: Idle -> Surge
+            logger.info("📈 Pool Scaler: System load detected. Pre-warming database pools...")
+            await pre_warm_connections()
+            last_load_state = True
+            
+        elif not current_load_state and last_load_state:
+            # Transition: Surge -> Idle
+            # We wait for a sustained idle period before shrinking
+            await asyncio.sleep(45)
+            # Re-check load
+            if not (jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20):
+                logger.info("📉 Pool Scaler: System idle. Shrinking DB pools to save VPS RAM.")
+                await _dispose_all_pools()
+                last_load_state = False
+        
+        # Periodic 'Idle heartbeat' to ensure we stay lean
+        if not current_load_state and not last_load_state:
+            import psutil
+            if psutil.virtual_memory().percent > 85:
+                logger.debug("🧹 Pool Scaler: High RAM while idle. Force-disposing pools.")
+                await _dispose_all_pools()
+
+async def run_ghost_connection_killer():
+    """
+    Subtask 2.4: Ghost Connection Killer.
+    Aggressively disposes idle pools every 60 seconds if system is not under load.
+    Prevents lingering RAM bloat from stagnant connections.
     """
     from core.metrics import jit_metrics
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
         if not _pools_initialized: continue
         
-        # Simple Logic: If traffic > 100 req/sec, allow more overflow
-        # (predictions_total is a counter, so we check delta)
-        # For this implementation, we log the intent.
-        # SQLAlchemy pools are not easily resizable after creation without 
-        # replacing the engine, but we can simulate the 'reaper' logic.
-        
-        logger.debug(f"📊 Pool Scaler: Traffic at {jit_metrics.predictions_total} total requests.")
+        # Only kill if NOT in surge and NOT currently processing high traffic
+        if not (jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20):
+            logger.info("👻 Ghost Killer: System idle. Disposing stagnant DB pools.")
+            await _dispose_all_pools()
 
 async def run_connection_reaper():
     """
@@ -215,8 +340,13 @@ async def run_connection_reaper():
             
             # 1. Critical Reap (OOM Prevention)
             if mem.percent > 90 and (now - last_reap) > 120:
-                logger.warning(f"🚨 Memory Critical ({mem.percent}%). Reaping all DB pools...")
+                logger.warning(f"🚨 Memory Critical ({mem.percent}%). Reaping all DB pools and triggering GC...")
                 await _dispose_all_pools()
+                
+                # Subtask 2.2: Aggressive GC
+                import gc
+                gc.collect()
+                
                 last_reap = now
                 from core.metrics import jit_metrics
                 jit_metrics.reaper_events += 1
@@ -247,6 +377,13 @@ async def _dispose_all_pools():
 def get_db():
     if not _pools_initialized: raise RuntimeError("Database not JIT initialized")
     db = SessionUser()
+    try: yield db
+    finally: db.close()
+
+def get_read_db():
+    """Subtask 2.7: Read-Replica Dependency."""
+    if not _pools_initialized: raise RuntimeError("Database not JIT initialized")
+    db = _SessionRead()
     try: yield db
     finally: db.close()
 

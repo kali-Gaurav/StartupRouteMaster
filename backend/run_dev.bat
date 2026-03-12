@@ -1,12 +1,22 @@
 @echo off
-REM Start the backend in development mode
-set ENVIRONMENT=development
-cd /d "%~dp0"
+TITLE RouteMaster V2: Self-Healing Watchdog
+echo 🛡️ RouteMaster Watchdog (Windows): Initializing...
 
-IF "%1"=="prod-parity" (
-    echo 🚀 Running with GUNICORN (Production Parity Mode)
-    .venv\Scripts\python.exe -m gunicorn -k uvicorn.workers.UvicornWorker --bind 127.0.0.1:8000 --workers 4 app:app
-) ELSE (
-    echo 🛠️ Running with UVICORN (Standard Dev Mode)
-    .venv\Scripts\uvicorn.exe app:app --reload --host 127.0.0.1 --port 8000
+:start
+echo 🚀 Starting app protocol v2.5...
+python backup_system.py
+
+:: Run uvicorn
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+
+echo ⚠️ Backend process exited with code %errorlevel%
+
+if %errorlevel% equ 0 (
+    echo 🛑 Clean shutdown detected.
+    pause
+    exit /b 0
 )
+
+echo 🔄 Critical failure detected. Restarting in 5 seconds...
+timeout /t 5
+goto start

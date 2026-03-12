@@ -47,9 +47,9 @@ def run_turbo_etl():
             session.add(agency)
             session.flush()
         
-        station_mapping = {s.stop_id: s.id for s in session.query(Stop.id, Stop.stop_id).all()}
-        existing_trips = {t[0] for t in session.query(Trip.trip_id).all()}
-        existing_calendars = {c[0] for c in session.query(Calendar.service_id).all()}
+        station_mapping = {s[1]: s[0] for s in session.query(Stop.id, Stop.stop_id).all()}
+        existing_trips = {t for t in session.query(Trip.trip_id).scalars().all()}
+        existing_calendars = {c for c in session.query(Calendar.service_id).scalars().all()}
         existing_routes = {r[0]: r[1] for r in session.query(Route.route_id, Route.id).all()}
         
         trains = [dict(r) for r in conn.execute("SELECT * FROM trains_master").fetchall()]

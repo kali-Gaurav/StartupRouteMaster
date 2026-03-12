@@ -6,7 +6,7 @@ from database.session import get_db, get_transit_db
 from services.search_service import SearchService
 from dependencies import get_route_engine
 from utils.geo_utils import get_state_from_ip
-from backend.utils.responses import SafeJSONResponse
+from utils.responses import SafeJSONResponse
 import json
 import asyncio
 import logging
@@ -54,6 +54,9 @@ async def unified_search(
 
     search_svc = SearchService(db)
     try:
+        from core.metrics import jit_metrics
+        adaptive_timeout = jit_metrics.get_adaptive_timeout(base_timeout=30.0)
+        
         result = await asyncio.wait_for(
             search_svc.search_routes(
                 source=source,
@@ -68,7 +71,7 @@ async def unified_search(
                 geo_state=geo_state,
                 request=request # Pass request for disconnection detection
             ),
-            timeout=30.0 # Subtask 1.15: 30s Hard Timeout
+            timeout=adaptive_timeout # Subtask 1.3: Adaptive Timeout
         )
         return result
     except asyncio.TimeoutError:
@@ -88,13 +91,23 @@ async def streaming_search(
     db: Session = Depends(get_db)
 ):
     """
-    [Subtask 1.6] Enhanced SSE endpoint with robust exception capturing.
+    [Subtask 1.6/1.13] Enhanced SSE endpoint with dynamic chunk sizing.
     """
     search_svc = SearchService(db)
+    from core.metrics import jit_metrics
+    
+    # [1.13] Calculate optimal chunk size
+    # Low Load: 1-2 items (fastest interactivity)
+    # High Load: 5-10 items (best throughput/efficiency)
+    chunk_size = 3
+    if jit_metrics.event_loop_latency_ms > 50 or jit_metrics.cpu_usage_percent > 80:
+        chunk_size = 10
+    elif jit_metrics.event_loop_latency_ms > 20:
+        chunk_size = 5
 
     async def event_generator():
         try:
-            async for chunk in search_svc.search_routes_stream(source, destination, date, budget):
+            async for chunk in search_svc.search_routes_stream(source, destination, date, budget, chunk_size=chunk_size):
                 # 1. Disconnection Check
                 if await request.is_disconnected():
                     logger.info("🛑 Streaming aborted: Client disconnected.")

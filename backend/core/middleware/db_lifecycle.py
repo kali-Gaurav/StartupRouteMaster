@@ -48,7 +48,7 @@ class DatabaseLifecycleMiddleware:
                 logger.error(f"❌ DB Lifecycle: Rollback failed: {rb_err}")
             
             # Standardized internal crash response
-            from backend.utils.responses import SafeJSONResponse
+            from utils.responses import SafeJSONResponse
             response = SafeJSONResponse(
                 status_code=500,
                 content={"error": True, "message": "Internal Database Lifecycle Error", "detail": str(e)}

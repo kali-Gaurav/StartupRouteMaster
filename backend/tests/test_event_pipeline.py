@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 
 # Force reload config after setting env vars
 import importlib
-import backend.config
-importlib.reload(backend.config)
+import config
+importlib.reload(config)
 from config import Config
 
 # Also reload the consumer module to pick up new config
-import backend.services.analytics_consumer
-importlib.reload(backend.services.analytics_consumer)
+import services.analytics_consumer
+importlib.reload(services.analytics_consumer)
 from services.analytics_consumer import get_analytics_consumer, start_analytics_consumer
 
 from services.event_producer import (

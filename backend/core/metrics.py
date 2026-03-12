@@ -60,6 +60,53 @@ class TelemetryMetrics:
             }
         }
 
+    def get_adaptive_timeout(self, base_timeout: float = 30.0) -> float:
+        """
+        Subtask 1.3: Adaptive Timeout Logic.
+        Reduces timeout dynamically as system load increases.
+        """
+        # If latency is high (>50ms), start cutting timeout
+        latency_factor = 1.0
+        if self.event_loop_latency_ms > 50:
+            latency_factor = 0.5 # Half the timeout if loop is struggling
+        elif self.event_loop_latency_ms > 20:
+            latency_factor = 0.8
+            
+        # If CPU is very high, cut further
+        cpu_factor = 1.0
+        if self.cpu_usage_percent > 90:
+            cpu_factor = 0.5
+            
+        final_timeout = base_timeout * latency_factor * cpu_factor
+        return max(2.0, final_timeout) # Minimum 2 seconds
+
+    @property
+    def is_overloaded(self) -> bool:
+        """
+        Subtask 1.4: Global Overload Signal.
+        Returns True if the system is hitting critical VPS resource limits.
+        """
+        return (
+            self.event_loop_latency_ms > 100 or 
+            self.cpu_usage_percent > 95 or 
+            self.ram_usage_percent > 95
+        )
+
+class DegradationManager:
+    """
+    Subtask 1.11: Graceful Degradation Manager.
+    Decides which features to disable based on real-time load.
+    """
+    @staticmethod
+    def should_skip_heavy_expansion() -> bool:
+        # If CPU > 80% or Latency > 50ms, skip multi-day expansion
+        return jit_metrics.cpu_usage_percent > 80 or jit_metrics.event_loop_latency_ms > 50
+
+    @staticmethod
+    def should_skip_ml_prediction() -> bool:
+        # If RAM is tight or CPU is high, skip ML
+        return jit_metrics.ram_usage_percent > 90 or jit_metrics.cpu_usage_percent > 85
+
 # Global Instance
 jit_metrics = TelemetryMetrics()
 

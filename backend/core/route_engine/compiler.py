@@ -17,43 +17,38 @@ class ScheduleCompiler:
         os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
 
     def compile(self):
-        logger.info("Starting Schedule Compilation for CSA Kernel...")
+        logger.info("Starting Memory-Efficient Schedule Compilation...")
         db = SessionLocal()
         try:
-            # 1. Fetch all stops and create an integer mapping
-            stops = db.query(Stop).all()
-            stop_map = {s.id: i for i, s in enumerate(sorted([st.id for st in stops]))}
-            id_to_stop = {i: s.id for s, i in stop_map.items()}
+            # 1. Fetch all stops (Still needed in RAM for mapping, but we use scalars for speed)
+            stop_ids = [s for s in db.query(Stop.id).order_by(Stop.id).scalars().all()]
+            stop_map = {stop_id: i for i, stop_id in enumerate(stop_ids)}
+            id_to_stop = {i: stop_id for i, stop_id in enumerate(stop_ids)}
             
-            # 2. Fetch all connections (Segments)
-            # A 'Connection' in CSA is a (dep_stop, arr_stop, dep_time, arr_time, trip_id)
-            segments = db.query(Segment).all()
-            
-            # Convert to a flat NumPy array
-            # Format: [dep_stop_idx, arr_stop_idx, dep_ts, arr_ts, trip_id]
-            # Times are stored as Unix timestamps (int) for speed
+            # 2. Fetch all connections (Segments) using yield_per for streaming
+            # Subtask 2.5: Streaming large query
             connection_data = []
             
-            # Base date for timestamp normalization (to keep integers small)
-            base_date = datetime(2024, 1, 1)
+            query = db.query(Segment).execution_options(yield_per=500)
+            
+            for seg in query:
+                try:
+                    dep_ts = int(seg.departure_time.hour * 3600 + seg.departure_time.minute * 60)
+                    arr_ts = int(seg.arrival_time.hour * 3600 + seg.arrival_time.minute * 60)
+                    
+                    if arr_ts < dep_ts:
+                        arr_ts += 86400
 
-            for seg in segments:
-                # Note: In a real system, we'd handle multi-day calendars here
-                # For the fast kernel, we normalize all times to a 24h or multi-day window
-                dep_ts = int(seg.departure_time.hour * 3600 + seg.departure_time.minute * 60)
-                arr_ts = int(seg.arrival_time.hour * 3600 + seg.arrival_time.minute * 60)
-                
-                # Handle overnight trains
-                if arr_ts < dep_ts:
-                    arr_ts += 86400
-
-                connection_data.append([
-                    stop_map[seg.source_stop_id],
-                    stop_map[seg.destination_stop_id],
-                    dep_ts,
-                    arr_ts,
-                    seg.trip_id
-                ])
+                    connection_data.append([
+                        stop_map[seg.source_station_id],
+                        stop_map[seg.dest_station_id],
+                        dep_ts,
+                        arr_ts,
+                        seg.trip_id
+                    ])
+                except KeyError as ke:
+                    logger.warning(f"Skipping segment {seg.id}: Station mapping error for {ke}")
+                    continue
 
             # 3. Sort connections by departure time (Requirement for CSA)
             connections = np.array(connection_data, dtype=np.int32)

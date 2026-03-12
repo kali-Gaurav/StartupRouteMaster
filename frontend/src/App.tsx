@@ -108,6 +108,8 @@ const ServerWarmupLoader = () => (
   </div>
 );
 
+import { SystemStatusBanner } from "@/components/SystemStatusBanner";
+
 const AppContent = () => {
   usePushNotifications();
   const { isWakingUp } = useServerWarmup();
@@ -118,6 +120,7 @@ const AppContent = () => {
 
   return (
     <TooltipProvider>
+      <SystemStatusBanner />
       <IconSprite />
       <Toaster />
       <Sonner />

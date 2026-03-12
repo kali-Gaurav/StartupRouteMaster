@@ -20,10 +20,12 @@ export interface ChatMessage {
 interface ChatState {
   isOpen: boolean;
   isHydrating: boolean;
+  isError: boolean;
   messages: ChatMessage[];
   lastIntent: string | null;
   setIsOpen: (open: boolean) => void;
   setIsHydrating: (loading: boolean) => void;
+  setIsError: (error: boolean) => void;
   addMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   updateLastMessage: (content: string, isStreaming: boolean) => void;
@@ -36,10 +38,12 @@ export const useChatStore = create<ChatState>()(
     (set) => ({
       isOpen: false,
       isHydrating: false,
+      isError: false,
       messages: [],
       lastIntent: null,
       setIsOpen: (open) => set({ isOpen: open }),
       setIsHydrating: (loading) => set({ isHydrating: loading }),
+      setIsError: (error) => set({ isError: error }),
       setMessages: (msgs) => set({ messages: msgs }),
       addMessage: (msg) => set((state) => ({
         messages: [

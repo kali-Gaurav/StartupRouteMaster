@@ -11,6 +11,7 @@ export interface ProactiveContext {
   currentStationCode?: string;
   upcomingJourneyDelay?: number; // Task 6.1: Minutes late
   upcomingPNRExpiryHours?: number; // Task 6.2: Hours until journey
+  surgeLevel?: string; // VPS integration
 }
 
 export interface ProactiveSuggestion {
@@ -25,6 +26,11 @@ export interface ProactiveSuggestion {
 const MAJOR_JUNCTIONS = ["KOTA", "AGC", "VGLJ", "BSB", "HWH", "NDLS", "MAS", "SBC"];
 
 export function evaluateProactiveRules(ctx: ProactiveContext): ProactiveSuggestion[] {
+  // Task 6.8: Disable ML processing entirely during Level 2 Surge
+  if (ctx.surgeLevel === 'High' || ctx.surgeLevel === 'Critical') {
+    return [];
+  }
+
   const suggestions: ProactiveSuggestion[] = [];
 
   // Rule 1: Late night journey without Guardian

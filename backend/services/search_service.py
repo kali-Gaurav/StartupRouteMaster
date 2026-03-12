@@ -94,304 +94,315 @@ class SearchService:
     async def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, page: int = 1, limit: int = 15, quota: str = "GN", client_ip: Optional[str] = None, geo_state: Optional[str] = None, session_id: Optional[str] = None, cursor: Optional[float] = None, request: Optional[Request] = None) -> Dict[Any, Any]:
         overall_start = time.time()
         
-        # 1. Normalize and Prepare Fingerprint Cache
-        source = source.upper().strip()
-        destination = destination.upper().strip()
-        quota = quota.upper().strip()
-        session_id = session_id or f"sid_{hashlib.md5(f'{source}:{destination}:{travel_date}:{budget_category}'.encode()).hexdigest()[:10]}"
-        
-        from database.models import RouteSearchLog
-        try:
-            search_date = datetime.strptime(travel_date, "%Y-%m-%d").date()
-        except:
-            search_date = datetime.utcnow().date()
-
-        await multi_layer_cache.initialize()
-        
-        # Redis Keys for Cursor-Based Pool (Subtask 1.1 & 18.2)
-        pool_key = f"search:pool:{quota}:{session_id}"
-        data_key = f"search:data:{quota}:{session_id}"
-        seen_key = f"search:seen:{quota}:{session_id}"
-        
-        # [1.1] Handle Cursor/Page 2+ via existing pool
-        if multi_layer_cache.redis and (page > 1 or cursor is not None):
-            return await self.load_more_routes(session_id, limit, quota=quota, cursor=cursor)
-
-        # 2. Resolve stations via Transit DB
-        source_stop, dest_stop = resolve_stations(self.transit_db, source, destination)
-        if not source_stop or not dest_stop:
-            return {"source": source, "destination": destination, "journeys": [], "error": "Station not found"}
-
-        try:
-            dt = datetime.strptime(travel_date, "%Y-%m-%d")
-        except:
-            dt = datetime.now()
-
-        from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
-        from core.route_engine.constraints_engine import ConstraintsEngine
-        from core.data_structures import Persona
-        
-        orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
-        
-        # [FIX] Handle 'all' or unexpected budget categories gracefully
-        safe_budget = budget_category.lower() if budget_category else "comfort"
-        if safe_budget == "all": safe_budget = "comfort"
+        import gc
+        gc.disable() # Subtask 2.6: Prevent GC overhead during heavy routing
         
         try:
-            persona = Persona(safe_budget)
-        except ValueError:
-            logger.warning(f"Invalid persona '{safe_budget}' requested. Falling back to COMFORT.")
-            persona = Persona.COMFORT
-
-        c = ConstraintsEngine.initialize_constraints(
-            persona_str=persona.value,
-            travel_date=dt.date(),
-            quota=quota
-        )
-
-        # 3. GATHER ALL POSSIBLE ROUTES (Tiers 0, 1, 2, 3) - [2.1] & [2.6] Parallel Expansion
-        all_unique_routes = {} 
-        
-        # [2.1] Phase 1: Search Target Date (mandatory)
-        search_res_target = await orchestrator.search_all_tiers(
-            source_code=source,
-            destination_code=destination,
-            departure_date=dt,
-            constraints=c,
-            limit=100,
-            db=self.transit_db
-        )
-        for r in search_res_target:
-            r.metadata["day_offset"] = 0
-            all_unique_routes[r.journey_id] = r
+            # 1. Normalize and Prepare Fingerprint Cache
+            source = source.upper().strip()
+            destination = destination.upper().strip()
+            quota = quota.upper().strip()
+            session_id = session_id or f"sid_{hashlib.md5(f'{source}:{destination}:{travel_date}:{budget_category}'.encode()).hexdigest()[:10]}"
             
-        # [Subtask 1.5] Disconnection Check 1
-        if request and await request.is_disconnected():
-            logger.warning(f"🛑 Search Aborted: Client disconnected during Phase 1 for {source}->{destination}")
-            return {"journeys": [], "aborted": True}
+            from database.models import RouteSearchLog
+            try:
+                search_date = datetime.strptime(travel_date, "%Y-%m-%d").date()
+            except:
+                search_date = datetime.utcnow().date()
 
-        # [2.2] Multi-Day Expansion Engine: If yield < 5, expansion is mandatory (Task 2.2)
-        expansion_triggered = False
-        if len(all_unique_routes) < 5:
-            expansion_triggered = True
-            logger.info(f"Low yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search serially.")
+            await multi_layer_cache.initialize()
+            
+            # Redis Keys for Cursor-Based Pool (Subtask 1.1 & 18.2)
+            pool_key = f"search:pool:{quota}:{session_id}"
+            data_key = f"search:data:{quota}:{session_id}"
+            seen_key = f"search:seen:{quota}:{session_id}"
+            
+            # [1.1] Handle Cursor/Page 2+ via existing pool
+            if multi_layer_cache.redis and (page > 1 or cursor is not None):
+                return await self.load_more_routes(session_id, limit, quota=quota, cursor=cursor)
 
-            # Day +1
-            res_plus = await orchestrator.search_all_tiers(source, destination, dt + timedelta(days=1), c, 50, self.transit_db)
-            for r in res_plus:
-                if r.journey_id not in all_unique_routes:
-                    r.metadata["day_offset"] = 1
-                    r.metadata["alt_reason"] = f"Alternative: Available on {(dt + timedelta(days=1)).strftime('%b %d')}"
-                    all_unique_routes[r.journey_id] = r
+            # 2. Resolve stations via Transit DB
+            source_stop, dest_stop = resolve_stations(self.transit_db, source, destination)
+            if not source_stop or not dest_stop:
+                return {"source": source, "destination": destination, "journeys": [], "error": "Station not found"}
 
-            # [Subtask 1.5] Disconnection Check 2
+            try:
+                dt = datetime.strptime(travel_date, "%Y-%m-%d")
+            except:
+                dt = datetime.now()
+
+            from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
+            from core.route_engine.constraints_engine import ConstraintsEngine
+            from core.data_structures import Persona
+            
+            orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
+            
+            # [FIX] Handle 'all' or unexpected budget categories gracefully
+            safe_budget = budget_category.lower() if budget_category else "comfort"
+            if safe_budget == "all": safe_budget = "comfort"
+            
+            try:
+                persona = Persona(safe_budget)
+            except ValueError:
+                logger.warning(f"Invalid persona '{safe_budget}' requested. Falling back to COMFORT.")
+                persona = Persona.COMFORT
+
+            c = ConstraintsEngine.initialize_constraints(
+                persona_str=persona.value,
+                travel_date=dt.date(),
+                quota=quota
+            )
+
+            # 3. GATHER ALL POSSIBLE ROUTES (Tiers 0, 1, 2, 3) - [2.1] & [2.6] Parallel Expansion
+            all_unique_routes = {} 
+            
+            # [2.1] Phase 1: Search Target Date (mandatory)
+            search_res_target = await orchestrator.search_all_tiers(
+                source_code=source,
+                destination_code=destination,
+                departure_date=dt,
+                constraints=c,
+                limit=100,
+                db=self.transit_db
+            )
+            for r in search_res_target:
+                r.metadata["day_offset"] = 0
+                all_unique_routes[r.journey_id] = r
+                
+            # [Subtask 1.5] Disconnection Check 1
             if request and await request.is_disconnected():
-                logger.warning(f"🛑 Search Aborted: Client disconnected during Expansion for {source}->{destination}")
+                logger.warning(f"🛑 Search Aborted: Client disconnected during Phase 1 for {source}->{destination}")
                 return {"journeys": [], "aborted": True}
 
-            # Day -1 (Only if still low yield)
+            # [2.2] Multi-Day Expansion Engine: If yield < 5, expansion is mandatory (Task 2.2)
+            expansion_triggered = False
             if len(all_unique_routes) < 5:
-                # Don't suggest past dates if searching for today
-                if (dt - timedelta(days=1)).date() >= datetime.utcnow().date():
-                    res_minus = await orchestrator.search_all_tiers(source, destination, dt - timedelta(days=1), c, 50, self.transit_db)
-                    for r in res_minus:
+                from core.metrics import DegradationManager
+                if DegradationManager.should_skip_heavy_expansion():
+                    logger.info("Graceful Degradation: Skipping multi-day expansion due to high system load.")
+                else:
+                    expansion_triggered = True
+                    logger.info(f"Low yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search serially.")
+
+                    # Day +1
+                    res_plus = await orchestrator.search_all_tiers(source, destination, dt + timedelta(days=1), c, 50, self.transit_db)
+                    for r in res_plus:
                         if r.journey_id not in all_unique_routes:
-                            r.metadata["day_offset"] = -1
-                            r.metadata["alt_reason"] = f"Alternative: Available on {(dt - timedelta(days=1)).strftime('%b %d')}"
+                            r.metadata["day_offset"] = 1
+                            r.metadata["alt_reason"] = f"Alternative: Available on {(dt + timedelta(days=1)).strftime('%b %d')}"
                             all_unique_routes[r.journey_id] = r
-        
-        # [Subtask 1.5] Disconnection Check 3
-        if request and await request.is_disconnected():
-            return {"journeys": [], "aborted": True}
 
-        # [6.2] Hub-Only Routing Fallback (Zero Yield)
-        if len(all_unique_routes) == 0:
-            logger.info(f"Zero yield for {source}->{destination}. Triggering Hub Fallback [6.4].")
-            # ... (Hub Fallback Logic) ...
-            from core.route_engine.hubs import get_hubs_near
+                    # [Subtask 1.5] Disconnection Check 2
+                    if request and await request.is_disconnected():
+                        logger.warning(f"🛑 Search Aborted: Client disconnected during Expansion for {source}->{destination}")
+                        return {"journeys": [], "aborted": True}
+
+                    # Day -1 (Only if still low yield)
+                    if len(all_unique_routes) < 5:
+                        # Don't suggest past dates if searching for today
+                        if (dt - timedelta(days=1)).date() >= datetime.utcnow().date():
+                            res_minus = await orchestrator.search_all_tiers(source, destination, dt - timedelta(days=1), c, 50, self.transit_db)
+                            for r in res_minus:
+                                if r.journey_id not in all_unique_routes:
+                                    r.metadata["day_offset"] = -1
+                                    r.metadata["alt_reason"] = f"Alternative: Available on {(dt - timedelta(days=1)).strftime('%b %d')}"
+                                    all_unique_routes[r.journey_id] = r
             
-            # Find closest hubs to source and destination
-            src_hubs = get_hubs_near(source_stop.latitude, source_stop.longitude, limit=2)
-            dst_hubs = get_hubs_near(dest_stop.latitude, dest_stop.longitude, limit=2)
-            
-            hub_tasks = []
-            # Combine unique hubs
-            candidate_hubs = list(set(src_hubs + dst_hubs))
-            
-            for hub_code in candidate_hubs:
-                # [6.4] Forced Join via Hub
-                hub_tasks.append(orchestrator.search_all_tiers(source, hub_code, dt, c, 20, self.transit_db))
-                hub_tasks.append(orchestrator.search_all_tiers(hub_code, destination, dt, c, 20, self.transit_db))
-            
-            hub_raw_results = await asyncio.gather(*hub_tasks)
-            
-            # Simple Join Heuristic: For each hub, join leg1 and leg2
-            for i in range(0, len(hub_raw_results), 2):
-                leg1_list = hub_raw_results[i]
-                leg2_list = hub_raw_results[i+1]
-                hub_code = candidate_hubs[i//2]
+            # [Subtask 1.5] Disconnection Check 3
+            if request and await request.is_disconnected():
+                return {"journeys": [], "aborted": True}
+
+            # [6.2] Hub-Only Routing Fallback (Zero Yield)
+            if len(all_unique_routes) == 0:
+                logger.info(f"Zero yield for {source}->{destination}. Triggering Hub Fallback [6.4].")
+                # ... (Hub Fallback Logic) ...
+                from core.route_engine.hubs import get_hubs_near
                 
-                for l1 in leg1_list:
-                    for l2 in leg2_list:
-                        # [6.6] Time-Sensitive Join (1 hour buffer)
-                        if l2.segments[0].departure_time > (l1.segments[-1].arrival_time + timedelta(hours=1)):
-                            # Create joined route
-                            merged = Route()
-                            for s in l1.segments: merged.add_segment(s)
-                            for s in l2.segments: merged.add_segment(s)
-                            for t in l1.transfers: merged.add_transfer(t)
-                            for t in l2.transfers: merged.add_transfer(t)
-                            # Add hub transfer
-                            from core.data_structures import TransferConnection
-                            hub_tc = TransferConnection(
-                                station_id=0, # hub station id placeholder
-                                station_name=hub_code,
-                                arrival_time=l1.segments[-1].arrival_time,
-                                departure_time=l2.segments[0].departure_time,
-                                duration_minutes=int((l2.segments[0].departure_time - l1.segments[-1].arrival_time).total_seconds() / 60)
-                            )
-                            merged.add_transfer(hub_tc)
-                            merged.metadata["engine"] = "hub_fallback"
-                            merged.metadata["is_discovery"] = True # [6.7]
-                            
-                            all_unique_routes[merged.journey_id] = merged
-                            if len(all_unique_routes) >= 10: break
-                    if len(all_unique_routes) >= 10: break
-
-        # [20.4] Intelligent Explainer for persistent Zero-Yield
-        if len(all_unique_routes) == 0:
-            return await self.explain_zero_results(source, destination, dt)
-
-        # 4. [1.1] Store in Redis Sorted Set
-        candidate_list = sorted(all_unique_routes.values(), key=lambda x: x.score)
-        if multi_layer_cache.redis:
-            await multi_layer_cache.redis.delete(pool_key, data_key, seen_key)
-            
-            # Use pipeline for atomicity and speed
-            async with multi_layer_cache.redis.pipeline(transaction=True) as pipe:
-                for r in candidate_list:
-                    # Score is the sorting cursor
-                    await pipe.zadd(pool_key, {r.journey_id: r.score})
-                    # Data is stored in Hash for efficient random access
-                    await pipe.hset(data_key, r.journey_id, json.dumps(r.to_dict(), default=str))
+                # Find closest hubs to source and destination
+                src_hubs = get_hubs_near(source_stop.latitude, source_stop.longitude, limit=2)
+                dst_hubs = get_hubs_near(dest_stop.latitude, dest_stop.longitude, limit=2)
                 
-                await pipe.expire(pool_key, 1800)
-                await pipe.expire(data_key, 1800)
-                await pipe.execute()
+                hub_tasks = []
+                # Combine unique hubs
+                candidate_hubs = list(set(src_hubs + dst_hubs))
+                
+                for hub_code in candidate_hubs:
+                    # [6.4] Forced Join via Hub
+                    hub_tasks.append(orchestrator.search_all_tiers(source, hub_code, dt, c, 20, self.transit_db))
+                    hub_tasks.append(orchestrator.search_all_tiers(hub_code, destination, dt, c, 20, self.transit_db))
+                
+                hub_raw_results = await asyncio.gather(*hub_tasks)
+                
+                # Simple Join Heuristic: For each hub, join leg1 and leg2
+                for i in range(0, len(hub_raw_results), 2):
+                    leg1_list = hub_raw_results[i]
+                    leg2_list = hub_raw_results[i+1]
+                    hub_code = candidate_hubs[i//2]
+                    
+                    for l1 in leg1_list:
+                        for l2 in leg2_list:
+                            # [6.6] Time-Sensitive Join (1 hour buffer)
+                            if l2.segments[0].departure_time > (l1.segments[-1].arrival_time + timedelta(hours=1)):
+                                # Create joined route
+                                merged = Route()
+                                for s in l1.segments: merged.add_segment(s)
+                                for s in l2.segments: merged.add_segment(s)
+                                for t in l1.transfers: merged.add_transfer(t)
+                                for t in l2.transfers: merged.add_transfer(t)
+                                # Add hub transfer
+                                from core.data_structures import TransferConnection
+                                hub_tc = TransferConnection(
+                                    station_id=0, # hub station id placeholder
+                                    station_name=hub_code,
+                                    arrival_time=l1.segments[-1].arrival_time,
+                                    departure_time=l2.segments[0].departure_time,
+                                    duration_minutes=int((l2.segments[0].departure_time - l1.segments[-1].arrival_time).total_seconds() / 60)
+                                )
+                                merged.add_transfer(hub_tc)
+                                merged.metadata["engine"] = "hub_fallback"
+                                merged.metadata["is_discovery"] = True # [6.7]
+                                
+                                all_unique_routes[merged.journey_id] = merged
+                                if len(all_unique_routes) >= 10: break
+                        if len(all_unique_routes) >= 10: break
 
-        # 5. Verify only first batch (Lazy Loading - Task 1.2)
-        initial_batch = candidate_list[:limit]
-        verified_routes = await self._verify_routes_parallel(initial_batch, dt, quota)
+            # [20.4] Intelligent Explainer for persistent Zero-Yield
+            if len(all_unique_routes) == 0:
+                return await self.explain_zero_results(source, destination, dt)
 
-        # Mark as seen
-        if multi_layer_cache.redis:
-            for r in verified_routes:
-                await multi_layer_cache.redis.sadd(seen_key, r.journey_id)
-            await multi_layer_cache.redis.expire(seen_key, 1800)
-
-        # [9.2] High-Risk Detection: GN_WL > 50 or Probability < 0.5
-        high_risk_count = sum(1 for r in verified_routes if r.availability_probability < 0.5)
-        logger.info(f"Verification Results: {len(verified_routes)} routes, High Risk: {high_risk_count}")
-        
-        # [9.3] Auto-Trigger Tatkal Search
-        if quota == "GN" and high_risk_count >= (len(verified_routes) / 2) and len(verified_routes) > 0:
-            logger.info(f"High risk GN yield detected ({high_risk_count}). Auto-triggering Tatkal search [9.3].")
-            tatkal_results = await orchestrator.search_all_tiers(source, destination, dt, c, 10, self.transit_db)
-            logger.info(f"Tatkal Search found {len(tatkal_results)} candidates.")
-            # Re-verify with Quota="TQ"
-            verified_tq = await self._verify_routes_parallel(tatkal_results, dt, "TQ")
-            logger.info(f"Verified {len(verified_tq)} Tatkal routes.")
-            
-            for r in verified_tq:
-                r.metadata["quota"] = "TQ"
-                r.metadata["is_alternative"] = True
-                r.metadata["is_verified"] = True 
-                r.metadata["ui_reasons"] = r.metadata.get("ui_reasons", []) + ["High Availability Alternative (Tatkal)"]
-                all_unique_routes[r.journey_id] = r
-            
-            logger.info(f"Total Unique Routes after merge: {len(all_unique_routes)}")
-            # Re-rank
+            # 4. [1.1] Store in Redis Sorted Set
             candidate_list = sorted(all_unique_routes.values(), key=lambda x: x.score)
-            top_candidates = candidate_list[:limit]
-            logger.info(f"Top {limit} candidates selected for final set.")
-            
-            to_verify_final = [r for r in top_candidates if not r.metadata.get("is_verified")]
-            logger.info(f"Final verification needed for {len(to_verify_final)} routes.")
-            
-            if to_verify_final:
-                verified_new = await self._verify_routes_parallel(to_verify_final, dt, quota)
-                verified_map = {r.journey_id: r for r in verified_new}
-                verified_routes = [verified_map.get(r.journey_id, r) for r in top_candidates]
-            else:
-                verified_routes = top_candidates
-            
-            logger.info(f"Final verified_routes count: {len(verified_routes)}")
-
-            # [9.9] Update Redis Cache with new alternatives
             if multi_layer_cache.redis:
+                await multi_layer_cache.redis.delete(pool_key, data_key, seen_key)
+                
+                # Use pipeline for atomicity and speed
                 async with multi_layer_cache.redis.pipeline(transaction=True) as pipe:
-                    for r in verified_tq:
+                    for r in candidate_list:
+                        # Score is the sorting cursor
                         await pipe.zadd(pool_key, {r.journey_id: r.score})
+                        # Data is stored in Hash for efficient random access
                         await pipe.hset(data_key, r.journey_id, json.dumps(r.to_dict(), default=str))
+                    
+                    await pipe.expire(pool_key, 1800)
+                    await pipe.expire(data_key, 1800)
                     await pipe.execute()
 
-        from core.route_engine.categorization import CategorizationEngine
-        from services.unlock_service import UnlockService
-        categories = CategorizationEngine.categorize(verified_routes, persona)
-        
-        # [NEW] Use the already-hydrated routes from CategorizationEngine to preserve pricing
-        # We'll pull from 'alternative_sorted' or combine all buckets to get the full list
-        all_hydrated_dicts = []
-        seen_jids = set()
-        for bucket_name, bucket_routes in categories.items():
-            if isinstance(bucket_routes, list):
-                for r_dict in bucket_routes:
-                    if r_dict["journey_id"] not in seen_jids:
-                        all_hydrated_dicts.append(r_dict)
-                        seen_jids.add(r_dict["journey_id"])
+            # 5. Verify only first batch (Lazy Loading - Task 1.2)
+            initial_batch = candidate_list[:limit]
+            verified_routes = await self._verify_routes_parallel(initial_batch, dt, quota)
 
-        masked_journeys = [UnlockService.mask_route(rd) for rd in all_hydrated_dicts]
-        
-        # [1.1] Determine Next Cursor
-        next_cursor = verified_routes[-1].score if verified_routes else None
+            # Mark as seen
+            if multi_layer_cache.redis:
+                for r in verified_routes:
+                    await multi_layer_cache.redis.sadd(seen_key, r.journey_id)
+                await multi_layer_cache.redis.expire(seen_key, 1800)
 
-        import math
-        total_pages = math.ceil(len(candidate_list) / limit) if candidate_list else 0
-        from core.data_structures import PaginationMetadata
-        pagination = PaginationMetadata(
-            total_results=len(candidate_list),
-            current_page=1,
-            limit=limit,
-            has_next=len(candidate_list) > limit,
-            total_pages=total_pages
-        )
+            # [9.2] High-Risk Detection: GN_WL > 50 or Probability < 0.5
+            high_risk_count = sum(1 for r in verified_routes if r.availability_probability < 0.5)
+            logger.info(f"Verification Results: {len(verified_routes)} routes, High Risk: {high_risk_count}")
+            
+            # [9.3] Auto-Trigger Tatkal Search
+            if quota == "GN" and high_risk_count >= (len(verified_routes) / 2) and len(verified_routes) > 0:
+                logger.info(f"High risk GN yield detected ({high_risk_count}). Auto-triggering Tatkal search [9.3].")
+                tatkal_results = await orchestrator.search_all_tiers(source, destination, dt, c, 10, self.transit_db)
+                logger.info(f"Tatkal Search found {len(tatkal_results)} candidates.")
+                # Re-verify with Quota="TQ"
+                verified_tq = await self._verify_routes_parallel(tatkal_results, dt, "TQ")
+                logger.info(f"Verified {len(verified_tq)} Tatkal routes.")
+                
+                for r in verified_tq:
+                    r.metadata["quota"] = "TQ"
+                    r.metadata["is_alternative"] = True
+                    r.metadata["is_verified"] = True 
+                    r.metadata["ui_reasons"] = r.metadata.get("ui_reasons", []) + ["High Availability Alternative (Tatkal)"]
+                    all_unique_routes[r.journey_id] = r
+                
+                logger.info(f"Total Unique Routes after merge: {len(all_unique_routes)}")
+                # Re-rank
+                candidate_list = sorted(all_unique_routes.values(), key=lambda x: x.score)
+                top_candidates = candidate_list[:limit]
+                logger.info(f"Top {limit} candidates selected for final set.")
+                
+                to_verify_final = [r for r in top_candidates if not r.metadata.get("is_verified")]
+                logger.info(f"Final verification needed for {len(to_verify_final)} routes.")
+                
+                if to_verify_final:
+                    verified_new = await self._verify_routes_parallel(to_verify_final, dt, quota)
+                    verified_map = {r.journey_id: r for r in verified_new}
+                    verified_routes = [verified_map.get(r.journey_id, r) for r in top_candidates]
+                else:
+                    verified_routes = top_candidates
+                
+                logger.info(f"Final verified_routes count: {len(verified_routes)}")
 
-        latency = (time.time() - overall_start) * 1000
-        final_response = {
-            "status": "success",
-            "source": source, "destination": destination, "session_id": session_id,
-            "data": {
-                "journeys": masked_journeys,
-                "grouped_journeys": {k: ([UnlockService.mask_route(r) for r in v] if isinstance(v, list) else v) for k, v in categories.items()},
-                "pagination": pagination.to_dict(),
-                "next_cursor": next_cursor
-            },
-            "metadata": {
-                "expansion_triggered": expansion_triggered,
-                "latency_ms": latency,
-                "total_candidates": len(candidate_list),
-                "monetization": "tier_2_masked"
+                # [9.9] Update Redis Cache with new alternatives
+                if multi_layer_cache.redis:
+                    async with multi_layer_cache.redis.pipeline(transaction=True) as pipe:
+                        for r in verified_tq:
+                            await pipe.zadd(pool_key, {r.journey_id: r.score})
+                            await pipe.hset(data_key, r.journey_id, json.dumps(r.to_dict(), default=str))
+                        await pipe.execute()
+
+            from core.route_engine.categorization import CategorizationEngine
+            from services.unlock_service import UnlockService
+            categories = CategorizationEngine.categorize(verified_routes, persona)
+            
+            # [NEW] Use the already-hydrated routes from CategorizationEngine to preserve pricing
+            # We'll pull from 'alternative_sorted' or combine all buckets to get the full list
+            all_hydrated_dicts = []
+            seen_jids = set()
+            for bucket_name, bucket_routes in categories.items():
+                if isinstance(bucket_routes, list):
+                    for r_dict in bucket_routes:
+                        if r_dict["journey_id"] not in seen_jids:
+                            all_hydrated_dicts.append(r_dict)
+                            seen_jids.add(r_dict["journey_id"])
+
+            masked_journeys = [UnlockService.mask_route(rd) for rd in all_hydrated_dicts]
+            
+            # [1.1] Determine Next Cursor
+            next_cursor = verified_routes[-1].score if verified_routes else None
+
+            import math
+            total_pages = math.ceil(len(candidate_list) / limit) if candidate_list else 0
+            from core.data_structures import PaginationMetadata
+            pagination = PaginationMetadata(
+                total_results=len(candidate_list),
+                current_page=1,
+                limit=limit,
+                has_next=len(candidate_list) > limit,
+                total_pages=total_pages
+            )
+
+            latency = (time.time() - overall_start) * 1000
+            final_response = {
+                "status": "success",
+                "source": source, "destination": destination, "session_id": session_id,
+                "data": {
+                    "journeys": masked_journeys,
+                    "grouped_journeys": {k: ([UnlockService.mask_route(r) for r in v] if isinstance(v, list) else v) for k, v in categories.items()},
+                    "pagination": pagination.to_dict(),
+                    "next_cursor": next_cursor
+                },
+                "metadata": {
+                    "expansion_triggered": expansion_triggered,
+                    "latency_ms": latency,
+                    "total_candidates": len(candidate_list),
+                    "monetization": "tier_2_masked"
+                }
             }
-        }
 
-        # Log search
-        log = RouteSearchLog(src=source, dst=destination, date=search_date, latency_ms=latency, ip_address=client_ip, geo_state=geo_state)
-        self.db.add(log)
-        self.db.commit()
-        
-        logger.info(f"SEARCH SUCCESS: Found {len(masked_journeys)} journeys for {source}->{destination}. JIDs: {[j['journey_id'] for j in masked_journeys]}")
-        
-        return final_response
+            # Log search
+            log = RouteSearchLog(src=source, dst=destination, date=search_date, latency_ms=latency, ip_address=client_ip, geo_state=geo_state)
+            self.db.add(log)
+            self.db.commit()
+            
+            logger.info(f"SEARCH SUCCESS: Found {len(masked_journeys)} journeys for {source}->{destination}. JIDs: {[j['journey_id'] for j in masked_journeys]}")
+            
+            return final_response
+        except Exception as e:
+            logger.error(f"Error in search_routes: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
     async def load_more_routes(self, session_id: str, limit: int = 15, quota: str = "GN", cursor: Optional[float] = None) -> Dict[Any, Any]:
         """Subtask 1.3: Yield-Aware Load More using Cursor (Subtask 1.1)."""
@@ -679,10 +690,11 @@ class SearchService:
                 if attempt == 1: raise e
         return [None, None, None]
 
-    async def search_routes_stream(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, quota: str = "GN"):
+    async def search_routes_stream(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, quota: str = "GN", chunk_size: int = 3):
         """
         [17.1] Streaming SSE search results.
-        [17.2] Yields verified routes one-by-one.
+        [17.2] Yields verified routes in batches.
+        [1.13] Optimized chunk_size based on load.
         """
         # (Standard Setup Logic - identical to search_routes)
         source = source.upper().strip()
@@ -709,8 +721,7 @@ class SearchService:
         yield {"status": "discovered", "count": len(search_res), "message": f"Found {len(search_res)} candidates. Verifying..."}
 
         # 3. Verification Streaming (Subtask 17.2)
-        # We verify in smaller chunks to stream faster
-        chunk_size = 3
+        # We verify in chunks to stream faster
         for i in range(0, len(search_res), chunk_size):
             chunk = search_res[i : i + chunk_size]
             # Use the parallel helper

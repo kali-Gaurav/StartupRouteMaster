@@ -16,14 +16,20 @@ from .fast_router import FastPathRouter
 from .scoring import RouteScorer
 from core.pricing.fare_calculator import calculate_fare
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import os
 
-# Task 10.18: High-capacity thread pool for CPU-bound binary routing
-# The default pool is too small for concurrent multi-threaded orchestration.
+# Subtask 1.9: Isolated Process Pool for CPU-bound routing
+# Ensures we don't block the main event loop GIL during heavy graph traversal.
+# We limit process count to save VPS RAM.
+CPU_BOUND_EXECUTOR = ProcessPoolExecutor(
+    max_workers=max(2, (os.cpu_count() or 4) // 2)
+)
+
+# Standard ThreadPool for I/O and lightweight concurrent logic
 ROUTING_POOL = ThreadPoolExecutor(
-    max_workers=min(64, (os.cpu_count() or 4) * 8),
-    thread_name_prefix="routing_worker"
+    max_workers=32,
+    thread_name_prefix="routing_io_worker"
 )
 
 logger = logging.getLogger(__name__)
@@ -77,11 +83,12 @@ class UnifiedRoutingOrchestrator:
         loop = asyncio.get_running_loop()
 
         # [6.1] Stable Worker Management
-        # Ensure TurboRouter uses the pool correctly
+        # t1 and t2 use ThreadPool (I/O or lightweight)
+        # t3 and t4 use ProcessPool (CPU bound)
         t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
         t0_task = self.ultra_turbo.find_routes(source_stop.id, dest_stop.id, departure_date.date(), limit)
-        t2_task = loop.run_in_executor(ROUTING_POOL, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
-        t3_task = self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph)
+        t2_task = loop.run_in_executor(CPU_BOUND_EXECUTOR, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
+        t3_task = loop.run_in_executor(CPU_BOUND_EXECUTOR, self.raptor.find_routes, source_stop.id, dest_stop.id, departure_date, constraints, graph)
 
         # [6.11] Graceful Exception Handling
         results_gathered = await asyncio.gather(t1_task, t0_task, t2_task, t3_task, return_exceptions=True)

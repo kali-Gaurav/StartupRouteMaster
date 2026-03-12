@@ -20,6 +20,7 @@ class RateLimitMiddleware:
         try:
             from services.multi_layer_cache import multi_layer_cache
             from database.config import Config
+            from utils.rate_limiter import RedisTokenBucket
 
             path = scope.get("path", "")
             
@@ -37,38 +38,34 @@ class RateLimitMiddleware:
             if client_ip in ("127.0.0.1", "localhost", "::1"):
                 return await self.app(scope, receive, send)
 
-            # 3. Rate Limit Logic
+            # 3. Distributed Rate Limit Logic (Token Bucket)
+            # Refill rate: limit/60 (tokens per second)
+            # Burst capacity: same as minute limit
+            limiter = RedisTokenBucket(multi_layer_cache.redis)
             limit = Config.RATE_LIMIT_PER_MINUTE
-            current_minute = int(time.time() / 60)
-            key = f"rate_limit:{client_ip}:{current_minute}"
+            rate = limit / 60.0
+            
+            key = f"rl:token_bucket:{client_ip}"
+            is_allowed, remaining = await limiter.is_allowed(key, rate, limit)
 
-            try:
-                request_count = await multi_layer_cache.redis.incr(key)
-                if request_count == 1:
-                    await multi_layer_cache.redis.expire(key, 60)
-
-                if request_count > limit:
-                    logger.warning(f"⚠️ Rate limit exceeded: {client_ip} on {path}")
-                    response = JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": True,
-                            "error_code": "RATE_LIMIT_EXCEEDED",
-                            "message": "Too many requests. Please try again later.",
-                            "limit": limit
-                        }
-                    )
-                    return await response(scope, receive, send)
-            except Exception as e:
-                logger.error(f"Rate limiter inner error: {e}")
-                # On Redis error, allow request to pass (fail open)
-                return await self.app(scope, receive, send)
+            if not is_allowed:
+                logger.warning(f"⚠️ Rate limit exceeded (Token Bucket): {client_ip} on {path}")
+                response = SafeJSONResponse(
+                    status_code=429,
+                    content={
+                        "error": True,
+                        "error_code": "RATE_LIMIT_EXCEEDED",
+                        "message": "Too many requests. Please try again later.",
+                        "limit": limit
+                    }
+                )
+                return await response(scope, receive, send)
 
             return await self.app(scope, receive, send)
             
         except Exception as exc:
             logger.error(f"CRITICAL: RateLimit Middleware Crash: {exc}", exc_info=True)
-            from backend.utils.responses import SafeJSONResponse
+            from utils.responses import SafeJSONResponse
             response = SafeJSONResponse(
                 status_code=500,
                 content={"error": True, "message": "Internal Rate Limit Error", "detail": str(exc)}

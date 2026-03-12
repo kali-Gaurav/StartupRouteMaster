@@ -18,7 +18,7 @@ class ObservabilityMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
-        from backend.utils.structured_logging import request_id_var
+        from utils.structured_logging import request_id_var
         
         # 1. Initialize metadata early to avoid UnboundLocalError
         method = scope.get("method", "UNKNOWN")
@@ -60,7 +60,7 @@ class ObservabilityMiddleware:
                     exc_info=True
                 )
                 # Standardized internal crash response
-                from backend.utils.responses import SafeJSONResponse
+                from utils.responses import SafeJSONResponse
                 response = SafeJSONResponse(
                     status_code=500,
                     content={"error": True, "message": "Internal Observability Error", "detail": str(e)}

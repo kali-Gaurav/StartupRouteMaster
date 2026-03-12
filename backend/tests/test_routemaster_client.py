@@ -1,8 +1,8 @@
 import pytest
 from sqlalchemy import create_engine, text
 
-import backend.services.routemaster_client as rmc
-import backend.database as bdb
+import services.routemaster_client as rmc
+import database as bdb
 
 
 @pytest.mark.asyncio

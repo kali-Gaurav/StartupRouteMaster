@@ -45,6 +45,9 @@ async def search_routes_endpoint(
             return {"dry_run": True, "resolved": {"source": src_stop.code if src_stop else None, "destination": dst_stop.code if dst_stop else None}}
 
         try:
+            from core.metrics import jit_metrics
+            adaptive_timeout = jit_metrics.get_adaptive_timeout(base_timeout=30.0)
+            
             result = await asyncio.wait_for(
                 service.search_routes(
                     source=search_request.source,
@@ -56,7 +59,7 @@ async def search_routes_endpoint(
                     client_ip=request.client.host,
                     request=request
                 ),
-                timeout=30.0 # Subtask 1.15: 30s Hard Timeout
+                timeout=adaptive_timeout # Subtask 1.3: Adaptive Timeout
             )
         except asyncio.TimeoutError:
             status_label = "timeout"

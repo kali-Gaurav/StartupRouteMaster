@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime
-from backend.core.route_engine.turbo_router import TurboRouter
+from core.route_engine.turbo_router import TurboRouter
 from database.session import SessionLocal
 from sqlalchemy import text
 
