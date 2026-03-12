@@ -1,11 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useChatStore } from "@/store/useChatStore";
 import { MessageCircle, Mic, MicOff, Send, X, Bot, User, WifiOff, RefreshCw, AlertTriangle, Zap, ShieldAlert, Navigation, Activity, MapPin, LayoutDashboard, History, Ticket } from "lucide-react";
 import { cn, getRailwayApiUrl, getRailwayWsUrl } from "@/lib/utils";
 import { searchStationsApi } from "@/services/railwayBackApi";
 import { processLocalIntent } from "@/services/localChatBrain";
 import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { logEvent } from "@/lib/observability";
-import { loadMemory } from "@/ai/persistentMemory";
+import { saveMemory, loadMemory } from "@/ai/persistentMemory";
 import { evaluateProactiveRules } from "@/ai/proactiveRules";
 import { listenWakeWord } from "@/ai/wakeWord";
 import { analyzeEmotionalRisk } from "@/ai/emotionalEngine";
@@ -98,12 +100,38 @@ function TypingIndicator({ durationMs = 2000, onCancel }: { durationMs?: number,
   );
 }
 
+function ChatBubbleSkeleton({ role }: { role: "user" | "assistant" }) {
+  return (
+    <div className={cn("flex gap-3 py-3 animate-pulse", role === "user" ? "flex-row-reverse" : "flex-row")}>
+      <div className={cn("w-8 h-8 rounded-lg shrink-0", role === "user" ? "bg-indigo-500/20" : "bg-cyan-500/20")} />
+      <div className={cn(
+        "max-w-[70%] h-16 rounded-2xl",
+        role === "user" ? "bg-indigo-600/10 ml-auto rounded-tr-sm" : "bg-slate-800/20 rounded-tl-sm"
+      )} style={{ width: Math.random() * 100 + 100 + 'px' }} />
+    </div>
+  );
+}
+
 export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
   const isBackendOnline = useBackendHealth();
-  const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { id: "welcome", role: "assistant", content: WELCOME_MSG, timestamp: new Date() },
-  ]);
+  
+  // Task 8.1: Global Chat State
+  const { 
+    isOpen, setIsOpen, 
+    isHydrating, setIsHydrating,
+    messages: storeMessages, 
+    addMessage: addToStore, 
+    updateLastMessage, 
+    setMessages: setStoreMessages,
+    lastIntent: storeLastIntent,
+    setLastIntent: setStoreLastIntent
+  } = useChatStore();
+
+  const messages = useMemo(() => storeMessages.map(m => ({
+    ...m,
+    timestamp: new Date(m.timestamp)
+  })), [storeMessages]);
+
   const [input, setInput] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -112,26 +140,57 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
 
   const wsRef = useRef<WebSocket | null>(null);
   const sessionIdRef = useRef<string>(generateSessionId());
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastMessageRef = useRef<HTMLDivElement | null>(null);
+  const parentRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const [conversationState, setConversationState] = useState<ConversationState>({
-    lastIntent: null,
+    lastIntent: storeLastIntent,
     searchQuery: null,
     journeyActive: false,
   });
 
+  // Sync state intent with store intent
+  useEffect(() => {
+    setConversationState(prev => ({ ...prev, lastIntent: storeLastIntent }));
+  }, [storeLastIntent]);
+
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
+
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+
+  useEffect(() => {
+    const memory = loadMemory();
+    if (memory.recentSearches) {
+      setRecentSearches(memory.recentSearches);
+    }
+    // Initialize welcome if empty
+    if (storeMessages.length === 0) {
+      addToStore({ role: "assistant", content: WELCOME_MSG });
+    }
+  }, []);
+
+  const saveSearchToMemory = useCallback((query: string) => {
+    setRecentSearches(prev => {
+      const updated = [query, ...prev.filter(s => s !== query)].slice(0, 3);
+      saveMemory({ recentSearches: updated });
+      return updated;
+    });
+  }, []);
+
+  // Task 1.1: Virtualizer Setup
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 80,
+    overscan: 10,
+  });
 
   // Core Static Suggestion Actions (The "Button Pattern" within the interface)
   const getContextActions = useCallback(() => {
     if (conversationState.journeyActive) {
       return [
         { label: "Share Location", type: "intent", value: "Share live location", icon: <MapPin className="w-3 h-3" /> },
-        { label: "Contact Police", type: "intent", value: "Contact Railway Police", icon: <AlertTriangle className="w-3 h-3" /> },
-        { label: "Guardian Mode", type: "system_control", value: "enable_guardian", icon: <ShieldAlert className="w-3 h-3" /> },
         { label: "Safety Status", type: "intent", value: "Check safety status", icon: <Activity className="w-3 h-3" /> },
       ];
     }
@@ -140,7 +199,6 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
         { label: "Check Availability", type: "intent", value: "Check Availability", icon: <Zap className="w-3 h-3" /> },
         { label: "Alternative Routes", type: "intent", value: "Alternative Routes", icon: <Navigation className="w-3 h-3" /> },
         { label: "PNR Status", type: "intent", value: "PNR Status", icon: <Activity className="w-3 h-3" /> },
-        { label: "Route Map", type: "intent", value: "Show route map", icon: <MapPin className="w-3 h-3" /> },
       ];
     }
     return [
@@ -155,18 +213,17 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
 
   // Frictionless Response Tracking: Scroll to top of the latest response
   const scrollToNewMessage = useCallback(() => {
-    if (lastMessageRef.current) {
-        lastMessageRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (messages.length > 0) {
+      rowVirtualizer.scrollToIndex(messages.length - 1, { align: 'start', behavior: 'smooth' });
     }
-  }, []);
+  }, [messages.length, rowVirtualizer]);
 
   useEffect(() => {
-    // Only auto-scroll when a new assistant message is being added or streamed
     const lastMsg = messages[messages.length - 1];
-    if (lastMsg?.role === "assistant") {
+    if (lastMsg?.role === "assistant" || lastMsg?.role === "user") {
         scrollToNewMessage();
     }
-  }, [messages, scrollToNewMessage]);
+  }, [messages.length, scrollToNewMessage]);
 
   // WebSocket Logic
   const connectWebSocket = useCallback(() => {
@@ -186,44 +243,28 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "token") {
-        setMessages((prev) => {
-          const lastMsg = prev[prev.length - 1];
-          if (lastMsg && lastMsg.role === "assistant" && lastMsg.isStreaming) {
-            return [
-              ...prev.slice(0, -1),
-              { ...lastMsg, content: lastMsg.content + data.token }
-            ];
-          } else {
-            return [
-              ...prev,
-              {
-                id: `stream-${Date.now()}`,
-                role: "assistant",
-                content: data.token,
-                timestamp: new Date(),
-                isStreaming: true
-              }
-            ];
-          }
-        });
+        const lastMsg = storeMessages[storeMessages.length - 1];
+        if (lastMsg && lastMsg.role === "assistant" && lastMsg.isStreaming) {
+          updateLastMessage(lastMsg.content + data.token, true);
+        } else {
+          addToStore({ role: "assistant", content: data.token, isStreaming: true });
+        }
       } else if (data.type === "final") {
         setIsLoading(false);
-        setMessages((prev) => {
-          const filtered = prev.filter(m => !m.isStreaming);
-          return [
-            ...filtered,
-            {
-              id: `msg-${Date.now()}`,
-              role: "assistant",
-              content: data.reply,
-              timestamp: new Date(),
-              actions: data.actions,
-              isStreaming: false
-            }
-          ];
-        });
+        const filtered = storeMessages.filter(m => !m.isStreaming);
+        setStoreMessages([
+          ...filtered,
+          {
+            id: `msg-${Date.now()}`,
+            role: "assistant",
+            content: data.reply,
+            timestamp: new Date().toISOString(),
+            actions: data.actions,
+            isStreaming: false
+          }
+        ]);
         if (data.intent) {
-          setConversationState(prev => ({ ...prev, lastIntent: data.intent }));
+          setStoreLastIntent(data.intent);
         }
       } else if (data.type === "error") {
         setIsLoading(false);
@@ -236,7 +277,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       wsRef.current = null;
       console.log("Chat WebSocket Disconnected");
     };
-  }, []);
+  }, [storeMessages, addToStore, updateLastMessage, setStoreMessages, setStoreLastIntent]);
 
   useEffect(() => {
     if (isOpen && isBackendOnline) {
@@ -268,9 +309,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
     return () => clearInterval(interval);
   }, [isBackendOnline]);
 
-  // History Load
+  // History Load (Server sync if needed)
   useEffect(() => {
     const loadHistory = async () => {
+      if (storeMessages.length > 1) return; // Already have state
+      setIsHydrating(true);
       try {
         const res = await fetch(getRailwayApiUrl(`/chat/history?session_id=${sessionIdRef.current}`));
         if (res.ok) {
@@ -280,19 +323,22 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
               id: `hist-${i}`,
               role: m.role,
               content: m.content,
-              timestamp: new Date(m.timestamp),
+              timestamp: m.timestamp,
               actions: m.actions
             }));
-            setMessages([
-              { id: "welcome", role: "assistant", content: WELCOME_MSG, timestamp: new Date() },
+            setStoreMessages([
+              { id: "welcome", role: "assistant", content: WELCOME_MSG, timestamp: new Date().toISOString() },
               ...formatted
             ]);
           }
         }
       } catch (e) { console.error("History load failed", e); }
+      finally {
+        setIsHydrating(false);
+      }
     };
     if (isOpen) loadHistory();
-  }, [isOpen]);
+  }, [isOpen, storeMessages.length, setIsHydrating, setStoreMessages]);
 
   // Memory Load
   useEffect(() => {
@@ -317,11 +363,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       audio.play().catch(() => {});
     });
     return cleanup;
-  }, [wakeWordEnabled]);
+  }, [wakeWordEnabled, setIsOpen]);
 
   const addMessage = useCallback((role: "user" | "assistant" | "system", content: string, actions?: ChatAction[]) => {
-    setMessages((prev) => [...prev, { id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, role, content, timestamp: new Date(), actions }]);
-  }, []);
+    addToStore({ role, content, actions });
+  }, [addToStore]);
 
   // Proactive Engine
   const triggerProactiveSuggestions = useCallback(() => {
@@ -354,6 +400,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       if (!src || !dest) return false;
       
       setConversationState(prev => ({ ...prev, searchQuery: collected, lastIntent: "search" }));
+      setStoreLastIntent("search");
 
       try {
         const [fromStations, toStations] = await Promise.all([searchStationsApi(src), searchStationsApi(dest)]);
@@ -369,7 +416,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
         return false;
       }
     },
-    [onSearchRequest]
+    [onSearchRequest, setStoreLastIntent]
   );
 
   const executeAction = useCallback((type: string, value?: string, label?: string) => {
@@ -431,7 +478,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
 
     const localResult = processLocalIntent(text);
     if (localResult) {
-      setConversationState(prev => ({ ...prev, lastIntent: "local_handled" }));
+      setStoreLastIntent("local_handled");
       addMessage("assistant", localResult.reply, localResult.actions);
       if (localResult.actions && localResult.actions.length > 0) {
         window.dispatchEvent(new CustomEvent("rail-assistant-suggestions", {
@@ -443,6 +490,10 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       }
       setIsLoading(false);
       return;
+    }
+
+    if (text.toLowerCase().includes(" to ") || text.toLowerCase().includes(" from ")) {
+      saveSearchToMemory(text);
     }
 
     if (isWsConnected && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -497,7 +548,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
   const toggleVoice = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      addMessage("system", "Voice interface incompatible with current browser.");
+      addMessage("system", "Voice interface incompatible with current hardware.");
       return;
     }
     if (isListening) {
@@ -506,141 +557,187 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
     }
     const recognition = new SR();
     recognition.lang = "en-IN";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
     recognition.onresult = (e: any) => {
       const t = e.results[0][0].transcript;
       setInput(t);
     };
     recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    
     recognition.start();
     setIsListening(true);
   };
 
   return (
-    <div className={cn("fixed bottom-6 right-6 z-50 flex flex-col items-end gap-4 pointer-events-none", className)}>
+    <div className={cn("fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none", className)}>
       
       {isOpen && (
-        <div className="w-full max-w-[440px] h-[600px] md:h-[720px] bg-background/95 dark:bg-[#0a0f1c]/98 backdrop-blur-3xl border border-white/20 dark:border-cyan-500/40 rounded-[2.5rem] shadow-[0_20px_80px_rgba(0,0,0,0.4)] dark:shadow-[0_20px_80px_rgba(6,182,212,0.2)] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300 pointer-events-auto origin-bottom-right">
+        <div className="w-full max-w-[440px] h-[calc(100vh-100px)] max-h-[800px] min-h-[500px] bg-background/90 dark:bg-[#0a0f1c]/95 backdrop-blur-[40px] border border-white/20 dark:border-cyan-500/30 rounded-[2.5rem] shadow-[0_20px_80px_rgba(0,0,0,0.4)] dark:shadow-[0_20px_80px_rgba(6,182,212,0.15)] flex flex-col overflow-hidden animate-in zoom-in-95 fade-in duration-500 pointer-events-auto origin-bottom-right will-change-transform">
           
           {/* Header */}
-          <div className="relative flex items-center justify-between px-8 py-5 bg-gradient-to-r from-[#0f172a] to-[#1e293b] dark:from-[#0a0f1c] dark:to-[#0f172a] border-b border-white/10 dark:border-cyan-500/30 overflow-hidden">
+          <div className="relative flex items-center justify-between px-8 py-4 bg-gradient-to-r from-[#0f172a] to-[#1e293b] dark:from-[#0a0f1c] dark:to-[#0f172a] border-b border-white/10 dark:border-cyan-500/30 overflow-hidden shrink-0">
             <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:16px_16px] opacity-20"></div>
             
             <div className="relative flex items-center gap-4">
               <div className="relative">
-                <div className="w-14 h-14 rounded-2xl bg-cyan-950/50 flex items-center justify-center shrink-0 border border-cyan-500/50 shadow-[0_0_20px_rgba(6,182,212,0.4)] rotate-3">
-                  <Bot className="w-7 h-7 text-cyan-400 -rotate-3" />
+                <div className="w-10 h-10 rounded-xl bg-cyan-950/50 flex items-center justify-center shrink-0 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)] rotate-3">
+                  <Bot className="w-5 h-5 text-cyan-400 -rotate-3" />
                 </div>
                 <div className={cn(
-                  "absolute inset-0 rounded-2xl border-2 border-transparent border-t-cyan-400 animate-spin-slow",
+                  "absolute inset-0 rounded-xl border-2 border-transparent border-t-cyan-400 animate-spin-slow",
                   isWsConnected ? "opacity-100" : "opacity-0"
                 )}></div>
                 <div className={cn(
-                  "absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-[#0f172a] shadow-[0_0_15px_currentColor]",
+                  "absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-[#0f172a] shadow-[0_0_10px_currentColor]",
                   isBackendOnline ? (isWsConnected ? "bg-cyan-400 text-cyan-400" : "bg-yellow-400 text-yellow-400") : "bg-red-500 text-red-500"
                 )} />
               </div>
               <div>
-                <h3 className="font-black text-xl text-white tracking-tighter flex items-center gap-2">
-                  RouteMaster <span className="text-cyan-400 font-mono text-[10px] opacity-80 border border-cyan-500/30 px-1.5 rounded uppercase">Protocol v2.5</span>
+                <h3 className="font-black text-base text-white tracking-tighter flex items-center gap-2">
+                  RouteMaster <span className="text-cyan-400 font-mono text-[8px] opacity-70 border border-cyan-500/30 px-1 rounded uppercase">v2.5</span>
                 </h3>
-                <p className="text-[10px] text-cyan-400/80 font-mono tracking-[0.2em] uppercase flex items-center gap-1 mt-0.5">
-                  {isWsConnected ? <><Activity className="w-3 h-3 animate-pulse"/> Syncing Neural Net</> : (isBackendOnline ? "Systems Nominal" : "Offline Cache Mode")}
+                <p className="text-[8px] text-cyan-400/60 font-mono tracking-[0.2em] uppercase flex items-center gap-1">
+                  {isWsConnected ? "Neural Link Active" : (isBackendOnline ? "Standby" : "Local Mode")}
                 </p>
               </div>
             </div>
-            <button onClick={() => setIsOpen(false)} className="relative p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all backdrop-blur-md border border-white/10 hover:scale-110 active:scale-95">
-              <X className="w-5 h-5 text-white/80" />
+            <button onClick={() => setIsOpen(false)} className="relative p-2 bg-white/5 hover:bg-white/10 rounded-xl transition-all backdrop-blur-md border border-white/10 active:scale-95">
+              <X className="w-4 h-4 text-white/80" />
             </button>
           </div>
 
-          {/* Messages Area */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-8 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] bg-gradient-to-b from-transparent via-muted/5 to-cyan-500/5 relative custom-scrollbar">
-            {messages.map((m, idx) => (
-              <div 
-                key={m.id} 
-                className={cn("flex gap-4 group", m.role === "user" ? "flex-row-reverse" : "flex-row")}
-                ref={idx === messages.length - 1 && m.role === "assistant" ? lastMessageRef : null}
-              >
-                {m.role !== "system" && (
-                  <div className={cn(
-                    "w-10 h-10 shrink-0 rounded-xl flex items-center justify-center shadow-xl transition-transform group-hover:scale-110", 
-                    m.role === "user" 
-                      ? "bg-gradient-to-br from-indigo-500 to-purple-600 rotate-3" 
-                      : "bg-gradient-to-br from-cyan-900 to-slate-900 border border-cyan-500/40 -rotate-3"
-                  )}>
-                    {m.role === "user" ? <User className="w-5 h-5 text-white" /> : <Bot className="w-5 h-5 text-cyan-400" />}
-                  </div>
-                )}
-                <div className={cn("flex-1 min-w-0", m.role === "system" ? "flex justify-center" : "")}>
-                  <div className={cn(
-                    "max-w-[88%] rounded-3xl px-5 py-4 text-[15px] shadow-lg leading-[1.6] transition-all", 
-                    m.role === "user" 
-                      ? "bg-gradient-to-br from-indigo-600 to-purple-700 text-white ml-auto rounded-tr-sm border border-indigo-400/30" 
-                      : m.role === "system"
-                        ? "bg-yellow-500/10 border border-yellow-500/20 text-yellow-600 dark:text-yellow-400 text-xs mx-auto text-center font-mono rounded-full py-2 px-6 backdrop-blur-sm"
-                        : "bg-white dark:bg-[#0f172a]/90 text-foreground border border-border/50 dark:border-cyan-500/10 rounded-tl-sm shadow-cyan-500/5"
-                  )}>
-                    <MarkdownRenderer content={m.content} />
-                    {m.role !== "system" && (
-                      <span className="text-[10px] opacity-40 mt-2 block text-right font-mono tracking-widest">
-                        {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    )}
-                  </div>
-                  
-                  {/* Inline Message Actions */}
-                  {m.actions && m.actions.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-4 ml-2">
-                      {m.actions.map((a, i) => (
-                        <button key={i} onClick={() => handleActionClick(a)} className="flex items-center gap-2 px-4 py-2 rounded-2xl text-xs font-bold bg-background border border-cyan-500/30 text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500 hover:text-white dark:hover:bg-cyan-500 dark:hover:text-white transition-all shadow-md active:scale-95">
-                          {a.icon && <span className="opacity-80">{a.icon}</span>}
-                          {a.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+          {/* Messages Area - MAXIMIZED & VIRTUALIZED (Task 1.1) */}
+          <div ref={parentRef} className="flex-1 overflow-y-auto px-6 py-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] bg-gradient-to-b from-transparent via-muted/5 to-cyan-500/5 relative">
+            {isHydrating ? (
+              <div className="space-y-4">
+                <ChatBubbleSkeleton role="assistant" />
+                <ChatBubbleSkeleton role="user" />
+                <ChatBubbleSkeleton role="assistant" />
               </div>
-            ))}
-            {isLoading && <TypingIndicator durationMs={2500} onCancel={handleCancel} />}
-            <div ref={messagesEndRef} />
+            ) : (
+              <div
+                style={{
+                  height: `${rowVirtualizer.getTotalSize()}px`,
+                  width: '100%',
+                  position: 'relative',
+                }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const m = messages[virtualRow.index];
+                  return (
+                    <div 
+                      key={m.id} 
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      className={cn("flex gap-3 group py-3", m.role === "user" ? "flex-row-reverse" : "flex-row")}
+                    >
+                      {m.role !== "system" && (
+                        <div className={cn(
+                          "w-8 h-8 shrink-0 rounded-lg flex items-center justify-center shadow-lg transition-transform group-hover:scale-105", 
+                          m.role === "user" 
+                            ? "bg-gradient-to-br from-indigo-500 to-purple-600 rotate-3" 
+                            : "bg-gradient-to-br from-cyan-900 to-slate-900 border border-cyan-500/40 -rotate-3"
+                        )}>
+                          {m.role === "user" ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-cyan-400" />}
+                        </div>
+                      )}
+                      <div className={cn("flex-1 min-w-0", m.role === "system" ? "flex justify-center" : "")}>
+                        <div className={cn(
+                          "max-w-[90%] rounded-2xl px-4 py-3 text-[14px] shadow-md leading-[1.5] transition-all", 
+                          m.role === "user" 
+                            ? "bg-gradient-to-br from-indigo-600 to-purple-700 text-white ml-auto rounded-tr-sm border border-indigo-400/20" 
+                            : m.role === "system"
+                              ? "bg-yellow-500/5 border border-yellow-500/10 text-yellow-600/80 dark:text-yellow-400/80 text-[10px] mx-auto text-center font-mono rounded-full py-1 px-4 backdrop-blur-sm"
+                              : "bg-white dark:bg-[#0f172a]/90 text-foreground border border-border/40 dark:border-cyan-500/10 rounded-tl-sm shadow-cyan-500/5"
+                        )}>
+                          <MarkdownRenderer content={m.content} />
+                          {m.role !== "system" && (
+                            <span className="text-[8px] opacity-30 mt-1 block text-right font-mono tracking-widest uppercase">
+                              {m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                        </div>
+                        
+                        {/* Inline Message Actions */}
+                        {m.actions && m.actions.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-3 ml-1">
+                            {m.actions.map((a, i) => (
+                              <button key={i} onClick={() => handleActionClick(a)} className="flex items-center gap-1.5 px-3 py-1 rounded-xl text-[11px] font-bold bg-background border border-cyan-500/20 text-cyan-600 dark:text-cyan-400 hover:bg-cyan-500 hover:text-white dark:hover:bg-cyan-500 dark:hover:text-white transition-all shadow-sm active:scale-95">
+                                {a.icon && <span className="shrink-0 flex items-center justify-center">{a.icon}</span>}
+                                <span className="leading-none">{a.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {isLoading && (
+              <div className="py-4">
+                <TypingIndicator durationMs={2500} onCancel={handleCancel} />
+              </div>
+            )}
           </div>
 
-          {/* Unified Smart Input Area */}
-          <div className="p-6 border-t border-border/40 bg-white/60 dark:bg-[#0a0f1c]/90 backdrop-blur-3xl space-y-6">
+          {/* Unified Smart Input Area - MINIMIZED SUGGESTIONS */}
+          <div className="p-4 border-t border-border/20 bg-white/60 dark:bg-[#0a0f1c]/95 backdrop-blur-3xl space-y-3 shrink-0">
             
-            {/* Multi-row Suggested Actions (Fixed Pattern) */}
-            <div className="grid grid-cols-2 gap-2 max-h-[140px] overflow-y-auto custom-scrollbar-mini pr-1">
+            {/* Task 1.2: Recent Searches */}
+            {recentSearches.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] pb-1">
+                {recentSearches.map((s, i) => (
+                  <button key={i} onClick={() => handleSendCore(s)} className="text-[9px] font-bold bg-cyan-500/5 border border-cyan-500/10 text-cyan-400/80 px-2 py-1 rounded-lg whitespace-nowrap hover:bg-cyan-500 hover:text-white transition-all">
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Context-Aware Quick Actions - COMPACT GRID */}
+            <div className="grid grid-cols-3 gap-1">
               {getContextActions().map((a, idx) => (
                 <button 
                   key={idx} 
                   onClick={() => handleActionClick(a)} 
                   className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-2xl text-[13px] font-bold transition-all border shadow-sm group",
-                    a.type === "system_control" || a.label.includes("SOS")
-                      ? "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 hover:bg-red-600 hover:text-white"
-                      : "bg-secondary/40 text-secondary-foreground border-transparent hover:border-cyan-500/40 hover:bg-cyan-500/10 dark:hover:bg-cyan-950/40"
+                    "flex items-center justify-center gap-1.5 px-2 py-2 rounded-xl text-[10px] font-black transition-all border shadow-sm group",
+                    a.type === "system_control"
+                      ? "bg-red-500/5 text-red-600 dark:text-red-400 border-red-500/10 hover:bg-red-600 hover:text-white"
+                      : "bg-secondary/30 text-secondary-foreground border-transparent hover:border-cyan-500/30 hover:bg-cyan-500/5 dark:hover:bg-cyan-950/40"
                   )}
                 >
-                  <span className="shrink-0 transition-transform group-hover:scale-125">{a.icon}</span>
-                  <span className="truncate">{a.label}</span>
+                  <span className="shrink-0 transition-transform group-hover:scale-110">{a.icon}</span>
+                  <span className="truncate leading-none uppercase tracking-tighter">{a.label}</span>
                 </button>
               ))}
             </div>
 
             {/* Offline/Status Notice */}
             {!isBackendOnline && (
-              <div className="flex items-center gap-3 px-5 py-3 bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 rounded-2xl text-[11px] font-bold tracking-tight">
-                <WifiOff className="w-4 h-4" />
-                <span className="flex-1 uppercase font-mono">Offline Protocol: {offlineQueueCount} packets queued</span>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <div className="flex items-center gap-2 px-4 py-2 bg-amber-500/5 border border-amber-500/10 text-amber-600 dark:text-amber-400 rounded-xl text-[9px] font-bold tracking-tight shrink-0">
+                <WifiOff className="w-3 h-3" />
+                <span className="flex-1 uppercase font-mono">Buffer: {offlineQueueCount} pkts</span>
+                <RefreshCw className="w-2.5 h-2.5 animate-spin" />
               </div>
             )}
             
             {/* Input Field */}
-            <div className="flex items-center gap-3 bg-background dark:bg-[#1e293b]/50 border-2 border-border/50 focus-within:border-cyan-500/60 rounded-[2rem] p-2 shadow-inner transition-all focus-within:shadow-[0_0_20px_rgba(6,182,212,0.1)]">
-              <button onClick={toggleVoice} className={cn("p-3.5 rounded-full transition-all active:scale-90", isListening ? "bg-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.6)] animate-pulse" : "text-muted-foreground hover:bg-secondary hover:text-foreground")}>
-                {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            <div className="flex items-center gap-2 bg-background dark:bg-[#1e293b]/40 border border-border/40 focus-within:border-cyan-500/40 rounded-2xl p-1.5 shadow-inner transition-all shrink-0">
+              <button onClick={toggleVoice} className={cn("p-2.5 rounded-xl transition-all active:scale-90", isListening ? "bg-red-500 text-white shadow-[0_0_15px_rgba(239,68,68,0.4)] animate-pulse" : "text-muted-foreground hover:bg-secondary hover:text-foreground")}>
+                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
               </button>
               <input
                 ref={inputRef}
@@ -648,16 +745,16 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder="Initialize command..."
-                className="flex-1 bg-transparent px-2 py-3 outline-none text-[15px] placeholder:text-muted-foreground/50 font-medium"
+                placeholder="Message..."
+                className="flex-1 bg-transparent px-1 py-2 outline-none text-sm placeholder:text-muted-foreground/40 font-medium"
               />
               <button
                 aria-label="Send"
                 onClick={handleSend}
                 disabled={!input.trim() || isLoading}
-                className="p-3.5 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-lg disabled:opacity-40 disabled:grayscale transition-all hover:shadow-[0_0_25px_rgba(6,182,212,0.5)] active:scale-90"
+                className="p-2.5 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-md disabled:opacity-30 disabled:grayscale transition-all hover:shadow-[0_0_20px_rgba(6,182,212,0.4)] active:scale-90"
               >
-                <Send className="w-6 h-6 ml-0.5" />
+                <Send className="w-4.5 h-4.5 ml-0.5" />
               </button>
             </div>
           </div>
@@ -665,25 +762,17 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       )}
 
       {/* Floating Control Hub */}
-      <div className="flex items-center gap-5 pointer-events-auto">
-        <button 
-          onClick={() => onNavigate?.("/sos")}
-          className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-500 via-red-600 to-red-800 text-white shadow-[0_10px_30px_rgba(239,68,68,0.5)] flex items-center justify-center hover:scale-110 active:scale-95 transition-all border-2 border-white/20 rotate-3 group"
-          title="Emergency Protocol"
-        >
-          <AlertTriangle className="w-7 h-7 animate-pulse group-hover:scale-125 transition-transform" />
-        </button>
-
+      <div className="flex items-center gap-4 pointer-events-auto">
         <button 
           onClick={() => setIsOpen(!isOpen)} 
           className={cn(
-            "w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all duration-500 shadow-[0_15px_60px_rgba(0,0,0,0.4)] border-2 border-white/10 active:scale-90",
+            "w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-500 shadow-[0_10px_40px_rgba(0,0,0,0.3)] border-2 border-white/10 active:scale-90",
             isOpen 
               ? "bg-[#0f172a] text-white rotate-180 scale-90" 
-              : "bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600 text-white hover:scale-105 hover:shadow-[0_0_40px_rgba(6,182,212,0.6)]"
+              : "bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600 text-white hover:scale-105 hover:shadow-[0_0_30px_rgba(6,182,212,0.5)]"
           )}
         >
-          {isOpen ? <X className="w-9 h-9" /> : <Bot className="w-10 h-10" />}
+          {isOpen ? <X className="w-7 h-7" /> : <Bot className="w-8 h-8" />}
         </button>
       </div>
 

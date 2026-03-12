@@ -153,12 +153,17 @@ async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         )
         return response.json()
 
-def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -> ChatResponse:
+def generate_response(intent: str, message: str, session_data: Dict[str, Any], entities: Dict[str, Any] = None) -> ChatResponse:
     reply = f"Detected intent: {intent}. How can I help?"
     actions = []
+    entities = entities or {}
     
     if intent == 'search': 
         reply = "🔍 Searching for your logistics... Where would you like to go?"
+    elif intent == 'pnr':
+        pnr = entities.get("pnr")
+        reply = f"🎫 Retrieving telemetry for PNR: {pnr}... I'm accessing live seat availability and status data."
+        actions = [ChatAction(label="Detailed Status", type="intent", value=f"PNR {pnr}")]
     elif intent == 'bookings':
         reply = "🎫 Retrieving your mission history... I've found your recent bookings. Would you like to view them in the dashboard?"
         actions = [ChatAction(label="Open Bookings", type="navigate", value="/bookings")]
@@ -171,6 +176,18 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any]) -
     elif intent == 'sos':
         reply = "🚨 **EMERGENCY PROTOCOL INITIALIZED.** I am notifying emergency contacts and sharing your live telemetry. Stay calm."
         actions = [ChatAction(label="View SOS Status", type="navigate", value="/sos")]
+    elif intent == 'cancel':
+        reply = "💳 Initiating refund protocol... I've found your latest eligible tickets. You can manage cancellations in your bookings."
+        actions = [ChatAction(label="My Bookings", type="navigate", value="/bookings")]
+    elif intent == 'fare':
+        reply = "💰 Accessing fare telemetry... Train costs vary by class and date. Please use the search tool for exact pricing."
+        actions = [ChatAction(label="Search Trains", type="intent", value="Search Trains")]
+    elif intent == 'track':
+        reply = "📡 Activating live tracking... Please enter your train number or check your active bookings for live telemetry."
+        actions = [ChatAction(label="Live Tracking", type="navigate", value="/dashboard")]
+    elif intent == 'station':
+        reply = "🏢 Station Database Online. I can provide platform info, amenities, and arrival/departure boards."
+        actions = [ChatAction(label="Find Station", type="navigate", value="/dashboard")]
 
     return ChatResponse(reply=reply, intent=intent, confidence=1.0, actions=actions)
 
@@ -221,7 +238,7 @@ async def chat_message(
             logger.error(f"LLM Call failed: {e}")
             response_obj = generate_response("fallback", chat_req.message, session)
     else:
-        response_obj = generate_response(intent, chat_req.message, session)
+        response_obj = generate_response(intent, chat_req.message, session, entities=local_intent.get("entities") if local_intent else None)
 
     # Subtask 8.4 & 8.7: Record Intent & Latency
     intent_log = AIIntentLog(

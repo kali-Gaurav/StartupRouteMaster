@@ -63,7 +63,9 @@ async def lifespan(app: FastAPI):
     from services.behavior_tracker import behavior_tracker
     from services.prediction_hub import prediction_hub
     from database.session import run_pool_scaler, run_connection_reaper
+    from core.metrics import run_event_loop_monitor, run_hardware_monitor
     from core.ml_models.loader import model_loader
+
     from services.multi_layer_cache import multi_layer_cache
     from utils.http_client import HttpClientManager
     
@@ -75,6 +77,7 @@ async def lifespan(app: FastAPI):
     app.state.behavior_task = asyncio.create_task(behavior_tracker.cleanup_idle_states())
     app.state.pool_scaler_task = asyncio.create_task(run_pool_scaler())
     app.state.reaper_task = asyncio.create_task(run_connection_reaper())
+    app.state.event_loop_task = asyncio.create_task(run_event_loop_monitor())
     app.state.ml_eviction_task = asyncio.create_task(model_loader.run_eviction_worker())
     app.state.cache_warmup_task = asyncio.create_task(multi_layer_cache.warmup.run_trending_analyzer())
     
@@ -104,61 +107,60 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- MIDDLEWARE (Order: Inner to Outer) ---
+# --- MIDDLEWARE DEFINITIONS ---
 
-# 1. GZip (Innermost)
-app.add_middleware(GZipMiddleware, minimum_size=500)
+class ResilientGZipMiddleware:
+    """Wrapper around GZipMiddleware to catch disconnected client errors."""
+    def __init__(self, app, minimum_size=500):
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+    async def __call__(self, scope, receive, send):
+        try:
+            await self.gzip(scope, receive, send)
+        except (anyio.EndOfResource, RuntimeError, ConnectionResetError) as e:
+            # Client disconnected during compression/stream
+            logger.debug(f"GZip: Client disconnected early: {e}")
+        except Exception as e:
+            logger.error(f"GZip Middleware Error: {e}")
+            raise e
 
-# 2. DB Lifecycle
-from core.middleware.db_lifecycle import DatabaseLifecycleMiddleware
-app.add_middleware(DatabaseLifecycleMiddleware)
+class RoutingCircuitBreaker:
+    """Proactive circuit breaker for heavy search routes."""
+    def __init__(self, failure_threshold=3, recovery_timeout=10):
+        self.failures = 0
+        self.last_failure_time = 0
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.is_open = False
 
-# 3. Rate Limiting
-from core.middleware.rate_limit import RateLimitMiddleware
-app.add_middleware(RateLimitMiddleware)
+    def check(self):
+        if self.is_open:
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                logger.info("🔧 Routing Circuit Breaker: Attempting recovery (HALF-OPEN)")
+                self.is_open = False
+                self.failures = 0
+                return True
+            return False
+        return True
 
-# 4. Traffic Profiler
-app.add_middleware(AsyncTrafficAnalyzer)
+    def report_failure(self):
+        self.failures += 1
+        self.last_failure_time = time.time()
+        if self.failures >= self.failure_threshold:
+            logger.error(f"🚨 Routing Circuit Breaker: TRIPPED after {self.failures} failures.")
+            self.is_open = True
 
-# 5. CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("CORS_ALLOWED_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    def report_success(self):
+        if self.failures > 0:
+            self.failures = max(0, self.failures - 1)
 
-# 6. JIT (Outer)
-# (Defined below as UnifiedJITMiddleware)
-
-# 7. Observability (Outermost - ensures RID is set first)
-from core.middleware.observability import ObservabilityMiddleware
-app.add_middleware(ObservabilityMiddleware)
-
-from backend.utils.responses import SafeJSONResponse
-
-# --- Global Exception Handlers (Subtask 9.4) ---
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled Exception: {type(exc).__name__}: {exc}", exc_info=True)
-    return SafeJSONResponse(
-        status_code=500,
-        content={"error": True, "message": "A critical system error occurred.", "type": type(exc).__name__}
-    )
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    return SafeJSONResponse(
-        status_code=exc.status_code,
-        content={"error": True, "message": exc.detail}
-    )
+routing_breaker = RoutingCircuitBreaker()
 
 class UnifiedJITMiddleware:
     """
     Native ASGI JIT Middleware:
     1. Handles path-based eager loading (GRAPH vs DATABASE).
     2. Returns 503 if components are still initializing.
+    3. [1.11] Localized circuit breaker for heavy routes.
     Eliminates BaseHTTPMiddleware overhead to prevent 'No response returned' errors.
     """
     def __init__(self, app):
@@ -170,14 +172,23 @@ class UnifiedJITMiddleware:
 
         try:
             path = scope.get("path", "")
+            is_heavy = path.startswith(("/api/search", "/api/v2/search"))
             
             # 1. Skip JIT for health, docs, and root
             if "health" in path or path.startswith("/api/docs") or path == "/":
                 return await self.app(scope, receive, send)
 
+            # [1.11] Circuit Breaker Check
+            if is_heavy and not routing_breaker.check():
+                response = SafeJSONResponse(
+                    status_code=503,
+                    content={"error": True, "message": "Search system is temporarily overloaded. Please try again in a minute."}
+                )
+                return await response(scope, receive, send)
+
             # 2. Trigger JIT readiness
             try:
-                if path.startswith("/api/search") or path.startswith("/api/v2/search") or "stats" in path:
+                if is_heavy or "stats" in path:
                     await jit_manager.ensure_ready("GRAPH")
                 elif path.startswith("/api"):
                     await jit_manager.ensure_ready("DATABASE")
@@ -202,10 +213,21 @@ class UnifiedJITMiddleware:
                     )
                     return await response(scope, receive, send)
 
-            # 3. Proceed to next handler
-            return await self.app(scope, receive, send)
+            # 3. Proceed to next handler with monitoring
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    status = message.get("status", 0)
+                    if is_heavy:
+                        if status >= 500:
+                            routing_breaker.report_failure()
+                        elif status < 400:
+                            routing_breaker.report_success()
+                await send(message)
+
+            return await self.app(scope, receive, send_wrapper)
             
         except Exception as exc:
+            if is_heavy: routing_breaker.report_failure()
             logger.error(f"CRITICAL: JIT Middleware Crash: {exc}", exc_info=True)
             response = SafeJSONResponse(
                 status_code=500,
@@ -213,7 +235,37 @@ class UnifiedJITMiddleware:
             )
             return await response(scope, receive, send)
 
+# --- MIDDLEWARE REGISTRATION (Order: Inner to Outer) ---
+
+# 1. GZip (Innermost)
+app.add_middleware(ResilientGZipMiddleware, minimum_size=500)
+
+# 2. DB Lifecycle
+from core.middleware.db_lifecycle import DatabaseLifecycleMiddleware
+app.add_middleware(DatabaseLifecycleMiddleware)
+
+# 3. Rate Limiting
+from core.middleware.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
+# 4. Traffic Profiler
+app.add_middleware(AsyncTrafficAnalyzer)
+
+# 5. CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ALLOWED_ORIGINS", "*").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 6. Unified JIT
 app.add_middleware(UnifiedJITMiddleware)
+
+# 7. Observability (Outermost - RID Context is set here)
+from core.middleware.observability import ObservabilityMiddleware
+app.add_middleware(ObservabilityMiddleware)
 
 # --- STATIC FILES ---
 os.makedirs("media/sos", exist_ok=True)
@@ -307,6 +359,32 @@ async def get_stats_proxy():
         "performance_score": 98.2,
         "uptime": datetime.utcnow().isoformat()
     }
+
+@app.get("/api/test/mem-spike")
+async def mem_spike():
+    """Simulate a memory spike to test Hardware Monitor."""
+    import gc
+    # Allocate ~100MB of dummy data
+    spike_list = []
+    for _ in range(10):
+        spike_list.append(" " * (10 * 1024 * 1024))
+    
+    # Hold it for 2 seconds then release
+    await asyncio.sleep(2)
+    del spike_list
+    gc.collect()
+    return {"message": "Memory spike completed"}
+
+@app.get("/api/test/cpu-spike")
+async def cpu_spike():
+    """Simulate a thread-blocking CPU task to test Event Loop Monitor."""
+    import math
+    import time
+    start = time.time()
+    # Synchronous block for ~500ms
+    while time.time() - start < 0.5:
+        [math.sqrt(i) for i in range(10000)]
+    return {"message": "CPU spike completed"}
 
 @app.get("/")
 async def root():

@@ -224,25 +224,27 @@ export function SOSWidget() {
   }
 
   return (
-    <div className="fixed bottom-24 right-4 z-[90]">
-      <div className="relative">
+    <div className="fixed bottom-6 right-24 md:right-28 z-[100] pointer-events-auto">
+      <div className="relative group">
         {longPressActive && (
-          <div className="absolute inset-0 rounded-full border-4 border-red-600 border-t-transparent animate-spin" />
+          <div className="absolute -inset-2 rounded-2xl border-4 border-red-600 border-t-transparent animate-spin" />
         )}
         <button
           onMouseDown={handlePressStart}
           onMouseUp={handlePressEnd}
+          onMouseLeave={handlePressEnd}
           onTouchStart={handlePressStart}
           onTouchEnd={handlePressEnd}
           className={cn(
-            "w-16 h-16 rounded-full bg-red-600 text-white shadow-lg flex items-center justify-center transition-transform active:scale-90",
-            longPressActive && "scale-110"
+            "w-16 h-16 md:w-20 md:h-20 rounded-[2rem] bg-gradient-to-br from-red-500 via-red-600 to-red-800 text-white shadow-[0_15px_40px_rgba(239,68,68,0.4)] flex items-center justify-center transition-all active:scale-90 border-2 border-white/20 rotate-3",
+            longPressActive && "scale-110 rotate-0"
           )}
+          title="Emergency SOS (Hold 2s)"
         >
-          <AlertTriangle className="w-8 h-8" />
+          <AlertTriangle className="w-8 h-8 md:w-10 md:h-10 animate-pulse" />
         </button>
-        <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded whitespace-nowrap">
-          HOLD FOR SOS
+        <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full whitespace-nowrap shadow-lg opacity-0 group-hover:opacity-100 transition-opacity uppercase tracking-widest border border-white/20">
+          Hold for SOS
         </div>
       </div>
     </div>

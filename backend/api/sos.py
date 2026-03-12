@@ -25,7 +25,62 @@ from utils.limiter import limiter
 
 import threading
 
+from services.emergency.safety_service import safety_service
+from sqlalchemy.orm import Session
+from database import get_db
+
 router = APIRouter(prefix="/sos", tags=["sos"])
+
+class TelemetryPayload(BaseModel):
+    lat: float
+    lng: float
+    battery_level: Optional[float] = 1.0
+    speed_kmh: Optional[float] = 0.0
+
+@router.post("/{event_id}/telemetry")
+async def update_sos_telemetry(
+    event_id: str, 
+    payload: TelemetryPayload,
+    user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Task 4.2: Automated Route Deviant Alert & Geofencing.
+    Analyzes live telemetry against the expected railway path.
+    """
+    event = _load_event(event_id)
+    if not event: raise HTTPException(status_code=404)
+    
+    # 1. Update basic state
+    event["lat"] = payload.lat
+    event["lng"] = payload.lng
+    event["battery_level"] = payload.battery_level
+    
+    # 2. Geofencing Audit (Deep Logic)
+    # Use user_id from event or current session
+    target_user_id = event.get("user_id") or (user.id if user else None)
+    
+    deviation_report = {"status": "skipped"}
+    if target_user_id:
+        deviation_report = await safety_service.check_journey_deviation(
+            user_id=target_user_id,
+            lat=payload.lat,
+            lon=payload.lng,
+            db_user=db
+        )
+    
+    # 3. Handle Deviation
+    if deviation_report.get("status") == "deviated":
+        event["priority"] = "critical"
+        event["extra"] = f"{event.get('extra', '')} | 🚩 GEOFENCE_VIOLATION: {deviation_report['distance_km']}km off-track"
+        await manager.broadcast_sos({"type": "GEOFENCE_ALERT", "event_id": event_id, "report": deviation_report})
+
+    _save_event(event)
+    return {
+        "status": "ok",
+        "geofence": deviation_report,
+        "is_critical": event.get("priority") == "critical"
+    }
 
 # Use the singleton instance directly
 _redis = multi_layer_cache.redis

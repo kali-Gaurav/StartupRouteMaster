@@ -6,6 +6,7 @@ from database.session import get_db, get_transit_db
 from services.search_service import SearchService
 from dependencies import get_route_engine
 from utils.geo_utils import get_state_from_ip
+from backend.utils.responses import SafeJSONResponse
 import json
 import asyncio
 import logging
@@ -52,19 +53,30 @@ async def unified_search(
     destination = sanitize_string(destination, length_limit=10)
 
     search_svc = SearchService(db)
-    result = await search_svc.search_routes(
-        source=source,
-        destination=destination,
-        travel_date=date,
-        budget_category=budget,
-        page=page,
-        limit=limit,
-        cursor=cursor,
-        quota=quota,
-        client_ip=client_ip,
-        geo_state=geo_state
-    )
-    return result
+    try:
+        result = await asyncio.wait_for(
+            search_svc.search_routes(
+                source=source,
+                destination=destination,
+                travel_date=date,
+                budget_category=budget,
+                page=page,
+                limit=limit,
+                cursor=cursor,
+                quota=quota,
+                client_ip=client_ip,
+                geo_state=geo_state,
+                request=request # Pass request for disconnection detection
+            ),
+            timeout=30.0 # Subtask 1.15: 30s Hard Timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.error(f"Unified Search timed out for {source}->{destination}")
+        return SafeJSONResponse(
+            status_code=504,
+            content={"error": True, "message": "Search processing timed out. Please try again later."}
+        )
 
 @router.get("/stream")
 async def streaming_search(

@@ -122,7 +122,6 @@ const AppContent = () => {
       <Toaster />
       <Sonner />
       <NetworkStatusBanner />
-      <SOSWidget />
       <DevBootstrap />
       <DevDebugPanel />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

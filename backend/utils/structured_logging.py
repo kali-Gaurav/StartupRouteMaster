@@ -36,6 +36,11 @@ class JsonFormatter(logging.Formatter):
             log_record["exception"] = self.formatException(record.exc_info)
         return orjson.dumps(log_record).decode('utf-8')
 
+class RequestIDFilter(logging.Filter):
+    def filter(self, record):
+        record.rid = get_request_id()
+        return True
+
 def setup_logging():
     """Configures logging based on the environment."""
     root_logger = logging.getLogger()
@@ -49,6 +54,10 @@ def setup_logging():
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     handler = logging.StreamHandler(sys.stdout)    
+    
+    # Add RID filter to handler
+    handler.addFilter(RequestIDFilter())
+    
     if Config.ENVIRONMENT == "production":
         # Use JSON formatter in production
         handler.setFormatter(JsonFormatter())
@@ -57,13 +66,6 @@ def setup_logging():
         standard_formatter = logging.Formatter(
             '%(asctime)s [%(levelname)s] %(name)s [RID:%(rid)s]: %(message)s'
         )
-        # Custom logic to inject rid into dev logs
-        old_factory = logging.getLogRecordFactory()
-        def record_factory(*args, **kwargs):
-            record = old_factory(*args, **kwargs)
-            record.rid = get_request_id()
-            return record
-        logging.setLogRecordFactory(record_factory)
         handler.setFormatter(standard_formatter)
         
     root_logger.addHandler(handler)

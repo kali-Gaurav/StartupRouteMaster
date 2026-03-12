@@ -11,8 +11,9 @@ class SafetyRedactor:
     # Patterns for common Indian PII
     PATTERNS = {
         "AADHAAR": r'\b\d{4}\s\d{4}\s\d{4}\b|\b\d{12}\b',
-        "OTP": r'\b\d{4,6}\b', # Can be aggressive, but safety first
-        "PHONE": r'\b(?:\+91|91|0)?[6-9]\d{9}\b'
+        "OTP": r'\b\d{4,6}\b',
+        "PHONE": r'\b(?:\+91|91|0)?[6-9]\d{9}\b',
+        "PNR": r'\b\d{10}\b|\b\d{3}[-\s]?\d{7}\b' # 10-digit PNR
     }
 
     @staticmethod
@@ -20,15 +21,14 @@ class SafetyRedactor:
         if not text: return text
         
         redacted = text
-        # Redact Aadhaar
+        # 1. Redact Aadhaar
         redacted = re.sub(SafetyRedactor.PATTERNS["AADHAAR"], "[REDACTED_ID]", redacted)
         
-        # Redact Phone (Only if it looks like a separate number, not the user's primary)
-        # For simplicity, we redact all matches in the text body
+        # 2. Redact Phone
         redacted = re.sub(SafetyRedactor.PATTERNS["PHONE"], "[REDACTED_PHONE]", redacted)
         
-        # Note: We avoid aggressive OTP redaction if it breaks simple counts, 
-        # but for safety transcripts, any 6-digit number is suspicious.
+        # 3. Redact PNR (Task 9.2)
+        redacted = re.sub(SafetyRedactor.PATTERNS["PNR"], "[REDACTED_PNR]", redacted)
         
         return redacted
 

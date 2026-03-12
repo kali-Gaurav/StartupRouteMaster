@@ -9,6 +9,7 @@ export interface MemoryState {
   journeyActive?: boolean;
   emotionalRisk?: number;
   lastInteraction?: string;
+  recentSearches?: string[];
 }
 
 const STORAGE_KEY = "diksha_memory_v1";

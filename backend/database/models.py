@@ -44,6 +44,11 @@ class User(UserBase):
     last_active_at = Column(DateTime, default=datetime.utcnow)
     preferences = Column(JSON, nullable=True)
     
+    # Task 3.1: Telegram Integration
+    telegram_id = Column(String(100), unique=True, nullable=True, index=True)
+    telegram_link_token = Column(String(100), unique=True, nullable=True, index=True)
+    telegram_link_expiry = Column(DateTime, nullable=True)
+    
     # Task 35: Credential Vault
     encrypted_irctc_creds = Column(LargeBinary, nullable=True)
     creds_iv = Column(LargeBinary, nullable=True)

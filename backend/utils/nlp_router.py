@@ -10,7 +10,11 @@ PATTERNS = {
     'greet': r'(?i)\b(hi|hello|hey|hola|namaste)\b',
     'bookings': r'(?i)\b(bookings|my tickets|history|last ticket|booked)\b',
     'dashboard': r'(?i)\b(dashboard|stats|analytics|my profile)\b',
-    'telegram': r'(?i)\b(telegram|bot|link telegram|connect telegram)\b'
+    'telegram': r'(?i)\b(telegram|bot|link telegram|connect telegram)\b',
+    'cancel': r'(?i)\b(cancel|refund|withdraw|refund status)\b',
+    'fare': r'(?i)\b(fare|price|cost|ticket rate|kitne ka hai)\b',
+    'track': r'(?i)\b(track|live status|where is|kahan pahunchi|running status)\b',
+    'station': r'(?i)\b(station|platform|facility|amenity|kahan hai station)\b'
 }
 
 def get_local_intent(message: str) -> Optional[Dict[str, Any]]:
@@ -23,25 +27,29 @@ def get_local_intent(message: str) -> Optional[Dict[str, Any]]:
     if re.search(PATTERNS['sos'], msg):
         return {"intent": "sos", "confidence": 1.0}
 
-    # 2. Check Bookings/History
+    # 2. Check High-Frequency Controls
     if re.search(PATTERNS['bookings'], msg):
         return {"intent": "bookings", "confidence": 1.0}
-
-    # 3. Check Dashboard
     if re.search(PATTERNS['dashboard'], msg):
         return {"intent": "dashboard", "confidence": 1.0}
-
-    # 4. Check Telegram
     if re.search(PATTERNS['telegram'], msg):
         return {"intent": "telegram", "confidence": 1.0}
+    if re.search(PATTERNS['cancel'], msg):
+        return {"intent": "cancel", "confidence": 1.0}
+    if re.search(PATTERNS['fare'], msg):
+        return {"intent": "fare", "confidence": 1.0}
+    if re.search(PATTERNS['station'], msg):
+        return {"intent": "station", "confidence": 1.0}
+    if re.search(PATTERNS['track'], msg):
+        return {"intent": "track", "confidence": 1.0}
 
-    # 5. Check PNR
+    # 3. Check PNR
     pnr_match = re.search(PATTERNS['pnr'], msg)
     if pnr_match:
         # Clean PNR
         pnr_clean = re.sub(r'[\-\s]', '', pnr_match.group(1))
         return {
-            "intent": "pnr_status", 
+            "intent": "pnr", 
             "entities": {"pnr": pnr_clean},
             "confidence": 1.0
         }

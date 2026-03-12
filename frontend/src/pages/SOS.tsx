@@ -15,7 +15,7 @@ import { AuthModal } from "@/components/AuthModal";
 import { LocationService } from "@/lib/locationService";
 import { voiceService } from "@/services/voiceService";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
-import { cn } from "@/lib/utils";
+import { cn, getRailwayApiUrl } from "@/lib/utils";
 
 export default function SOSPage() {
   const { user, isAuthenticated, session } = useAuth();
@@ -34,6 +34,40 @@ export default function SOSPage() {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [activeTab, setActiveTab] = useState<'emergency' | 'shield'>('emergency');
   const [voiceEnabled, setVoiceEnabled] = useState(true);
+
+  // Task 4.2: Real-time Telemetry Sync
+  useEffect(() => {
+    if (!eventId || (!sent && !isShieldActive && !isGuardianActive)) return;
+
+    const syncTelemetry = async () => {
+      if (!location) return;
+      try {
+        let batteryLevel = 1.0;
+        if ('getBattery' in navigator) {
+          const battery: any = await (navigator as any).getBattery();
+          batteryLevel = battery.level;
+        }
+
+        await fetch(getRailwayApiUrl(`/sos/${eventId}/telemetry`), {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            lat: location.lat,
+            lng: location.lng,
+            battery_level: batteryLevel
+          })
+        });
+      } catch (err) {
+        console.error("Telemetry sync failed", err);
+      }
+    };
+
+    const interval = setInterval(syncTelemetry, 30000);
+    return () => clearInterval(interval);
+  }, [eventId, location, sent, isShieldActive, isGuardianActive, token]);
 
   // Load initial location
   useEffect(() => {

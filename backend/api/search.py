@@ -44,16 +44,27 @@ async def search_routes_endpoint(
             src_stop, dst_stop = resolve_stations(db, search_request.source, search_request.destination)
             return {"dry_run": True, "resolved": {"source": src_stop.code if src_stop else None, "destination": dst_stop.code if dst_stop else None}}
 
-        result = await service.search_routes(
-            source=search_request.source,
-            destination=search_request.destination,
-            travel_date=travel_date_str,
-            budget_category=search_request.budget,
-            limit=limit,
-            session_id=search_request.session_id,
-            client_ip=request.client.host,
-            request=request
-        )
+        try:
+            result = await asyncio.wait_for(
+                service.search_routes(
+                    source=search_request.source,
+                    destination=search_request.destination,
+                    travel_date=travel_date_str,
+                    budget_category=search_request.budget,
+                    limit=limit,
+                    session_id=search_request.session_id,
+                    client_ip=request.client.host,
+                    request=request
+                ),
+                timeout=30.0 # Subtask 1.15: 30s Hard Timeout
+            )
+        except asyncio.TimeoutError:
+            status_label = "timeout"
+            logger.error(f"Search timed out for {search_request.source}->{search_request.destination}")
+            return SafeJSONResponse(
+                status_code=504,
+                content={"error": True, "message": "Search processing timed out. Please try a simpler route or different date."}
+            )
 
         if not result or not result.get("journeys"):
             # Task 34: Alternative Hub-Route Suggestion

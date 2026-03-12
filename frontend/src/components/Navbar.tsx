@@ -37,7 +37,7 @@ export function Navbar() {
               <TrainIcon className="w-5 h-5 text-white" />
             </div>
             <span className="text-xl font-bold text-foreground">
-              Pareto<span className="text-gradient">Route</span>
+              Route<span className="text-gradient">Master</span>
             </span>
           </a>
 

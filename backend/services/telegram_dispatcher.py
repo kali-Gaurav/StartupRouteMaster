@@ -67,23 +67,15 @@ class TelegramDispatcher:
             return False
 
     async def send_welcome(self, chat_id: Union[str, int]):
-        """Task 33.6: Welcome message with suggestion buttons (Tony Stark Style)."""
+        """Task 33.6: Welcome message with suggestion buttons (RouteMaster Style)."""
         welcome = (
-            "🚀 <b>J.A.R.V.I.S / Rail Assistant Online</b>\n\n"
+            "🚀 <b>RouteMaster / Rail Assistant Online</b>\n\n"
             "Systems operational. I am your advanced AI travel companion.\n\n"
             "How can I assist you with your logistics today?"
         )
         
-        # Mirroring web chatbot "Button Pattern" for Telegram
-        reply_markup = {
-            "keyboard": [
-                [{"text": "🎫 Book Ticket"}, {"text": "🔍 Search Trains"}],
-                [{"text": "📊 Dashboard"}, {"text": "📜 My Bookings"}],
-                [{"text": "🚨 SOS Emergency"}, {"text": "❓ Help"}]
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": False
-        }
+        # Task 3.2: Mirroring web chatbot "Button Pattern" for Telegram
+        reply_markup = self.get_keyboard("default")
         
         return await self._api_request("sendMessage", {
             "chat_id": chat_id,
@@ -91,6 +83,31 @@ class TelegramDispatcher:
             "parse_mode": "HTML",
             "reply_markup": reply_markup
         })
+
+    def get_keyboard(self, context: str = "default") -> Dict[str, Any]:
+        """Task 3.2: Unified Keyboard Mirroring logic."""
+        if context == "journey":
+            buttons = [
+                [{"text": "📍 Share Location"}, {"text": "🛡️ Safety Status"}],
+                [{"text": "📊 Dashboard"}, {"text": "🚨 SOS Emergency"}]
+            ]
+        elif context == "search":
+            buttons = [
+                [{"text": "🔍 Check Availability"}, {"text": "🛤️ Alt Routes"}],
+                [{"text": "📊 Dashboard"}, {"text": "🎫 Book Ticket"}]
+            ]
+        else:
+            buttons = [
+                [{"text": "🎫 Book Ticket"}, {"text": "🔍 Search Trains"}],
+                [{"text": "📊 Dashboard"}, {"text": "📜 My Bookings"}],
+                [{"text": "🚨 SOS Emergency"}, {"text": "❓ Help"}]
+            ]
+            
+        return {
+            "keyboard": buttons,
+            "resize_keyboard": True,
+            "one_time_keyboard": False
+        }
 
     async def _api_request(self, method: str, payload: Dict[str, Any]):
         """Internal helper for Telegram API calls."""

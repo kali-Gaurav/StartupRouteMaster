@@ -20,17 +20,14 @@ class ObservabilityMiddleware:
 
         from backend.utils.structured_logging import request_id_var
         
-        # 1. Extract or Generate Request ID
+        # 1. Initialize metadata early to avoid UnboundLocalError
+        method = scope.get("method", "UNKNOWN")
+        path = scope.get("path", "UNKNOWN")
         headers_dict = dict(scope.get("headers", []))
         request_id = headers_dict.get(b"x-request-id", str(uuid.uuid4()).encode()).decode()
         
         # 2. Set ContextVar for downstream loggers
         token = request_id_var.set(request_id)
-        logger.info(f"SETTING RID: {request_id} for {path}")
-        scope["request_id"] = request_id
-        
-        method = scope.get("method", "UNKNOWN")
-        path = scope.get("path", "UNKNOWN")
         start_time = time.perf_counter()
         
         status_code = [0] 
@@ -54,20 +51,21 @@ class ObservabilityMiddleware:
                     )
 
         try:
-            await self.app(scope, receive, send_wrapper)
-        except Exception as e:
-            duration = (time.perf_counter() - start_time) * 1000
-            logger.error(
-                f"EXCEPTION {method} {path} after {duration:.2f}ms: {e}", 
-                exc_info=True
-            )
-            # Standardized internal crash response
-            from backend.utils.responses import SafeJSONResponse
-            response = SafeJSONResponse(
-                status_code=500,
-                content={"error": True, "message": "Internal Observability Error", "detail": str(e)}
-            )
-            return await response(scope, receive, send)
+            try:
+                await self.app(scope, receive, send_wrapper)
+            except Exception as e:
+                duration = (time.perf_counter() - start_time) * 1000
+                logger.error(
+                    f"EXCEPTION {method} {path} after {duration:.2f}ms: {e}", 
+                    exc_info=True
+                )
+                # Standardized internal crash response
+                from backend.utils.responses import SafeJSONResponse
+                response = SafeJSONResponse(
+                    status_code=500,
+                    content={"error": True, "message": "Internal Observability Error", "detail": str(e)}
+                )
+                return await response(scope, receive, send)
         finally:
             # 4. Clear context to prevent leaks
             request_id_var.reset(token)
