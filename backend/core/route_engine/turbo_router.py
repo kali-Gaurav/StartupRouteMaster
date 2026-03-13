@@ -38,6 +38,8 @@ class TurboRouter:
         return res[0] if res else str(station_id)
 
     def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
+        import gc
+        gc.disable() # Subtask 5.3
         db = self.db_factory()
         try:
             src_ids = self._get_city_cluster(db, source_code)
@@ -73,6 +75,7 @@ class TurboRouter:
             return all_routes[:limit]
         finally:
             db.close()
+            gc.enable() # Subtask 5.3
 
     def _unpack_trains(self, blob: bytes) -> Dict[int, Dict]:
         """[4.2] Unpack V3 Binary Struct (IHHBBH = 12 bytes)."""

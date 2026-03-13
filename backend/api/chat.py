@@ -158,12 +158,55 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any], e
     actions = []
     entities = entities or {}
     
+    # Task 2.4: Contextual Entity Merging
+    session_entities = session_data.get("extracted_entities", {})
+    merged_entities = {**session_entities, **entities}
+    
     if intent == 'search': 
-        reply = "🔍 Searching for your logistics... Where would you like to go?"
+        source = merged_entities.get("source")
+        dest = merged_entities.get("destination")
+        
+        # Task 2.5: Resolve stations to confirm corrections
+        from services.station_search_service import station_search_engine
+        
+        src_resolved = station_search_engine.resolve(source) if source else None
+        dst_resolved = station_search_engine.resolve(dest) if dest else None
+        
+        if src_resolved and dst_resolved:
+            # Task 2.5: Build confirmation message
+            confirmations = []
+            if source.upper() != src_resolved.code and source.upper() != src_resolved.name.upper():
+                confirmations.append(f"'{source}' to {src_resolved.name} ({src_resolved.code})")
+            if dest.upper() != dst_resolved.code and dest.upper() != dst_resolved.name.upper():
+                confirmations.append(f"'{dest}' to {dst_resolved.name} ({dst_resolved.code})")
+            
+            correction_text = f" (Correcting {' & '.join(confirmations)})" if confirmations else ""
+            
+            reply = f"🔍 Initializing logistics{correction_text}. Journey from {src_resolved.name} to {dst_resolved.name}. Checking live availability..."
+            
+            # Update entities with canonical codes for frontend
+            merged_entities["source"] = src_resolved.code
+            merged_entities["destination"] = dst_resolved.code
+            
+            return ChatResponse(reply=reply, intent=intent, confidence=1.0, trigger_search=True, collected=merged_entities)
+        else:
+            reply = "🔍 I'm ready to search for trains. Where are you traveling from and to?"
+            actions = [ChatAction(label="Mumbai to Delhi", type="intent", value="Mumbai to Delhi")]
+    
     elif intent == 'pnr':
-        pnr = entities.get("pnr")
+        pnr = merged_entities.get("pnr")
         reply = f"🎫 Retrieving telemetry for PNR: {pnr}... I'm accessing live seat availability and status data."
         actions = [ChatAction(label="Detailed Status", type="intent", value=f"PNR {pnr}")]
+    
+    elif intent == 'clarify':
+        # Task 2.3: Neural Clarification
+        reply = "🤔 Mission Parameters Uncertain. Did you mean to Search for Trains or Track a live journey?"
+        actions = [
+            ChatAction(label="🔍 Search Trains", type="intent", value="Search Trains"),
+            ChatAction(label="📡 Track Journey", type="intent", value="Track Train")
+        ]
+        return ChatResponse(reply=reply, intent=intent, confidence=0.5, actions=actions)
+
     elif intent == 'bookings':
         reply = "🎫 Retrieving your mission history... I've found your recent bookings. Would you like to view them in the dashboard?"
         actions = [ChatAction(label="Open Bookings", type="navigate", value="/bookings")]
@@ -212,7 +255,11 @@ async def chat_message(
     
     intent_start = time.time()
     extracted = EntityExtractor.extract_all(chat_req.message)
-    if extracted: session.setdefault("extracted_entities", {}).update(extracted)
+    
+    # Task 2.4: Sequential Context - Merge entities into session memory
+    if extracted:
+        current_entities = session.get("extracted_entities", {})
+        session["extracted_entities"] = {**current_entities, **extracted}
     
     local_intent = await asyncio.to_thread(get_local_intent, chat_req.message)
     intent_latency = (time.time() - intent_start) * 1000
@@ -220,13 +267,17 @@ async def chat_message(
     intent = local_intent["intent"] if local_intent else "unknown"
     confidence = local_intent.get("confidence", 0.0) if local_intent else 0.0
     
+    # Task 2.3: Confidence Triage
+    if confidence > 0.0 and confidence < 0.6:
+        intent = "clarify"
+
     llm_latency = 0.0
     if intent == "unknown" and Config.OPENROUTER_API_KEY:
         llm_start = time.time()
         try:
             # Task 6.1: Include conversational context (History)
-            llm_messages = [{"role": "system", "content": "You are Diksha, the RouteMaster AI. Assist with train travel and safety."}]
-            for msg in session.get("messages", [])[-20:]:
+            llm_messages = [{"role": "system", "content": "You are Diksha, the RouteMaster AI. Assist with train travel and safety. Be concise."}]
+            for msg in session.get("messages", [])[-10:]:
                 llm_messages.append(msg)
             llm_messages.append({"role": "user", "content": chat_req.message})
             
@@ -238,13 +289,22 @@ async def chat_message(
             logger.error(f"LLM Call failed: {e}")
             response_obj = generate_response("fallback", chat_req.message, session)
     else:
-        response_obj = generate_response(intent, chat_req.message, session, entities=local_intent.get("entities") if local_intent else None)
+        # Task 2.7: Intent-to-Action Mapping
+        from services.chat_action_dispatcher import chat_dispatcher
+        action_entities = local_intent.get("entities") if local_intent else extracted
+        action_result = await chat_dispatcher.dispatch(intent, action_entities or {}, db, user)
+        
+        response_obj = generate_response(intent, chat_req.message, session, entities=action_entities)
+        
+        # If an action was performed, prefix the AI response with the tactical result
+        if action_result:
+            response_obj.reply = f"{action_result}\n\n{response_obj.reply}"
 
     # Subtask 8.4 & 8.7: Record Intent & Latency
     intent_log = AIIntentLog(
         query=chat_req.message,
         matched_intent=response_obj.intent,
-        confidence=response_obj.confidence,
+        confidence=response_obj.confidence or 0.0,
         intent_latency_ms=int(intent_latency),
         llm_latency_ms=int(llm_latency),
         timestamp=datetime.utcnow()

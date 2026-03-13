@@ -8,6 +8,10 @@ env_path = Path(__file__).resolve().parent.parent / '.env'
 load_dotenv(dotenv_path=env_path, override=True)
 
 class Config:
+    # Path Configuration (Resolved relative to backend root)
+    BASE_DIR = str(Path(__file__).resolve().parent.parent)
+    _base = Path(BASE_DIR)
+
     # System Mode (Read from environment, default to False for production readiness)
     OFFLINE_MODE = os.getenv("OFFLINE_MODE", "false").lower() in ("1", "true", "yes")
 
@@ -59,6 +63,9 @@ class Config:
     # Task 12: Strict CORS
     # In production, this should be a comma-separated list of your frontend domains
     CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
+    
+    # Task 5: Memory Mapping & JIT
+    MEMMAP_DIR = os.getenv("MEMMAP_DIR", os.path.join(BASE_DIR, "data", "memmap"))
     
     # Task 13: API Rate Limiting
     RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))

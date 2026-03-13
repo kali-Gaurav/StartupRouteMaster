@@ -7,7 +7,7 @@ import time
 import anyio
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -184,12 +184,12 @@ class UnifiedJITMiddleware:
 
         try:
             path = scope.get("path", "")
+            method = scope.get("method", "")
             is_heavy = path.startswith(("/api/search", "/api/v2/search"))
-            
-            # 1. Skip JIT for health, docs, and root
-            if "health" in path or path.startswith("/api/docs") or path == "/":
-                return await self.app(scope, receive, send)
 
+            # 1. Skip JIT for health, docs, root, and OPTIONS requests
+            if "health" in path or path.startswith("/api/docs") or path == "/" or method == "OPTIONS":
+                return await self.app(scope, receive, send)
             # [1.11] Circuit Breaker Check
             if is_heavy and not routing_breaker.check():
                 response = SafeJSONResponse(
@@ -507,6 +507,38 @@ class SoftScalingMiddleware:
 
         return await self.app(scope, receive, send)
 
+class PenaltyBoxMiddleware:
+    """
+    Subtask 4.7: Penalty Box Guard.
+    Absolute outermost layer. Immediately drops traffic from jailed IPs.
+    """
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        # 1. Extract Client IP
+        client = scope.get("client")
+        client_ip = client[0] if client else "unknown"
+        
+        # 2. Check if jailed
+        from core.orchestrator import orchestrator
+        if await orchestrator.penalty_box.is_jailed(client_ip):
+            logger.warning(f"🚫 Penalty Box: Blocking request from jailed IP {client_ip}")
+            response = SafeJSONResponse(
+                status_code=403,
+                content={
+                    "error": True,
+                    "message": "Your IP has been temporarily restricted due to suspicious activity. Please try again later.",
+                    "retry_after": 600
+                }
+            )
+            return await response(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
 # --- MIDDLEWARE REGISTRATION (Order: Inner to Outer) ---
 
 # 1. GZip (Innermost)
@@ -551,8 +583,11 @@ app.add_middleware(MaintenanceMiddleware)
 # 11. Emergency Kill Switch (The Final Gate)
 app.add_middleware(DropAllMiddleware)
 
-# 12. Dynamic Body Size (Absolute Outermost)
+# 12. Dynamic Body Size (Outermost)
 app.add_middleware(DynamicBodySizeMiddleware)
+
+# 13. Penalty Box (Absolute Outermost - The Wall)
+app.add_middleware(PenaltyBoxMiddleware)
 
 # --- STATIC FILES ---
 os.makedirs("media/sos", exist_ok=True)
@@ -623,8 +658,9 @@ async def global_exception_handler(request: Request, exc: Exception):
     error_id = secrets.token_hex(4).upper()
     logger.error(f"🚨 SYSTEM PANIC [{error_id}]: {type(exc).__name__}: {exc}", exc_info=True)
     
-    # Check if this is a recurring failure that might require a restart
-    # (Future logic: trigger orchestrator.request_restart() if error rate > X)
+    # [4.7] Report error to PenaltyBox
+    client_ip = request.client.host if request.client else "unknown"
+    await orchestrator.penalty_box.report_error(client_ip)
     
     return SafeJSONResponse(
         status_code=500,
@@ -660,8 +696,17 @@ async def toggle_maintenance(enabled: bool):
 
 @app.get("/api/health")
 @app.get("/api/health/live")
-async def health_check():
-    from core.metrics import jit_metrics
+async def health_check(surge_override: Optional[str] = None):
+    from core.metrics import jit_metrics, SurgeLevel
+    
+    if surge_override:
+        try:
+            level = SurgeLevel[surge_override.upper()]
+            jit_metrics._surge_override = level
+            logger.info(f"🧪 Test Override: Surge Level forced to {level.name}")
+        except KeyError:
+            pass
+
     return {
         "status": "online",
         "system": orchestrator.get_health_report(),
@@ -669,6 +714,28 @@ async def health_check():
         "jit_intelligence": jit_metrics.get_report(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+@app.get("/api/stats")
+async def get_system_stats():
+    """Returns general railway network statistics."""
+    from database.session import get_async_transit_db
+    from sqlalchemy import text
+    
+    try:
+        # Use direct async generator for speed
+        from database.session import AsyncSessionTransit
+        async with AsyncSessionTransit() as db:
+            trains_result = await db.execute(text("SELECT COUNT(*) FROM trains_master"))
+            stations_result = await db.execute(text("SELECT COUNT(*) FROM stops"))
+            
+            return {
+                "total_trains": trains_result.scalar() or 0,
+                "total_stations": stations_result.scalar() or 0,
+                "status": "synchronized"
+            }
+    except Exception as e:
+        logger.error(f"Stats Error: {e}")
+        return {"total_trains": 0, "total_stations": 0, "status": "error"}
 
 @app.get("/api/test/mem-spike")
 async def mem_spike():

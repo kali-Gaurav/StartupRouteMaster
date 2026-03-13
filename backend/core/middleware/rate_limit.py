@@ -2,6 +2,7 @@ import time
 import logging
 from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.responses import JSONResponse
+from utils.responses import SafeJSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class RateLimitMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
+        from utils.responses import SafeJSONResponse
         try:
             from services.multi_layer_cache import multi_layer_cache
             from database.config import Config
@@ -24,8 +26,8 @@ class RateLimitMiddleware:
 
             path = scope.get("path", "")
             
-            # 1. Skip for health/static/root
-            if path.startswith(("/api/status/health", "/api/health", "/health", "/media")) or path == "/":
+            # 1. Skip for health/static/root/stats
+            if path.startswith(("/api/status/health", "/api/health", "/health", "/media", "/api/stats")) or path == "/":
                 return await self.app(scope, receive, send)
 
             if not multi_layer_cache.redis:
@@ -50,6 +52,11 @@ class RateLimitMiddleware:
 
             if not is_allowed:
                 logger.warning(f"⚠️ Rate limit exceeded (Token Bucket): {client_ip} on {path}")
+                
+                # [4.7] Report to PenaltyBox
+                from core.orchestrator import orchestrator
+                await orchestrator.penalty_box.report_error(client_ip)
+
                 response = SafeJSONResponse(
                     status_code=429,
                     content={
@@ -65,7 +72,6 @@ class RateLimitMiddleware:
             
         except Exception as exc:
             logger.error(f"CRITICAL: RateLimit Middleware Crash: {exc}", exc_info=True)
-            from utils.responses import SafeJSONResponse
             response = SafeJSONResponse(
                 status_code=500,
                 content={"error": True, "message": "Internal Rate Limit Error", "detail": str(exc)}

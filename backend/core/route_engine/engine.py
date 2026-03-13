@@ -84,7 +84,37 @@ class RailwayRouteEngine:
                 self.current_snapshot = snapshot
                 self.current_graph = TimeDependentGraph(snapshot)
             
+            # [Subtask 5.5] Trigger Predictive JIT Hydration
+            asyncio.create_task(self._predictive_hydration(self.current_graph))
+            
             return self.current_graph
+
+    async def _predictive_hydration(self, graph: TimeDependentGraph):
+        """
+        Subtask 5.5: Predictive JIT Hydration.
+        Background task to hydrate high-frequency hubs/segments into RAM.
+        """
+        try:
+            from core.route_engine.hubs import MAJOR_HUBS
+            logger.info("🧠 Predictive JIT: Hydrating major hub segments...")
+            
+            # Identify stop IDs for major hubs
+            hub_ids = []
+            for code in MAJOR_HUBS[:10]: # Top 10 hubs only to save RAM
+                for sid, stop in graph.stop_cache.items():
+                    if stop.code == code:
+                        hub_ids.append(sid)
+                        break
+            
+            # Pre-fetch departures for these hubs
+            for hid in hub_ids:
+                # This populates the internal cache of segments for these stations
+                graph.get_departures_from_stop(hid, graph.snapshot.date, lookahead_minutes=1440)
+                await asyncio.sleep(0.1) # Jitter to avoid CPU spike
+                
+            logger.info(f"✅ Predictive JIT: Hydrated {len(hub_ids)} hub clusters.")
+        except Exception as e:
+            logger.error(f"Predictive Hydration Error: {e}")
 
     async def search(
         self,

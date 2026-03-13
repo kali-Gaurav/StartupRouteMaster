@@ -164,7 +164,9 @@ class GraphBuilder:
             station_ids_by_trip = defaultdict(set)
 
             # 1. Load all stops
-            stops_raw = session.execute(text("SELECT id, stop_id, code, name, city, state, latitude, longitude FROM stops")).fetchall()
+            stops_raw = session.execute(
+                text("SELECT id, stop_id, code, name, city, state, latitude, longitude FROM stops").execution_options(yield_per=500)
+            ) # Subtask 5.4
             for row in stops_raw:
                 s = MockStop()
                 s.id, s.stop_id, s.code, s.name, s.city, s.state = row[0], row[1], row[2], row[3], row[4], row[5]
@@ -188,9 +190,9 @@ class GraphBuilder:
                     WHERE t.service_id IN ({placeholders}) 
                     ORDER BY s.trip_id, s.departure_time
                 """
-                segments_raw = session.execute(text(query)).fetchall()
+                segments_raw = session.execute(text(query).execution_options(yield_per=500)) # Subtask 5.4
             
-            logger.info(f"Found {len(segments_raw)} segments.")
+            logger.info("Processing segments with yield_per(500)...")
 
             trip_cumulative_offsets = defaultdict(int)
             trip_last_time = {}
@@ -252,7 +254,9 @@ class GraphBuilder:
             try:
                 logger.info("Loading transfer graph with dynamic proximity (2km)...")
                 # Pre-load from DB
-                transfers = session.execute(text("SELECT from_stop_id, to_stop_id, min_transfer_time, dist_meters FROM transfers")).fetchall()
+                transfers = session.execute(
+                    text("SELECT from_stop_id, to_stop_id, min_transfer_time, dist_meters FROM transfers").execution_options(yield_per=500)
+                ).fetchall()
                 for f_sid, t_sid, min_time, dist in transfers:
                     if f_sid in stop_cache and t_sid in stop_cache:
                         target = stop_cache[t_sid]
@@ -294,7 +298,7 @@ class GraphBuilder:
                 day = date.strftime('%A')
                 p = ','.join([f"'{sid}'" for sid in service_ids])
                 q = f"SELECT ss.station_id, ss.trip_id, ss.arrival, ss.departure, ss.stop_seq FROM station_schedule ss JOIN trips t ON ss.trip_id = t.id WHERE ss.day_of_week = '{day}' AND t.service_id IN ({p})"
-                rows = session.execute(text(q)).fetchall()
+                rows = session.execute(text(q).execution_options(yield_per=500))
                 for r in rows:
                     si, ti = int(r[0]), int(r[1])
                     item = {'trip_id': ti, 'arrival': r[2], 'departure': r[3], 'stop_seq': int(r[4])}
@@ -324,13 +328,19 @@ class GraphBuilder:
                 stop_id_to_idx[sid] = idx
                 idx_to_stop_id.append(sid)
 
+            # [Subtask 5.1] Memory Mapping Coordinate Matrix
+            from .graph import MemMapManager
+            mmap_path = MemMapManager.save_array("coordinate_matrix", coords)
+            mapped_coords = MemMapManager.load_array("coordinate_matrix")
+            logger.info(f"📍 Memory-mapped coordinate matrix to {mmap_path}")
+
             return {
                 'departures_by_stop': departures, 'arrivals_by_stop': arrivals, 'trip_segments': trip_segments,
                 'transfer_graph': transfer_graph, 'stop_cache': stop_cache, 'station_schedule': station_schedule,
                 'train_path': train_path, 'route_patterns': route_patterns, 'stop_index': stop_index_map,
                 'station_time_index': station_time_index, 'reliability_scores': reliability_scores,
                 'station_ids_by_trip': station_ids_by_trip,
-                'coordinate_matrix': coords,
+                'coordinate_matrix': mapped_coords,
                 'stop_id_to_idx': stop_id_to_idx,
                 'idx_to_stop_id': idx_to_stop_id
             }

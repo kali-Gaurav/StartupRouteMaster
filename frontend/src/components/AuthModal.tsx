@@ -4,13 +4,13 @@
  */
 
 import React, { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { supabase } from '@/lib/supabase';
-import { Loader2, Phone, Mail, CheckCircle2 } from 'lucide-react';
+import { Loader2, Phone, Mail, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface AuthModalProps {
   open: boolean;
@@ -53,7 +53,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       setMessage(`OTP sent to your ${authMethod}.`);
       setStep('verify');
     } catch (err: any) {
-      setError(err.message || 'Failed to send OTP');
+      console.error('OTP Error:', err);
+      if (err.status === 429 || err.message?.includes('rate limit')) {
+        setError('Too many requests. Please wait a few minutes before trying again.');
+      } else if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+        setError('Network error. Please check your internet connection and try again.');
+      } else {
+        setError(err.message || 'Failed to send OTP');
+      }
     } finally {
       setLoading(false);
     }
@@ -115,7 +122,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       if (sbError) throw sbError;
       setMessage('OTP resent successfully!');
     } catch (err: any) {
-      setError(err.message || 'Failed to resend OTP');
+      if (err.status === 429) {
+        setError('Rate limit exceeded. Please wait before resending.');
+      } else {
+        setError(err.message || 'Failed to resend OTP');
+      }
     } finally {
       setLoading(false);
     }
@@ -133,8 +144,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="text-2xl font-bold text-center">
-            Welcome to Railway Manager
+            Welcome to RouteMaster
           </DialogTitle>
+          <DialogDescription className="text-center">
+            Sign in to access your bookings and travel assistant
+          </DialogDescription>
         </DialogHeader>
 
         <Tabs value={authMethod} onValueChange={(v: string) => setAuthMethod(v as 'phone' | 'email')} className="w-full">
@@ -169,8 +183,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                 </div>
 
                 {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">
-                    {error}
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{error}</span>
                   </div>
                 )}
 
@@ -213,8 +228,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                 </div>
 
                 {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">
-                    {error}
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{error}</span>
                   </div>
                 )}
 
@@ -277,8 +293,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                 </div>
 
                 {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">
-                    {error}
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{error}</span>
                   </div>
                 )}
 
@@ -321,8 +338,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                 </div>
 
                 {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md">
-                    {error}
+                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                    <span>{error}</span>
                   </div>
                 )}
 

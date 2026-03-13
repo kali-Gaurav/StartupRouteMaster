@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 import logging
 import numpy as np
+import os
+import json
 
 from database.models import Stop
 
@@ -11,6 +13,43 @@ from database.models import Stop
 from core.data_structures import RouteSegment, TransferConnection, Route
 
 logger = logging.getLogger(__name__)
+
+class MemMapManager:
+    """
+    Subtask 5.1: Memory Mapping Manager.
+    Saves large numpy arrays to disk and loads them using numpy.memmap
+    to minimize RAM footprint on VPS.
+    """
+    @staticmethod
+    def save_array(name: str, array: np.ndarray) -> str:
+        from database.config import Config
+        os.makedirs(Config.MEMMAP_DIR, exist_ok=True)
+        path = os.path.join(Config.MEMMAP_DIR, f"{name}.dat")
+        
+        # Save metadata (shape, dtype)
+        meta_path = path + ".meta"
+        with open(meta_path, 'w') as f:
+            json.dump({"shape": array.shape, "dtype": str(array.dtype)}, f)
+            
+        # Write binary data
+        fp = np.memmap(path, dtype=array.dtype, mode='w+', shape=array.shape)
+        fp[:] = array[:]
+        fp.flush()
+        return path
+
+    @staticmethod
+    def load_array(name: str, mode: str = 'r') -> Optional[np.ndarray]:
+        from database.config import Config
+        path = os.path.join(Config.MEMMAP_DIR, f"{name}.dat")
+        meta_path = path + ".meta"
+        
+        if not os.path.exists(path) or not os.path.exists(meta_path):
+            return None
+            
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+            
+        return np.memmap(path, dtype=meta['dtype'], mode=mode, shape=tuple(meta['shape']))
 
 @dataclass
 class StaticGraphSnapshot:

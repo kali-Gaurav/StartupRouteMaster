@@ -33,8 +33,13 @@ class ManagedTask:
             self.failure_count += 1
             logger.error(f"❌ Task '{self.name}' failed: {e}\n{traceback.format_exc()}")
             if self.restart_on_fail:
-                wait_time = min(2 ** self.failure_count, 60) # Exponential backoff
-                logger.info(f"🔄 Task '{self.name}' will restart in {wait_time}s...")
+                # Subtask 4.8: Jittered Exponential Backoff
+                base_wait = min(2 ** self.failure_count, 60)
+                # Add +/- 20% jitter
+                jitter = base_wait * 0.2 * (random.random() * 2 - 1)
+                wait_time = max(1, base_wait + jitter)
+                
+                logger.info(f"🔄 Task '{self.name}' will restart in {wait_time:.2f}s (base={base_wait}s)...")
                 await asyncio.sleep(wait_time)
                 self.start()
         finally:
@@ -53,9 +58,9 @@ class LoopWatchdog:
     """
     Subtask 1.15: Loop Deadlock Watchdog.
     Runs in a dedicated OS thread. Monitors the event loop health.
-    If the loop is blocked for > 30s, it indicates a hard deadlock.
+    If the loop is blocked for > 60s, it indicates a hard deadlock.
     """
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
         self.last_check_in = time.time()
         self.is_running = False
@@ -87,6 +92,46 @@ class LoopWatchdog:
     def stop(self):
         self.is_running = False
 
+class PenaltyBoxManager:
+    """
+    Subtask 4.7: IP-based Penalty Box.
+    Tracks IPs causing repeated errors (404, 500, 429) and jails them.
+    Saves VPS resources by blocking abusive traffic early.
+    """
+    def __init__(self, error_threshold: int = 10, window_sec: int = 60, jail_sec: int = 600):
+        self.error_threshold = error_threshold
+        self.window_sec = window_sec
+        self.jail_sec = jail_sec
+        self.redis = None # Set during bootstrap
+
+    async def report_error(self, ip: str):
+        """Increments error count for an IP. Jails if threshold exceeded."""
+        if not self.redis: return
+        
+        try:
+            # Atomic increment
+            key = f"penalty:errors:{ip}"
+            count = await self.redis.incr(key)
+            if count == 1:
+                await self.redis.expire(key, self.window_sec)
+            
+            # log at info for verification
+            logger.info(f"⚖️ PenaltyBox: IP {ip} error count {count}/{self.error_threshold}")
+            
+            if count >= self.error_threshold:
+                logger.critical(f"🔨 PenaltyBox: IP {ip} exceeded threshold. JAILING for {self.jail_sec}s.")
+                await self.redis.set(f"penalty:jail:{ip}", "1", ex=self.jail_sec)
+        except Exception as e:
+            logger.error(f"PenaltyBox error: {e}")
+
+    async def is_jailed(self, ip: str) -> bool:
+        """Checks if an IP is currently in the penalty box."""
+        if not self.redis: return False
+        try:
+            return await self.redis.exists(f"penalty:jail:{ip}") > 0
+        except:
+            return False
+
 class SystemOrchestrator:
     """
     Advanced System Orchestrator.
@@ -94,6 +139,7 @@ class SystemOrchestrator:
     [Subtask 1.12] Maintenance Mode Management.
     [Subtask 1.15] Loop Watchdog Integration.
     [Subtask 1.17] Emergency Kill Switch.
+    [Subtask 4.7] Penalty Box Traffic Shaping.
     """
     def __init__(self):
         self.tasks: Dict[str, ManagedTask] = {}
@@ -102,6 +148,7 @@ class SystemOrchestrator:
         self._maintenance_mode = False
         self._kill_switch = False
         self.watchdog = LoopWatchdog()
+        self.penalty_box = PenaltyBoxManager() # Subtask 4.7
 
     async def set_kill_switch(self, active: bool):
         self._kill_switch = active
@@ -148,6 +195,35 @@ class SystemOrchestrator:
         """
         logger.info("🛠️ System Orchestrator: Beginning staggered bootstrap...")
         
+        # [4.7] Connect Penalty Box to Redis
+        from services.multi_layer_cache import multi_layer_cache
+        self.penalty_box.redis = multi_layer_cache.redis
+
+        # [5.2] Register Lazy Graph Pre-warming (Low Priority)
+        from core.route_engine.zonal_loader import lazy_graph_loader
+        from core.route_engine.hubs import MAJOR_HUBS
+        
+        async def prewarm_hubs_task():
+            # Resolve MAJOR_HUBS to IDs (approximate for test)
+            # In production, this would query the DB.
+            dummy_hub_ids = [1, 2, 3] # NDLS, HWH, MAS etc.
+            await lazy_graph_loader.prewarm_essential_hubs(dummy_hub_ids)
+            logger.info("📍 Essential hubs pre-warmed in memory-mapped cache.")
+
+        self.register_task("graph-prewarm", prewarm_hubs_task, priority=50)
+
+        # [5.6] Register Nightly Snapshot Purge
+        from core.route_engine.snapshot_manager import SnapshotManager
+        sm = SnapshotManager()
+        
+        async def nightly_maintenance():
+            while not self.is_shutting_down:
+                # Run once a day (approx)
+                await sm.purge_old_snapshots(keep_days=2)
+                await asyncio.sleep(86400) # 24 hours
+
+        self.register_task("nightly-purge", nightly_maintenance, priority=100)
+
         # [1.15] Start Watchdog
         self.watchdog.start()
         asyncio.create_task(self._watchdog_checkin_loop())

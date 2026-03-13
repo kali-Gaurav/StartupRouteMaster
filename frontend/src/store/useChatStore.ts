@@ -23,9 +23,11 @@ interface ChatState {
   isError: boolean;
   messages: ChatMessage[];
   lastIntent: string | null;
+  draftInput: string;
   setIsOpen: (open: boolean) => void;
   setIsHydrating: (loading: boolean) => void;
   setIsError: (error: boolean) => void;
+  setDraftInput: (text: string) => void;
   addMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   updateLastMessage: (content: string, isStreaming: boolean) => void;
@@ -41,9 +43,11 @@ export const useChatStore = create<ChatState>()(
       isError: false,
       messages: [],
       lastIntent: null,
+      draftInput: "",
       setIsOpen: (open) => set({ isOpen: open }),
       setIsHydrating: (loading) => set({ isHydrating: loading }),
       setIsError: (error) => set({ isError: error }),
+      setDraftInput: (draftInput) => set({ draftInput }),
       setMessages: (msgs) => set({ messages: msgs }),
       addMessage: (msg) => set((state) => ({
         messages: [
@@ -65,7 +69,7 @@ export const useChatStore = create<ChatState>()(
         return state;
       }),
       setLastIntent: (intent) => set({ lastIntent: intent }),
-      clearHistory: () => set({ messages: [], lastIntent: null }),
+      clearHistory: () => set({ messages: [], lastIntent: null, draftInput: "" }),
     }),
     {
       name: 'routemaster-chat-storage',

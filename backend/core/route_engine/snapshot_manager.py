@@ -87,3 +87,43 @@ class SnapshotManager:
         date_str = date.strftime("%Y%m%d")
         if multi_layer_cache.redis:
             await multi_layer_cache.redis.delete(f"graph:snapshot:{date_str}")
+
+    async def purge_old_snapshots(self, keep_days: int = 2):
+        """
+        Subtask 5.6: Automated Snapshot Eviction.
+        Deletes disk and Redis snapshots older than keep_days.
+        Also cleans up associated MEMMAP files.
+        """
+        from datetime import timedelta
+        threshold = datetime.now() - timedelta(days=keep_days)
+        threshold_str = threshold.strftime("%Y%m%d")
+        
+        logger.info(f"🧹 Snapshot Manager: Purging snapshots older than {threshold_str}")
+        
+        # 1. Clean Disk Pickles
+        files = await self.list_snapshots()
+        for f in files:
+            # Extract date from filename: graph_snapshot_YYYYMMDD.pkl
+            try:
+                ds = f.split("_")[-1].split(".")[0]
+                if ds < threshold_str:
+                    path = os.path.join(self.snapshot_dir, f)
+                    os.remove(path)
+                    logger.info(f"  🗑️ Deleted old snapshot: {f}")
+                    
+                    # Also clean Redis
+                    if multi_layer_cache.redis:
+                        await multi_layer_cache.redis.delete(f"graph:snapshot:{ds}")
+            except: continue
+
+        # 2. Clean MemMap Directory (Subtask 5.1 cleanup)
+        from database.config import Config
+        if os.path.exists(Config.MEMMAP_DIR):
+            for f in os.listdir(Config.MEMMAP_DIR):
+                f_path = os.path.join(Config.MEMMAP_DIR, f)
+                # If file was modified more than keep_days ago
+                if os.path.getmtime(f_path) < threshold.timestamp():
+                    try:
+                        os.remove(f_path)
+                        logger.info(f"  🗑️ Deleted old memmap file: {f}")
+                    except: pass

@@ -15,6 +15,7 @@ type ThemeContextValue = {
   theme: ThemeId;
   mode: ThemeMode;
   isDarkMode: boolean;
+  isLowPowerMode: boolean; // New: Task 1.12
   setTheme: (theme: ThemeId) => void;
   setMode: (mode: ThemeMode) => void;
   toggleMode: () => void;
@@ -32,12 +33,49 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return "default";
   });
 
+  const [isLowPowerMode, setIsLowPowerMode] = useState(false);
+
   // Mode (light vs dark)
   const [mode, setModeState] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem("rm-theme-mode") as ThemeMode;
     if (saved === "light" || saved === "dark") return saved;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
+
+  // Task 1.12: OS Preference Listener
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleChange = (e: MediaQueryListEvent) => {
+      // Only sync if user hasn't manually set a preference in this session
+      if (!localStorage.getItem("rm-theme-mode")) {
+        setModeState(e.matches ? "dark" : "light");
+      }
+    };
+    
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
+
+  // Task 1.12: Battery-Aware Protocol
+  useEffect(() => {
+    if (!('getBattery' in navigator)) return;
+
+    const updateBatteryStatus = (battery: any) => {
+      const isLow = battery.level < 0.20 && !battery.charging;
+      setIsLowPowerMode(isLow);
+      
+      // Force Dark Mode in Low Power
+      if (isLow && mode !== 'dark') {
+        setModeState('dark');
+      }
+    };
+
+    (navigator as any).getBattery().then((battery: any) => {
+      updateBatteryStatus(battery);
+      battery.addEventListener('levelchange', () => updateBatteryStatus(battery));
+      battery.addEventListener('chargingchange', () => updateBatteryStatus(battery));
+    });
+  }, [mode]);
 
   const [rotationDisabled, setRotationDisabledState] = useState(() => {
     const saved = localStorage.getItem("rm-rotation-disabled");
@@ -104,13 +142,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       theme, 
       mode,
       isDarkMode,
+      isLowPowerMode,
       setTheme, 
       setMode,
       toggleMode,
       rotationDisabled, 
       setRotationDisabled 
     }),
-    [theme, mode, isDarkMode, setTheme, setMode, toggleMode, rotationDisabled, setRotationDisabled]
+    [theme, mode, isDarkMode, isLowPowerMode, setTheme, setMode, toggleMode, rotationDisabled, setRotationDisabled]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

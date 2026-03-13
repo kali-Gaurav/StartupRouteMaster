@@ -51,8 +51,8 @@ def resolve_stations(db: Session, source_query: str, dest_query: str) -> Tuple[O
                     name=resolved.name,
                     city=resolved.city,
                     state=resolved.state,
-                    latitude=resolved.lat,
-                    longitude=resolved.lon
+                    latitude=resolved.latitude,
+                    longitude=resolved.longitude
                 )
         
         # 5. Cache result if found

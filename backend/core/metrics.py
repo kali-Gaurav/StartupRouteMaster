@@ -6,6 +6,14 @@ import logging
 
 logger = logging.getLogger("jit-metrics")
 
+from enum import IntEnum
+
+class SurgeLevel(IntEnum):
+    NORMAL = 0
+    ELEVATED = 1
+    HIGH = 2
+    CRITICAL = 3
+
 class TelemetryMetrics:
     """
     Prometheus-style Metrics for Predictive JIT and System Health.
@@ -25,7 +33,51 @@ class TelemetryMetrics:
         self.event_loop_latency_ms = 0.0
         self.cpu_usage_percent = 0.0
         self.ram_usage_percent = 0.0
+        self._last_surge_level = SurgeLevel.NORMAL
+        self._surge_override: Optional[SurgeLevel] = None # Subtask 4.6 testing
         self.start_time = time.time()
+
+    @property
+    def surge_level(self) -> SurgeLevel:
+        """
+        Subtask 4.2: Dynamic Surge Level Calculation.
+        Uses multiple metrics with hysteresis to prevent rapid state flapping.
+        """
+        # [4.6 Override for testing]
+        if hasattr(self, '_surge_override') and self._surge_override is not None:
+            return self._surge_override
+
+        cpu = self.cpu_usage_percent
+        ram = self.ram_usage_percent
+        latency = self.event_loop_latency_ms
+
+        # Determine raw level
+        raw_level = SurgeLevel.NORMAL
+        if cpu > 95 or ram > 95 or latency > 200:
+            raw_level = SurgeLevel.CRITICAL
+        elif cpu > 85 or ram > 90 or latency > 100:
+            raw_level = SurgeLevel.HIGH
+        elif cpu > 70 or ram > 80 or latency > 50:
+            raw_level = SurgeLevel.ELEVATED
+
+        # Hysteresis: only downgrade if we are well below the threshold
+        # (Prevent flip-flopping)
+        if raw_level < self._last_surge_level:
+            # Check if we are really clear of the previous threshold
+            # We need to be 5% below the trigger to downgrade
+            is_still_high = False
+            if self._last_surge_level == SurgeLevel.CRITICAL:
+                is_still_high = cpu > 90 or ram > 90 or latency > 150
+            elif self._last_surge_level == SurgeLevel.HIGH:
+                is_still_high = cpu > 80 or ram > 85 or latency > 80
+            elif self._last_surge_level == SurgeLevel.ELEVATED:
+                is_still_high = cpu > 65 or ram > 75 or latency > 40
+            
+            if is_still_high:
+                return self._last_surge_level
+
+        self._last_surge_level = raw_level
+        return raw_level
 
     def get_report(self) -> Dict[str, Any]:
         uptime = time.time() - self.start_time
@@ -36,6 +88,7 @@ class TelemetryMetrics:
         return {
             "uptime_seconds": uptime,
             "performance": {
+                "surge_level": self.surge_level.name,
                 "event_loop_latency_ms": round(self.event_loop_latency_ms, 4),
                 "cpu_usage_percent": round(self.cpu_usage_percent, 2),
                 "ram_usage_percent": round(self.ram_usage_percent, 2),

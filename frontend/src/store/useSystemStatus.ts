@@ -9,6 +9,7 @@ interface SystemState {
   degradedFeatures: string[];
   retryAfter: number; // seconds
   latencyMs: number;
+  fps: number; // Task 1.20
   
   setSystemStatus: (status: Partial<SystemState>) => void;
   setRetryAfter: (seconds: number) => void;
@@ -21,6 +22,7 @@ export const useSystemStatus = create<SystemState>((set) => ({
   degradedFeatures: [],
   retryAfter: 0,
   latencyMs: 0,
+  fps: 60,
 
   setSystemStatus: (status) => set((state) => ({ ...state, ...status })),
   setRetryAfter: (seconds) => {

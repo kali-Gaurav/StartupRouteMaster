@@ -18,6 +18,7 @@ from database.config import Config
 from services.multi_layer_cache import multi_layer_cache, RouteQuery
 from utils.station_utils import resolve_stations
 from utils import metrics
+from core.metrics import jit_metrics, SurgeLevel, DegradationManager
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,12 @@ class SearchService:
             # 3. GATHER ALL POSSIBLE ROUTES (Tiers 0, 1, 2, 3) - [2.1] & [2.6] Parallel Expansion
             all_unique_routes = {} 
             
+            # [Subtask 4.3] Surge Level 1 Protection
+            from core.metrics import jit_metrics, SurgeLevel
+            skip_heavy = jit_metrics.surge_level >= SurgeLevel.ELEVATED
+            if skip_heavy:
+                logger.warning("🚦 Surge Level 1 Active: Skipping heavy routing engines.")
+
             # [2.1] Phase 1: Search Target Date (mandatory)
             search_res_target = await orchestrator.search_all_tiers(
                 source_code=source,
@@ -163,7 +170,8 @@ class SearchService:
                 departure_date=dt,
                 constraints=c,
                 limit=100,
-                db=self.transit_db
+                db=self.transit_db,
+                skip_heavy=skip_heavy
             )
             for r in search_res_target:
                 r.metadata["day_offset"] = 0
@@ -289,7 +297,16 @@ class SearchService:
 
             # 5. Verify only first batch (Lazy Loading - Task 1.2)
             initial_batch = candidate_list[:limit]
-            verified_routes = await self._verify_routes_parallel(initial_batch, dt, quota)
+            
+            # [Subtask 4.4] Surge Level 2 Protection: Disable ML & Verification
+            if jit_metrics.surge_level >= SurgeLevel.HIGH:
+                logger.warning("🚦 Surge Level 2 Active: Skipping ML verification to save resources.")
+                verified_routes = initial_batch
+                for r in verified_routes:
+                    r.metadata["verification_skipped"] = True
+                    r.availability_probability = 0.5 # Default
+            else:
+                verified_routes = await self._verify_routes_parallel(initial_batch, dt, quota)
 
             # Mark as seen
             if multi_layer_cache.redis:

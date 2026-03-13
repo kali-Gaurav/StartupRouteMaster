@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, W
 from sqlalchemy.orm import Session
 import logging
 import time
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -13,9 +14,11 @@ from services.station_service import StationService
 from services.search_service import SearchService
 from database.config import Config
 from utils.limiter import limiter
+from utils.responses import SafeJSONResponse
 from fastapi_cache.decorator import cache
 from utils.metrics import SEARCH_LATENCY_SECONDS, SEARCH_REQUESTS_TOTAL, ROUTE_LATENCY_MS
 from api.websockets import manager as websocket_manager
+from core.metrics import jit_metrics, SurgeLevel
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -36,6 +39,22 @@ async def search_routes_endpoint(
     start_time = time.time()
     status_label = "success"
     try:
+        from core.metrics import jit_metrics, SurgeLevel
+        
+        # [Subtask 4.5] Surge Level 3 Protection: Block unauthenticated traffic
+        if jit_metrics.surge_level >= SurgeLevel.CRITICAL:
+            auth_header = request.headers.get("authorization")
+            if not auth_header and not search_request.session_id:
+                logger.warning(f"🛑 Surge Level 3: Blocking unauthenticated request from {request.client.host}")
+                return SafeJSONResponse(
+                    status_code=503,
+                    content={
+                        "error": True,
+                        "message": "System is at peak capacity. Priority is given to active sessions. Please sign in or try again later.",
+                        "retry_after": 60
+                    }
+                )
+
         travel_date_str = search_request.date or datetime.now().strftime("%Y-%m-%d")
         service = SearchService(db)
 

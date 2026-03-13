@@ -57,7 +57,8 @@ class UnifiedRoutingOrchestrator:
         departure_date: datetime,
         constraints: RouteConstraints,
         limit: int = 50,
-        db=None
+        db=None,
+        skip_heavy: bool = False # Subtask 4.3
     ) -> List[Route]:
         start_time = time.perf_counter()
         from utils.station_utils import resolve_stations
@@ -76,41 +77,54 @@ class UnifiedRoutingOrchestrator:
         # 3. Dynamic Depth Management
         # [6.4] Enforce max_transfers constraint
         max_t = min(constraints.max_transfers or 3, 3)
+        if skip_heavy:
+            max_t = min(max_t, 1) # Force max 1 transfer during Level 1 Surge
         self.raptor.max_transfers = max_t
 
         # 4. RUN ALL ENGINES IN PARALLEL
-        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code}")
+        logger.info(f"Orchestrator: Executing engines for {source_code} -> {destination_code} (SkipHeavy={skip_heavy})")
         loop = asyncio.get_running_loop()
 
-        # [6.1] Stable Worker Management
-        # t1 and t2 use ThreadPool (I/O or lightweight)
-        # t3 and t4 use ProcessPool (CPU bound)
-        t1_task = loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit)
-        t0_task = self.ultra_turbo.find_routes(source_stop.id, dest_stop.id, departure_date.date(), limit)
-        t2_task = loop.run_in_executor(CPU_BOUND_EXECUTOR, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints)
-        t3_task = loop.run_in_executor(CPU_BOUND_EXECUTOR, self.raptor.find_routes, source_stop.id, dest_stop.id, departure_date, constraints, graph)
+        # Tasks to gather
+        tasks = []
+        
+        # T1: Turbo (Fast CSA) - ALWAYS RUN
+        tasks.append(loop.run_in_executor(ROUTING_POOL, self.turbo_router.find_routes, source_code, destination_code, departure_date, limit))
+        
+        # T0: Ultra-Turbo - ALWAYS RUN
+        tasks.append(asyncio.create_task(self.ultra_turbo.find_routes(source_stop.id, dest_stop.id, departure_date.date(), limit)))
+        
+        if not skip_heavy:
+            # T2: FastPath (Heuristic)
+            tasks.append(loop.run_in_executor(CPU_BOUND_EXECUTOR, self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints))
+            # T3: Deep RAPTOR (Heavy)
+            tasks.append(loop.run_in_executor(CPU_BOUND_EXECUTOR, self.raptor.find_routes, source_stop.id, dest_stop.id, departure_date, constraints, graph))
+        else:
+            logger.warning(f"🚦 Level 1 Surge: Skipping RAPTOR/FastPath for {source_code}->{destination_code}")
 
         # [6.11] Graceful Exception Handling
-        results_gathered = await asyncio.gather(t1_task, t0_task, t2_task, t3_task, return_exceptions=True)
+        results_gathered = await asyncio.gather(*tasks, return_exceptions=True)
         
-        def safe_get(res, default):
-            if isinstance(res, Exception):
-                logger.error(f"Engine failure: {type(res).__name__}: {res}")
-                return default
-            return res
-
-        turbo_raw = safe_get(results_gathered[0], [])
-        ultra_res = safe_get(results_gathered[1], [])
-        fast_res = safe_get(results_gathered[2], [])
-        raptor_res = safe_get(results_gathered[3], [])
-
-        # 5. CONSOLIDATE & UNION
         all_routes: List[Route] = []
         all_routes.extend(hub_results)
-        all_routes.extend(ultra_res)
-        all_routes.extend(self._hydrate_turbo_results(turbo_raw, source_code, destination_code))
-        all_routes.extend(fast_res)
-        all_routes.extend(raptor_res)
+        
+        # Safely collect results from dynamic tasks list
+        for res in results_gathered:
+            if isinstance(res, Exception):
+                logger.error(f"Engine failure: {type(res).__name__}: {res}")
+                continue
+            if not isinstance(res, list): continue
+            
+            # If it's the turbo_raw (first task), we need to hydrate it
+            if len(res) > 0 and not hasattr(res[0], 'segments'): # it's turbo_raw dicts
+                all_routes.extend(self._hydrate_turbo_results(res, source_code, destination_code))
+            else:
+                all_routes.extend(res)
+
+        # 5. CONSOLIDATE & UNION
+        # [Subtask 4.3] If skipping heavy, filter out any > 1 transfer routes that might have snuck in
+        if skip_heavy:
+            all_routes = [r for r in all_routes if len(r.transfers) <= 1]
 
         # [6.14] Filter Time-Travelers
         all_routes = [r for r in all_routes if self._is_valid_route(r)]

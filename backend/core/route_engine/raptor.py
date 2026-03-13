@@ -99,73 +99,77 @@ class OptimizedRAPTOR:
 
     def _search_single_departure_sync(self, graph: TimeDependentGraph, source_stop_id: int, dest_stop_id: int,
                                       departure_dt: datetime, constraints: RouteConstraints) -> List[Route]:
-        routes_by_round = defaultdict(list)
-        weekday_bit = 1 << departure_dt.weekday()
+        import gc
+        gc.disable() # Subtask 5.3
+        try:
+            routes_by_round = defaultdict(list)
+            weekday_bit = 1 << departure_dt.weekday()
 
-        # [5.1] Get initial departures from source
-        source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt, lookahead_minutes=720)
-        
-        # [5.12] Multi-round earliest arrival with strict Dominance
-        # best_arrival[station] = earliest time seen so far across ANY round
-        global_best_arrival = defaultdict(lambda: datetime.max)
-        global_best_arrival[source_stop_id] = departure_dt
-
-        # round_best_arrival[round][station]
-        round_best_arrival = defaultdict(lambda: defaultdict(lambda: datetime.max))
-        round_best_arrival[0][source_stop_id] = departure_dt
-
-        for dep_time, trip_id in source_departures[:self.max_initial_departures]:
-            segments = graph.get_trip_segments(trip_id)
-            if not segments: continue
+            # [5.1] Get initial departures from source
+            source_departures = graph.get_departures_from_stop(source_stop_id, departure_dt, lookahead_minutes=720)
             
-            start_idx = -1
-            for idx, s in enumerate(segments):
-                if s.departure_stop_id == source_stop_id and s.departure_time >= dep_time:
-                    if not (s.service_mask & weekday_bit): break
-                    start_idx = idx
-                    break
+            # [5.12] Multi-round earliest arrival with strict Dominance
+            global_best_arrival = defaultdict(lambda: datetime.max)
+            global_best_arrival[source_stop_id] = departure_dt
 
-            if start_idx == -1: continue
+            # round_best_arrival[round][station]
+            round_best_arrival = defaultdict(lambda: defaultdict(lambda: datetime.max))
+            round_best_arrival[0][source_stop_id] = departure_dt
 
-            current_segs = []
-            for i in range(start_idx, len(segments)):
-                seg = segments[i]
-                current_segs.append(seg)
+            for dep_time, trip_id in source_departures[:self.max_initial_departures]:
+                segments = graph.get_trip_segments(trip_id)
+                if not segments: continue
                 
-                arr_st = seg.arrival_stop_id
-                # [5.12] Dominance: Only keep if better than global best
-                if seg.arrival_time < global_best_arrival[arr_st]:
-                    global_best_arrival[arr_st] = seg.arrival_time
-                    round_best_arrival[0][arr_st] = seg.arrival_time
-                    route = Route(segments=list(current_segs))
-                    routes_by_round[0].append(route)
+                start_idx = -1
+                for idx, s in enumerate(segments):
+                    if s.departure_stop_id == source_stop_id and s.departure_time >= dep_time:
+                        if not (s.service_mask & weekday_bit): break
+                        start_idx = idx
+                        break
 
-        # Process Rounds (Transfers)
-        for r in range(1, self.max_transfers + 1):
-            if not routes_by_round[r-1]: break
-            
-            # [5.12] Prune current round candidates: only keep the best arrival per station from the PREVIOUS round
-            stations_to_explore = {}
-            for rt in routes_by_round[r-1]:
-                last_st = rt.segments[-1].arrival_stop_id
-                if last_st not in stations_to_explore or rt.segments[-1].arrival_time < stations_to_explore[last_st].segments[-1].arrival_time:
-                    stations_to_explore[last_st] = rt
-            
-            for pr in stations_to_explore.values():
-                if pr.segments[-1].arrival_stop_id == dest_stop_id: continue
+                if start_idx == -1: continue
+
+                current_segs = []
+                for i in range(start_idx, len(segments)):
+                    seg = segments[i]
+                    current_segs.append(seg)
+                    
+                    arr_st = seg.arrival_stop_id
+                    # [5.12] Dominance: Only keep if better than global best
+                    if seg.arrival_time < global_best_arrival[arr_st]:
+                        global_best_arrival[arr_st] = seg.arrival_time
+                        round_best_arrival[0][arr_st] = seg.arrival_time
+                        route = Route(segments=list(current_segs))
+                        routes_by_round[0].append(route)
+
+            # Process Rounds (Transfers)
+            for r in range(1, self.max_transfers + 1):
+                if not routes_by_round[r-1]: break
                 
-                new_found = self._process_route_transfers_sync(pr, graph, dest_stop_id, constraints, global_best_arrival, r)
-                routes_by_round[r].extend(new_found)
-            
-            if not routes_by_round[r]: break
+                # [5.12] Prune current round candidates: only keep the best arrival per station from the PREVIOUS round
+                stations_to_explore = {}
+                for rt in routes_by_round[r-1]:
+                    last_st = rt.segments[-1].arrival_stop_id
+                    if last_st not in stations_to_explore or rt.segments[-1].arrival_time < stations_to_explore[last_st].segments[-1].arrival_time:
+                        stations_to_explore[last_st] = rt
+                
+                for pr in stations_to_explore.values():
+                    if pr.segments[-1].arrival_stop_id == dest_stop_id: continue
+                    
+                    new_found = self._process_route_transfers_sync(pr, graph, dest_stop_id, constraints, global_best_arrival, r)
+                    routes_by_round[r].extend(new_found)
+                
+                if not routes_by_round[r]: break
 
-        all_results = []
-        for r_idx in range(self.max_transfers + 1):
-            for rt in routes_by_round[r_idx]:
-                if rt.segments and rt.segments[-1].arrival_stop_id == dest_stop_id:
-                    all_results.append(rt)
+            all_results = []
+            for r_idx in range(self.max_transfers + 1):
+                for rt in routes_by_round[r_idx]:
+                    if rt.segments and rt.segments[-1].arrival_stop_id == dest_stop_id:
+                        all_results.append(rt)
 
-        return self._deduplicate_routes(all_results)
+            return self._deduplicate_routes(all_results)
+        finally:
+            gc.enable() # Subtask 5.3
 
     def _process_route_transfers_sync(self, route: Route, graph: TimeDependentGraph,
                                       dest_stop_id: int, constraints: RouteConstraints,

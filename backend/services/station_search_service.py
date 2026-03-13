@@ -17,6 +17,8 @@ class StationSuggestion:
     name: str
     city: str
     state: Optional[str] = None
+    latitude: float = 0.0
+    longitude: float = 0.0
     score: float = 100.0
     popularity: float = 0.0
 
@@ -32,9 +34,11 @@ class StationSearchEngine:
     PREFIX_CACHE_TTL = 3600 
     
     ALIASES = {
-        "delhi": "NDLS", "bombay": "BCT", "mumbai": "BCT", "mumbai central": "BCT",
-        "banglore": "SBC", "bangalore": "SBC", "madras": "MAS", "calcutta": "HWH",
-        "howrah": "HWH", "pune": "PA", "secunderabad": "SC", "hyderabad": "HYB", "chennai": "MAS"
+        "delhi": "NDLS", "bombay": "MMCT", "mumbai": "MMCT", "mumbai central": "MMCT",
+        "banglore": "SBC", "bangalore": "SBC", "bengaluru": "SBC", "bengalore": "SBC",
+        "madras": "MAS", "calcutta": "HWH", "howrah": "HWH", "pune": "PUNE", 
+        "secunderabad": "SC", "hyderabad": "HYB", "chennai": "MAS", "kolkata": "HWH", 
+        "dilli": "NDLS", "ndls": "NDLS", "mmct": "MMCT", "bct": "MMCT"
     }
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
@@ -61,7 +65,7 @@ class StationSearchEngine:
         conn.row_factory = sqlite3.Row
         try:
             query = f"""
-                SELECT s.id, s.code, s.name, s.city, s.state, COALESCE(r.connectivity_score, 0) as connectivity
+                SELECT s.id, s.code, s.name, s.city, s.state, s.latitude, s.longitude, COALESCE(r.connectivity_score, 0) as connectivity
                 FROM {self.TABLE_NAME} s
                 LEFT JOIN station_rank r ON s.id = r.station_id
             """
@@ -76,7 +80,12 @@ class StationSearchEngine:
                 pop = row['connectivity']
                 if any(x in name.upper() for x in ['JN', 'CENTRAL', 'TERMINUS']): pop += 50
                 
-                s = StationSuggestion(code=code, name=name, city=city, state=row['state'], popularity=float(pop))
+                s = StationSuggestion(
+                    code=code, name=name, city=city, state=row['state'],
+                    latitude=float(row['latitude'] or 0.0),
+                    longitude=float(row['longitude'] or 0.0),
+                    popularity=float(pop)
+                )
                 # Store by internal ID for FTS mapping
                 self._station_map[str(row['id'])] = s
                 # Store by code for suggestions
@@ -126,37 +135,89 @@ class StationSearchEngine:
             if alias_code in self._station_map: 
                 return [self._station_map[alias_code]]
 
-        # 3. Candidate Selection (FTS5 + Trie Fallback)
+        # 3. Candidate Selection (FTS5 + Trie Fallback + Fuzzy Task 2.5)
         candidates_list: List[StationSuggestion] = []
         try:
             conn = sqlite3.connect(str(self.db_path))
-            # FTS rowid matches our stops.id
             cursor = conn.execute("SELECT rowid FROM stops_fts WHERE stops_fts MATCH ?", (f"{q}*",))
             ids = [str(r[0]) for r in cursor.fetchall()]
             for sid in ids:
                 if sid in self._station_map: candidates_list.append(self._station_map[sid])
             conn.close()
         except:
-            # Fallback to Tries
+            pass
+
+        # Task 2.5: If candidates are weak or empty, fallback to Trie
+        if not candidates_list:
             idx_list = list(set(self._search_trie(self._code_trie, q) + self._search_trie(self._name_trie, q)))
             for idx in idx_list: candidates_list.append(self._stations[idx])
 
-        # 4. Scoring & Ranking (Suggestion #4)
+        # Task 2.5: Special Code Fallback (Ensures MMTC -> MMCT)
+        if len(q) <= 4:
+            # Check all station codes for close matches
+            for code, s in self._station_map.items():
+                if len(code) <= 5: # Only compare codes
+                    # Use >= 75 to catch MMTC (75) and Ndlz (75)
+                    if fuzz.ratio(q, code.lower()) >= 75:
+                        candidates_list.append(s)
+
+        # 4. Scoring & Ranking (Task 2.5 Fuzzy integration)
         scored: List[Tuple[float, StationSuggestion]] = []
+        
+        # Priority 1: Smart Scorer
         for s in candidates_list:
             score = 0.0
             scode, sname = s.code.lower(), s.name.lower()
             
-            if scode == q: score = 2000 # Exact code match is king
-            elif sname == q: score = 1800 # Exact name match is second
-            elif scode.startswith(q): score = 1200
-            elif any(p == q for p in sname.split()): score = 1500 # Exact word match in name
-            elif any(p.startswith(q) for p in sname.split()): score = 800
-            else: score = 100
+            # 4.1 Exact Matches (Highest Priority)
+            if scode == q: score = 10000 
+            elif sname == q: score = 9000 
             
-            # Popularity boost (Connectivity Score) - Weight it more
-            score += min(500, s.popularity * 2)
+            # 4.2 Code logic (3-4 chars)
+            elif len(q) <= 4:
+                # Direct fuzzy ratio against code
+                c_ratio = fuzz.ratio(q, scode)
+                if c_ratio > 70:
+                    score = 15000 + c_ratio * 10 # Massive boost for code matches
+                elif scode.startswith(q):
+                    score = 12000
+            
+            # 4.3 Word Logic
+            elif any(p == q for p in sname.split()): score = 7000
+            elif sname.startswith(q): score = 6000
+            
+            # 4.4 Feature detection (Local vs Main)
+            if "local" in q and ("(l)" in sname or "local" in sname): score += 2000
+            elif "local" not in q and ("(l)" in sname or "local" in sname): score -= 1000
+            
+            # 4.5 General Fuzzy (if no strong word match)
+            if score < 5000:
+                # WRatio is good for partials, but for 'Mmbai' -> 'Mumbai' we need strong character match
+                f_score = max(fuzz.ratio(q, sname), fuzz.WRatio(q, sname))
+                score = f_score * 50
+            
+            # 4.6 First letter bonus (Crucial for typos like 'Mmbai' not going to 'Trivandrum')
+            if sname.startswith(q[0]) or scode.startswith(q[0]):
+                score += 1000
+            
+            # 4.7 Popularity boost
+            score += min(2000, s.popularity * 15)
             scored.append((score, s))
+
+        # Priority 2: Full index fuzzy fallback
+        if not scored or max(s[0] for s in scored) < 6000:
+            if len(q) >= 3:
+                # Limit full search to first letter matches if query is decent length
+                search_keys = [k for k in self._name_to_code.keys() if k.startswith(q[0])] if len(q) >= 3 else self._name_to_code.keys()
+                fuzzy_results = process.extract(q, search_keys, limit=10, scorer=fuzz.WRatio)
+                for name, f_score, _ in fuzzy_results:
+                    code = self._name_to_code.get(name)
+                    if code and code in self._station_map:
+                        s = self._station_map[code]
+                        # First letter boost again
+                        score = (f_score * 50) + min(2000, s.popularity * 15) + 1000
+                        if "local" in q and ("(l)" in s.name.lower() or "local" in s.name.lower()): score += 2000
+                        scored.append((score, s))
             
         scored.sort(key=lambda x: x[0], reverse=True)
         
