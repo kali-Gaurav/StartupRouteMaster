@@ -65,8 +65,13 @@ class GraphBuilder:
         
         snapshot = StaticGraphSnapshot(
             date=date,
-            departures_by_stop=data['departures_by_stop'],
-            arrivals_by_stop=data['arrivals_by_stop'],
+            _departures_data=data.get('_departures_data'),
+            _departures_index=data.get('_departures_index'),
+            _arrivals_data=data.get('_arrivals_data'),
+            _arrivals_index=data.get('_arrivals_index'),
+            _stop_id_map=data.get('_stop_id_map', {}),
+            departures_by_stop={}, # Empty to save RAM
+            arrivals_by_stop={},   # Empty to save RAM
             trip_segments=data['trip_segments'],
             transfer_graph=data['transfer_graph'],
             stop_cache=data['stop_cache'],

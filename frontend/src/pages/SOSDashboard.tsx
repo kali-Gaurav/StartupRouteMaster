@@ -1,413 +1,263 @@
-import { useState, useEffect, useRef } from "react";
-import {
-  ShieldAlert,
-  Activity,
-  MapPin,
-  PhoneCall,
-  Siren,
-  Users,
-  CheckCircle,
+import { useState, useEffect } from "react";
+import { 
+  ShieldAlert, 
+  MapPin, 
+  Clock, 
+  User, 
+  Phone, 
+  CheckCircle, 
   AlertTriangle,
-  MessageCircle,
-  Send
+  ExternalLink,
+  MessageSquare,
+  Zap,
+  Activity,
+  Navigation,
+  Loader2,
+  RefreshCw,
+  Search,
+  MoreVertical
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { LiveIncidentMap } from "@/components/LiveIncidentMap";
 
-// Mock data structure based on the new 50-task pipeline
-interface SOSIncident {
-  id: string;
-  userId: string;
-  name: string;
-  phone: string;
-  lat: number;
-  lng: number;
-  status: "new" | "active" | "responding" | "resolved" | "inactive";
-  priority: "high" | "critical" | "medium";
-  category: "medical" | "security" | "derailment" | "unknown";
-  triggeredAt: string;
-  batteryLevel: number;
-  networkStrength: string;
-  trainNo?: string;
-  coach?: string;
-  isCovert?: boolean;
-  chatHistory?: { role: string; content: string; timestamp: string }[];
-  active_participants?: string[];
-  nearestAuthority?: {
-    name: string;
-    type: string;
-    contact_number: string;
-    distance_km: number;
-    eta_mins: number;
-  };
-}
+// Mock Active SOS Events for Operator View
+const MOCK_EVENTS = [
+  {
+    id: "SOS-9921",
+    name: "Rajesh Kumar",
+    phone: "+91 98765 43210",
+    train: "12002 - Shatabdi Express",
+    pnr: "4421908821",
+    lat: 28.6139,
+    lng: 77.2090,
+    status: "active",
+    priority: "high",
+    triggered_at: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
+    battery: 0.85
+  },
+  {
+    id: "SOS-9925",
+    name: "Priya Sharma",
+    phone: "+91 91234 56789",
+    train: "12951 - Rajdhani Exp",
+    pnr: "2281773641",
+    lat: 19.0760,
+    lng: 72.8777,
+    status: "active",
+    priority: "standard",
+    triggered_at: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
+    battery: 0.42
+  }
+];
 
-export default function SOSDashboard() {
-  const [incidents, setIncidents] = useState<SOSIncident[]>([
-    {
-      id: "sos-1234",
-      userId: "u-998",
-      name: "Aditi Sharma",
-      phone: "+91 98765 43210",
-      lat: 28.6428,
-      lng: 77.2190,
-      status: "active",
-      priority: "critical",
-      category: "security",
-      triggeredAt: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
-      batteryLevel: 24,
-      networkStrength: "Weak (Edge)",
-      trainNo: "12952",
-      coach: "S4",
-      chatHistory: [
-        { role: "user", content: "Hi, I feel unsafe", timestamp: "22:15" },
-        { role: "assistant", content: "I'm here. What's happening?", timestamp: "22:15" },
-        { role: "user", content: "Someone is following me in coach S4", timestamp: "22:16" }
-      ],
-      nearestAuthority: {
-        name: "New Delhi RPF Post",
-        type: "RPF",
-        contact_number: "+91-11-23363322",
-        distance_km: 0.12,
-        eta_mins: 2
-      }
-    },
-    {
-      id: "sos-5678",
-      userId: "u-112",
-      name: "Rahul Verma",
-      phone: "+91 91234 56789",
-      lat: 19.0760,
-      lng: 72.8777,
-      status: "new",
-      priority: "high",
-      category: "medical",
-      triggeredAt: new Date(Date.now() - 1000 * 30).toISOString(),
-      batteryLevel: 85,
-      networkStrength: "Strong (4G)",
-      trainNo: "12009",
-      coach: "C2",
-      nearestAuthority: {
-        name: "Wockhardt Hospital",
-        type: "HOSPITAL",
-        contact_number: "+91-22-102",
-        distance_km: 1.5,
-        eta_mins: 10
-      }
-    }
-  ]);
+const SOSDashboard = () => {
+  const [events, setEvents] = useState(MOCK_EVENTS);
+  const [selectedEvent, setSelectedEvent] = useState<any>(MOCK_EVENTS[0]);
+  const [loading, setLoading] = useState(false);
 
-  const [selectedIncident, setSelectedIncident] = useState<SOSIncident | null>(incidents[0]);
-  const [adminMessage, setAdminMessage] = useState("");
-  const [liveChat, setLiveChat] = useState<any[]>([]);
-  const chatWs = useRef<WebSocket | null>(null);
-
-  // 1. Establish Secure Chat Connection
-  useEffect(() => {
-    if (!selectedIncident) return;
-
-    const wsUrl = `ws://${window.location.hostname}:8000/api/v2/ws/sos/chat/${selectedIncident.id}`;
-    chatWs.current = new WebSocket(wsUrl);
-
-    chatWs.current.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === "admin_chat") {
-        setLiveChat(prev => [...prev, payload.data]);
-      }
-    };
-
-    return () => {
-      chatWs.current?.close();
-      setLiveChat([]);
-    };
-  }, [selectedIncident]);
-
-  const sendAdminMessage = () => {
-    if (!adminMessage.trim() || !chatWs.current) return;
-    
-    chatWs.current.send(JSON.stringify({
-      sender: "OPS_ADMIN",
-      message: adminMessage
-    }));
-    
-    setAdminMessage("");
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "new": return "bg-red-600 text-white animate-pulse";
-      case "active": return "bg-orange-500 text-white";
-      case "responding": return "bg-blue-500 text-white";
-      case "resolved": return "bg-green-500 text-white";
-      default: return "bg-gray-500 text-white";
+  const getPriorityColor = (p: string) => {
+    switch (p) {
+      case 'high': return "bg-red-500 text-white shadow-lg shadow-red-500/20";
+      case 'standard': return "bg-amber-500 text-white shadow-lg shadow-amber-500/20";
+      default: return "bg-muted text-muted-foreground";
     }
   };
 
-  const updateStatus = (id: string, newStatus: any) => {
-    setIncidents(prev => prev.map(i => i.id === id ? { ...i, status: newStatus } : i));
-    if (selectedIncident?.id === id) {
-      setSelectedIncident(prev => prev ? { ...prev, status: newStatus } : null);
-    }
+  const handleResolve = (id: string) => {
+    setEvents(events.filter(e => e.id !== id));
+    if (selectedEvent?.id === id) setSelectedEvent(null);
+    toast.success(`Event ${id} marked as resolved`);
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col md:flex-row font-sans">
-      
-      {/* LEFT PANEL: Incident Queue */}
-      <div className="w-full md:w-1/3 lg:w-1/4 border-r border-border bg-muted/30 flex flex-col h-screen overflow-hidden">
-        <div className="p-4 border-b border-border bg-white dark:bg-muted flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-2 text-red-600 font-black tracking-tight">
-            <Siren className="w-6 h-6 animate-pulse" />
-            <span>OPS COMMAND</span>
+    <div className="min-h-screen bg-background text-foreground flex flex-col selection:bg-primary selection:text-primary-foreground font-sans">
+      {/* Header */}
+      <header className="p-4 border-b border-border bg-background/80 backdrop-blur-xl sticky top-0 z-30 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center shadow-lg shadow-red-600/20">
+            <ShieldAlert className="w-6 h-6 text-white animate-pulse" />
           </div>
-          <div className="bg-red-100 text-red-700 text-xs font-bold px-2 py-1 rounded-full">
-            {incidents.filter(i => i.status === 'new' || i.status === 'active').length} ACTIVE
+          <div>
+            <h1 className="text-xl font-black uppercase tracking-tighter leading-none">SafeGuard Ops</h1>
+            <p className="text-[10px] font-black uppercase text-muted-foreground tracking-widest mt-1 opacity-60">Terminal: DL_HQ_CENTRAL</p>
           </div>
         </div>
-
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-          {incidents.map(incident => (
-            <button
-              key={incident.id}
-              onClick={() => setSelectedIncident(incident)}
-              className={cn(
-                "w-full text-left p-4 rounded-xl border transition-all duration-200",
-                selectedIncident?.id === incident.id 
-                  ? "bg-white dark:bg-muted border-primary shadow-md scale-[1.02]" 
-                  : "bg-white/50 dark:bg-muted/50 border-border hover:border-primary/50"
-              )}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <span className={cn("text-[10px] font-black uppercase px-2 py-0.5 rounded shadow-sm", getStatusColor(incident.status))}>
-                  {incident.status}
-                </span>
-                <span className="text-xs text-muted-foreground font-mono">
-                  {new Date(incident.triggeredAt).toLocaleTimeString()}
-                </span>
-              </div>
-              <div className="font-bold text-sm truncate">{incident.name}</div>
-              <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
-                <MapPin className="w-3 h-3" /> Train {incident.trainNo} • {incident.coach}
-              </div>
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-muted rounded-xl border border-border">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="text-[10px] font-black uppercase tracking-widest">Network Secure</span>
+          </div>
+          <Button variant="ghost" size="icon" className="rounded-xl"><RefreshCw className="h-5 w-5" /></Button>
         </div>
-      </div>
+      </header>
 
-      {/* RIGHT PANEL: Live Telemetry & Control */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden bg-muted/10">
-        {selectedIncident ? (
-          <>
-            {/* Header */}
-            <div className="p-6 border-b border-border bg-white dark:bg-muted shadow-sm flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                {selectedIncident.isCovert && (
-                    <div className="flex items-center gap-2 bg-slate-900 text-white px-3 py-1.5 rounded-lg animate-pulse border border-primary/50">
-                        <ShieldAlert className="w-4 h-4 text-primary" />
-                        <span className="text-xs font-black tracking-widest uppercase">Silent Intervention</span>
-                    </div>
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar: Event Feed */}
+        <aside className="w-full md:w-80 lg:w-96 border-r border-border bg-muted/30 overflow-y-auto flex flex-col shrink-0">
+          <div className="p-4 border-b border-border space-y-4">
+            <div className="relative group">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
+              <Input placeholder="Search PNR or Entity..." className="pl-10 h-10 rounded-xl bg-background border-2 border-transparent focus:border-primary/20" />
+            </div>
+            <div className="flex justify-between items-center px-1">
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground">Live Feed ({events.length})</span>
+              <Badge className="bg-red-500/10 text-red-500 border-none text-[9px] font-black">ACTIVE</Badge>
+            </div>
+          </div>
+
+          <div className="flex-1 divide-y divide-border">
+            {events.map((e) => (
+              <div 
+                key={e.id}
+                onClick={() => setSelectedEvent(e)}
+                className={cn(
+                  "p-5 cursor-pointer transition-all relative group",
+                  selectedEvent?.id === e.id ? "bg-background border-l-4 border-l-red-600" : "hover:bg-background/50"
                 )}
-                <div>
-                  <h1 className="text-2xl font-black">{selectedIncident.name}</h1>
-                  <p className="text-sm text-muted-foreground flex items-center gap-2 mt-1">
-                    <PhoneCall className="w-4 h-4" /> {selectedIncident.phone}
-                    <span className="opacity-50">|</span>
-                    ID: <span className="font-mono">{selectedIncident.id}</span>
-                  </p>
+              >
+                <div className="flex justify-between items-start mb-3">
+                  <Badge className={cn("text-[8px] font-black uppercase tracking-widest border-none px-2", getPriorityColor(e.priority))}>
+                    {e.priority}
+                  </Badge>
+                  <span className="text-[9px] font-mono text-muted-foreground opacity-60">
+                    {new Date(e.triggered_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <h3 className="text-sm font-black uppercase tracking-tight truncate">{e.name}</h3>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase mt-1 opacity-60">{e.train}</p>
+                <div className="flex items-center gap-2 mt-4">
+                  <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+                    <div className={cn("h-full rounded-full transition-all duration-1000", e.battery < 0.3 ? "bg-red-500" : "bg-emerald-500")} style={{ width: `${e.battery * 100}%` }} />
+                  </div>
+                  <span className="text-[8px] font-black text-muted-foreground">{Math.round(e.battery * 100)}%</span>
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => updateStatus(selectedIncident.id, 'responding')}
-                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors shadow-sm"
-                >
-                  Mark Responding
-                </button>
-                <button 
-                  onClick={() => updateStatus(selectedIncident.id, 'resolved')}
-                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-bold text-sm transition-colors shadow-sm flex items-center gap-2"
-                >
-                  <CheckCircle className="w-4 h-4" /> Resolve
-                </button>
-              </div>
-            </div>
-
-            {/* Map & Telemetry Grid */}
-            <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Interactive Live Map */}
-              <div className="lg:col-span-2 rounded-2xl overflow-hidden border border-border shadow-md bg-slate-100 relative min-h-[500px]">
-                <LiveIncidentMap 
-                  incidents={incidents} 
-                  selectedId={selectedIncident.id}
-                  onIncidentSelect={setSelectedIncident}
-                />
-              </div>
-
-              {/* Telemetry Panel */}
-              <div className="flex flex-col gap-6">
-                
-                {/* AI Analysis */}
-                <div className="bg-white dark:bg-muted p-5 rounded-2xl border border-border shadow-sm">
-                  <h3 className="font-black text-sm uppercase tracking-wider text-muted-foreground mb-4 flex items-center gap-2">
-                    <Activity className="w-4 h-4" /> AI Threat Analysis
-                  </h3>
-                  <div className="space-y-4">
-                    <div>
-                      <div className="text-xs text-muted-foreground mb-1">Detected Category</div>
-                      <div className="font-bold text-lg capitalize text-red-600 flex items-center gap-2">
-                        {selectedIncident.category === 'security' ? <ShieldAlert className="w-5 h-5"/> : <AlertTriangle className="w-5 h-5"/>}
-                        {selectedIncident.category}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-muted-foreground mb-1">AI Transcript Summary</div>
-                      <p className="text-sm bg-red-50 dark:bg-red-900/10 p-3 rounded-lg border border-red-100 dark:border-red-900/30 font-medium">
-                        "User repeatedly mentioned someone trying to snatch their bag. High stress detected in voice."
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Device Telemetry */}
-                <div className="bg-white dark:bg-muted p-5 rounded-2xl border border-border shadow-sm">
-                  <h3 className="font-black text-sm uppercase tracking-wider text-muted-foreground mb-4 flex items-center gap-2">
-                    <Activity className="w-4 h-4" /> Device Telemetry
-                  </h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-muted/50 p-3 rounded-xl">
-                      <div className="text-[10px] uppercase text-muted-foreground font-bold mb-1">Battery</div>
-                      <div className={cn("font-black text-lg", selectedIncident.batteryLevel < 30 ? "text-red-600" : "text-green-600")}>
-                        {selectedIncident.batteryLevel}%
-                      </div>
-                    </div>
-                    <div className="bg-muted/50 p-3 rounded-xl">
-                      <div className="text-[10px] uppercase text-muted-foreground font-bold mb-1">Network</div>
-                      <div className="font-black text-sm truncate">
-                        {selectedIncident.networkStrength}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Chat Context & Live Admin Chat */}
-                <div className="bg-white dark:bg-muted p-5 rounded-2xl border border-border shadow-sm flex-1 flex flex-col min-h-[400px]">
-                  <h3 className="font-black text-sm uppercase tracking-wider text-muted-foreground mb-4 flex items-center gap-2">
-                    <MessageCircle className="w-4 h-4" /> Live Secure Chat
-                  </h3>
-                  
-                  {/* Message Feed (Historical + Live) */}
-                  <div className="flex-1 overflow-y-auto space-y-3 pr-2 mb-4">
-                    {/* Pre-SOS History */}
-                    {selectedIncident.chatHistory?.map((msg, i) => (
-                      <div key={`hist-${i}`} className={cn(
-                        "p-3 rounded-xl text-xs opacity-60",
-                        msg.role === 'user' ? "bg-primary/5 border border-primary/10 ml-4" : "bg-muted border border-border mr-4"
-                      )}>
-                        <div className="font-black uppercase text-[8px] mb-1">{msg.role === 'user' ? selectedIncident.name : 'DIKSHA AI'} • {msg.timestamp}</div>
-                        {msg.content}
-                      </div>
-                    ))}
-                    
-                    {/* Divider */}
-                    <div className="relative py-4">
-                        <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-red-200 dark:border-red-900/30" /></div>
-                        <div className="relative flex justify-center"><span className="bg-white dark:bg-muted px-2 text-[10px] font-black text-red-600 uppercase tracking-widest">Live Admin Intervention</span></div>
-                    </div>
-
-                    {/* Live Admin Chat */}
-                    {liveChat.map((msg, i) => (
-                      <div key={`live-${i}`} className={cn(
-                        "p-3 rounded-xl text-xs animate-in slide-in-from-bottom-2",
-                        msg.sender === 'OPS_ADMIN' ? "bg-slate-900 text-white ml-4" : "bg-red-600 text-white mr-4"
-                      )}>
-                        <div className="font-black uppercase text-[8px] opacity-70 mb-1">{msg.sender} • {new Date(msg.timestamp).toLocaleTimeString()}</div>
-                        {msg.content}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Input Area */}
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={adminMessage}
-                      onChange={(e) => setAdminMessage(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && sendAdminMessage()}
-                      placeholder="Type a command or message to passenger..."
-                      className="w-full bg-muted border-2 border-border rounded-xl px-4 py-3 pr-12 text-sm outline-none focus:border-primary transition-colors"
-                    />
-                    <button 
-                      onClick={sendAdminMessage}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-primary hover:text-primary/80"
-                    >
-                      <Send className="w-5 h-5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Live Participants HUD */}
-                <div className="bg-white dark:bg-muted p-5 rounded-2xl border border-border shadow-sm">
-                  <h3 className="font-black text-sm uppercase tracking-wider text-muted-foreground mb-4 flex items-center gap-2">
-                    <Users className="w-4 h-4" /> Conference Participants
-                  </h3>
-                  <div className="flex flex-wrap gap-3">
-                    {['Passenger', 'RPF', 'Admin'].map(role => {
-                        const isActive = selectedIncident.active_participants?.includes(role);
-                        return (
-                            <div key={role} className={cn(
-                                "flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-bold transition-all",
-                                isActive ? "bg-green-50 border-green-200 text-green-700 dark:bg-green-900/20" : "bg-muted border-border text-muted-foreground opacity-50"
-                            )}>
-                                <div className={cn("w-2 h-2 rounded-full", isActive ? "bg-green-500 animate-pulse" : "bg-muted-foreground")} />
-                                {role}
-                            </div>
-                        )
-                    })}
-                  </div>
-                </div>
-
-                {/* Action Dispatcher */}
-                <div className="bg-white dark:bg-muted p-5 rounded-2xl border border-border shadow-sm flex flex-col gap-3">
-                  <h3 className="font-black text-sm uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-2">
-                    <Siren className="w-4 h-4" /> Authority Dispatch
-                  </h3>
-                  
-                  {selectedIncident.nearestAuthority ? (
-                    <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-900/30 rounded-xl p-3 mb-2">
-                      <div className="text-[10px] font-bold text-green-700 uppercase mb-1">AI Recommendation</div>
-                      <div className="font-black text-sm">{selectedIncident.nearestAuthority.name}</div>
-                      <div className="text-xs text-muted-foreground">ETA: {selectedIncident.nearestAuthority.eta_mins} mins ({selectedIncident.nearestAuthority.distance_km}km)</div>
-                      <button className="w-full mt-3 bg-green-600 text-white hover:bg-green-700 p-2 rounded-lg font-bold text-xs transition-colors flex justify-center items-center gap-2 shadow-sm">
-                        <PhoneCall className="w-3 h-3" /> Call {selectedIncident.nearestAuthority.contact_number}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="text-xs text-muted-foreground italic mb-2">No nearby authorities detected automatically.</div>
-                  )}
-                  
-                  <button className="w-full bg-slate-900 text-white hover:bg-slate-800 p-3 rounded-xl font-bold text-sm transition-colors flex justify-center items-center gap-2 shadow-sm">
-                    <ShieldAlert className="w-4 h-4" /> Dispatch RPF Manual
-                  </button>
-                  <button className="w-full bg-red-600 text-white hover:bg-red-700 p-3 rounded-xl font-bold text-sm transition-colors flex justify-center items-center gap-2 shadow-sm">
-                    <Activity className="w-4 h-4" /> Dispatch Medical Manual
-                  </button>
-                  <button className="w-full bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20 p-3 rounded-xl font-bold text-sm transition-colors flex justify-center items-center gap-2 shadow-sm">
-                    <MessageCircle className="w-4 h-4" /> Open Secure Chat
-                  </button>
-
-                </div>
-
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center flex-col text-muted-foreground">
-            <ShieldAlert className="w-16 h-16 opacity-20 mb-4" />
-            <p className="font-medium">Select an incident from the queue to view telemetry.</p>
+            ))}
           </div>
-        )}
+        </aside>
+
+        {/* Main Console: Map + Intelligence */}
+        <main className="flex-1 bg-background overflow-y-auto p-6 space-y-6">
+          {selectedEvent ? (
+            <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in duration-500">
+              {/* Event Header Detail */}
+              <div className="flex flex-wrap justify-between items-end gap-6 border-b border-border pb-6">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px] font-black uppercase text-red-600 border-red-600/20 bg-red-600/5">INCIDENT_ID: {selectedEvent.id}</Badge>
+                    <Badge variant="outline" className="text-[10px] font-black uppercase">PNR: {selectedEvent.pnr}</Badge>
+                  </div>
+                  <h2 className="text-4xl font-black uppercase tracking-tighter">{selectedEvent.name}</h2>
+                  <div className="flex items-center gap-4 text-xs font-bold text-muted-foreground uppercase tracking-widest">
+                    <span className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5" /> {selectedEvent.phone}</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-border" />
+                    <span className="flex items-center gap-1.5 text-primary"><Train className="w-3.5 h-3.5" /> {selectedEvent.train}</span>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="rounded-xl font-black uppercase text-[10px] tracking-widest gap-2 border-2">
+                    <MessageSquare className="w-4 h-4" /> Open Comms
+                  </Button>
+                  <Button className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black uppercase text-[10px] tracking-widest gap-2" onClick={() => handleResolve(selectedEvent.id)}>
+                    <CheckCircle className="w-4 h-4" /> Resolve Case
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Map Mockup */}
+                <Card className="lg:col-span-2 border-none glass overflow-hidden relative min-h-[450px] shadow-2xl">
+                  <div className="absolute inset-0 bg-muted/20 flex flex-col items-center justify-center p-10 text-center space-y-4">
+                    <div className="relative">
+                      <div className="w-20 h-20 bg-red-600/10 rounded-full flex items-center justify-center animate-ping absolute inset-0" />
+                      <div className="w-20 h-20 bg-background border-2 border-border rounded-full flex items-center justify-center relative shadow-xl">
+                        <MapPin className="w-10 h-10 text-red-600" />
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-xl font-black uppercase tracking-tight">Active GPS Uplink</h4>
+                      <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest mt-1">LAT: {selectedEvent.lat} | LNG: {selectedEvent.lng}</p>
+                    </div>
+                    <Button variant="outline" className="rounded-xl font-black uppercase text-[10px] bg-background">Launch External Map</Button>
+                  </div>
+                  <div className="absolute bottom-4 left-4 bg-background/90 backdrop-blur-md p-3 rounded-xl border border-border shadow-lg">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-primary flex items-center gap-2">
+                      <Navigation className="w-3 h-3" /> PRECISION_RADIUS: 5M
+                    </p>
+                  </div>
+                </Card>
+
+                {/* Intelligence Panel */}
+                <div className="space-y-6">
+                  <Card className="border-none glass bg-blue-500/5">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs font-black uppercase tracking-[0.2em] text-blue-600 flex items-center gap-2">
+                        <Activity className="w-4 h-4" /> Neural Analysis
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="p-3 bg-background rounded-xl border border-border space-y-1">
+                        <span className="text-[9px] font-black uppercase text-muted-foreground">Threat Level</span>
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-black text-amber-500 uppercase">ELEVATED</span>
+                          <Zap className="w-4 h-4 text-amber-500 fill-current" />
+                        </div>
+                      </div>
+                      <p className="text-[10px] font-bold text-muted-foreground leading-relaxed uppercase">
+                        AI detected abnormal kinetic pattern matching "Rapid Deceleration". Passenger might be in distress or medical emergency.
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-none glass">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs font-black uppercase tracking-[0.2em] text-foreground flex items-center gap-2">
+                        <User className="w-4 h-4" /> Emergency Contacts
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {[1, 2].map(i => (
+                        <div key={i} className="p-3 bg-muted/50 rounded-xl flex items-center justify-between group">
+                          <div>
+                            <p className="text-xs font-black uppercase tracking-tight">Kin Member {i}</p>
+                            <p className="text-[10px] font-bold text-muted-foreground">+91 99000 88776</p>
+                          </div>
+                          <Button variant="ghost" size="icon" className="rounded-lg h-8 w-8 hover:bg-emerald-500/10 hover:text-emerald-500"><Phone className="w-4 h-4" /></Button>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <div className="bg-red-600 rounded-2xl p-5 text-white shadow-xl shadow-red-600/20 relative overflow-hidden">
+                    <div className="relative z-10">
+                      <h4 className="font-black uppercase text-xs tracking-widest mb-1">Station Dispatch</h4>
+                      <p className="text-[10px] font-bold text-red-100 uppercase mb-4">Nearest: KOTA JUNCTION (RPF)</p>
+                      <Button className="w-full bg-white text-red-600 font-black uppercase text-[10px] tracking-widest rounded-xl h-10 hover:bg-red-50">INITIALIZE RPF DISPATCH</Button>
+                    </div>
+                    <ShieldAlert className="absolute right-[-10px] bottom-[-10px] w-24 h-24 text-white/10" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center text-center space-y-6">
+              <div className="w-24 h-24 bg-muted rounded-full flex items-center justify-center">
+                <CheckCircle className="w-12 h-12 text-muted-foreground opacity-20" />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black uppercase tracking-tighter opacity-20">Select Incident Terminal</h3>
+                <p className="text-sm text-muted-foreground font-bold uppercase tracking-widest mt-2 opacity-20">Awaiting distress signal synchronization...</p>
+              </div>
+            </div>
+          )}
+        </main>
       </div>
     </div>
   );
-}
+};
+
+export default SOSDashboard;

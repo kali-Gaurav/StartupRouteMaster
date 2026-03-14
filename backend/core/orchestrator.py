@@ -234,8 +234,8 @@ class SystemOrchestrator:
         for task in sorted_tasks:
             if self.is_shutting_down: break
             
-            # Add jitter (0.1s to 0.5s)
-            jitter = random.uniform(0.1, 0.5)
+            # Reduce jitter for development speed (was 0.1-0.5)
+            jitter = random.uniform(0.01, 0.05)
             await asyncio.sleep(jitter)
             
             task.start()

@@ -1,495 +1,234 @@
-import { useState, useEffect, useRef, useMemo } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { 
+  Search, 
+  ArrowLeft, 
+  MapPin, 
+  Train, 
+  Calendar, 
+  Filter, 
+  ArrowRightLeft,
+  Loader2,
+  Clock,
+  Navigation,
+  ShieldCheck,
+  Zap
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Command,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-} from "@/components/ui/command";
-import { ArrowLeftRight, Search, MapPin, Loader2, ArrowLeft, RefreshCw } from "lucide-react";
-import { useNavigate } from "react-router-dom";
-import { toast } from "@/hooks/use-toast";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
 import { getRailwayApiUrl } from "@/lib/utils";
-import { searchRoutesApi, unlockJourneyDetailsApi } from "@/services/railwayBackApi";
-import { RouteCardMini } from "@/components/RouteCardMini";
-import { TrainCardSkeleton } from "@/components/TrainCardSkeleton";
-import { HighlightedText } from "@/components/HighlightedText"; // [47.2]
-import { useVirtualizer } from "@tanstack/react-virtual";
-import RouteSorterWorker from "@/workers/route-sorter.worker?worker";
-import { useSearchCache } from "@/hooks/useSearchCache";
-
-interface RouteResult {
-  journey_id?: string;
-  train_no: string;
-  train_name: string;
-  departure: string;
-  arrival: string;
-  duration: string;
-  fare?: number | null;
-  availability?: string | null;
-  transfers: number;
-  legs?: Leg[];
-  is_unlocked?: boolean;
-}
-
-interface Leg {
-  train_no?: string | number;
-  train_name?: string;
-  departure?: string;
-  arrival?: string;
-  fare?: number | null;
-  distance?: number;
-  time_minutes?: number;
-}
-
-interface Station {
-  code: string;
-  name: string;
-  state?: string;
-}
-
-interface SearchFormData {
-  origin: Station | null;
-  destination: Station | null;
-  date: string;
-  time: string;
-}
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 const MiniAppSearch = () => {
   const navigate = useNavigate();
-  const [formData, setFormData] = useState<SearchFormData>({
-    origin: null,
-    destination: null,
-    date: "",
-    time: "00:00"
-  });
-
-  const [stations, setStations] = useState<Station[]>([]);
-  const [filteredStations, setFilteredStations] = useState<Station[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [isRevalidating, setIsRevalidating] = useState(false);
-  const [openPopover, setOpenPopover] = useState<"origin" | "destination" | null>(null);
-  const [stationSearchQuery, setStationSearchQuery] = useState(""); // [47.2]
-  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>();
-  
-  const [searchResults, setSearchResults] = useState<RouteResult[]>([]);
-  const [showResults, setShowResults] = useState(false);
-  const [searchHistory, setSearchHistory] = useState<any[]>([]); // [46.1]
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [unlockedJourneys, setUnlockedJourneys] = useState<Record<string, unknown>>({});
-  const [isUnlocking, setIsUnlocking] = useState<string | null>(null);
-
-  // Suggestion #7: SWR Cache
-  const { getCachedResults, saveToCache } = useSearchCache();
-
-  // Suggestion #5: Persistent worker
-  const sorterWorker = useMemo(() => new RouteSorterWorker(), []);
-
-  // Suggestion #1: Virtualization Setup
-  const parentRef = useRef<HTMLDivElement>(null);
-  const virtualizer = useVirtualizer({
-    count: searchResults.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 180,
-    overscan: 5,
-  });
+  const [searchParams] = useSearchParams();
+  const [from, setFrom] = useState(searchParams.get("from") || "");
+  const [to, setTo] = useState(searchParams.get("to") || "");
+  const [date, setDate] = useState(searchParams.get("date") || new Date().toISOString().split('T')[0]);
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<any[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
 
   useEffect(() => {
-    loadStations();
-    const today = new Date().toISOString().split('T')[0];
-    setFormData(prev => ({ ...prev, date: today }));
-    
-    // [46.1] Load search history from local storage
-    const saved = localStorage.getItem("rm_search_history");
-    if (saved) {
-      try {
-        setSearchHistory(JSON.parse(saved));
-      } catch (e) {
-        console.error("Failed to parse search history", e);
-      }
+    if (from && to) {
+      handleSearch();
     }
   }, []);
 
-  const saveToHistory = (origin: Station, destination: Station) => {
-    const newEntry = { origin, destination, timestamp: Date.now() };
-    const filtered = searchHistory.filter(h => 
-      h.origin.code !== origin.code || h.destination.code !== destination.code
-    );
-    const updated = [newEntry, ...filtered].slice(0, 3);
-    setSearchHistory(updated);
-    localStorage.setItem("rm_search_history", JSON.stringify(updated));
-  };
-
-  const loadStations = async () => {
-    try {
-      const response = await fetch(getRailwayApiUrl("/stations/search?q=a"));
-      if (response.ok) {
-        const data = await response.json();
-        if (data.stations && data.stations.length > 0) {
-          setStations(data.stations);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to load stations:", error);
-    }
-  };
-  
-  const searchStationsApi = async (query: string) => {
-    if (!query || query.length < 2) return;
-    try {
-      const response = await fetch(getRailwayApiUrl(`/stations/search?q=${encodeURIComponent(query)}`));
-      if (response.ok) {
-        const data = await response.json();
-        setFilteredStations(data.stations || []);
-      }
-    } catch (error) {
-      console.error("Station search error:", error);
-    }
-  };
-
-  const handleStationSearch = (query: string) => {
-    setStationSearchQuery(query); // [47.2]
-    if (!query.trim()) {
-      setFilteredStations(stations);
+  const handleSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!from || !to) {
+      toast.error("Please enter both stations");
       return;
     }
-    const filtered = stations.filter(station =>
-      station.name.toLowerCase().includes(query.toLowerCase()) ||
-      station.code.toLowerCase().includes(query.toLowerCase())
-    );
-    setFilteredStations(filtered);
-    
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-    searchTimeoutRef.current = setTimeout(() => {
-      searchStationsApi(query);
-    }, 300);
-  };
 
-  const handleSelectStation = (station: Station, type: "origin" | "destination") => {
-    setFormData(prev => ({ ...prev, [type]: station }));
-    setOpenPopover(null);
+    setLoading(true);
+    setHasSearched(true);
+    try {
+      const response = await fetch(getRailwayApiUrl(`/api/search?from=${from}&to=${to}&date=${date}`));
+      if (response.ok) {
+        const data = await response.json();
+        setResults(data.routes || []);
+      } else {
+        toast.error("Search failed");
+      }
+    } catch (error) {
+      console.error("Search failed:", error);
+      toast.error("Network error during search");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const swapStations = () => {
-    setFormData(prev => ({
-      ...prev,
-      origin: prev.destination,
-      destination: prev.origin
-    }));
+    const temp = from;
+    setFrom(to);
+    setTo(temp);
   };
-
-  const handleSearch = async (isPrefetch = false) => {
-    if (!formData.origin || !formData.destination) return;
-
-    const useDate = formData.date?.trim() || new Date().toISOString().slice(0, 10);
-    
-    if (isPrefetch && (isSearching || searchResults.length > 0)) return;
-
-    if (!isPrefetch) {
-      const cached = getCachedResults(formData.origin.code, formData.destination.code, useDate);
-      if (cached) {
-        setSearchResults(cached);
-        setShowResults(true);
-        setIsRevalidating(true);
-      } else {
-        setIsSearching(true);
-        setShowResults(true); // Show results container early for skeleton
-        setSearchResults([]);
-      }
-    }
-
-    setSearchError(null);
-
-    try {
-      const data = await searchRoutesApi(
-        formData.origin.code,
-        formData.destination.code,
-        2,
-        100,
-        { date: useDate, sortBy: "duration" }
-      );
-      
-      const results: RouteResult[] = [];
-      if (data.journeys && Array.isArray(data.journeys)) {
-        for (const journey of data.journeys) {
-          results.push({
-            journey_id: journey.journey_id,
-            train_no: journey.train_no || "N/A",
-            train_name: journey.train_name || "Express Train",
-            departure: journey.departure_time || "--:--",
-            arrival: journey.arrival_time || "--:--",
-            duration: journey.travel_time || "N/A",
-            fare: journey.cheapest_fare,
-            availability: journey.availability_status,
-            transfers: journey.num_transfers,
-            is_unlocked: false
-          });
-        }
-      }
-
-      setSearchResults(results);
-      saveToCache(formData.origin.code, formData.destination.code, useDate, results);
-      saveToHistory(formData.origin, formData.destination); // [46.1]
-      
-      if (results.length > 30) {
-        sorterWorker.onmessage = (e) => setSearchResults(e.data.sorted);
-        sorterWorker.postMessage({ routes: results, sortBy: 'departure', order: 'asc' });
-      }
-    } catch (error) {
-      if (!isPrefetch) setSearchError("Search failed.");
-    } finally {
-      setIsSearching(false);
-      setIsRevalidating(false);
-    }
-  };
-  
-  const handleUnlock = async (route: RouteResult) => {
-    if (!route.journey_id) return;
-    setIsUnlocking(route.journey_id);
-    try {
-      const data = await unlockJourneyDetailsApi(route.journey_id, formData.date) as any;
-      setUnlockedJourneys(prev => ({ ...prev, [route.journey_id!]: data }));
-      setSearchResults(prev => prev.map(r => 
-        r.journey_id === route.journey_id ? { ...r, is_unlocked: true, fare: data.journey.cheapest_fare } : r
-      ));
-      toast({ title: "Unlocked!" });
-    } catch (error) {
-      toast({ title: "Unlock Failed", variant: "destructive" });
-    } finally {
-      setIsUnlocking(null);
-    }
-  };
-
-  const handleBook = (route: RouteResult) => {
-    navigate("/mini-app/booking", { 
-      state: { route, origin: formData.origin, destination: formData.destination, date: formData.date } 
-    });
-  };
-
-  const handleSaveRoute = () => {
-    toast({ title: "Saved!" });
-  };
-
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const minDate = new Date().toISOString().split('T')[0];
-  
-  // [48.2] IRCTC 120-day booking window
-  const maxDateObj = new Date();
-  maxDateObj.setDate(maxDateObj.getDate() + 120);
-  const maxDate = maxDateObj.toISOString().split('T')[0];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      <div className="p-4 bg-white border-b sticky top-0 z-10 shadow-sm">
-        <div className="max-w-md mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <Button variant="ghost" size="icon" onClick={() => navigate("/mini-app/home")}>
+    <div className="min-h-screen bg-background text-foreground flex flex-col selection:bg-primary selection:text-primary-foreground">
+      {/* Sticky Header with Search Controls */}
+      <div className="p-4 bg-background/80 backdrop-blur-xl border-b border-border sticky top-0 z-20">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" onClick={() => navigate("/mini-app")} className="rounded-xl hover:bg-muted">
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-bold">Search Trains</h1>
+            <h1 className="text-xl font-black uppercase tracking-tighter">Route Search</h1>
           </div>
-          {isRevalidating && (
-            <div className="flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-full animate-pulse">
-              <RefreshCw className="h-3 w-3 animate-spin" />
-              UPDATING
-            </div>
-          )}
-        </div>
-      </div>
 
-      <div ref={parentRef} className="flex-1 overflow-auto p-4">
-        <div className="max-w-md mx-auto space-y-6">
-          {!showResults && (
-            <Card className="shadow-sm border-0">
-              <CardContent className="p-6 space-y-5">
-                <div className="space-y-4">
-                  <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold mb-1.5 block">From</Label>
-                    <Popover open={openPopover === "origin"} onOpenChange={(open) => setOpenPopover(open ? "origin" : null)}>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left h-12 px-4 text-base">
-                          <MapPin className="h-5 w-5 mr-3 text-blue-600" />
-                          {formData.origin ? formData.origin.name : "Select origin"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-[calc(100vw-2rem)] max-w-md p-0" align="start">
-                        <Command>
-                          <CommandInput placeholder="Search station..." className="h-12 text-base" onValueChange={handleStationSearch} />
-                          <CommandGroup className="max-h-80 overflow-auto">
-                            {filteredStations.map((s) => (
-                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "origin")} className="h-12 text-base px-4">
-                                <HighlightedText text={s.name} highlight={stationSearchQuery} />
-                                <span className="ml-2 text-slate-400">(<HighlightedText text={s.code} highlight={stationSearchQuery} />)</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-
-                  <div className="flex justify-center -my-2 relative z-10">
-                    <Button variant="ghost" size="icon" onClick={swapStations} className="h-11 w-11 rounded-full bg-white shadow-md border border-slate-100 hover:bg-slate-50">
-                      <ArrowLeftRight className="h-5 w-5 text-blue-600" />
-                    </Button>
-                  </div>
-
-                  <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold mb-1.5 block">To</Label>
-                    <Popover open={openPopover === "destination"} onOpenChange={(open) => setOpenPopover(open ? "destination" : null)}>
-                      <PopoverTrigger asChild>
-                        <Button variant="outline" className="w-full justify-start text-left h-12 px-4 text-base">
-                          <MapPin className="h-5 w-5 mr-3 text-green-600" />
-                          {formData.destination ? formData.destination.name : "Select destination"}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-[calc(100vw-2rem)] max-w-md p-0" align="start">
-                        <Command>
-                          <CommandInput placeholder="Search station..." className="h-12 text-base" onValueChange={handleStationSearch} />
-                          <CommandGroup className="max-h-80 overflow-auto">
-                            {filteredStations.map((s) => (
-                              <CommandItem key={s.code} value={s.code} onSelect={() => handleSelectStation(s, "destination")} className="h-12 text-base px-4">
-                                <HighlightedText text={s.name} highlight={stationSearchQuery} />
-                                <span className="ml-2 text-slate-400">(<HighlightedText text={s.code} highlight={stationSearchQuery} />)</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold">Date</Label>
-                    <input
-                      type="date"
-                      value={formData.date}
-                      onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
-                      min={minDate}
-                      max={maxDate} // [48.2]
-                      className="w-full h-12 px-3 border rounded-md"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs uppercase text-slate-500 font-bold">Time</Label>
-                    <input
-                      type="time"
-                      value={formData.time}
-                      onChange={(e) => setFormData(prev => ({ ...prev, time: e.target.value }))}
-                      className="w-full h-12 px-3 border rounded-md"
-                    />
-                  </div>
-                </div>
-
+          <form onSubmit={handleSearch} className="space-y-3">
+            <div className="relative space-y-2">
+              <div className="relative group">
+                <MapPin className="absolute left-4 top-3.5 h-5 w-5 text-primary" />
+                <Input
+                  placeholder="From Station"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value.toUpperCase())}
+                  className="pl-12 py-7 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all font-bold"
+                />
+              </div>
+              
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 z-10">
                 <Button 
-                  onClick={() => handleSearch(false)} 
-                  onMouseEnter={() => handleSearch(true)}
-                  disabled={isSearching} 
-                  className="w-full h-12 bg-blue-600 hover:bg-blue-700 font-bold"
+                  type="button"
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={swapStations} 
+                  className="h-10 w-10 rounded-full bg-background shadow-md border border-border hover:bg-muted active:scale-90 transition-all"
                 >
-                  {isSearching ? <Loader2 className="animate-spin mr-2" /> : <Search className="mr-2 h-4 w-4" />}
-                  SEARCH TRAINS
+                  <ArrowRightLeft className="h-4 w-4 text-primary rotate-90" />
                 </Button>
-              </CardContent>
-            </Card>
-          )}
+              </div>
 
-          {/* [46.2] Recent Searches Chips */}
-          {!showResults && searchHistory.length > 0 && (
-            <div className="space-y-3">
-              <h3 className="text-xs uppercase text-slate-500 font-bold px-1">Recent Searches</h3>
-              <div className="flex flex-wrap gap-2">
-                {searchHistory.map((h, i) => (
-                  <Button
-                    key={i}
-                    variant="outline"
-                    size="sm"
-                    className="h-10 px-4 rounded-full bg-white border-slate-200 text-slate-700 hover:bg-blue-50 hover:border-blue-200 transition-colors"
-                    onClick={() => {
-                      setFormData(prev => ({ ...prev, origin: h.origin, destination: h.destination }));
-                      // Trigger search immediately
-                      handleSearch(false);
-                    }}
-                  >
-                    <RefreshCw className="h-3 w-3 mr-2 text-slate-400" />
-                    <span className="font-bold">{h.origin.code}</span>
-                    <ArrowLeftRight className="h-3 w-3 mx-2 text-slate-300" />
-                    <span className="font-bold">{h.destination.code}</span>
-                  </Button>
-                ))}
+              <div className="relative group">
+                <Navigation className="absolute left-4 top-3.5 h-5 w-5 text-emerald-500" />
+                <Input
+                  placeholder="To Station"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value.toUpperCase())}
+                  className="pl-12 py-7 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all font-bold"
+                />
               </div>
             </div>
-          )}
 
-          {showResults && (
-            <div className="space-y-4 pb-10">
-              <div className="flex items-center justify-between px-1">
-                <h2 className="font-bold text-slate-700">{searchResults.length} Routes found</h2>
-                <Button variant="ghost" size="sm" onClick={() => setShowResults(false)} className="text-blue-600">Change</Button>
+            <div className="flex gap-2">
+              <div className="relative flex-1 group">
+                <Calendar className="absolute left-4 top-3.5 h-5 w-5 text-muted-foreground" />
+                <Input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="pl-12 py-7 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all font-bold"
+                />
               </div>
-
-              {isSearching && (
-                <div className="space-y-4">
-                  <TrainCardSkeleton />
-                  <TrainCardSkeleton />
-                  <TrainCardSkeleton />
-                </div>
-              )}
-
-              {searchError && <p className="text-red-500 text-center py-10">{searchError}</p>}
-
-              <div
-                style={{
-                  height: `${virtualizer.getTotalSize()}px`,
-                  width: '100%',
-                  position: 'relative',
-                }}
-              >
-                {virtualizer.getVirtualItems().map((virtualRow) => {
-                  const route = searchResults[virtualRow.index];
-                  return (
-                    <div
-                      key={virtualRow.key}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: `${virtualRow.size}px`,
-                        transform: `translateY(${virtualRow.start}px)`,
-                        paddingBottom: '16px'
-                      }}
-                    >
-                      <RouteCardMini
-                        route={route as any}
-                        originCode={formData.origin?.code || ""}
-                        destinationCode={formData.destination?.code || ""}
-                        isUnlocked={!!(route.journey_id && unlockedJourneys[route.journey_id])}
-                        isProcessing={isUnlocking === route.journey_id}
-                        onUnlock={handleUnlock}
-                        onBook={handleBook}
-                        onSave={handleSaveRoute}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
+              <Button type="submit" disabled={loading} className="h-auto px-8 rounded-2xl shadow-lg shadow-primary/20 active:scale-95 transition-all">
+                {loading ? <Loader2 className="h-6 w-6 animate-spin" /> : <Search className="h-6 w-6" />}
+              </Button>
             </div>
-          )}
+          </form>
         </div>
       </div>
+
+      {/* Main Results Area */}
+      <main className="flex-1 max-w-md mx-auto w-full p-4 space-y-4">
+        {!hasSearched ? (
+          <div className="py-20 text-center space-y-6 animate-in fade-in slide-in-from-bottom-4">
+            <div className="w-20 h-20 bg-primary/10 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
+              <Train className="h-10 w-10 text-primary animate-pulse" />
+            </div>
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tight">Neural Search Active</h3>
+              <p className="text-sm text-muted-foreground font-bold mt-2">Enter stations to calculate optimal vectors</p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2">
+               {['NDLS', 'BCT', 'MAS', 'HWH'].map(code => (
+                 <button 
+                   key={code}
+                   onClick={() => setFrom(code)}
+                   className="px-4 py-2 rounded-xl bg-muted border border-border text-[10px] font-black uppercase tracking-widest hover:bg-primary hover:text-white transition-all"
+                 >
+                   {code}
+                 </button>
+               ))}
+            </div>
+          </div>
+        ) : loading ? (
+          <div className="py-20 text-center space-y-4">
+            <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto" />
+            <p className="text-xs font-black uppercase tracking-widest text-muted-foreground">Synchronizing Timetables...</p>
+          </div>
+        ) : results.length > 0 ? (
+          <div className="space-y-4 animate-in fade-in duration-500">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">{results.length} Routes Identified</span>
+              <Button variant="ghost" size="sm" className="h-7 text-[10px] font-black uppercase tracking-widest gap-1">
+                <Filter className="h-3 w-3" /> Filter
+              </Button>
+            </div>
+            {results.map((route, i) => (
+              <Card 
+                key={i} 
+                className="border-none glass hover:scale-[1.01] transition-transform active:scale-[0.99] cursor-pointer overflow-hidden group"
+                onClick={() => navigate(`/mini-app/booking?id=${route.id || i}`)}
+              >
+                <div className="h-1 w-full bg-gradient-to-r from-primary/50 to-emerald-500/50 opacity-0 group-hover:opacity-100 transition-opacity" />
+                <CardContent className="p-5 space-y-4">
+                  <div className="flex justify-between items-start">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-primary text-[10px] font-black text-white uppercase tracking-tighter">SUPERFAST</span>
+                        <span className="text-xs font-black text-primary uppercase">#{route.train_number || '12002'}</span>
+                      </div>
+                      <h3 className="font-black text-lg uppercase tracking-tight leading-none">{route.train_name || "Shatabdi Express"}</h3>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-black tracking-tighter">₹{route.fare || '1,240'}</p>
+                      <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest">Available</p>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center bg-muted/50 p-4 rounded-2xl relative">
+                    <div className="text-center z-10">
+                      <p className="text-xl font-black tabular-nums">{route.departure_time || '06:00'}</p>
+                      <p className="text-[10px] font-black text-muted-foreground uppercase">{from}</p>
+                    </div>
+                    
+                    <div className="flex-1 flex flex-col items-center gap-1 px-4">
+                       <div className="w-full h-px bg-border relative">
+                         <div className="absolute inset-0 bg-primary/30 animate-pulse" />
+                         <Train className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-4 w-4 text-primary bg-background p-0.5 rounded-full border border-border" />
+                       </div>
+                       <span className="text-[9px] font-black text-muted-foreground uppercase">{route.duration || '6h 40m'}</span>
+                    </div>
+
+                    <div className="text-center z-10">
+                      <p className="text-xl font-black tabular-nums">{route.arrival_time || '12:40'}</p>
+                      <p className="text-[10px] font-black text-muted-foreground uppercase">{to}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-[10px] font-black uppercase tracking-tighter text-muted-foreground pt-1">
+                    <span className="flex items-center gap-1"><ShieldCheck className="h-3 w-3 text-emerald-500" /> Verified Safe</span>
+                    <span className="flex items-center gap-1 text-amber-500"><Zap className="h-3 w-3 fill-current" /> 98% On-Time</span>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <div className="py-20 text-center space-y-4">
+            <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mx-auto opacity-50">
+              <Search className="h-8 w-8" />
+            </div>
+            <p className="text-sm font-black uppercase tracking-widest text-muted-foreground">Zero Vectors Found</p>
+            <Button variant="outline" onClick={() => setHasSearched(false)} className="rounded-xl font-bold">RETRY CALCULATION</Button>
+          </div>
+        )}
+      </main>
     </div>
   );
 };

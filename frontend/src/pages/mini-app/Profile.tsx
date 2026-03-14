@@ -1,499 +1,164 @@
 import { useState, useEffect } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-
-import { Progress } from "@/components/ui/progress";
-import {
-  ArrowLeft,
-  User,
-  Zap,
-  Trophy,
-  TrendingUp,
-  Award,
-  LogOut,
-  Settings,
-  Loader2,
-  Link2,
-  Check
-} from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "@/hooks/use-toast";
-import { getRailwayApiUrl } from "@/lib/utils";
-
-import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch"; // [50.2]
-import { useTheme } from "@/context/ThemeContext"; // [50.2]
-import { Moon, Sun } from "lucide-react"; // [50.2]
-
-interface UserProfile {
-// ...
-  id: number;
-  first_name: string;
-  last_name?: string;
-  username?: string;
-  email?: string;
-  total_journeys: number;
-  total_distance: number;
-  favorite_route?: string;
-  member_since: string;
-  last_login: string;
-  badges: Badge[];
-  current_level: string;
-  level_progress: number;
-}
-
-interface Badge {
-  id: string;
-  name: string;
-  icon: string;
-  earned_at: string;
-  description: string;
-}
-
-// const BADGES = {
-//   "beginner": { icon: "🎫", name: "Beginner", requirement: "1+ journeys" },
-//   "explorer": { icon: "🥉", name: "Explorer", requirement: "5+ journeys" },
-//   "regular": { icon: "🥈", name: "Regular Traveler", requirement: "10+ journeys" },
-//   "expert": { icon: "🥇", name: "Expert Traveler", requirement: "25+ journeys" },
-//   "master": { icon: "🏆", name: "Train Master", requirement: "50+ journeys" },
-//   "legend": { icon: "🌟", name: "Legend", requirement: "100+ journeys" }
-// };
+import { 
+  User, 
+  Settings, 
+  Shield, 
+  LogOut, 
+  ArrowLeft, 
+  ChevronRight, 
+  Bell, 
+  Moon, 
+  Smartphone,
+  CheckCircle2,
+  RefreshCw,
+  Clock
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/context/AuthContext";
+import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
+import { useTelegramWebApp } from "@/hooks/useTelegramWebApp";
+import { cn } from "@/lib/utils";
 
 const MiniAppProfile = () => {
   const navigate = useNavigate();
-  const { theme, isDarkMode, toggleMode } = useTheme(); // [50.2]
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [linkStatus, setLinkStatus] = useState<{ linked: boolean; linked_at?: string } | null>(null);
-  const [linkCode, setLinkCode] = useState("");
-  const [isLinking, setIsLinking] = useState(false);
+  const { user, signOut } = useAuth();
+  const { webApp } = useTelegramWebApp();
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    loadUserProfile();
-    loadLinkStatus();
-  }, []);
-
-  const loadLinkStatus = async () => {
-    const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-    if (!userId) return;
-    try {
-      const res = await fetch(getRailwayApiUrl(`/api/telegram-link/status/${userId}`));
-      if (res.ok) {
-        const data = await res.json();
-        setLinkStatus({ linked: data.linked, linked_at: data.linked_at });
-      }
-    } catch {
-      setLinkStatus({ linked: false });
+    if (webApp) {
+      webApp.BackButton.show();
+      webApp.BackButton.onClick(() => navigate("/mini-app"));
     }
-  };
+    return () => webApp?.BackButton.hide();
+  }, [webApp, navigate]);
 
-  const loadUserProfile = async () => {
-    setIsLoading(true);
+  const handleSignOut = async () => {
+    setLoading(true);
     try {
-      const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-      if (!userId) return;
-
-      const response = await fetch(getRailwayApiUrl(`/api/user/${userId}/profile`));
-      if (response.ok) {
-        const data = await response.json();
-        setProfile(data);
-      }
-    } catch (error) {
-      console.error("Failed to load profile:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load profile",
-        variant: "destructive"
-      });
+      await signOut();
+      navigate("/login");
+      toast.success("Session decommissioned");
+    } catch (e) {
+      toast.error("Decommissioning failed");
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleLinkSubmit = async () => {
-    const userId = window.Telegram?.WebApp?.initDataUnsafe?.user?.id;
-    if (!userId || !linkCode.trim()) return;
-    setIsLinking(true);
-    try {
-      const res = await fetch(getRailwayApiUrl("/api/telegram-link/link"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: userId, code: linkCode.trim() }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        toast({ title: "Linked", description: "Telegram account linked." });
-        setLinkCode("");
-        loadLinkStatus();
-      } else {
-        toast({
-          title: "Link failed",
-          description: (data.detail as string) || "Invalid or expired code",
-          variant: "destructive",
-        });
-      }
-    } catch {
-      toast({ title: "Error", description: "Could not link account", variant: "destructive" });
-    } finally {
-      setIsLinking(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    setIsLoggingOut(true);
-    try {
-      const logoutData = {
-        type: "LOGOUT",
-        timestamp: new Date().toISOString()
-      };
-
-      if (window.Telegram?.WebApp) {
-        window.Telegram.WebApp.sendData(JSON.stringify(logoutData));
-        toast({
-          title: "Logged Out",
-          description: "You have been logged out successfully"
-        });
-        setTimeout(() => navigate("/"), 1500);
-      }
-    } catch (error) {
-      console.error("Logout error:", error);
-    } finally {
-      setIsLoggingOut(false);
-    }
-  };
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-slate-50 p-4">
-        <div className="max-w-md mx-auto space-y-6">
-          {/* Header Skeleton */}
-          <div className="flex items-center space-x-3">
-            <Skeleton className="h-10 w-10 rounded-full" />
-            <div className="space-y-2">
-              <Skeleton className="h-6 w-32" />
-              <Skeleton className="h-4 w-48" />
-            </div>
-          </div>
-
-          {/* Info Card Skeleton */}
-          <Card className="shadow-lg border-0 overflow-hidden">
-            <div className="bg-slate-200 h-20" />
-            <CardContent className="p-6 -mt-12 relative flex flex-col items-center">
-              <Skeleton className="h-24 w-24 rounded-full border-4 border-white shadow-lg mb-4" />
-              <div className="space-y-2 flex flex-col items-center">
-                <Skeleton className="h-8 w-48" />
-                <Skeleton className="h-4 w-32" />
-                <Skeleton className="h-6 w-20 rounded-full mt-2" />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Stats Skeleton */}
-          <div className="grid grid-cols-3 gap-3">
-            {[1, 2, 3].map((i) => (
-              <Card key={i}>
-                <CardContent className="p-4 flex flex-col items-center space-y-2">
-                  <Skeleton className="h-6 w-6 rounded-full" />
-                  <Skeleton className="h-8 w-12" />
-                  <Skeleton className="h-3 w-16" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {/* Progress Skeleton */}
-          <Card>
-            <CardContent className="p-6 space-y-4">
-              <div className="flex justify-between items-center">
-                <Skeleton className="h-5 w-24" />
-                <Skeleton className="h-5 w-12" />
-              </div>
-              <Skeleton className="h-3 w-full rounded-full" />
-              <Skeleton className="h-3 w-48" />
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
-
-  if (!profile) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-        <div className="max-w-md mx-auto">
-          <Card className="text-center py-12">
-            <CardContent className="space-y-4">
-              <div className="text-4xl">😕</div>
-              <h3 className="text-lg font-bold text-gray-900">Profile Not Found</h3>
-              <Button
-                onClick={() => navigate("/mini-app/home")}
-                className="w-full bg-blue-600 hover:bg-blue-700"
-              >
-                Return Home
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
-
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case "Beginner":
-        return "bg-blue-100 text-blue-800";
-      case "Regular":
-        return "bg-purple-100 text-purple-800";
-      case "Expert":
-        return "bg-amber-100 text-amber-800";
-      default:
-        return "bg-gray-100 text-gray-800";
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-md mx-auto space-y-6">
-        {/* Header */}
-        <div className="flex items-center space-x-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => navigate("/mini-app/home")}
-            className="hover:bg-blue-200"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Profile</h1>
-            <p className="text-sm text-gray-600">Your travel statistics</p>
+    <div className="min-h-screen bg-background text-foreground flex flex-col selection:bg-primary selection:text-primary-foreground">
+      <div className="p-4 border-b border-border sticky top-0 z-20 bg-background/80 backdrop-blur-xl">
+        <div className="max-w-md mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" onClick={() => navigate("/mini-app")} className="rounded-xl lg:hidden">
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <h1 className="text-xl font-black uppercase tracking-tighter">Terminal ID</h1>
           </div>
-        </div>
-
-        {/* User Info Card */}
-        <Card className="shadow-lg border-0 overflow-hidden">
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 h-20" />
-          <CardContent className="p-6 -mt-12 relative">
-            <div className="bg-white rounded-full w-24 h-24 flex items-center justify-center border-4 border-white shadow-lg mx-auto mb-4">
-              <User className="h-12 w-12 text-blue-600" />
-            </div>
-
-            <div className="text-center space-y-1">
-              <h2 className="text-2xl font-bold text-gray-900">
-                {profile.first_name} {profile.last_name || ""}
-              </h2>
-              {profile.username && (
-                <p className="text-gray-600">@{profile.username}</p>
-              )}
-              <div className="flex justify-center gap-2 pt-2">
-                <Badge className={`${getLevelColor(profile.current_level)}`}>
-                  {profile.current_level}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Stats Grid */}
-        <div className="grid grid-cols-3 gap-3">
-          <Card>
-            <CardContent className="p-4 text-center space-y-1">
-              <TrendingUp className="h-6 w-6 text-blue-600 mx-auto" />
-              <p className="text-2xl font-bold text-gray-900">{profile.total_journeys}</p>
-              <p className="text-xs text-gray-600">Journeys</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 text-center space-y-1">
-              <Zap className="h-6 w-6 text-orange-600 mx-auto" />
-              <p className="text-2xl font-bold text-gray-900">
-                {(profile.total_distance / 1000).toFixed(0)}K
-              </p>
-              <p className="text-xs text-gray-600">km Traveled</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4 text-center space-y-1">
-              <Trophy className="h-6 w-6 text-amber-600 mx-auto" />
-              <p className="text-2xl font-bold text-gray-900">{profile.badges.length}</p>
-              <p className="text-xs text-gray-600">Badges</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Level Progress */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Level Progress</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="font-semibold text-gray-900">{profile.current_level}</p>
-              <p className="text-sm text-gray-600">{profile.level_progress}%</p>
-            </div>
-            <Progress value={profile.level_progress} className="h-3" />
-            <p className="text-xs text-gray-600">
-              Keep journeying to reach the next level!
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Badges */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Award className="h-5 w-5 text-amber-600" />
-              Achievements
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {profile.badges.length === 0 ? (
-              <p className="text-sm text-gray-600 text-center py-4">
-                Complete more journeys to unlock badges!
-              </p>
-            ) : (
-              <div className="grid grid-cols-3 gap-3">
-                {profile.badges.map((badge) => (
-                  <div key={badge.id} className="text-center">
-                    <div className="text-3xl mb-1">{badge.icon}</div>
-                    <p className="text-xs font-semibold text-gray-900">{badge.name}</p>
-                    <p className="text-xs text-gray-600 mt-1">
-                      {new Date(badge.earned_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Link Telegram */}
-        <Card className="border-2 border-dashed border-blue-200">
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Link2 className="h-5 w-5 text-blue-600" />
-              Link Telegram
-            </CardTitle>
-            <CardDescription>
-              Link this account with the bot for notifications and personalization.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {linkStatus?.linked ? (
-              <div className="flex items-center gap-2 text-green-700 bg-green-50 p-3 rounded-lg">
-                <Check className="h-5 w-5 shrink-0" />
-                <span className="text-sm font-medium">Telegram linked</span>
-                {linkStatus.linked_at && (
-                  <span className="text-xs text-gray-600">
-                    since {new Date(linkStatus.linked_at).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-            ) : (
-              <>
-                <p className="text-sm text-gray-600">
-                  1. In Telegram, send <strong>/link</strong> to the bot.<br />
-                  2. Enter the 6-digit code below.
-                </p>
-                <div className="flex gap-2">
-                  <label htmlFor="telegram-code" className="sr-only">Telegram link code</label>
-                  <input
-                    id="telegram-code"
-                    name="telegram-code"
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={6}
-                    placeholder="000000"
-                    value={linkCode}
-                    onChange={(e) => setLinkCode(e.currentTarget.value.replace(/\D/g, ""))}
-                    className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-center font-mono text-lg"
-                  />
-                  <Button
-                    onClick={handleLinkSubmit}
-                    disabled={isLinking || linkCode.length !== 6}
-                    className="bg-blue-600 hover:bg-blue-700"
-                  >
-                    {isLinking ? <Loader2 className="h-5 w-5 animate-spin" /> : "Link"}
-                  </Button>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Theme Settings [50.2] */}
-        <Card className="shadow-sm border-0">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Settings className="h-5 w-5 text-blue-600" />
-              Appearance
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {isDarkMode ? <Moon className="h-5 w-5 text-indigo-400" /> : <Sun className="h-5 w-5 text-amber-500" />}
-              <div>
-                <p className="text-sm font-semibold">Dark Mode</p>
-                <p className="text-xs text-slate-500">Easier on the eyes at night</p>
-              </div>
-            </div>
-            <Switch 
-              checked={isDarkMode} 
-              onCheckedChange={toggleMode} 
-            />
-          </CardContent>
-        </Card>
-
-        {/* Account Info */}
-        <Card className="bg-blue-50 border-blue-200">
-          <CardContent className="pt-4 space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">Member Since</span>
-              <span className="font-semibold text-gray-900">
-                {new Date(profile.member_since).toLocaleDateString()}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">Last Login</span>
-              <span className="font-semibold text-gray-900">
-                {new Date(profile.last_login).toLocaleDateString()}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Action Buttons */}
-        <div className="flex gap-3">
-          <Button
-            variant="outline"
-            className="flex-1 border-2"
-            onClick={() => navigate("/mini-app/home")}
-          >
-            <Settings className="h-4 w-4 mr-2" />
-            Settings
-          </Button>
-          <Button
-            variant="destructive"
-            className="flex-1"
-            onClick={handleLogout}
-            disabled={isLoggingOut}
-          >
-            {isLoggingOut ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Logging out...
-              </>
-            ) : (
-              <>
-                <LogOut className="h-4 w-4 mr-2" />
-                Logout
-              </>
-            )}
+          <Button variant="ghost" size="icon" className="rounded-xl">
+            <Settings className="h-5 w-5" />
           </Button>
         </div>
       </div>
+
+      <main className="flex-1 max-w-md mx-auto w-full p-6 space-y-8">
+        {/* User Identity Section */}
+        <div className="text-center space-y-4 pt-4">
+          <div className="relative inline-block">
+            <div className="w-24 h-24 rounded-3xl bg-primary/10 flex items-center justify-center mx-auto shadow-inner border-2 border-primary/20 group">
+              <User className="h-12 w-12 text-primary group-hover:scale-110 transition-transform" />
+            </div>
+            <div className="absolute -bottom-2 -right-2 bg-emerald-500 text-white p-1.5 rounded-xl border-4 border-background shadow-lg">
+              <CheckCircle2 className="h-4 w-4" />
+            </div>
+          </div>
+          <div>
+            <h2 className="text-2xl font-black uppercase tracking-tighter">{user?.first_name || "Authorized Entity"}</h2>
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-widest opacity-60 mt-1">{user?.email}</p>
+          </div>
+          <div className="flex justify-center gap-2">
+            <Badge className="bg-primary/10 text-primary border-none font-black text-[9px] px-3 uppercase tracking-widest">GOLD_TIER</Badge>
+            <Badge className="bg-emerald-500/10 text-emerald-500 border-none font-black text-[9px] px-3 uppercase tracking-widest">VERIFIED</Badge>
+          </div>
+        </div>
+
+        {/* Action Groups */}
+        <div className="space-y-6 pb-10">
+          <div className="space-y-3">
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground ml-1">System Interface</h3>
+            <Card className="border-none glass divide-y divide-border overflow-hidden">
+              <div className="p-4 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
+                    <Bell className="h-5 w-5 text-blue-500" />
+                  </div>
+                  <span className="text-sm font-black uppercase tracking-tight">Signal Config</span>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground opacity-40 group-hover:opacity-100 transition-opacity" />
+              </div>
+              <div className="p-4 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+                    <Moon className="h-5 w-5 text-purple-500" />
+                  </div>
+                  <span className="text-sm font-black uppercase tracking-tight">Interface Theme</span>
+                </div>
+                <Badge variant="outline" className="text-[8px] font-black uppercase">AUTO</Badge>
+              </div>
+              <div className="p-4 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center">
+                    <Smartphone className="h-5 w-5 text-orange-500" />
+                  </div>
+                  <span className="text-sm font-black uppercase tracking-tight">Link Device</span>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground opacity-40 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </Card>
+          </div>
+
+          <div className="space-y-3">
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground ml-1">Security Node</h3>
+            <Card className="border-none glass divide-y divide-border overflow-hidden">
+              <div className="p-4 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center">
+                    <Shield className="h-5 w-5 text-red-500" />
+                  </div>
+                  <span className="text-sm font-black uppercase tracking-tight">Biometric Lock</span>
+                </div>
+                <Badge variant="outline" className="text-[8px] font-black uppercase text-red-500 border-red-500/20 bg-red-500/5">OFF</Badge>
+              </div>
+              <div className="p-4 flex items-center justify-between hover:bg-muted/50 transition-colors cursor-pointer group" onClick={handleSignOut}>
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
+                    <LogOut className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <span className="text-sm font-black uppercase tracking-tight text-muted-foreground group-hover:text-red-500 transition-colors">Decommission Session</span>
+                </div>
+                {loading && <RefreshCw className="h-4 w-4 animate-spin text-primary" />}
+              </div>
+            </Card>
+          </div>
+        </div>
+
+        {/* Footer info */}
+        <div className="pt-4 text-center space-y-4">
+          <div className="flex items-center justify-center gap-2 text-muted-foreground opacity-40">
+            <Clock className="h-3 w-3" />
+            <span className="text-[9px] font-black uppercase tracking-widest">Last Auth: {new Date().toLocaleDateString()}</span>
+          </div>
+          <p className="text-[8px] font-black uppercase text-muted-foreground tracking-[0.3em] opacity-30 leading-relaxed">
+            RouteMaster Mini-App Terminal v2.5.0-alpha<br/>
+            Neural Link Status: STABLE
+          </p>
+        </div>
+      </main>
     </div>
   );
 };

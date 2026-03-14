@@ -215,6 +215,8 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
 
   const parentRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null); // For click-outside
+  const toggleButtonRef = useRef<HTMLButtonElement>(null); // To exclude toggle button
   const abortControllerRef = useRef<AbortController | null>(null);
   const isAtBottomRef = useRef(true); // Task 1.10
 
@@ -295,12 +297,22 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
   }, [messages.length, scrollToNewMessage]);
 
   const clearChatHistory = useCallback(() => {
+    // 1. Clear local store IMMEDIATELY for instant feedback
     clearStoreHistory();
+    
+    // 2. Re-add welcome message immediately
+    addToStore({ role: "assistant", content: WELCOME_MSG });
+
+    // 3. Clear backend history in background (Task 8.1 Resilience)
+    fetch(getRailwayApiUrl(`/chat/history?session_id=${sessionIdRef.current}`), {
+      method: 'DELETE'
+    }).catch(e => console.warn("Failed to clear backend history", e));
+
     if ('vibrate' in navigator) {
-      navigator.vibrate([200]); // Task 1.18: Mission Clear Haptic
+      navigator.vibrate([200]); // Mission Clear Haptic
     }
     logEvent("chatbot_history_cleared");
-  }, [clearStoreHistory]);
+  }, [clearStoreHistory, addToStore]);
 
   const triggerErrorFeedback = useCallback((vibrate = true) => {
     setIsError(true);
@@ -427,10 +439,17 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
     };
   }, [isOpen, isBackendOnline, connectWebSocket]);
 
+  const hasLoadedHistoryRef = useRef(false);
+
   // History Load (Server sync if needed)
   useEffect(() => {
     const loadHistory = async () => {
-      if (storeMessages.length > 1) return; // Already have state
+      if (hasLoadedHistoryRef.current) return;
+      if (storeMessages.length > 1) {
+        hasLoadedHistoryRef.current = true;
+        return;
+      }
+      
       setIsHydrating(true);
       try {
         const res = await fetch(getRailwayApiUrl(`/chat/history?session_id=${sessionIdRef.current}`));
@@ -449,6 +468,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
               ...formatted
             ]);
           }
+          hasLoadedHistoryRef.current = true;
         }
       } catch (e) { console.error("History load failed", e); }
       finally {
@@ -456,7 +476,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       }
     };
     if (isOpen) loadHistory();
-  }, [isOpen, storeMessages.length, setIsHydrating, setStoreMessages]);
+  }, [isOpen, setIsHydrating, setStoreMessages]);
 
   // Memory Load
   useEffect(() => {
@@ -696,6 +716,25 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
     }
   }, [isOpen]);
 
+  // Task: Click outside to close (UX improvement)
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!isOpen) return;
+      
+      const target = event.target as Node;
+      const isOutsideContainer = containerRef.current && !containerRef.current.contains(target);
+      const isOutsideToggle = toggleButtonRef.current && !toggleButtonRef.current.contains(target);
+      
+      if (isOutsideContainer && isOutsideToggle) {
+        setIsOpen(false);
+        logEvent("chatbot_closed_outside_click");
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isOpen, setIsOpen]);
+
   // Core Static Suggestion Actions (The "Button Pattern" within the interface)
   const getContextActions = useCallback(() => {
     if (conversationState.journeyActive) {
@@ -730,6 +769,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       <AnimatePresence>
         {isOpen && (
           <motion.div 
+            ref={containerRef}
             initial={{ scale: 0, opacity: 0, originX: 1, originY: 1 }}
             animate={{ 
               scale: 1, 
@@ -753,10 +793,11 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
           >
           
           {/* Header */}
-          <div className="relative flex items-center justify-between px-8 py-4 bg-gradient-to-r from-[#0f172a] to-[#1e293b] dark:from-[#0a0f1c] dark:to-[#0f172a] border-b border-white/10 dark:border-cyan-500/30 overflow-hidden shrink-0">
+          <div className="relative z-20 flex items-center justify-between px-8 py-4 bg-gradient-to-r from-[#0f172a] to-[#1e293b] dark:from-[#0a0f1c] dark:to-[#0f172a] border-b border-white/10 dark:border-cyan-500/30 overflow-hidden shrink-0">
             <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:16px_16px] opacity-20"></div>
             
             <div className="relative flex items-center gap-4">
+              {/* ... same bot icon stuff ... */}
               <div className="relative">
                 <div className="w-10 h-10 rounded-xl bg-cyan-950/50 flex items-center justify-center shrink-0 border border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.3)] rotate-3">
                   <Bot className="w-5 h-5 text-cyan-400 -rotate-3" />
@@ -785,11 +826,24 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button onClick={clearChatHistory} title="Reset Terminal" className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl transition-all border border-white/10 group">
+            <div className="relative z-30 flex items-center gap-2">
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  clearChatHistory();
+                }} 
+                title="Reset Terminal" 
+                className="p-2 bg-white/5 hover:bg-red-500/20 rounded-xl transition-all border border-white/10 group cursor-pointer pointer-events-auto"
+              >
                 <Trash2 className="w-4 h-4 text-white/40 group-hover:text-red-400" />
               </button>
-              <button onClick={() => setIsOpen(false)} className="relative p-2 bg-white/5 hover:bg-white/10 rounded-xl transition-all backdrop-blur-md border border-white/10 active:scale-95">
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsOpen(false);
+                }} 
+                className="relative p-2 bg-white/5 hover:bg-white/10 rounded-xl transition-all backdrop-blur-md border border-white/10 active:scale-95 cursor-pointer pointer-events-auto"
+              >
                 <X className="w-4 h-4 text-white/80" />
               </button>
             </div>
@@ -1000,6 +1054,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       {/* Floating Control Hub */}
       <div className="flex items-center gap-4 pointer-events-auto">
         <button 
+          ref={toggleButtonRef}
           onClick={() => setIsOpen(!isOpen)} 
           className={cn(
             "w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-500 shadow-[0_10px_40px_rgba(0,0,0,0.3)] border-2 border-white/10 active:scale-90",

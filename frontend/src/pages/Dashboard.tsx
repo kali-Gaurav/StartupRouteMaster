@@ -176,8 +176,8 @@ export default function Dashboard() {
   }, [isOnline]);
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] dark:bg-background text-foreground">
-      <header className="sticky top-0 z-10 border-b border-border bg-white/80 dark:bg-background/80 backdrop-blur-md">
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur-md">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className={`p-2.5 rounded-xl ${isOnline ? 'bg-primary/10' : 'bg-orange-500/10'}`}>

@@ -13,12 +13,15 @@ import {
   Clock,
   Star,
   Shield,
-  RefreshCw
+  RefreshCw,
+  Zap,
+  Activity
 } from "lucide-react";
 import { getRailwayApiUrl } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import { useTelegramWebApp } from "@/hooks/useTelegramWebApp";
 import { fetchWithAuth } from "@/lib/apiClient";
+import { cn } from "@/lib/utils";
 
 interface Recommendation {
   origin_code: string;
@@ -127,7 +130,6 @@ const MiniAppHome = () => {
       description: "Find routes between stations",
       icon: Search,
       path: "/mini-app/search",
-      color: "bg-blue-500",
       gradient: "from-blue-500 to-blue-600"
     },
     {
@@ -135,7 +137,6 @@ const MiniAppHome = () => {
       description: "Monitor active trips",
       icon: MapPin,
       path: "/mini-app/track",
-      color: "bg-green-500",
       gradient: "from-green-500 to-green-600"
     },
     {
@@ -143,7 +144,6 @@ const MiniAppHome = () => {
       description: "Get help in emergencies",
       icon: AlertTriangle,
       path: "/mini-app/sos",
-      color: "bg-red-500",
       gradient: "from-red-500 to-red-600"
     },
     {
@@ -151,105 +151,120 @@ const MiniAppHome = () => {
       description: "Your favorite journeys",
       icon: Heart,
       path: "/mini-app/saved",
-      color: "bg-purple-500",
       gradient: "from-purple-500 to-purple-600"
     }
   ];
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-md mx-auto space-y-6">
+    <div className="min-h-screen bg-background text-foreground selection:bg-primary selection:text-primary-foreground p-4">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(var(--primary),0.05),transparent_50%)] pointer-events-none" />
+      
+      <div className="max-w-md mx-auto space-y-6 relative z-10">
         {/* Header */}
-        <div className="text-center space-y-2">
-          <div className="flex items-center justify-center space-x-2">
-            <Train className="h-8 w-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">RouteMaster</h1>
+        <div className="text-center space-y-2 py-4">
+          <div className="flex items-center justify-center gap-3">
+            <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center shadow-lg shadow-primary/5">
+              <Train className="h-7 w-7 text-primary" />
+            </div>
+            <h1 className="text-3xl font-black tracking-tighter text-foreground uppercase">RouteMaster</h1>
           </div>
-          <p className="text-gray-600">Smart Railway Assistant</p>
+          <div className="flex items-center justify-center gap-2">
+             <span className="px-2 py-0.5 rounded bg-muted text-[10px] font-black uppercase tracking-widest text-muted-foreground border border-border">System v2.5</span>
+             <span className="flex items-center gap-1 text-[10px] font-black uppercase text-emerald-500">
+               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+               Live
+             </span>
+          </div>
           {user && (
-            <p className="text-sm text-gray-500">
-              Welcome back, {user.first_name || user.last_name || "Traveler"}!
+            <p className="text-sm font-bold text-muted-foreground mt-4">
+              Welcome back, <span className="text-foreground">{user.first_name || "Traveler"}</span>!
             </p>
           )}
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-3 gap-4">
-          <Card className="text-center">
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold text-blue-600">{stats.totalJourneys}</div>
-              <p className="text-xs text-gray-600">Journeys</p>
+        <div className="grid grid-cols-3 gap-3">
+          <Card className="text-center border-none glass overflow-hidden shadow-sm">
+            <CardContent className="p-4">
+              <div className="text-xl font-black text-primary">{stats.totalJourneys}</div>
+              <p className="text-[10px] font-black uppercase text-muted-foreground tracking-tighter">Journeys</p>
             </CardContent>
           </Card>
-          <Card className="text-center">
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold text-green-600">{stats.savedRoutes}</div>
-              <p className="text-xs text-gray-600">Saved Routes</p>
+          <Card className="text-center border-none glass overflow-hidden shadow-sm">
+            <CardContent className="p-4">
+              <div className="text-xl font-black text-emerald-500">{stats.savedRoutes}</div>
+              <p className="text-[10px] font-black uppercase text-muted-foreground tracking-tighter">Saved</p>
             </CardContent>
           </Card>
-          <Card className="text-center">
-            <CardContent className="pt-4">
-              <div className="text-2xl font-bold text-purple-600">{stats.badges}</div>
-              <p className="text-xs text-gray-600">Badges</p>
+          <Card className="text-center border-none glass overflow-hidden shadow-sm">
+            <CardContent className="p-4">
+              <div className="text-xl font-black text-amber-500">{stats.badges}</div>
+              <p className="text-[10px] font-black uppercase text-muted-foreground tracking-tighter">Badges</p>
             </CardContent>
           </Card>
         </div>
+
         {statsError && isAuthenticated && (
-          <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
-            <span>{statsError}</span>
-            <Button size="sm" variant="outline" onClick={() => loadUserStats()} className="shrink-0">
-              <RefreshCw className="h-4 w-4 mr-1" />
-              Retry
+          <div className="flex items-center justify-between gap-2 rounded-2xl bg-amber-500/10 border border-amber-500/20 px-4 py-3 text-xs font-bold text-amber-600">
+            <span className="flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> {statsError}</span>
+            <Button size="sm" variant="ghost" onClick={() => loadUserStats()} className="h-8 rounded-xl font-black uppercase text-[10px] bg-amber-500/10">
+              <RefreshCw className="h-3 w-3 mr-1" />
+              Sync
             </Button>
           </div>
         )}
 
         {/* Quick Actions */}
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">Quick Actions</h2>
+          <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground ml-1">Core Modules</h2>
           <div className="grid grid-cols-2 gap-4">
             {quickActions.map((action) => (
               <Card
                 key={action.path}
-                className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-105"
+                className="cursor-pointer border-2 border-transparent hover:border-primary/20 transition-all duration-300 hover:scale-[1.02] active:scale-95 glass group"
                 onClick={() => handleCardClick(action.path)}
               >
-                <CardContent className="p-4">
-                  <div className={`w-12 h-12 rounded-lg bg-gradient-to-r ${action.gradient} flex items-center justify-center mb-3`}>
+                <CardContent className="p-5">
+                  <div className={cn(
+                    "w-12 h-12 rounded-2xl flex items-center justify-center mb-4 shadow-xl transition-transform group-hover:rotate-3 bg-gradient-to-br",
+                    action.gradient
+                  )}>
                     <action.icon className="h-6 w-6 text-white" />
                   </div>
-                  <h3 className="font-semibold text-gray-900 mb-1">{action.title}</h3>
-                  <p className="text-sm text-gray-600">{action.description}</p>
+                  <h3 className="font-black text-foreground text-sm uppercase tracking-tight mb-1">{action.title}</h3>
+                  <p className="text-[10px] font-bold text-muted-foreground uppercase opacity-60 leading-tight">{action.description}</p>
                 </CardContent>
               </Card>
             ))}
           </div>
         </div>
 
-        {/* Personalized Recommendations (if user logged in) */}
+        {/* Personalized Recommendations */}
         {recommendations.length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-gray-900">Your Frequent Routes</h2>
+            <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground ml-1">Frequent Corridors</h2>
             <div className="space-y-2">
               {recommendations.map((rec, index) => (
                 <Card 
                   key={index}
-                  className="cursor-pointer hover:shadow-md transition-shadow"
+                  className="cursor-pointer border-none glass hover:bg-muted/30 transition-all active:scale-[0.98]"
                   onClick={() => handleQuickSearch(rec.origin_code, rec.destination_code)}
                 >
-                  <CardContent className="p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
-                        <Star className="h-5 w-5 text-purple-600" />
+                  <CardContent className="p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shadow-inner">
+                        <Star className="h-5 w-5 text-primary" />
                       </div>
                       <div>
-                        <p className="font-medium text-gray-900 text-sm">
-                          {rec.origin_name || rec.origin_code} → {rec.destination_name || rec.destination_code}
+                        <p className="font-black text-foreground text-sm uppercase tracking-tight">
+                          {rec.origin_code} → {rec.destination_code}
                         </p>
-                        <p className="text-xs text-gray-500">Tap to search</p>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase opacity-60">{rec.origin_name || "Origin"} corridor</p>
                       </div>
                     </div>
-                    <Clock className="h-4 w-4 text-gray-400" />
+                    <div className="bg-muted p-2 rounded-lg">
+                      <Clock className="h-4 w-4 text-muted-foreground" />
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -257,30 +272,30 @@ const MiniAppHome = () => {
           </div>
         )}
         
-        {/* Popular Routes (works without login - standalone!) */}
+        {/* Popular Routes */}
         {popularRoutes.length > 0 && recommendations.length === 0 && (
           <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-gray-900">Popular Routes</h2>
+            <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground ml-1">Trending Vectors</h2>
             <div className="space-y-2">
               {popularRoutes.map((route, index) => (
                 <Card 
                   key={index}
-                  className="cursor-pointer hover:shadow-md transition-shadow"
+                  className="cursor-pointer border-none glass hover:bg-muted/30 transition-all active:scale-[0.98]"
                   onClick={() => handleQuickSearch(route.origin_code, route.destination_code)}
                 >
-                  <CardContent className="p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
-                        <Train className="h-5 w-5 text-blue-600" />
+                  <CardContent className="p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center shadow-inner">
+                        <Activity className="h-5 w-5 text-blue-500" />
                       </div>
                       <div>
-                        <p className="font-medium text-gray-900 text-sm">
-                          {route.origin_name} → {route.destination_name}
+                        <p className="font-black text-foreground text-sm uppercase tracking-tight">
+                          {route.origin_code} → {route.destination_code}
                         </p>
-                        <p className="text-xs text-gray-500">Trending route</p>
+                        <p className="text-[10px] font-bold text-muted-foreground uppercase opacity-60">{route.origin_name} sector</p>
                       </div>
                     </div>
-                    <Clock className="h-4 w-4 text-gray-400" />
+                    <Zap className="h-4 w-4 text-amber-500 animate-pulse" />
                   </CardContent>
                 </Card>
               ))}
@@ -290,36 +305,45 @@ const MiniAppHome = () => {
 
         {/* Additional Features */}
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold text-gray-900">More Features</h2>
-          <div className="space-y-3">
+          <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground ml-1">Terminal Utility</h2>
+          <div className="grid grid-cols-1 gap-2">
             <Button
               variant="outline"
-              className="w-full justify-start"
+              className="w-full justify-between h-14 rounded-2xl border-2 hover:bg-muted font-black uppercase text-xs tracking-widest group px-6"
               onClick={() => handleCardClick("/mini-app/profile")}
             >
-              <BarChart3 className="h-4 w-4 mr-2" />
-              Travel Statistics
+              <div className="flex items-center gap-3">
+                <BarChart3 className="h-5 w-5 text-primary" />
+                <span>Neural Statistics</span>
+              </div>
+              <RefreshCw className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity" />
             </Button>
             <Button
               variant="outline"
-              className="w-full justify-start"
+              className="w-full justify-between h-14 rounded-2xl border-2 hover:bg-muted font-black uppercase text-xs tracking-widest group px-6"
               onClick={() => handleCardClick("/mini-app/profile")}
             >
-              <Settings className="h-4 w-4 mr-2" />
-              Profile &amp; Settings
+              <div className="flex items-center gap-3">
+                <Settings className="h-5 w-5 text-muted-foreground" />
+                <span>Interface Config</span>
+              </div>
+              <RefreshCw className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity" />
             </Button>
           </div>
         </div>
 
         {/* Safety Notice */}
-        <Card className="bg-amber-50 border-amber-200">
-          <CardContent className="pt-4">
-            <div className="flex items-start space-x-3">
-              <Shield className="h-5 w-5 text-amber-600 mt-0.5" />
+        <Card className="border-none glass bg-red-500/5 overflow-hidden">
+          <div className="h-1 w-full bg-red-500/20" />
+          <CardContent className="p-6">
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0">
+                <Shield className="h-6 w-6 text-red-500" />
+              </div>
               <div>
-                <p className="text-sm font-medium text-amber-800">Safety First</p>
-                <p className="text-xs text-amber-700 mt-1">
-                  For emergencies, call 112. This app provides location sharing for faster assistance.
+                <p className="text-xs font-black uppercase tracking-widest text-red-600 mb-1">Safety Protocol Active</p>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase leading-relaxed opacity-80">
+                  Global SOS node 112 integrated. Emergency telemetry sharing is synchronized with railway OPS center.
                 </p>
               </div>
             </div>

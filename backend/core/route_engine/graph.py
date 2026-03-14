@@ -55,8 +55,22 @@ class MemMapManager:
 class StaticGraphSnapshot:
     """Pre-built static graph snapshot (Schedule-based)"""
     date: datetime
+    # departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
+    # arrivals_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
+    
+    # [Task 5.1 Optimization] Vectorized connection storage
+    # _departures_data: np.ndarray shape (N, 2) -> [timestamp_secs, trip_id]
+    # _departures_index: np.ndarray shape (NUM_STOPS, 2) -> [start_idx, count]
+    _departures_data: Optional[np.ndarray] = None
+    _departures_index: Optional[np.ndarray] = None
+    _arrivals_data: Optional[np.ndarray] = None
+    _arrivals_index: Optional[np.ndarray] = None
+    _stop_id_map: Dict[int, int] = field(default_factory=dict) # stop_id -> index in _index arrays
+
+    # Legacy fallback for backward compatibility during transition
     departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
     arrivals_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
+
     trip_segments: Dict[int, List[RouteSegment]] = field(default_factory=lambda: defaultdict(list))
     transfer_graph: Dict[int, List[TransferConnection]] = field(default_factory=lambda: defaultdict(list))
     stop_cache: Dict[int, Stop] = field(default_factory=dict)
@@ -88,7 +102,7 @@ class StaticGraphSnapshot:
     stop_id_to_idx: Dict[int, int] = field(default_factory=dict)
     idx_to_stop_id: List[int] = field(default_factory=list)
 
-    version: str = "v3.0" # Bumped for Task 16
+    version: str = "v3.1" # Bumped for Task 5.1 Optimization
 
     created_at: datetime = field(default_factory=datetime.utcnow)
     transfer_metrics: Dict[str, Any] = field(default_factory=dict)
@@ -269,6 +283,46 @@ class TimeDependentGraph:
             limit_time = after_time + timedelta(minutes=lookahead_minutes)
         except OverflowError:
             limit_time = datetime(2100, 1, 1)
+
+        # 0. [Task 5.1 Optimization] Vectorized Connection Lookup
+        if self.snapshot and self.snapshot._departures_data is not None:
+            stop_idx = self.snapshot._stop_id_map.get(stop_id)
+            if stop_idx is not None:
+                start_offset, count = self.snapshot._departures_index[stop_idx]
+                if count > 0:
+                    # columns: [timestamp, trip_id]
+                    data = self.snapshot._departures_data[start_offset : start_offset + count]
+                    
+                    after_ts = int(after_time.timestamp())
+                    limit_ts = int(limit_time.timestamp())
+                    
+                    # Binary search on timestamp column
+                    idx = np.searchsorted(data[:, 0], after_ts)
+                    candidates = data[idx:]
+                    
+                    adjusted = []
+                    for ts, trip_id in candidates:
+                        if ts > limit_ts: break
+                        
+                        tid = int(trip_id)
+                        if self.overlay.is_cancelled(tid): continue
+                        
+                        # Task 8: Bitmask check
+                        segments = self.trip_segments.get(tid)
+                        if segments and not (segments[0].service_mask & weekday_bit):
+                            continue
+
+                        delay = self.overlay.get_trip_delay(tid)
+                        effective_ts = ts + (delay * 60)
+                        
+                        if after_ts <= effective_ts <= limit_ts:
+                            # Convert back to datetime for legacy compatibility
+                            # In high-performance mode, we should keep it as timestamp
+                            adjusted.append((datetime.fromtimestamp(effective_ts), tid))
+                    
+                    if adjusted:
+                        return sorted(adjusted, key=lambda x: x[0])
+                    return []
 
         # 1. Use station_time_index if available (from snapshot)
         if self.snapshot and self.snapshot.station_time_index:

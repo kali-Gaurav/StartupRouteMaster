@@ -201,17 +201,17 @@ export default function SOSPage() {
 
   if (tripEnded) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-8">
-        <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6">
-          <CheckCircle className="w-12 h-12 text-green-600" />
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-8">
+        <div className="w-24 h-24 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6">
+          <CheckCircle className="w-12 h-12 text-emerald-500" />
         </div>
-        <h1 className="text-3xl font-black uppercase tracking-tighter text-slate-900">Session Secure</h1>
-        <p className="mt-2 text-center text-slate-500 max-w-sm">
+        <h1 className="text-3xl font-black uppercase tracking-tighter text-foreground">Session Secure</h1>
+        <p className="mt-2 text-center text-muted-foreground max-w-sm font-medium">
           Location sharing has been decommissioned. You are marked as safe.
         </p>
         <button 
           onClick={() => window.location.href = "/"}
-          className="mt-10 px-10 py-4 bg-[#0f172a] text-white rounded-2xl font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all"
+          className="mt-10 px-10 py-4 bg-primary text-primary-foreground rounded-2xl font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-xl shadow-primary/20"
           aria-label="Return to Dashboard"
         >
           Return to Hub
@@ -221,34 +221,34 @@ export default function SOSPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-white selection:bg-red-500/30">
-      <div className="container mx-auto max-w-md min-h-screen flex flex-col p-6">
+    <div className="min-h-screen bg-background text-foreground selection:bg-red-500/30">
+      <div className="container mx-auto max-w-md min-h-screen flex flex-col p-6 pt-20">
         {/* Header */}
         <header className="flex items-center justify-between py-4 mb-8">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center">
-              <ShieldAlert className="w-5 h-5" />
+            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shadow-lg shadow-red-600/20">
+              <ShieldAlert className="w-5 h-5 text-white" />
             </div>
-            <span className="font-black uppercase tracking-widest text-sm">SafeGuard Hub</span>
+            <span className="font-black uppercase tracking-widest text-sm text-foreground">SafeGuard Hub</span>
           </div>
           <div className="flex items-center gap-2">
             <button 
               onClick={isSubscribed ? unsubscribeUser : subscribeUser}
-              className={cn("p-2 rounded-full transition-colors", isSubscribed ? "text-emerald-500 bg-emerald-500/10" : "text-slate-400 hover:bg-slate-800")}
+              className={cn("p-2 rounded-full transition-colors", isSubscribed ? "text-emerald-500 bg-emerald-500/10" : "text-muted-foreground hover:bg-muted")}
               aria-label={isSubscribed ? "Disable Safety Notifications" : "Enable Safety Notifications"}
             >
               {isSubscribed ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
             </button>
             <button 
               onClick={toggleVoice} 
-              className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400"
+              className="p-2 hover:bg-muted rounded-full transition-colors text-muted-foreground"
               aria-label={voiceEnabled ? "Mute Voice Feedback" : "Enable Voice Feedback"}
             >
               {voiceEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
             </button>
             <button 
               onClick={() => window.history.back()} 
-              className="p-2 hover:bg-slate-800 rounded-full transition-colors"
+              className="p-2 hover:bg-muted rounded-full transition-colors"
               aria-label="Go Back"
             >
               <X className="w-6 h-6" />
@@ -258,12 +258,12 @@ export default function SOSPage() {
 
         {/* Dynamic Tab Switcher */}
         {!sent && !isShieldActive && !isGuardianActive && (
-          <div className="bg-slate-900/50 p-1.5 rounded-2xl flex gap-1 border border-slate-800 mb-10">
+          <div className="bg-muted/50 p-1.5 rounded-2xl flex gap-1 border border-border mb-10">
             <button 
               onClick={() => setActiveTab('emergency')}
               className={cn(
                 "flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all",
-                activeTab === 'emergency' ? "bg-red-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                activeTab === 'emergency' ? "bg-red-600 text-white shadow-lg" : "text-muted-foreground hover:text-foreground"
               )}
               aria-pressed={activeTab === 'emergency'}
             >
@@ -273,7 +273,7 @@ export default function SOSPage() {
               onClick={() => setActiveTab('shield')}
               className={cn(
                 "flex-1 py-3 rounded-xl text-xs font-black uppercase tracking-widest transition-all",
-                activeTab === 'shield' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                activeTab === 'shield' ? "bg-primary text-primary-foreground shadow-lg" : "text-muted-foreground hover:text-foreground"
               )}
               aria-pressed={activeTab === 'shield'}
             >
@@ -288,30 +288,30 @@ export default function SOSPage() {
             <div className="relative mb-12">
               <div className={cn(
                 "w-48 h-48 rounded-full flex items-center justify-center border-4 relative z-10",
-                sent ? "border-red-500/20" : isGuardianActive ? "border-emerald-500/20" : "border-blue-500/20"
+                sent ? "border-red-500/20" : isGuardianActive ? "border-emerald-500/20" : "border-primary/20"
               )}>
                 <div className={cn(
                   "w-36 h-36 rounded-full flex items-center justify-center animate-pulse",
                   sent ? "bg-red-600 shadow-[0_0_60px_rgba(220,38,38,0.5)]" : 
                   isGuardianActive ? "bg-emerald-600 shadow-[0_0_60px_rgba(16,185,129,0.5)]" : 
-                  "bg-blue-600 shadow-[0_0_60px_rgba(37,99,235,0.5)]"
+                  "bg-primary shadow-[0_0_60px_rgba(var(--primary),0.5)]"
                 )}>
-                  {sent ? <ShieldAlert className="w-16 h-16" /> : 
-                   isGuardianActive ? <Heart className="w-16 h-16" /> : 
-                   <ShieldCheck className="w-16 h-16" />}
+                  {sent ? <ShieldAlert className="w-16 h-16 text-white" /> : 
+                   isGuardianActive ? <Heart className="w-16 h-16 text-white" /> : 
+                   <ShieldCheck className="w-16 h-16 text-white" />}
                 </div>
               </div>
               <div className={cn(
                 "absolute inset-0 rounded-full animate-ping opacity-20",
-                sent ? "bg-red-500" : isGuardianActive ? "bg-emerald-500" : "bg-blue-500"
+                sent ? "bg-red-500" : isGuardianActive ? "bg-emerald-500" : "bg-primary"
               )} />
             </div>
 
             <div className="text-center space-y-4">
-              <h2 className="text-3xl font-black uppercase tracking-tighter">
+              <h2 className="text-3xl font-black uppercase tracking-tighter text-foreground">
                 {sent ? "Active Emergency" : isGuardianActive ? "Guardian Mode" : "Shield Active"}
               </h2>
-              <p className="text-slate-400 text-sm font-medium leading-relaxed max-w-xs mx-auto">
+              <p className="text-muted-foreground text-sm font-medium leading-relaxed max-w-xs mx-auto">
                 {sent 
                   ? "Distress signal broadcasted. Railway Police and medical responders have your coordinates."
                   : isGuardianActive ? "AI risk detection active. Family is receiving live updates and alerts." : 
@@ -320,19 +320,19 @@ export default function SOSPage() {
             </div>
 
             <div className="mt-12 w-full space-y-4">
-              <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 flex items-center justify-between">
+              <div className="bg-muted/50 border border-border rounded-3xl p-5 flex items-center justify-between shadow-inner">
                 <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center">
-                    <Navigation className="w-5 h-5 text-blue-400" />
+                  <div className="w-10 h-10 bg-background border border-border rounded-xl flex items-center justify-center shadow-sm">
+                    <Navigation className="w-5 h-5 text-primary" />
                   </div>
                   <div>
-                    <p className="text-[10px] font-black uppercase text-slate-500">Current Fix</p>
-                    <p className="text-xs font-mono tabular-nums">{location?.lat.toFixed(5)}, {location?.lng.toFixed(5)}</p>
+                    <p className="text-[10px] font-black uppercase text-muted-foreground">Current Fix</p>
+                    <p className="text-xs font-mono tabular-nums text-foreground">{location?.lat.toFixed(5)}, {location?.lng.toFixed(5)}</p>
                   </div>
                 </div>
                 <div className="flex flex-col items-end">
-                  <p className="text-[10px] font-black uppercase text-green-500 flex items-center gap-1">
-                    <span className="w-1 h-1 rounded-full bg-green-500 animate-pulse" />
+                  <p className="text-[10px] font-black uppercase text-emerald-500 flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
                     LIVE_FEED
                   </p>
                 </div>
@@ -340,14 +340,14 @@ export default function SOSPage() {
 
               <button
                 onClick={handleEndTrip}
-                className="w-full py-5 bg-white text-[#0f172a] rounded-2xl font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-xl"
+                className="w-full py-5 bg-foreground text-background rounded-2xl font-black uppercase tracking-widest hover:opacity-90 active:scale-95 transition-all shadow-xl"
                 aria-label="Deactivate Tracking - I am Safe"
               >
                 I am Safe - End Session
               </button>
               
               {(sent || isGuardianActive) && (
-                <button className="w-full py-4 border-2 border-red-600 text-red-500 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-red-600/10 transition-colors" aria-label="Immediately Call Rail Police">
+                <button className="w-full py-4 border-2 border-red-600 text-red-600 rounded-2xl font-black uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-red-600/10 transition-colors" aria-label="Immediately Call Rail Police">
                   <PhoneCall className="w-5 h-5" />
                   Call Rail Police
                 </button>
@@ -360,11 +360,11 @@ export default function SOSPage() {
             {activeTab === 'emergency' ? (
               <div className="space-y-10">
                 <div className="space-y-4">
-                  <h2 className="text-5xl font-black uppercase tracking-tighter leading-none italic">
+                  <h2 className="text-5xl font-black uppercase tracking-tighter leading-none italic text-foreground">
                     Critical<br />
                     Response
                   </h2>
-                  <p className="text-slate-400 font-medium">Use only in case of immediate danger, theft, or medical emergency.</p>
+                  <p className="text-muted-foreground font-bold">Use only in case of immediate danger, theft, or medical emergency.</p>
                 </div>
 
                 <div className="flex flex-col items-center">
@@ -375,53 +375,53 @@ export default function SOSPage() {
                     aria-label="Activate SOS Emergency Distress Signal"
                   >
                     <div className="absolute inset-0 bg-red-600 rounded-full blur-3xl opacity-20 group-hover:opacity-40 transition-opacity" />
-                    <div className="w-64 h-64 rounded-full bg-red-600 flex flex-col items-center justify-center shadow-[0_0_100px_rgba(220,38,38,0.4)] relative z-10 active:scale-95 transition-transform hover:scale-105 border-8 border-white/10">
-                      {sending ? <Loader2 className="w-16 h-16 animate-spin" /> : (
-                        <>
+                    <div className="w-64 h-64 rounded-full bg-red-600 flex flex-col items-center justify-center shadow-[0_0_100px_rgba(220,38,38,0.4)] relative z-10 active:scale-95 transition-transform hover:scale-105 border-8 border-background">
+                      {sending ? <Loader2 className="w-16 h-16 animate-spin text-white" /> : (
+                        <div className="flex flex-col items-center text-white">
                           <Zap className="w-12 h-12 mb-2 fill-current" />
                           <span className="text-4xl font-black uppercase tracking-widest italic">SOS</span>
-                        </>
+                        </div>
                       )}
                     </div>
                   </button>
-                  <p className="mt-8 text-slate-500 text-[10px] font-black uppercase tracking-[0.2em]">Press to signal</p>
+                  <p className="mt-8 text-muted-foreground text-[10px] font-black uppercase tracking-[0.2em]">Press to signal</p>
                 </div>
               </div>
             ) : (
               <div className="space-y-10">
                 <div className="space-y-4">
-                  <h2 className="text-5xl font-black uppercase tracking-tighter leading-none italic text-blue-500">
+                  <h2 className="text-5xl font-black uppercase tracking-tighter leading-none italic text-primary">
                     Proactive<br />
                     Shield
                   </h2>
-                  <p className="text-slate-400 font-medium">Share your journey live with our ops center. Perfect for late-night travel.</p>
+                  <p className="text-muted-foreground font-bold">Share your journey live with our ops center. Perfect for late-night travel.</p>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4">
-                  <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6">
+                  <div className="bg-muted/30 border border-border rounded-3xl p-6 space-y-6 glass">
                     <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-blue-600/20 rounded-2xl flex items-center justify-center">
-                        <ShieldCheck className="w-6 h-6 text-blue-500" />
+                      <div className="w-12 h-12 bg-primary/20 rounded-2xl flex items-center justify-center">
+                        <ShieldCheck className="w-6 h-6 text-primary" />
                       </div>
                       <div>
-                        <h4 className="font-black uppercase text-xs tracking-widest">Active Monitoring</h4>
-                        <p className="text-slate-500 text-[10px] font-medium uppercase">Ops Center Linkage</p>
+                        <h4 className="font-black uppercase text-xs tracking-widest text-foreground">Active Monitoring</h4>
+                        <p className="text-muted-foreground text-[10px] font-bold uppercase">Ops Center Linkage</p>
                       </div>
                     </div>
                     
                     <ul className="space-y-3">
-                      <li className="flex items-center gap-3 text-xs font-bold text-slate-300 uppercase tracking-tight">
-                        <CheckCircle className="w-4 h-4 text-green-500" /> 15s Location Polling
+                      <li className="flex items-center gap-3 text-xs font-black text-foreground uppercase tracking-tight">
+                        <CheckCircle className="w-4 h-4 text-emerald-500" /> 15s Location Polling
                       </li>
-                      <li className="flex items-center gap-3 text-xs font-bold text-slate-300 uppercase tracking-tight">
-                        <CheckCircle className="w-4 h-4 text-green-500" /> Automated Route Deviant Alert
+                      <li className="flex items-center gap-3 text-xs font-black text-foreground uppercase tracking-tight">
+                        <CheckCircle className="w-4 h-4 text-emerald-500" /> Automated Route Deviant Alert
                       </li>
                     </ul>
 
                     <button
                       onClick={() => startTracking('standard')}
                       disabled={sending || !location}
-                      className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest hover:bg-blue-700 transition-all active:scale-95 shadow-lg shadow-blue-600/20"
+                      className="w-full py-4 bg-primary text-primary-foreground rounded-2xl font-black uppercase tracking-widest hover:opacity-90 transition-all active:scale-95 shadow-lg shadow-primary/20"
                       aria-label="Activate Proactive Safety Shield"
                     >
                       {sending ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : "Activate Shield"}
@@ -429,7 +429,7 @@ export default function SOSPage() {
                   </div>
 
                   {/* Journey Guardian Mode */}
-                  <div className="bg-emerald-950/30 border-2 border-emerald-500/30 rounded-3xl p-6 space-y-5 relative overflow-hidden group transition-all hover:bg-emerald-900/40">
+                  <div className="bg-emerald-500/5 border-2 border-emerald-500/20 rounded-3xl p-6 space-y-5 relative overflow-hidden group transition-all hover:bg-emerald-500/10">
                     <div className="absolute -top-6 -right-6 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
                       <Heart className="w-24 h-24 text-emerald-500" />
                     </div>
@@ -440,15 +440,15 @@ export default function SOSPage() {
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                           <h4 className="font-black uppercase text-xs tracking-widest text-emerald-500">Journey Guardian</h4>
+                           <h4 className="font-black uppercase text-xs tracking-widest text-emerald-600 dark:text-emerald-400">Journey Guardian</h4>
                            <span className="px-1.5 py-0.5 rounded bg-emerald-500 text-[8px] font-black text-white uppercase tracking-tighter">Elite</span>
                         </div>
-                        <p className="text-slate-500 text-[10px] font-medium uppercase">Travel Alone - Never Alone</p>
+                        <p className="text-muted-foreground text-[10px] font-bold uppercase">Travel Alone - Never Alone</p>
                       </div>
                     </div>
                     
                     <div className="space-y-4 relative z-10">
-                      <p className="text-[11px] text-slate-300 font-medium leading-relaxed">
+                      <p className="text-[11px] text-muted-foreground font-bold leading-relaxed">
                         AI risk detection + automated family alerts. Our most advanced protection for solo travelers.
                       </p>
                     </div>
@@ -469,13 +469,13 @@ export default function SOSPage() {
         )}
 
         {/* Footer Info */}
-        {!sent && !isShieldActive && (
-          <footer className="mt-auto py-6 border-t border-slate-800/50">
-            <div className="flex items-center gap-4 text-slate-500">
+        {!sent && !isShieldActive && !isGuardianActive && (
+          <footer className="mt-auto py-6 border-t border-border/50">
+            <div className="flex items-center gap-4 text-muted-foreground">
               <MapPin className="w-4 h-4" />
               <div className="flex-1">
                 <p className="text-[10px] font-black uppercase tracking-widest mb-0.5">Verified Station</p>
-                <p className="text-xs font-mono">{locationError || (location ? `FIX_LAT:${location.lat.toFixed(4)} FIX_LNG:${location.lng.toFixed(4)}` : "ACQUIRING_GPS...")}</p>
+                <p className="text-xs font-mono font-bold tracking-tighter">{locationError || (location ? `FIX_LAT:${location.lat.toFixed(4)} FIX_LNG:${location.lng.toFixed(4)}` : "ACQUIRING_GPS...")}</p>
               </div>
             </div>
           </footer>

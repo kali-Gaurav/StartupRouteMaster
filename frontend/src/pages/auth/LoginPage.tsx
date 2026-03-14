@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Loader2, Mail, Lock, AlertCircle, Github } from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 const loginSchema = z.object({
   email: z.string().email({ message: "Invalid email address" }),
@@ -69,25 +70,33 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12 sm:px-6 lg:px-8">
-      <Card className="w-full max-w-md shadow-xl border-t-4 border-t-primary">
-        <CardHeader className="space-y-1">
-          <CardTitle className="text-3xl font-extrabold tracking-tight text-center">RouteMaster</CardTitle>
-          <CardDescription className="text-center text-base">
-            Secure access to your travel dashboard
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12 sm:px-6 lg:px-8 selection:bg-primary selection:text-primary-foreground">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(var(--primary),0.05),transparent_50%)] pointer-events-none" />
+      
+      <Card className="w-full max-w-md shadow-2xl border-t-4 border-t-primary glass relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-3xl -mr-16 -mt-16" />
+        
+        <CardHeader className="space-y-2 pb-8">
+          <div className="mx-auto w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center mb-2">
+            <Lock className="w-6 h-6 text-primary" />
+          </div>
+          <CardTitle className="text-4xl font-black tracking-tighter text-center text-foreground">RouteMaster</CardTitle>
+          <CardDescription className="text-center text-base font-medium text-muted-foreground">
+            Neural Authentication Gateway
           </CardDescription>
         </CardHeader>
+        
         <CardContent>
           {error && (
-            <Alert variant="destructive" className="mb-6">
+            <Alert variant="destructive" className="mb-6 bg-destructive/10 border-destructive/20 text-destructive animate-in fade-in slide-in-from-top-1">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Error</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
+              <AlertTitle className="font-black uppercase tracking-widest text-[10px]">Security Alert</AlertTitle>
+              <AlertDescription className="font-bold">{error}</AlertDescription>
             </Alert>
           )}
 
           <div className="grid grid-cols-2 gap-4 mb-8">
-            <Button variant="outline" className="w-full py-6 font-semibold" onClick={() => handleSocialLogin('google')} disabled={loading}>
+            <Button variant="outline" className="w-full py-6 font-bold rounded-2xl border-2 hover:bg-primary/5 transition-all" onClick={() => handleSocialLogin('google')} disabled={loading}>
                <svg className="mr-2 h-5 w-5" viewBox="0 0 24 24">
                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
@@ -96,7 +105,7 @@ const LoginPage = () => {
                </svg>
                Google
             </Button>
-            <Button variant="outline" className="w-full py-6 font-semibold" onClick={() => handleSocialLogin('github')} disabled={loading}>
+            <Button variant="outline" className="w-full py-6 font-bold rounded-2xl border-2 hover:bg-primary/5 transition-all" onClick={() => handleSocialLogin('github')} disabled={loading}>
                <Github className="mr-2 h-5 w-5" />
                GitHub
             </Button>
@@ -104,59 +113,65 @@ const LoginPage = () => {
 
           <div className="relative mb-8">
             <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t" />
+              <span className="w-full border-t border-border" />
             </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white px-2 text-muted-foreground font-medium">Or continue with email</span>
+            <div className="relative flex justify-center text-[10px] uppercase font-black tracking-widest">
+              <span className="bg-card px-4 text-muted-foreground">Neural Uplink</span>
             </div>
           </div>
 
-          <form onSubmit={handleSubmit(onEmailSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmit(onEmailSubmit)} className="space-y-6">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+              <Label htmlFor="email" className="font-black uppercase tracking-widest text-[10px] text-muted-foreground ml-1">Terminal ID (Email)</Label>
+              <div className="relative group">
+                <Mail className="absolute left-4 top-3.5 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                 <Input
                   id="email"
                   type="email"
-                  placeholder="m@example.com"
-                  className="pl-9"
+                  placeholder="name@nexus.com"
+                  className="pl-12 py-7 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all font-bold"
                   {...register("email")}
                   disabled={loading}
                 />
               </div>
-              {errors.email && <p className="text-xs text-destructive mt-1">{errors.email.message}</p>}
+              {errors.email && <p className="text-[10px] font-black uppercase text-destructive mt-1 ml-1">{errors.email.message}</p>}
             </div>
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">Password</Label>
-                <Link to="/forgot-password" size="sm" className="text-xs font-medium text-primary hover:underline">
-                  Forgot password?
+              <div className="flex items-center justify-between ml-1">
+                <Label htmlFor="password" className="font-black uppercase tracking-widest text-[10px] text-muted-foreground">Access Code</Label>
+                <Link to="/forgot-password" size="sm" className="text-[10px] font-black uppercase tracking-widest text-primary hover:text-primary/80 transition-colors">
+                  Reset Protocol
                 </Link>
               </div>
-              <div className="relative">
-                <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+              <div className="relative group">
+                <Lock className="absolute left-4 top-3.5 h-5 w-5 text-muted-foreground group-focus-within:text-primary transition-colors" />
                 <Input
                   id="password"
                   type="password"
-                  className="pl-9"
+                  placeholder="••••••••"
+                  className="pl-12 py-7 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all font-bold"
                   {...register("password")}
                   disabled={loading}
                 />
               </div>
-              {errors.password && <p className="text-xs text-destructive mt-1">{errors.password.message}</p>}
+              {errors.password && <p className="text-[10px] font-black uppercase text-destructive mt-1 ml-1">{errors.password.message}</p>}
             </div>
-            <Button type="submit" className="w-full py-6 text-lg font-semibold" disabled={loading}>
-              {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-              {loading ? "Signing in..." : "Sign In"}
+            <Button type="submit" className="w-full py-8 text-lg font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary/20 hover:scale-[1.01] active:scale-[0.99] transition-all" disabled={loading}>
+              {loading ? (
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <span>Authorizing...</span>
+                </div>
+              ) : "Initialize Session"}
             </Button>
           </form>
         </CardContent>
-        <CardFooter className="flex flex-col gap-4 border-t p-6 bg-slate-50/50">
-          <p className="text-sm text-center text-muted-foreground w-full">
-            New to RouteMaster?{" "}
-            <Link to="/signup" className="font-bold text-primary hover:underline">
-              Create an account
+        
+        <CardFooter className="flex flex-col gap-4 border-t border-border/50 p-8 bg-muted/20">
+          <p className="text-sm text-center text-muted-foreground font-bold">
+            Unauthorized?{" "}
+            <Link to="/signup" className="text-primary hover:underline font-black uppercase tracking-tighter">
+              Register New Entity
             </Link>
           </p>
         </CardFooter>

@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Loader2, ShieldCheck, AlertCircle, ArrowLeft, Mail } from 'lucide-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 const VerifyOTPPage = () => {
   const [searchParams] = useSearchParams();
@@ -76,30 +77,34 @@ const VerifyOTPPage = () => {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-12">
-      <Card className="w-full max-w-md shadow-xl border-t-4 border-t-primary">
-        <CardHeader className="space-y-1">
-          <div className="flex justify-center mb-2">
-            <div className="p-3 bg-primary/10 rounded-full">
-              <Mail className="h-8 w-8 text-primary" />
-            </div>
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12 selection:bg-primary selection:text-primary-foreground">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(var(--primary),0.05),transparent_50%)] pointer-events-none" />
+      
+      <Card className="w-full max-w-md shadow-2xl border-t-4 border-t-primary glass relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-3xl -mr-16 -mt-16" />
+        
+        <CardHeader className="space-y-2 pb-8 text-center">
+          <div className="mx-auto w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+            <ShieldCheck className="h-10 w-10 text-primary animate-pulse" />
           </div>
-          <CardTitle className="text-2xl font-bold text-center">Verify Your Email</CardTitle>
-          <CardDescription className="text-center">
-            Enter the 6-digit code sent to <span className="font-semibold text-foreground">{email}</span>
+          <CardTitle className="text-3xl font-black tracking-tighter">Verify Identity</CardTitle>
+          <CardDescription className="text-base font-medium">
+            Enter the 6-digit pulse code sent to <br />
+            <span className="font-black text-foreground underline decoration-primary/30 decoration-2 underline-offset-4">{email}</span>
           </CardDescription>
         </CardHeader>
+        
         <CardContent>
           {error && (
-            <Alert variant="destructive" className="mb-6">
+            <Alert variant="destructive" className="mb-6 bg-destructive/10 border-destructive/20 text-destructive animate-in fade-in slide-in-from-top-1">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Verification Failed</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
+              <AlertTitle className="font-black uppercase tracking-widest text-[10px]">Verification Failure</AlertTitle>
+              <AlertDescription className="font-bold">{error}</AlertDescription>
             </Alert>
           )}
 
-          <form onSubmit={handleVerify} className="space-y-6">
-            <div className="space-y-2">
+          <form onSubmit={handleVerify} className="space-y-8">
+            <div className="space-y-4">
               <Label htmlFor="otp" className="sr-only">One-Time Password</Label>
               <Input
                 id="otp"
@@ -107,35 +112,42 @@ const VerifyOTPPage = () => {
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 placeholder="000000"
-                className="text-center text-3xl tracking-[1rem] font-bold py-8"
+                className="text-center text-4xl tracking-[1rem] font-black py-10 rounded-2xl border-2 bg-muted/30 focus:bg-background transition-all shadow-inner"
                 maxLength={6}
                 value={otp}
                 onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 disabled={loading}
                 autoFocus
               />
+              <p className="text-[10px] text-center font-black uppercase text-muted-foreground tracking-[0.2em]">Enter Secure Token</p>
             </div>
-            <Button type="submit" className="w-full py-6 text-lg font-semibold" disabled={loading || otp.length < 6}>
-              {loading && <Loader2 className="mr-2 h-5 w-5 animate-spin" />}
-              {loading ? "Verifying..." : "Verify Code"}
+            
+            <Button type="submit" className="w-full py-8 text-lg font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary/20 hover:scale-[1.01] transition-all" disabled={loading || otp.length < 6}>
+              {loading ? (
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <span>Synchronizing...</span>
+                </div>
+              ) : "Authenticate Access"}
             </Button>
           </form>
         </CardContent>
-        <CardFooter className="flex flex-col gap-4 border-t p-6 bg-slate-50/50">
-          <div className="flex items-center justify-between w-full text-sm">
+        
+        <CardFooter className="flex flex-col gap-4 border-t border-border/50 p-8 bg-muted/20">
+          <div className="flex items-center justify-between w-full">
             <button 
               onClick={() => navigate('/login')}
-              className="flex items-center text-muted-foreground hover:text-primary transition-colors"
+              className="flex items-center text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-primary transition-colors"
             >
-              <ArrowLeft className="mr-1 h-4 w-4" />
-              Back to Login
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Abort
             </button>
             <button 
               onClick={handleResend}
               disabled={loading}
-              className="text-primary font-semibold hover:underline disabled:opacity-50"
+              className="text-[10px] font-black uppercase tracking-widest text-primary hover:underline disabled:opacity-50"
             >
-              Resend Code
+              Request New Token
             </button>
           </div>
         </CardFooter>

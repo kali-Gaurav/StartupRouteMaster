@@ -158,6 +158,7 @@ const AppContent = () => {
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />
             <Route path="/safety" element={<Safety />} />
+            <Route path="/track" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/ops/sos" element={<SOSDashboard />} />
             
