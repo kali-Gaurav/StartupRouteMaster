@@ -108,8 +108,16 @@ export interface BackendJourney {
 }
 
 export interface BackendRoutesResponse {
+  status?: string;
   source: string;
   destination: string;
+  routes?: {
+    direct?: BackendJourney[];
+    one_transfer?: BackendJourney[];
+    two_transfer?: BackendJourney[];
+    three_plus_transfer?: BackendJourney[];
+    three_transfer?: BackendJourney[];
+  };
   data?: {
     journeys: BackendJourney[];
     grouped_journeys: {
@@ -129,6 +137,9 @@ export interface BackendRoutesResponse {
   journey_message?: string;
   booking_tips?: string[];
   message?: string;
+  reasons?: string[];
+  suggestions?: string[];
+  session_id?: string;
 }
 
 export async function searchStationsApi(q: string, signal?: AbortSignal): Promise<Station[]> {
@@ -156,6 +167,7 @@ export interface SearchRoutesParams {
   dateWindow?: number;
   sortBy?: 'duration' | 'cost' | 'score';
   correlationId?: string;
+  routeSource?: string;
 }
 
 function defaultDate(): string {

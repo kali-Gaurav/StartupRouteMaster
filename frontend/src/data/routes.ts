@@ -37,6 +37,8 @@ export interface Route {
   liveFareTotal: number;
   seatProbability: number;
   safetyScore: number;
+  reliabilityBadge?: 'green' | 'yellow' | 'red';
+  isLocked?: boolean;
 }
 
 export const categoryIcons: Record<string, string> = {
