@@ -42,8 +42,8 @@ class RouteScorer:
         MAX_COMFORT_TRANSFER = 360 # 6 hours
         
         # 1. Base Components (Time & Cost)
-        time_score = route.total_duration * w.time
-        cost_score = route.total_cost * w.cost
+        time_score = (route.total_duration or 0) * w.time
+        cost_score = (route.total_cost or 0.0) * w.cost
         
         # 2. Advanced Transfer Penalty
         base_transfer_p = (len(route.transfers) ** 1.5) * w.transfer

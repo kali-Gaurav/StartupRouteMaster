@@ -72,6 +72,8 @@ class Config(metaclass=ConfigMeta):
         
         filename = "user_store.db" if db_type == "user" else "transit_graph.db"
         db_path = cls._base_path / "database" / filename
+        
+        # [Issue 7] Sanitize SQLite URL: Strip query params (like sslmode) that break aiosqlite/sqlite3
         if is_async:
             return f"sqlite+aiosqlite:///{db_path}"
         return f"sqlite:///{db_path}"

@@ -408,7 +408,7 @@ class UnifiedRoutingOrchestrator:
     async def _step_vectorized_fares(self, routes: List[Route], constraints: RouteConstraints, graph, db):
         from core.pricing.fare_calculator import calculate_fares_batch
         import numpy as np
-        dists = np.array([r.total_distance for r in routes], dtype=np.float32)
+        dists = np.array([float(r.total_distance or 0.0) for r in routes], dtype=np.float32)
         batch_fares = calculate_fares_batch(dists, constraints.preferred_class or "SL", is_tatkal=constraints.quota == "TQ", db=db)
         for i, r in enumerate(routes):
             r.total_cost = float(batch_fares[i])
@@ -446,8 +446,8 @@ class UnifiedRoutingOrchestrator:
 
     def _step_journey_story(self, routes: List[Route], constraints: RouteConstraints, graph, db):
         for r in routes:
-            dur_rating = max(1, 5 - (r.total_duration / 600))
-            cost_rating = max(1, 5 - (r.total_cost / 1000))
+            dur_rating = max(1, 5 - ((r.total_duration or 0) / 600.0))
+            cost_rating = max(1, 5 - ((r.total_cost or 0.0) / 1000.0))
             tr_rating = max(1, 5 - (len(r.transfers) * 1.5))
             r.metadata["rating"] = round((dur_rating * 0.4) + (cost_rating * 0.3) + (tr_rating * 0.3), 1)
             parts = []

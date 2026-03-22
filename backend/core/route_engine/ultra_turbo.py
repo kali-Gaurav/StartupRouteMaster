@@ -133,13 +133,13 @@ class UltraTurboDirectEngine:
                         trip_id=int(row['tid1']), departure_stop_id=int(row['sid1']), 
                         arrival_stop_id=int(row['hub']), departure_time=nt(row['dep1']), 
                         arrival_time=nt(row['arr1']), duration_minutes=(row['ts_arr1']-row['ts_dep1'])//60, 
-                        distance_km=max(0.0, float(row['d2']-row['d1'])), train_number=str(row['tno1'])
+                        distance_km=max(0.0, float((row['d2'] or 0.0) - (row['d1'] or 0.0))), train_number=str(row['tno1'])
                     )
                     s2 = RouteSegment(
                         trip_id=int(row['tid2']), departure_stop_id=int(row['hub']), 
                         arrival_stop_id=int(row['sid2']), departure_time=nt(row['dep2']), 
                         arrival_time=nt(row['arr2']), duration_minutes=(row['ts_arr2']-row['ts_dep2'])//60, 
-                        distance_km=max(0.0, float(row[20]-row[19])), train_number=str(row['tno2'])
+                        distance_km=max(0.0, float((row[20] or 0.0) - (row[19] or 0.0))), train_number=str(row['tno2'])
                     )
                     rt.add_segment(s1); rt.add_segment(s2)
                     rt.add_transfer(TransferConnection(int(row['hub']), s1.arrival_time, s2.departure_time, (row['ts_dep2']-row['ts_arr1'])//60, str(row['hub_name'])))
@@ -164,6 +164,6 @@ class UltraTurboDirectEngine:
             async for row in cursor:
                 rt = Route()
                 def nt(s): return f"{int(s.split(':')[0])%24:02d}:{s.split(':')[1]}:{s.split(':')[2]}"
-                rt.add_segment(RouteSegment(trip_id=int(row[0]), departure_stop_id=int(row[2]), arrival_stop_id=int(row[3]), departure_time=nt(row[4]), arrival_time=nt(row[5]), duration_minutes=(row[7]-row[6])//60, distance_km=max(0.0, float(row[9]-row[8])), train_number=str(row[1])))
+                rt.add_segment(RouteSegment(trip_id=int(row[0]), departure_stop_id=int(row[2]), arrival_stop_id=int(row[3]), departure_time=nt(row[4]), arrival_time=nt(row[5]), duration_minutes=(row[7]-row[6])//60, distance_km=max(0.0, float((row[9] or 0.0) - (row[8] or 0.0))), train_number=str(row[1])))
                 rt.metadata["engine"] = "ultra_turbo_direct"; rt.metadata["day_offset"] = offset
                 yield rt

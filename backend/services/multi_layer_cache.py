@@ -122,15 +122,17 @@ class MultiLayerCache(ServiceProvider):
         self._warmup_orchestrator = None
 
     async def init(self):
-        """IoC Lifecycle: Connect to Redis."""
+        """IoC Lifecycle: Connect to Redis (Idempotent)."""
+        if self._initialized and self.redis:
+            return
         from redis.asyncio import from_url
         try:
             self.redis = await from_url(Config.REDIS_URL, decode_responses=False)
             await self.redis.ping()
             self._initialized = True
             logger.info("📡 IoC: MultiLayerCache (Redis L2) Initialized.")
-            # Start background invalidation listener
-            self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+            if not self._pubsub_task or self._pubsub_task.done():
+                self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
         except Exception as e:
             logger.error(f"IoC: Redis init failed: {e}")
             raise e

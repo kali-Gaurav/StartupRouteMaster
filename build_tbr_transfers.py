@@ -18,7 +18,6 @@ def compute_hub_transfers(hub_id, trip_events, min_wait_sec=900, max_wait_sec=21
     """
     Worker function to compute all valid O(N^2) transfers at a single hub.
     trip_events is a list of tuples: (trip_id, arr_ts, dep_ts)
-    Optimized: Use sorting to find transfers faster than O(N^2).
     """
     if not trip_events: return []
     
@@ -27,18 +26,42 @@ def compute_hub_transfers(hub_id, trip_events, min_wait_sec=900, max_wait_sec=21
     edges = []
     
     for i, (ta_id, ta_arr, ta_dep) in enumerate(events):
-        # We need to find all tb where tb_dep is in [ta_arr + min_wait, ta_arr + max_wait]
-        # Since we sorted by arr_ts, we can't easily binary search on dep_ts 
-        # but for most stations N is small (<1000).
-        # We still use a range scan to keep it reasonably fast.
+        # [Issue 10] Pruning: Only keep soonest per next trip, and cap total outgoing
+        found_next_trips = set()
+        count = 0
         for j in range(len(events)):
             tb_id, tb_arr, tb_dep = events[j]
-            if ta_id == tb_id: continue
+            if ta_id == tb_id or tb_id in found_next_trips: continue
             
             wait_time = tb_dep - ta_arr
             if min_wait_sec <= wait_time <= max_wait_sec:
                 edges.append((ta_id, tb_id, hub_id, wait_time // 60))
+                found_next_trips.add(tb_id)
+                count += 1
+                if count >= 30: break # Cap promising outgoing
                 
+    return edges
+
+def compute_metro_transfers(group_name, group_events, min_wait_sec=5400, max_wait_sec=28800):
+    """
+    Compute transfers between DIFFERENT stations in the same metro group.
+    """
+    edges = []
+    sids = list(group_events.keys())
+    
+    for i, (s1) in enumerate(sids):
+        for s2 in sids:
+            if s1 == s2: continue 
+            s2_events = sorted(group_events[s2], key=lambda x: x[2])
+            for tid1, arr1, dep1 in group_events[s1]:
+                # [Issue 10] Metro pruning: even stricter as metro groups are huge
+                count = 0
+                for tid2, arr2, dep2 in s2_events:
+                    wait = dep2 - arr1
+                    if min_wait_sec <= wait <= max_wait_sec:
+                        edges.append((tid1, tid2, s2, wait // 60))
+                        count += 1
+                        if count >= 10: break # Strictly cap metro inter-station transfers
     return edges
 
 def build_transfer_graph():
@@ -48,10 +71,16 @@ def build_transfer_graph():
     import sqlite3
     db_path = "backend/database/transit_graph.db"
     conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
-    # 1. Identify all valid hubs (stations with > 5 stop events)
+    # 1. Map Metro Groups [Task 27.15]
+    from utils.station_utils import METRO_GROUPS
+    
     logger.info("📍 Identifying all active transfer hubs...")
+    cursor.execute("SELECT id, code FROM stops")
+    all_stops = {r['code']: r['id'] for r in cursor.fetchall()}
+    
     cursor.execute("""
         SELECT stop_id, count(*) as stop_count 
         FROM stop_times 
@@ -59,7 +88,16 @@ def build_transfer_graph():
         HAVING stop_count > 5
     """)
     hub_ids = {r[0] for r in cursor.fetchall()}
-    logger.info(f"📍 Identified {len(hub_ids)} Active Transfer Hubs.")
+    
+    metro_stop_map = {}
+    metro_group_events = defaultdict(lambda: defaultdict(list))
+    
+    for gname, codes in METRO_GROUPS.items():
+        for code in codes:
+            sid = all_stops.get(code)
+            if sid:
+                metro_stop_map[sid] = gname
+                hub_ids.add(sid)
     
     # 2. Gather Trip Events at Hubs
     hub_list_str = ",".join(map(str, hub_ids))
@@ -68,25 +106,30 @@ def build_transfer_graph():
     
     hub_events = defaultdict(list)
     for row in cursor.fetchall():
-        sid, tid, arr, dep = row
+        sid, tid, arr, dep = row['stop_id'], row['trip_id'], row['arrival_timestamp'], row['departure_timestamp']
         if arr is not None and dep is not None:
             hub_events[sid].append((tid, arr, dep))
+            if sid in metro_stop_map:
+                metro_group_events[metro_stop_map[sid]][sid].append((tid, arr, dep))
     conn.close()
     
     # 3. Parallel Computation
     all_edges = []
-    with ProcessPoolExecutor() as executor:
-        futures = [executor.submit(compute_hub_transfers, hid, evs) for hid, evs in hub_events.items()]
-        for f in futures: all_edges.extend(f.result())
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        hub_futures = [executor.submit(compute_hub_transfers, hid, evs) for hid, evs in hub_events.items()]
+        metro_futures = [executor.submit(compute_metro_transfers, gname, gevs) for gname, gevs in metro_group_events.items()]
+        
+        logger.info(f"⚙️ Computing transfers for {len(hub_futures)} hubs and {len(metro_futures)} metro groups...")
+        
+        for f in hub_futures: all_edges.extend(f.result())
+        for f in metro_futures: all_edges.extend(f.result())
 
-    # 4. Save to Vectorized MemMap with NESTED Index
+    # 4. Save to Vectorized MemMap
     logger.info(f"✅ Precomputed {len(all_edges)} valid edges.")
-    
-    # Sort by (from_trip_id, station_id) for nested indexing
     all_edges.sort(key=lambda x: (x[0], x[2]))
     
     edges_array = np.zeros(len(all_edges), dtype=trip_edge_dtype)
-    edge_index = defaultdict(dict) # trip_id -> {station_id: (start, count)}
+    edge_index = defaultdict(dict)
     
     curr_key = (-1, -1)
     start_idx = 0
@@ -95,22 +138,18 @@ def build_transfer_graph():
     for i, edge in enumerate(all_edges):
         f_tid, t_tid, sid, wait = edge
         edges_array[i] = (t_tid, sid, wait)
-        
         this_key = (f_tid, sid)
         if this_key != curr_key:
-            if curr_key != (-1, -1):
-                edge_index[curr_key[0]][curr_key[1]] = (start_idx, count)
-            curr_key = this_key
-            start_idx = i
-            count = 1
-        else:
-            count += 1
+            if curr_key != (-1, -1): edge_index[curr_key[0]][curr_key[1]] = (start_idx, count)
+            curr_key = this_key; start_idx = i; count = 1
+        else: count += 1
             
-    if curr_key != (-1, -1):
-        edge_index[curr_key[0]][curr_key[1]] = (start_idx, count)
-
+    if curr_key != (-1, -1): edge_index[curr_key[0]][curr_key[1]] = (start_idx, count)
+    
     import pickle
-    with open("backend/data/tbr_edge_index.pkl", "wb") as f:
+    data_dir = "backend/data"
+    os.makedirs(data_dir, exist_ok=True)
+    with open(os.path.join(data_dir, "tbr_edge_index.pkl"), "wb") as f:
         pickle.dump(dict(edge_index), f)
         
     mmap_path = MemMapManager.save_array("tbr_edges", edges_array)

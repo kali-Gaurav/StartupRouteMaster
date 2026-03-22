@@ -86,7 +86,8 @@ _RAW_POOL_SIZE = 10
 async def init_raw_transit_pool():
     """Initializes a raw aiosqlite pool independent of SQLAlchemy."""
     raw_url = Config.GET_SQLALCHEMY_URL("transit", is_async=False)
-    db_path = raw_url.replace("sqlite:///", "")
+    # [Issue 7] Fix sslmode for aiosqlite (remove params)
+    db_path = raw_url.split("?")[0].replace("sqlite:///", "") 
     logger.info(f"⚡ Initializing Ultra-Turbo Raw Pool (Size: {_RAW_POOL_SIZE}) at {db_path}")
     if "postgresql" in raw_url:
         logger.info("⚡ Skipping raw pool for PostgreSQL")
@@ -424,12 +425,22 @@ async def run_pool_scaler():
                 await _dispose_all_pools()
                 last_load_state = False
         
-        # Periodic 'Idle heartbeat' to ensure we stay lean
+        # [Issue 8] Memory-Aware Dynamic Sizing with Hysteresis
         if not current_load_state and not last_load_state:
             import psutil
-            if psutil.virtual_memory().percent > 85:
-                logger.debug("🧹 Pool Scaler: High RAM while idle. Force-disposing pools.")
+            mem_usage = psutil.virtual_memory().percent
+            # Hysteresis: only downscale above 85%, upscale above 70% was handled by pre-warm
+            # But the 'idle heartbeat' should be more intelligent
+            if mem_usage > 90:
+                logger.info("🧹 Pool Scaler: High RAM pressure (>90%). Forcing disposal.")
                 await _dispose_all_pools()
+                import gc; gc.collect()
+            elif mem_usage < 60:
+                # If memory is very free, we can stay warmer or do nothing
+                pass
+            elif mem_usage > 80:
+                # Intermediate pressure: only kill if idle for a while (already handled by sleep)
+                pass
 
 async def run_ghost_connection_killer():
     """

@@ -80,6 +80,7 @@ class MemMapManager:
 @dataclass
 class StaticGraphSnapshot:
     date: datetime
+    version: str = "v10.0" # [Issue 6] Pinned version for cache stability
     
     # Vectorized Core
     _departures_data: Optional[np.ndarray] = None
