@@ -1,8 +1,8 @@
+
 import sqlite3
-conn = sqlite3.connect('backend/database/transit_graph.db')
-cur = conn.cursor()
-codes = ['NDLS', 'BCT', 'CSMT', 'HWH', 'MAS', 'BZA', 'PNBE', 'PUNE']
-placeholders = ','.join(['?'] * len(codes))
-cur.execute(f"SELECT id, code FROM stops WHERE code IN ({placeholders})", codes)
-print("IDs:", cur.fetchall())
+db_path = "backend/database/transit_graph.db"
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+cursor.execute("SELECT id, stop_id, code, name FROM stops WHERE id IN (15, 59, 60, 78)")
+for row in cursor.fetchall(): print(row)
 conn.close()

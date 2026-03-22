@@ -1,237 +1,142 @@
-#!/usr/bin/env python3
-"""
-Frequency-aware Range-RAPTOR Window Sizing
-
-Dynamically adjusts the Range-RAPTOR search window based on corridor frequency.
-More frequent corridors = smaller windows (better coverage with tight search).
-Less frequent corridors = larger windows (need to search further out).
-
-Architecture:
-1. Compute trip frequency (trips per hour) for origin-destination pair
-2. Scale Range window based on frequency
-3. Cache frequency computations for performance
-"""
-
-import asyncio
 import logging
-from datetime import datetime, timedelta, date
-from typing import Dict, Optional, Tuple
-import redis.asyncio as redis
-from sqlalchemy import func
+from typing import Dict, Any, Tuple
+from functools import lru_cache
+from datetime import datetime, timedelta
 
-from database.models import Calendar, CalendarDate, StopTime
-from database.session import SessionLocal
-from database.config import Config
+logger = logging.getLogger("frequency-sizer")
 
-logger = logging.getLogger(__name__)
+# [Task 3] Cache for frequency metrics to avoid repeated calculations
+_frequency_cache: Dict[int, Tuple[int, float]] = {}
+_cache_timestamp = datetime.now()
+_CACHE_TTL_SECONDS = 3600  # Refresh every hour
 
-# Cache key prefix for frequency computations
-FREQUENCY_CACHE_TTL = 86400  # 24 hours
-FREQUENCY_CACHE_PREFIX = "corridor_frequency:"
+def _should_refresh_cache() -> bool:
+    """Check if frequency cache needs refresh"""
+    global _cache_timestamp
+    if datetime.now() - _cache_timestamp > timedelta(seconds=_CACHE_TTL_SECONDS):
+        _cache_timestamp = datetime.now()
+        _frequency_cache.clear()
+        return True
+    return False
 
-
-class FrequencyAwareWindowSizer:
+def get_frequency_aware_sizer(stop_id: int, graph: Any) -> int:
     """
-    Computes trip frequency on corridors and sizes Range-RAPTOR window adaptively.
+    [Task 3] Frequency-Aware Sizing - Dynamically adjusts search depth based on train density.
+    
+    Higher density hubs (NDLS, HWH) get larger frontiers to capture diverse options.
+    Lower density stops get smaller frontiers for efficiency.
+    
+    Frontier Size Scaling:
+    - 0-30 deps: 3 routes (remote stations, fewer options)
+    - 31-100 deps: 5 routes (secondary hubs)
+    - 101-300 deps: 10 routes (major hubs)
+    - 301-600 deps: 15 routes (super-hubs like NDLS, HWH)
+    - 600+ deps: 20 routes (exceptional mega-hubs)
+    
+    Also computes frequency density (deps per hour) for adaptive timeouts and caching.
     """
-
-    def __init__(self, redis_url: Optional[str] = None):
-        self.redis_url = redis_url or Config.REDIS_URL
-        self.redis_client = None
-
-    async def _ensure_redis(self):
-        """Lazy initialize Redis connection"""
-        if self.redis_client is None:
-            try:
-                self.redis_client = await redis.from_url(self.redis_url)
-            except Exception as e:
-                logger.warning(f"Redis connection failed: {e}, will use DB queries only")
-
-    async def get_range_window_minutes(
-        self,
-        origin_stop_id: int,
-        destination_stop_id: int,
-        search_date: date,
-        base_range_minutes: int = 60,
-        distance_km: Optional[float] = None,
-    ) -> int:
-        """
-        Calculate adaptive Range-RAPTOR window based on corridor frequency.
-
-        Args:
-            origin_stop_id: Starting stop
-            destination_stop_id: Destination stop
-            search_date: Date of travel
-            base_range_minutes: Default window size (60 minutes)
-            distance_km: Route distance (optional, for fallback)
-
-        Returns:
-            Recommended Range window in minutes
-        """
-        await self._ensure_redis()
-
-        # Compute frequency for this corridor on this date
-        frequency_trips_per_hour = await self._compute_corridor_frequency(
-            origin_stop_id=origin_stop_id,
-            destination_stop_id=destination_stop_id,
-            search_date=search_date,
-        )
-
-        # Scale window based on frequency
-        if frequency_trips_per_hour > 2.0:
-            # High frequency: shrink window to 30 mins
-            window = 30
-        elif frequency_trips_per_hour > 1.0:
-            # Medium frequency: keep at 60 mins
-            window = base_range_minutes
-        elif frequency_trips_per_hour > 0.5:
-            # Low frequency: expand to 2 hours
-            window = 120
-        else:
-            # Very low frequency: expand to 4-6 hours based on distance
-            if distance_km is not None:
-                if distance_km < 200:
-                    window = 180  # 3 hours for short distances
-                elif distance_km < 800:
-                    window = 360  # 6 hours for medium distances
-                else:
-                    window = 480  # 8 hours for long distances
-            else:
-                window = 360  # default to 6 hours
-
-        logger.debug(
-            f"Frequency-aware window: {frequency_trips_per_hour:.2f} trips/hr → {window} min"
-        )
-        return window
-
-    async def _compute_corridor_frequency(
-        self,
-        origin_stop_id: int,
-        destination_stop_id: int,
-        search_date: date,
-    ) -> float:
-        """
-        Compute trips per hour from origin to destination on given date.
-
-        Returns:
-            Number of direct/multi-leg trips per hour (0-max)
-        """
-        cache_key = f"{FREQUENCY_CACHE_PREFIX}{origin_stop_id}:{destination_stop_id}:{search_date.isoformat()}"
-
-        # Try cache first
-        if self.redis_client is not None:
-            try:
-                cached = await self.redis_client.get(cache_key)
-                if cached is not None:
-                    return float(cached)
-            except Exception as e:
-                logger.debug(f"Cache lookup failed: {e}")
-
-        # Compute from database
-        frequency = await self._compute_frequency_from_db(
-            origin_stop_id=origin_stop_id,
-            destination_stop_id=destination_stop_id,
-            search_date=search_date,
-        )
-
-        # Cache result
-        if self.redis_client is not None:
-            try:
-                await self.redis_client.setex(
-                    cache_key,
-                    FREQUENCY_CACHE_TTL,
-                    str(frequency),
-                )
-            except Exception as e:
-                logger.debug(f"Cache store failed: {e}")
-
-        return frequency
-
-    async def _compute_frequency_from_db(
-        self,
-        origin_stop_id: int,
-        destination_stop_id: int,
-        search_date: date,
-    ) -> float:
-        """
-        Query database to count trips between origin and destination on search_date.
+    if not graph or not graph.snapshot:
+        logger.debug(f"[Task 3] No graph/snapshot for stop {stop_id}, returning default size 5")
+        return 5
+    
+    # [Task 3] Check cache first
+    if stop_id in _frequency_cache:
+        size, density = _frequency_cache[stop_id]
+        logger.debug(f"[Task 3] Cache hit for stop {stop_id}: {size} routes, density {density:.1f} deps/hour")
+        return size
+    
+    try:
+        stop_idx = graph.snapshot._stop_id_map.get(stop_id)
+        if stop_idx is None:
+            logger.debug(f"[Task 3] Stop {stop_id} not in map, returning default size 5")
+            return 5
         
-        Uses asyncio to avoid blocking the event loop.
-        Returns 0 if database query fails (graceful degradation).
-        """
-        def _query():
-            try:
-                from database.session import SessionTransit
-                db = SessionTransit()
-                try:
-                    # Check if date is valid (has calendar entry)
-                    calendar_entry = db.query(Calendar).filter(
-                        Calendar.start_date <= search_date,
-                        Calendar.end_date >= search_date,
-                    ).first()
+        # Get departure count for this stop
+        _, count = graph.snapshot._departures_index[stop_idx]
+        
+        # [Task 3] Enhanced Scaling Logic with density calculation
+        if count < 30:
+            size = 3
+            category = "remote"
+        elif count < 100:
+            size = 5
+            category = "secondary"
+        elif count < 300:
+            size = 10
+            category = "major"
+        elif count < 600:
+            size = 15
+            category = "super-hub"
+        else:
+            size = 20
+            category = "mega-hub"
+        
+        # [Task 3] Calculate frequency density (departures per hour)
+        # Assuming roughly 24-hour schedule window in snapshot
+        frequency_density = count / 24.0
+        
+        logger.info(f"[Task 3] Stop {stop_id}: {count} deps ({frequency_density:.1f}/hour), "
+                   f"category={category}, frontier_size={size}")
+        
+        # [Task 3] Cache result
+        _frequency_cache[stop_id] = (size, frequency_density)
+        
+        return size
+        
+    except Exception as e:
+        logger.warning(f"[Task 3] Error computing frequency for stop {stop_id}: {e}")
+        return 5
 
-                    if calendar_entry is None:
-                        # No regular service on this date
-                        exceptions = db.query(CalendarDate).filter(
-                            CalendarDate.date == search_date,
-                            CalendarDate.exception_type == 1,  # service added
-                        )
-                        if not exceptions.first():
-                            return 0.0
+def get_frequency_category(stop_id: int, graph: Any) -> str:
+    """
+    [Task 3] Get human-readable frequency category for a stop.
+    Useful for debugging and logging.
+    """
+    if not graph or not graph.snapshot:
+        return "unknown"
+    
+    try:
+        stop_idx = graph.snapshot._stop_id_map.get(stop_id)
+        if stop_idx is None:
+            return "unknown"
+        
+        _, count = graph.snapshot._departures_index[stop_idx]
+        
+        if count < 30:
+            return "remote"
+        elif count < 100:
+            return "secondary"
+        elif count < 300:
+            return "major"
+        elif count < 600:
+            return "super-hub"
+        else:
+            return "mega-hub"
+    except:
+        return "unknown"
 
-                    # Count trips with stops at both origin and destination
-                    # This is a simplified query; in practice might need more sophisticated matching
-                    origin_trips = db.query(StopTime.trip_id).filter(
-                        StopTime.stop_id == origin_stop_id
-                    ).subquery()
-
-                    dest_trips = db.query(StopTime.trip_id).filter(
-                        StopTime.stop_id == destination_stop_id
-                    ).subquery()
-
-                    # Find trips that visit both stops
-                    connecting_trips = db.query(func.count(StopTime.trip_id)).filter(
-                        StopTime.trip_id.in_(db.query(origin_trips)),
-                    ).distinct().scalar()
-
-                    # Normalize to trips per hour (assume service from 6am-11pm = 17 hours)
-                    service_hours = 17.0
-                    frequency = float(connecting_trips or 0) / service_hours
-
-                    return frequency
-
-                finally:
-                    db.close()
-            
-            except Exception as e:
-                logger.warning(f"Failed to compute frequency from database: {e}, returning 0.0")
-                # Return 0 to indicate no frequency data available (will trigger larger window)
-                return 0.0
-
-        # Run query in thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _query)
-
-    async def clear_cache(self, origin_stop_id: int, destination_stop_id: int):
-        """Clear frequency cache for a specific corridor"""
-        if self.redis_client is not None:
-            try:
-                pattern = f"{FREQUENCY_CACHE_PREFIX}{origin_stop_id}:{destination_stop_id}:*"
-                keys = await self.redis_client.keys(pattern)
-                if keys:
-                    await self.redis_client.delete(*keys)
-                    logger.info(f"Cleared {len(keys)} frequency cache entries")
-            except Exception as e:
-                logger.warning(f"Cache clear failed: {e}")
-
-
-# Singleton instance
-_frequency_sizer = None
-
-
-async def get_frequency_aware_sizer() -> FrequencyAwareWindowSizer:
-    """Get or initialize the frequency-aware window sizer"""
-    global _frequency_sizer
-    if _frequency_sizer is None:
-        _frequency_sizer = FrequencyAwareWindowSizer()
-    return _frequency_sizer
+def get_adaptive_timeout(source_stop_id: int, dest_stop_id: int, graph: Any, 
+                        base_timeout_ms: int = 5000) -> int:
+    """
+    [Task 3] Compute adaptive timeout based on source and destination frequencies.
+    
+    High-frequency routes can afford tighter timeouts.
+    Low-frequency routes need more time for exploration.
+    """
+    try:
+        source_size = get_frequency_aware_sizer(source_stop_id, graph)
+        dest_size = get_frequency_aware_sizer(dest_stop_id, graph)
+        
+        # Combined frequency factor (1.0 for mega-hubs, 0.5 for remote)
+        frequency_factor = (source_size * dest_size) / (20 * 20)
+        
+        # Adaptive timeout: reduce for high-frequency, extend for low-frequency
+        adaptive_timeout = int(base_timeout_ms / (0.5 + frequency_factor))
+        
+        logger.debug(f"[Task 3] Adaptive timeout: {adaptive_timeout}ms "
+                    f"(source_size={source_size}, dest_size={dest_size}, factor={frequency_factor:.2f})")
+        
+        return max(2000, min(adaptive_timeout, 15000))  # Clamp to 2-15 seconds
+    except Exception as e:
+        logger.warning(f"[Task 3] Error computing adaptive timeout: {e}")
+        return base_timeout_ms

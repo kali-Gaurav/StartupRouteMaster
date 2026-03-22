@@ -48,10 +48,10 @@ class CSARoutingKernel:
         """Reverts search space to the full global graph."""
         self.connections = self.global_connections
 
-    def find_routes(self, source_stop_id: int, dest_stop_id: int, start_time: int) -> List[Dict]:
+    def find_routes(self, source_stop_id: int, dest_stop_id: int, start_time: int) -> List[List[Dict]]:
         """
-        Extracts the full path for the earliest arrival.
-        Optimized loop for high-throughput scanning.
+        UPGRADED: Returns multiple Pareto-optimal paths.
+        Dimensions: [Arrival Time, Number of Transfers]
         """
         if source_stop_id not in self.id_to_idx or dest_stop_id not in self.id_to_idx:
             return []
@@ -59,51 +59,82 @@ class CSARoutingKernel:
         source_idx = self.id_to_idx[source_stop_id]
         dest_idx = self.id_to_idx[dest_stop_id]
 
-        # earliest_arrival[stop_idx] = arrival_time
-        earliest_arrival = np.full(self.stop_count, 2147483647, dtype=np.int32)
-        earliest_arrival[source_idx] = start_time
+        # multi_earliest_arrival[stop_idx][num_transfers] = arrival_time
+        MAX_TRANSFERS = 3
+        earliest_arrival = np.full((self.stop_count, MAX_TRANSFERS + 1), 2147483647, dtype=np.int32)
+        earliest_arrival[source_idx, 0] = start_time
         
-        # in_connection[stop_idx] = connection_index that brought us here
-        in_connection = np.full(self.stop_count, -1, dtype=np.int32)
-        trip_reachable = {}
+        # in_connection[stop_idx][num_transfers] = connection_index
+        in_connection = np.full((self.stop_count, MAX_TRANSFERS + 1), -1, dtype=np.int32)
+        
+        # track trip reachability per transfer count
+        trip_reachable = np.full((len(self.connections), MAX_TRANSFERS + 1), False, dtype=bool)
 
         # CORE CSA SCAN
         for i, c in enumerate(self.connections):
-            # 1. Start-time pruning
-            if c[2] < start_time: continue
+            dep_time = c[2]
+            if dep_time < start_time: continue
             
-            dep_stop, arr_stop, dep_time, arr_time, trip_id = c
+            dep_stop, arr_stop, arr_time, trip_id = int(c[0]), int(c[1]), int(c[3]), int(c[4])
             
-            # 2. Check reachability
-            if earliest_arrival[dep_stop] <= dep_time or trip_reachable.get(trip_id, False):
-                # 3. Update arrival
-                if arr_time < earliest_arrival[arr_stop]:
-                    earliest_arrival[arr_stop] = arr_time
-                    in_connection[arr_stop] = i
-                    trip_reachable[trip_id] = True
-            
-            # 4. Global pruning (If we can't arrive earlier than current best at dest)
-            if dep_time > earliest_arrival[dest_idx]:
-                break
+            for t in range(MAX_TRANSFERS + 1):
+                # 1. Stay on same trip (no extra transfer)
+                # 2. Start new trip from a stop reached in t-1 transfers
+                can_reach = False
+                if earliest_arrival[dep_stop, t] <= dep_time:
+                    can_reach = True
+                elif t > 0 and earliest_arrival[dep_stop, t-1] <= dep_time:
+                    can_reach = True
+                
+                if can_reach:
+                    if arr_time < earliest_arrival[arr_stop, t]:
+                        # Pruning: only update if this is better than any lower-transfer arrival
+                        is_pareto = True
+                        for prev_t in range(t):
+                            if earliest_arrival[arr_stop, prev_t] <= arr_time:
+                                is_pareto = False
+                                break
+                        
+                        if is_pareto:
+                            earliest_arrival[arr_stop, t] = arr_time
+                            in_connection[arr_stop, t] = i
 
-        if earliest_arrival[dest_idx] == 2147483647:
-            return []
+        # Extract all Pareto-optimal paths to destination
+        results = []
+        best_overall_arrival = 2147483647
+        
+        for t in range(MAX_TRANSFERS + 1):
+            arr_t = earliest_arrival[dest_idx, t]
+            if arr_t < 2147483647 and arr_t < best_overall_arrival:
+                # Backtrack this specific (dest, t) Pareto point
+                path = []
+                curr_stop = dest_idx
+                curr_t = t
+                while curr_stop != source_idx:
+                    c_idx = in_connection[curr_stop, curr_t]
+                    if c_idx == -1: break
+                    
+                    conn = self.connections[c_idx]
+                    path.append({
+                        "dep_stop": self.stop_ids[int(conn[0])],
+                        "arr_stop": self.stop_ids[int(conn[1])],
+                        "dep_time": int(conn[2]),
+                        "arr_time": int(conn[3]),
+                        "trip_id": int(conn[4])
+                    })
+                    
+                    # Did we transfer to get to this trip?
+                    prev_stop = int(conn[0])
+                    # If we couldn't have reached dep_stop at dep_time with curr_t transfers, 
+                    # it must have been curr_t - 1.
+                    if curr_t > 0 and earliest_arrival[prev_stop, curr_t] > conn[2]:
+                        curr_t -= 1
+                    
+                    curr_stop = prev_stop
+                
+                if path:
+                    results.append(path[::-1])
+                
+                best_overall_arrival = arr_t # In CSA, higher t must have earlier arrival to be Pareto
 
-        # Backtrack
-        path = []
-        curr_stop = dest_idx
-        while curr_stop != source_idx:
-            c_idx = in_connection[curr_stop]
-            if c_idx == -1: break
-            
-            conn = self.connections[c_idx]
-            path.append({
-                "dep_stop": self.stop_ids[conn[0]],
-                "arr_stop": self.stop_ids[conn[1]],
-                "dep_time": int(conn[2]),
-                "arr_time": int(conn[3]),
-                "trip_id": int(conn[4])
-            })
-            curr_stop = conn[0]
-            
-        return path[::-1]
+        return results

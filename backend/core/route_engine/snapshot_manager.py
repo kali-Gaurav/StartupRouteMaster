@@ -1,5 +1,6 @@
 import pickle
 import os
+import asyncio
 from datetime import datetime
 from typing import Optional, Any, List, Tuple
 import logging
@@ -28,6 +29,7 @@ class SnapshotManager:
         Loads snapshot using prioritized layers:
         1. Redis (RAM speed)
         2. Disk (Persistent fallback)
+        Includes version validation to force rebuilds on schema changes.
         """
         date_str = date.strftime("%Y%m%d")
         
@@ -36,8 +38,12 @@ class SnapshotManager:
             await multi_layer_cache.initialize()
             snapshot = await multi_layer_cache.get_graph_snapshot(date_str)
             if snapshot:
-                logger.info(f"🚀 Loaded snapshot for {date_str} from Redis.")
-                return snapshot
+                # [Task 27.18] Version Validation
+                if getattr(snapshot, 'version', None) != StaticGraphSnapshot.version:
+                    logger.warning(f"🔄 Redis snapshot version mismatch ({getattr(snapshot, 'version', 'None')} != {StaticGraphSnapshot.version}). Forcing rebuild.")
+                else:
+                    logger.info(f"🚀 Loaded snapshot for {date_str} from Redis (v{snapshot.version}).")
+                    return snapshot
         except Exception as e:
             logger.warning(f"Redis snapshot load failed: {e}")
 
@@ -45,15 +51,38 @@ class SnapshotManager:
         filename = self._get_filename(date)
         if os.path.exists(filename):
             try:
-                with open(filename, 'rb') as f:
-                    snapshot = pickle.load(f)
-                logger.info(f"💾 Loaded snapshot for {date_str} from disk.")
-                # Proactive Hydration: Save to Redis for next time
-                await self.save_snapshot(snapshot)
-                return snapshot
+                def load_from_disk():
+                    with open(filename, 'rb') as f:
+                        return pickle.load(f)
+                
+                snapshot = await asyncio.to_thread(load_from_disk)
+                
+                # [Task 27.18] Version Validation
+                if getattr(snapshot, 'version', None) != StaticGraphSnapshot.version:
+                    logger.warning(f"🔄 Disk snapshot version mismatch. Forcing rebuild.")
+                    os.remove(filename) # Clean up stale file
+                else:
+                    logger.info(f"💾 Loaded snapshot for {date_str} from disk (v{snapshot.version}).")
+                    # Proactive Hydration: Save to Redis for next time
+                    await self.save_snapshot(snapshot)
+                    return snapshot
             except Exception as e:
                 logger.error(f"Failed to load snapshot from disk: {e}")
         
+        return None
+
+    def load_snapshot_sync(self, date: datetime) -> Optional[StaticGraphSnapshot]:
+        """
+        Synchronous wrapper for load_snapshot. 
+        Only uses Layer 2 (Disk) to avoid nested event loop issues in threaded logic.
+        """
+        filename = self._get_filename(date)
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'rb') as f:
+                    return pickle.load(f)
+            except Exception as e:
+                logger.error(f"SnapshotManager: Sync Disk Load Failed: {e}")
         return None
 
     async def save_snapshot(self, snapshot: StaticGraphSnapshot):

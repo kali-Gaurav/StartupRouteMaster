@@ -1,17 +1,19 @@
 import logging
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Optional, Any
 
 from .csa_kernel import CSARoutingKernel
-from .scorer import RouteScorer
+from .scoring import RouteScorer
 from .constraints import RouteConstraints
+from core.data_structures import Route, RouteSegment, TransferConnection
 
 logger = logging.getLogger(__name__)
 
 class HybridRouteEngine:
     """
     Subtask 3.6: Hybrid Engine with JIT Multi-Zonal Injection.
+    UPGRADED: Returns multiple Pareto-optimal routes as Route objects.
     """
     def __init__(self, timetable_path: str = "backend/data/timetable.npz"):
         self.kernel = CSARoutingKernel(timetable_path)
@@ -25,17 +27,63 @@ class HybridRouteEngine:
         self.kernel.reset_to_global()
 
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
-                         departure_date: datetime, constraints: RouteConstraints) -> List[Any]:
-        # Normalize time
+                         departure_date: datetime, constraints: RouteConstraints,
+                         graph: Optional[Any] = None) -> List[Route]:
+        # Normalize time to seconds from start of day
         start_time_secs = departure_date.hour * 3600 + departure_date.minute * 60
         
-        # Search using CURRENT state of kernel (could be global or stitched)
-        raw_path = self.kernel.find_routes(source_stop_id, dest_stop_id, start_time_secs)
+        # CSA Kernel returns List[List[Dict]] (Multiple Pareto paths)
+        raw_paths = self.kernel.find_routes(source_stop_id, dest_stop_id, start_time_secs)
         
-        if not raw_path:
+        if not raw_paths:
             return []
 
-        scorer = RouteScorer(constraints)
-        processed = scorer.score_route(raw_path)
+        results = []
+        base_date = departure_date.date()
         
-        return [processed]
+        stop_cache = {}
+        if graph and hasattr(graph, 'snapshot'):
+            stop_cache = graph.snapshot.stop_cache
+
+        for path in raw_paths:
+            rt = Route()
+            for i, step in enumerate(path):
+                # Connection times are seconds from start of day
+                dep_dt = datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['dep_time'])
+                arr_dt = datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['arr_time'])
+                
+                # Handle midnight rollover (simplified)
+                if arr_dt < dep_dt:
+                    arr_dt += timedelta(days=1)
+                
+                seg = RouteSegment(
+                    trip_id=step['trip_id'],
+                    departure_stop_id=step['dep_stop'],
+                    arrival_stop_id=step['arr_stop'],
+                    departure_time=dep_dt,
+                    arrival_time=arr_dt,
+                    duration_minutes=int((arr_dt - dep_dt).total_seconds() / 60),
+                    distance_km=0.0, # Will be hydrated by orchestrator
+                    train_number=str(step['trip_id']),
+                    departure_code=stop_cache[step['dep_stop']].code if step['dep_stop'] in stop_cache else str(step['dep_stop']),
+                    arrival_code=stop_cache[step['arr_stop']].code if step['arr_stop'] in stop_cache else str(step['arr_stop'])
+                )
+                rt.add_segment(seg)
+                
+                # Add transfer if not the first segment
+                if i > 0:
+                    prev_seg = rt.segments[-2]
+                    wait_mins = int((seg.departure_time - prev_seg.arrival_time).total_seconds() / 60)
+                    tc = TransferConnection(
+                        station_id=seg.departure_stop_id,
+                        station_name=seg.departure_code,
+                        arrival_time=prev_seg.arrival_time,
+                        departure_time=seg.departure_time,
+                        duration_minutes=wait_mins
+                    )
+                    rt.add_transfer(tc)
+            
+            rt.metadata["engine"] = "hybrid_csa"
+            results.append(rt)
+            
+        return results

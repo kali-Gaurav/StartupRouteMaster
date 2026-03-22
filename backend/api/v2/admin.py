@@ -70,6 +70,30 @@ async def rebuild_graph(engine=Depends(get_route_engine)):
     return {"message": "Graph rebuild triggered", "timestamp": datetime.now()}
 
 # ==============================================================================
+# ENGINE REGISTRY CONTROLS (Task 21.5)
+# ==============================================================================
+
+@router.get("/engines")
+async def list_engines():
+    """List all registered routing engines and their current status."""
+    from core.orchestrator import orchestrator
+    return orchestrator.engine_registry.engines
+
+class EngineToggleRequest(BaseModel):
+    name: str
+    enabled: bool
+
+@router.post("/engines/toggle")
+async def toggle_engine(payload: EngineToggleRequest):
+    """Enable or disable a specific routing engine at runtime."""
+    from core.orchestrator import orchestrator
+    if payload.name not in orchestrator.engine_registry.engines:
+        raise HTTPException(status_code=404, detail=f"Engine {payload.name} not found")
+    
+    orchestrator.engine_registry.set_enabled(payload.name, payload.enabled)
+    return {"message": f"Engine {payload.name} set to {'ENABLED' if payload.enabled else 'DISABLED'}"}
+
+# ==============================================================================
 # PLATFORM CONFIGURATION (Task 25)
 # ==============================================================================
 
@@ -404,6 +428,73 @@ async def force_reconcile():
     return await reconciliation_service.reconcile_all_pending()
 
 # ==============================================================================
+# CONTROL PLANE (Task 9)
+# ==============================================================================
+
+from core.control_plane import control_plane, SystemLevel
+
+class LevelUpdateRequest(BaseModel):
+    level: int
+    reason: str = "Manual admin update"
+
+@router.get("/control/status")
+async def get_control_status():
+    """Get current system level and all feature toggles."""
+    return {
+        "level": (await control_plane.get_level()).name,
+        "features": control_plane._features,
+        "last_sync": control_plane._local_cache_time
+    }
+
+@router.post("/control/level")
+async def update_system_level(payload: LevelUpdateRequest):
+    """Update global system level (NORMAL, WARNING, LOCKED, etc.)."""
+    try:
+        new_level = SystemLevel(payload.level)
+        await control_plane.set_level(new_level, user="admin", reason=payload.reason)
+        return {"success": True, "new_level": new_level.name}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid system level.")
+
+class FeatureToggleRequest(BaseModel):
+    feature: str
+    enabled: bool
+
+@router.post("/control/feature")
+async def toggle_feature(payload: FeatureToggleRequest):
+    """Enable or disable a specific feature toggle."""
+    await control_plane.set_feature(payload.feature, payload.enabled, user="admin")
+    return {"success": True, "feature": payload.feature, "enabled": payload.enabled}
+
+@router.get("/control/audit")
+async def get_control_audit(limit: int = 50):
+    """Retrieve the latest audit logs from the control plane."""
+    return await control_plane.get_audit_logs(limit)
+
+@router.post("/control/snapshot")
+async def save_control_snapshot():
+    """Save current system state as a stable restore point."""
+    await control_plane.save_stable_snapshot()
+    return {"success": True, "message": "Stable snapshot saved."}
+
+@router.post("/control/rollback")
+async def trigger_control_rollback():
+    """Rollback system state to the last stable snapshot."""
+    success = await control_plane.rollback(user="admin")
+    if not success:
+        raise HTTPException(status_code=400, detail="Rollback failed or no snapshot found.")
+    return {"success": True, "message": "System rolled back to stable state."}
+
+class EmergencyPolicyRequest(BaseModel):
+    policy: str
+
+@router.post("/control/emergency")
+async def apply_emergency_policy(payload: EmergencyPolicyRequest):
+    """Apply a predefined emergency policy (e.g. LOCKDOWN, LITE_MODE)."""
+    await control_plane.apply_emergency_policy(payload.policy, user="admin")
+    return {"success": True, "policy": payload.policy}
+
+# ==============================================================================
 # SYSTEM SENTINEL & CLUSTER
 # ==============================================================================
 
@@ -464,11 +555,21 @@ from database.config import Config
 
 @router.get("/system/health")
 async def get_system_health():
-    """Subtask 26.4: Storage & Uptime."""
-    # Use current working directory to avoid path resolution errors on different environments
+    """Subtask 26.4: Storage & Uptime. Updated with IoC Status [Task 8 & 9]."""
+    from core.container import container
+    from core.control_plane import control_plane
     usage = psutil.disk_usage(".")
     from utils.geo_utils import is_tatkal_window
-    return {"cpu_usage_percent": psutil.cpu_percent(), "uptime_human": get_uptime_string(), "disk_free_gb": round(usage.free / (1024**3), 2), "is_tatkal_window": is_tatkal_window(), "process_id": os.getpid()}
+    
+    return {
+        "cpu_usage_percent": psutil.cpu_percent(), 
+        "uptime_human": get_uptime_string(), 
+        "disk_free_gb": round(usage.free / (1024**3), 2), 
+        "is_tatkal_window": is_tatkal_window(), 
+        "process_id": os.getpid(),
+        "services": container.get_all_status(),
+        "system_state": (await control_plane.get_level()).name
+    }
 
 @router.get("/system/resource-history")
 async def get_resource_history():

@@ -8,8 +8,9 @@ while true; do
     echo "🚀 Starting app protocol v2.5..."
     python backup_system.py # Backup before each start
     
-    # Run uvicorn
-    uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers
+    # Run Gunicorn with Uvicorn workers (Production Mode)
+    # Using -c gunicorn_conf.py for structured settings
+    gunicorn -c gunicorn_conf.py app:app
     
     EXIT_CODE=$?
     echo "⚠️ Backend process exited with code $EXIT_CODE"

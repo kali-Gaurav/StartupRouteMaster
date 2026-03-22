@@ -65,21 +65,30 @@ class CategorizationEngine:
         sorted_optimal = sorted(hydrated, key=lambda x: x.get("score", 0), reverse=True)
         top_5_optimal = sorted_optimal[:5]
 
-        # 5. Structural Buckets (Subtask 8.3)
-        direct = [rd for rd in hydrated if len(rd.get("transfers", [])) == 0]
-        one_transfer = [rd for rd in hydrated if len(rd.get("transfers", [])) == 1]
-        two_transfer = [rd for rd in hydrated if len(rd.get("transfers", [])) == 2]
-        three_plus_transfer = [rd for rd in hydrated if len(rd.get("transfers", [])) >= 3]
+        # 5. Structural Buckets — use segment count (legs) for reliable transfer detection
+        # 1 segment = direct (0 transfers), 2 = 1T, 3 = 2T, 4+ = 3T+
+        def get_transfer_count(rd):
+            segs = rd.get("segments", rd.get("legs", []))
+            return max(0, len(segs) - 1)
+
+        direct = sorted([rd for rd in hydrated if get_transfer_count(rd) == 0],
+                        key=lambda x: x.get("score", 0), reverse=True)
+        one_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) == 1],
+                              key=lambda x: x.get("score", 0), reverse=True)[:15]
+        two_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) == 2],
+                              key=lambda x: x.get("score", 0), reverse=True)[:10]
+        three_plus_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) >= 3],
+                                     key=lambda x: x.get("score", 0), reverse=True)[:5]
 
         # 6. Final Response with Metadata
         response = {
             "top_3_confirmed_fastest": top_3_confirmed,
             "top_10_fastest_total": top_10_fastest,
             "top_5_optimal": top_5_optimal,
-            "direct": sorted(direct, key=lambda x: x.get("total_duration", 99999))[:10],
-            "one_transfer": sorted(one_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
-            "two_transfer": sorted(two_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
-            "three_plus_transfer": sorted(three_plus_transfer, key=lambda x: x.get("total_duration", 99999))[:10],
+            "direct": direct,                            # All direct routes
+            "one_transfer": one_transfer,                # Capped at 15
+            "two_transfer": two_transfer,                # Capped at 10
+            "three_plus_transfer": three_plus_transfer,  # Capped at 5
             "alternative_sorted": sorted_by_speed[:20],
             "metadata": {
                 "total_yield": len(hydrated),

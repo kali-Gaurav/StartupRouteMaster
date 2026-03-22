@@ -1,4 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
+import datetime as dt_mod
+try:
+    import _datetime
+    if not hasattr(dt_mod, 'datetime_CAPI') and hasattr(_datetime, 'datetime_CAPI'):
+        setattr(dt_mod, 'datetime_CAPI', getattr(_datetime, 'datetime_CAPI'))
+except Exception:
+    pass
+
 from sqlalchemy.orm import Session
 import logging
 import time

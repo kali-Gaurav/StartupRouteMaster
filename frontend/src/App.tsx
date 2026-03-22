@@ -127,7 +127,7 @@ const AppContent = () => {
       <NetworkStatusBanner />
       <DevBootstrap />
       <DevDebugPanel />
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<ErrorBoundary name="Landing"><Index /></ErrorBoundary>} />

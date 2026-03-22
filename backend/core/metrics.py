@@ -1,8 +1,9 @@
 import time
 import asyncio
-import psutil
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
+from core.resource_monitor import resource_monitor
+from core.system_monitor import system_monitor
 
 logger = logging.getLogger("jit-metrics")
 
@@ -17,6 +18,7 @@ class SurgeLevel(IntEnum):
 class TelemetryMetrics:
     """
     Prometheus-style Metrics for Predictive JIT and System Health.
+    Refactored for Task 2: Resource-Aware Global Monitor.
     """
     def __init__(self):
         self.predictions_total = 0
@@ -31,53 +33,22 @@ class TelemetryMetrics:
         self.ml_batch_efficiency = 0.0
         self.reaper_events = 0
         self.event_loop_latency_ms = 0.0
-        self.cpu_usage_percent = 0.0
-        self.ram_usage_percent = 0.0
         self._last_surge_level = SurgeLevel.NORMAL
-        self._surge_override: Optional[SurgeLevel] = None # Subtask 4.6 testing
+        self._surge_override: Optional[SurgeLevel] = None 
         self.start_time = time.time()
 
     @property
-    def surge_level(self) -> SurgeLevel:
-        """
-        Subtask 4.2: Dynamic Surge Level Calculation.
-        Uses multiple metrics with hysteresis to prevent rapid state flapping.
-        """
-        # [4.6 Override for testing]
-        if hasattr(self, '_surge_override') and self._surge_override is not None:
-            return self._surge_override
+    def cpu_usage_percent(self) -> float:
+        return system_monitor.stats["cpu"]
 
-        cpu = self.cpu_usage_percent
-        ram = self.ram_usage_percent
-        latency = self.event_loop_latency_ms
+    @property
+    def ram_usage_percent(self) -> float:
+        return system_monitor.stats["ram"]
 
-        # Determine raw level
-        raw_level = SurgeLevel.NORMAL
-        if cpu > 95 or ram > 95 or latency > 200:
-            raw_level = SurgeLevel.CRITICAL
-        elif cpu > 85 or ram > 90 or latency > 100:
-            raw_level = SurgeLevel.HIGH
-        elif cpu > 70 or ram > 80 or latency > 50:
-            raw_level = SurgeLevel.ELEVATED
-
-        # Hysteresis: only downgrade if we are well below the threshold
-        # (Prevent flip-flopping)
-        if raw_level < self._last_surge_level:
-            # Check if we are really clear of the previous threshold
-            # We need to be 5% below the trigger to downgrade
-            is_still_high = False
-            if self._last_surge_level == SurgeLevel.CRITICAL:
-                is_still_high = cpu > 90 or ram > 90 or latency > 150
-            elif self._last_surge_level == SurgeLevel.HIGH:
-                is_still_high = cpu > 80 or ram > 85 or latency > 80
-            elif self._last_surge_level == SurgeLevel.ELEVATED:
-                is_still_high = cpu > 65 or ram > 75 or latency > 40
-            
-            if is_still_high:
-                return self._last_surge_level
-
-        self._last_surge_level = raw_level
-        return raw_level
+    @property
+    def surge_level(self):
+        """Task 4: Delegates to centralized system_monitor state."""
+        return system_monitor.current_state
 
     def get_report(self) -> Dict[str, Any]:
         uptime = time.time() - self.start_time
@@ -85,13 +56,14 @@ class TelemetryMetrics:
         if (self.correct_predictions + self.false_positives) > 0:
             accuracy = self.correct_predictions / (self.correct_predictions + self.false_positives)
 
+        stats = resource_monitor.get_stats()
         return {
             "uptime_seconds": uptime,
             "performance": {
                 "surge_level": self.surge_level.name,
                 "event_loop_latency_ms": round(self.event_loop_latency_ms, 4),
-                "cpu_usage_percent": round(self.cpu_usage_percent, 2),
-                "ram_usage_percent": round(self.ram_usage_percent, 2),
+                "cpu_usage_percent": round(stats["cpu_percent"], 2),
+                "ram_usage_percent": round(stats["ram_percent"], 2),
                 "reaper_events": self.reaper_events
             },
             "predictions": {
@@ -114,60 +86,62 @@ class TelemetryMetrics:
         }
 
     def get_adaptive_timeout(self, base_timeout: float = 30.0) -> float:
-        """
-        Subtask 1.3: Adaptive Timeout Logic.
-        Reduces timeout dynamically as system load increases.
-        """
-        # If latency is high (>50ms), start cutting timeout
         latency_factor = 1.0
         if self.event_loop_latency_ms > 50:
-            latency_factor = 0.5 # Half the timeout if loop is struggling
+            latency_factor = 0.5 
         elif self.event_loop_latency_ms > 20:
             latency_factor = 0.8
             
-        # If CPU is very high, cut further
         cpu_factor = 1.0
         if self.cpu_usage_percent > 90:
             cpu_factor = 0.5
             
         final_timeout = base_timeout * latency_factor * cpu_factor
-        return max(2.0, final_timeout) # Minimum 2 seconds
+        return max(2.0, final_timeout)
 
     @property
     def is_overloaded(self) -> bool:
-        """
-        Subtask 1.4: Global Overload Signal.
-        Returns True if the system is hitting critical VPS resource limits.
-        """
+        stats = resource_monitor.get_stats()
         return (
             self.event_loop_latency_ms > 100 or 
-            self.cpu_usage_percent > 95 or 
-            self.ram_usage_percent > 95
+            stats["cpu_percent"] > 95 or 
+            stats["ram_percent"] > 95
         )
 
+    # [Task 13.8] Performance Heatmaps
+    async def record_latency(self, endpoint: str, duration_ms: float):
+        """Records latency into Redis buckets (Histogram)."""
+        from services.multi_layer_cache import multi_layer_cache
+        if not multi_layer_cache.redis: return
+        
+        # Buckets: 50ms, 100ms, 250ms, 500ms, 1s, 2s, 5s+
+        buckets = [50, 100, 250, 500, 1000, 2000, 5000]
+        selected_bucket = "inf"
+        for b in buckets:
+            if duration_ms <= b:
+                selected_bucket = str(b)
+                break
+        
+        try:
+            key = f"metrics:heatmap:{endpoint}"
+            await multi_layer_cache.redis.hincrby(key, selected_bucket, 1)
+            # Add to a global SLA counter [13.9]
+            if duration_ms > 2000:
+                await multi_layer_cache.redis.incr(f"metrics:sla_violations:{endpoint}")
+        except Exception: pass
+
 class DegradationManager:
-    """
-    Subtask 1.11: Graceful Degradation Manager.
-    Decides which features to disable based on real-time load.
-    """
     @staticmethod
     def should_skip_heavy_expansion() -> bool:
-        # If CPU > 80% or Latency > 50ms, skip multi-day expansion
         return jit_metrics.cpu_usage_percent > 80 or jit_metrics.event_loop_latency_ms > 50
 
     @staticmethod
     def should_skip_ml_prediction() -> bool:
-        # If RAM is tight or CPU is high, skip ML
         return jit_metrics.ram_usage_percent > 90 or jit_metrics.cpu_usage_percent > 85
 
-# Global Instance
 jit_metrics = TelemetryMetrics()
 
 async def run_event_loop_monitor():
-    """
-    Subtask 1.1: Event Loop Latency Monitor.
-    Measures the 'lag' in the event loop by timing how long asyncio.sleep(0.1) actually takes.
-    """
     logger.info("⏱️ Event Loop Monitor Started.")
     while True:
         start = time.perf_counter()
@@ -175,26 +149,6 @@ async def run_event_loop_monitor():
         actual_delay = (time.perf_counter() - start - 0.1) * 1000 
         
         jit_metrics.event_loop_latency_ms = (0.8 * jit_metrics.event_loop_latency_ms) + (0.2 * max(0, actual_delay))
+        system_monitor.update_loop_latency(actual_delay)
         await asyncio.sleep(0.5)
 
-async def run_hardware_monitor():
-    """
-    Subtask 1.2: Hardware Monitor.
-    Samples CPU and RAM usage to drive load-shedding logic.
-    """
-    logger.info("🖥️ Hardware Monitor Started.")
-    # Initialize CPU sampling
-    psutil.cpu_percent(interval=None)
-    
-    while True:
-        try:
-            jit_metrics.cpu_usage_percent = psutil.cpu_percent(interval=None)
-            jit_metrics.ram_usage_percent = psutil.virtual_memory().percent
-            
-            if jit_metrics.cpu_usage_percent > 90 or jit_metrics.ram_usage_percent > 90:
-                logger.warning(f"⚠️ High Resource Usage: CPU {jit_metrics.cpu_usage_percent}% | RAM {jit_metrics.ram_usage_percent}%")
-                
-        except Exception as e:
-            logger.error(f"Hardware Monitor Error: {e}")
-            
-        await asyncio.sleep(1.0)

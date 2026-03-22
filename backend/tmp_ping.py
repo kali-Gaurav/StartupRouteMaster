@@ -1,1 +1,0 @@
-import urllib.request\nimport sys\ntry:\n    r = urllib.request.urlopen(" http://127.0.0.1:8000/api/health\, timeout=5)\n print(r.status)\n print(r.read().decode()[:500])\nexcept Exception as e:\n print(\ERROR\, type(e).__name__, e)\n

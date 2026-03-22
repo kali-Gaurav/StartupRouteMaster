@@ -75,8 +75,12 @@ class UserSession(UserBase):
     user_id = Column(String(36), ForeignKey("users.id"))
     ip_address = Column(String(50))
     user_agent = Column(String(255))
+    device_info = Column(JSON, nullable=True) # E.g., {"os": "iOS", "browser": "Safari"}
     login_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
     duration_seconds = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    refresh_token_hash = Column(String(255), nullable=True) # For refresh token rotation
     
     user = relationship("User", back_populates="sessions")
 
@@ -456,6 +460,11 @@ class Stop(TransitBase):
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
     data_quality_score = Column(Integer, default=0)
+    
+    # [HUB EXPANSION]
+    connectivity_score = Column(Float, default=0.0, index=True)
+    hub_type = Column(String(50), default="regular")
+    is_major_junction = Column(Boolean, default=False)
     
     stop_times = relationship("StopTime", back_populates="stop")
     facilities = relationship("StationFacilities", back_populates="stop", uselist=False)

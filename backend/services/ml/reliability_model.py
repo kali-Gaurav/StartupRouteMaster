@@ -84,19 +84,17 @@ class MLReliabilityModel:
         distance_km: Optional[float] = None,
     ) -> float:
         """
-        Predict route reliability (0 = unreliable, 1 = very reliable).
-
-        Args:
-            trip_id: Trip ID
-            origin_stop_id: Starting stop
-            destination_stop_id: Ending stop
-            departure_time: Departure datetime
-            transfer_duration_minutes: Duration of next transfer (if applicable)
-            distance_km: Route distance in km
-
-        Returns:
-            Reliability score in [0, 1]
+        Predict route reliability.
+        Task 43: Pruned fallback during resource surges.
         """
+        # 1. Check system load (Task 43)
+        import psutil
+        from database.config import Config
+        if Config.SLIM_MODE or psutil.virtual_memory().percent > 90:
+            return await self._fallback_heuristic(
+                transfer_duration_minutes, distance_km, departure_time
+            )
+
         if self.loaded and self.model is not None:
             try:
                 features = await self._extract_features(
@@ -109,9 +107,8 @@ class MLReliabilityModel:
                 )
                 X = self._vectorize_features(features)
                 if hasattr(self.model, "predict_proba"):
-                    pred = self.model.predict_proba(X)[0][1]  # P(reliable=1)
+                    pred = self.model.predict_proba(X)[0][1]
                 else:
-                    # Fallback if model is a regressor or doesn't support proba
                     pred = self.model.predict(X)[0]
                 return float(np.clip(pred, 0.0, 1.0))
             except Exception as e:

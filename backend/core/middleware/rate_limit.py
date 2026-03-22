@@ -3,6 +3,10 @@ import logging
 from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.responses import JSONResponse
 from utils.responses import SafeJSONResponse
+from services.multi_layer_cache import multi_layer_cache
+from database.config import Config
+from utils.rate_limiter import RedisTokenBucket
+from core.orchestrator import orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +22,7 @@ class RateLimitMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
-        from utils.responses import SafeJSONResponse
         try:
-            from services.multi_layer_cache import multi_layer_cache
-            from database.config import Config
-            from utils.rate_limiter import RedisTokenBucket
-
             path = scope.get("path", "")
             
             # 1. Skip for health/static/root/stats
@@ -41,8 +40,6 @@ class RateLimitMiddleware:
                 return await self.app(scope, receive, send)
 
             # 3. Distributed Rate Limit Logic (Token Bucket)
-            # Refill rate: limit/60 (tokens per second)
-            # Burst capacity: same as minute limit
             limiter = RedisTokenBucket(multi_layer_cache.redis)
             limit = Config.RATE_LIMIT_PER_MINUTE
             rate = limit / 60.0
@@ -54,7 +51,6 @@ class RateLimitMiddleware:
                 logger.warning(f"⚠️ Rate limit exceeded (Token Bucket): {client_ip} on {path}")
                 
                 # [4.7] Report to PenaltyBox
-                from core.orchestrator import orchestrator
                 await orchestrator.penalty_box.report_error(client_ip)
 
                 response = SafeJSONResponse(

@@ -41,7 +41,7 @@ class DatabaseLifecycleMiddleware:
             await self.app(scope, receive, send)
         except Exception as e:
             # 4. Global Rollback on unhandled exception
-            logger.error(f"🔗 DB Lifecycle: Request failed, rolling back session. RID: {scope.get('request_id', 'N/A')}")
+            logger.error(f"🔗 DB Lifecycle: Request failed, rolling back session. RID: {scope.get('request_id', 'N/A')} - Error: {e}", exc_info=True)
             try:
                 await db.rollback()
             except Exception as rb_err:

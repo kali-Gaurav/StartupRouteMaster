@@ -1,13 +1,20 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 from database.models import EscrowStatus, BookingStatus
 
 class BookingResponseSchema(BaseModel):
+    # Task 28: Optimized Pydantic V2 Model
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        str_strip_whitespace=True
+    )
+
     id: str
     user_id: str
     pnr_number: Optional[str] = None
-    booking_status: Any # Using Any to avoid complex Enum issues with Pydantic v2 if needed, but let's try BookingStatus first
+    booking_status: Any 
     escrow_status: EscrowStatus
     escrow_message: Optional[str] = None
     amount_paid: float
@@ -27,13 +34,12 @@ class BookingResponseSchema(BaseModel):
     trip_id: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class SubmitUtrSchema(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
     utr_number: str = Field(..., min_length=12, max_length=12, pattern=r"^\d{12}$")
 
 class EscrowBookingCreateSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     passenger_name: str
     passenger_age: int
     train_number: str

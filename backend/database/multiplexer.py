@@ -83,8 +83,9 @@ class AsyncMultiplexerSession:
         await self.write_session.close()
         if self._ghost: await self._ghost.close()
 
+from database.session import AsyncSessionUser, AsyncSessionTransit, _pools_initialized, initialize_database_pools
+
 async def get_multiplexed_db():
-    from database.session import AsyncSessionUser, AsyncSessionTransit, _pools_initialized, initialize_database_pools
     if not _pools_initialized:
         await initialize_database_pools()
         

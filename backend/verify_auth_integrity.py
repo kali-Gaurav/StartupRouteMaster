@@ -9,7 +9,7 @@ from datetime import datetime
 # Add the current directory to sys.path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from database.session import SessionLocal, initialize_database_pools
+from database.session import SessionLocal, initialize_database_pools, init_db
 from database.models import User, Profile
 from api.dependencies import get_current_user
 
@@ -24,8 +24,12 @@ class TestAuthIntegrity(unittest.TestCase):
     def setUpClass(cls):
         # Set environment to development for local sqlite
         os.environ["ENVIRONMENT"] = "development"
+        # Force a unique test database for this run to avoid conflicts
+        os.environ["USER_DB_URL"] = "sqlite:///test_user_store.db"
         # Initialize database pools
         asyncio.run(initialize_database_pools())
+        # Ensure tables are created
+        asyncio.run(init_db())
 
     def setUp(self):
         self.db = SessionLocal()
@@ -36,6 +40,15 @@ class TestAuthIntegrity(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
+    @classmethod
+    def tearDownClass(cls):
+        # Clean up test database file
+        if os.path.exists("test_user_store.db"):
+            try:
+                os.remove("test_user_store.db")
+            except:
+                pass
+
     def create_mock_supabase_user(self, id, email=None, phone=None, metadata=None):
         mock_user = MagicMock()
         # Crucial fix: return actual strings for ID/email/phone, not another mock
@@ -45,17 +58,14 @@ class TestAuthIntegrity(unittest.TestCase):
         type(mock_user).user_metadata = PropertyMock(return_value=metadata or {})
         return mock_user
 
-    @patch("api.dependencies.supabase")
-    def test_email_user_sync(self, mock_supabase):
+    @patch("microservices.shared.auth.SharedAuthManager.verify_jwt")
+    def test_email_user_sync(self, mock_verify):
         """Test that a new Supabase email user is correctly synced to local DB."""
         sb_id = str(uuid.uuid4())
         test_email = f"test-{uuid.uuid4()}@example.com"
         
         mock_user = self.create_mock_supabase_user(sb_id, email=test_email, metadata={"full_name": "Test User", "role": "user"})
-        # Supabase client returns a response object with a .user property
-        mock_resp = MagicMock()
-        mock_resp.user = mock_user
-        mock_supabase.auth.get_user.return_value = mock_resp
+        mock_verify.return_value = mock_user
 
         request = MockRequest()
         user = get_current_user(request, token="mock-token", db=self.db)
@@ -68,16 +78,14 @@ class TestAuthIntegrity(unittest.TestCase):
         self.assertIsNotNone(profile)
         self.assertEqual(profile.name, "Test User")
 
-    @patch("api.dependencies.supabase")
-    def test_phone_user_sync(self, mock_supabase):
+    @patch("microservices.shared.auth.SharedAuthManager.verify_jwt")
+    def test_phone_user_sync(self, mock_verify):
         """Test that a new Supabase phone user is correctly synced to local DB."""
         sb_id = str(uuid.uuid4())
         test_phone = "+919876543210"
         
         mock_user = self.create_mock_supabase_user(sb_id, phone=test_phone, metadata={"full_name": "Phone User", "role": "user"})
-        mock_resp = MagicMock()
-        mock_resp.user = mock_user
-        mock_supabase.auth.get_user.return_value = mock_resp
+        mock_verify.return_value = mock_user
 
         request = MockRequest()
         user = get_current_user(request, token="mock-token", db=self.db)
@@ -85,20 +93,20 @@ class TestAuthIntegrity(unittest.TestCase):
         self.assertIsNotNone(user)
         self.assertEqual(user.supabase_id, sb_id)
         
-        profile = self.db.query(Profile).filter(Profile.id == sb_id).first()
+        # Profile might have ID as sb_id (if sync_user uses it) or local user.id
+        # SharedAuthManager uses Profile(user_id=user.id)
+        profile = self.db.query(Profile).filter(Profile.user_id == user.id).first()
         self.assertIsNotNone(profile)
         self.assertEqual(profile.name, "Phone User")
 
-    @patch("api.dependencies.supabase")
-    def test_admin_role_sync(self, mock_supabase):
+    @patch("microservices.shared.auth.SharedAuthManager.verify_jwt")
+    def test_admin_role_sync(self, mock_verify):
         """Test that roles from Supabase metadata are reflected locally."""
         sb_id = str(uuid.uuid4())
         test_email = f"test-admin-{uuid.uuid4()}@example.com"
         
         mock_user = self.create_mock_supabase_user(sb_id, email=test_email, metadata={"full_name": "Admin User", "role": "admin"})
-        mock_resp = MagicMock()
-        mock_resp.user = mock_user
-        mock_supabase.auth.get_user.return_value = mock_resp
+        mock_verify.return_value = mock_user
 
         request = MockRequest()
         
@@ -107,22 +115,21 @@ class TestAuthIntegrity(unittest.TestCase):
 
         # Change role to 'user'
         mock_user.user_metadata["role"] = "user"
+        # We need a new mock_user or clear cache if there was any, but get_current_user calls it fresh
         user = get_current_user(request, token="token2", db=self.db)
         self.assertEqual(user.role, "user")
 
-    @patch("api.dependencies.supabase")
-    def test_existing_user_linking(self, mock_supabase):
+    @patch("microservices.shared.auth.SharedAuthManager.verify_jwt")
+    def test_existing_user_linking(self, mock_verify):
         """Test that an existing local user (pre-supabase) is linked correctly."""
         test_email = f"test-legacy-{uuid.uuid4()}@example.com"
-        legacy_user = User(id=str(uuid.uuid4()), email=test_email, role="user")
+        legacy_user = User(id=str(uuid.uuid4()), email=test_email, role="user", is_verified=True)
         self.db.add(legacy_user)
         self.db.commit()
 
         sb_id = str(uuid.uuid4())
         mock_user = self.create_mock_supabase_user(sb_id, email=test_email, metadata={"full_name": "Legacy User"})
-        mock_resp = MagicMock()
-        mock_resp.user = mock_user
-        mock_supabase.auth.get_user.return_value = mock_resp
+        mock_verify.return_value = mock_user
 
         request = MockRequest()
         user = get_current_user(request, token="mock-token", db=self.db)

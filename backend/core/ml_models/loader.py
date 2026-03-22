@@ -21,7 +21,25 @@ class ModelLoader:
         self.load_timeout = 0.5 
 
     async def get_model(self, model_name: str) -> Any:
-        """Retrieves model with fallback and usage tracking."""
+        """Task 13: Lazy ML Hydration with Low-RAM Fallback."""
+        # 1. Trigger JIT (Will skip if in SLIM_MODE)
+        from services.jit_manager import jit_manager
+        await jit_manager.ensure_ready("ML_MODELS")
+        
+        # 2. Check memory pressure
+        import psutil
+        if psutil.virtual_memory().percent > 90:
+            logger.warning(f"🚨 Low RAM ({psutil.virtual_memory().percent}%). Bypassing ML for {model_name}.")
+            return self._get_heuristic_model(model_name)
+
+        # 3. Check if node was skipped (SLIM_MODE)
+        node = jit_manager.nodes.get("ML_MODELS")
+        if node and node.state == "READY" and model_name not in self.loaded_models:
+            # If it was marked READY but not actually loaded (e.g. skipped)
+            # we check if we should still return a heuristic
+            if jit_manager.low_power_mode:
+                return self._get_heuristic_model(model_name)
+
         self.last_used[model_name] = time.time()
         
         if model_name in self.loaded_models:

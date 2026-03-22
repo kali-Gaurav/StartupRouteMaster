@@ -98,6 +98,8 @@ class CacheService:
         self._lru = LocalLRU(capacity=500) # L0 Local Cache
         self.version_prefix = Config.REDIS_VERSION_PREFIX
         try:
+            if not redis_url:
+                raise ValueError("REDIS_URL is not set")
             # Note: decode_responses=True is important for locks and general use
             self.redis = redis.from_url(redis_url, decode_responses=True, ssl_cert_reqs=None)
             self.redis.ping()

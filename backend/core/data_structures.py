@@ -37,6 +37,7 @@ class SeatStatus(Enum):
 class Persona(str, Enum):
     """Core Routing Personas aligned with SearchRequestSchema."""
     EMERGENCY = "emergency" # Speed > Comfort
+    FAST = "fast"           # Speed > Cost
     COMFORT = "comfort"     # No GN, AC only, min transfers
     BUDGET = "budget"       # Cheapest CNF
     ECONOMY = "economy"     # Alias for budget
@@ -87,6 +88,18 @@ class AllocationStatus(Enum):
     CANCELLED = "cancelled"
 
 
+class SearchPhase(str, Enum):
+    """
+    Subtask 2.1: Multi-Phase Search Strategy.
+    - STRICT: Minimal wait, hubs only, high comfort.
+    - MODERATE: Standard windows, expanded hubs.
+    - RELAXED: Long waits, any station, lower comfort/ratio.
+    """
+    STRICT = "strict"
+    MODERATE = "moderate"
+    RELAXED = "relaxed"
+
+
 # ==============================================================================
 # CORE ROUTING STRUCTURES
 # ==============================================================================
@@ -106,6 +119,38 @@ class SpaceTimeNode:
         return (self.stop_id == other.stop_id and
                 self.timestamp == other.timestamp and
                 self.event_type == other.event_type)
+
+
+class SearchPhase(str, Enum):
+    """Phases for progressive search expansion."""
+    STRICT = "strict"      # Phase 1: High quality, fast
+    MODERATE = "moderate"  # Phase 2: Standard
+    RELAXED = "relaxed"    # Phase 3: Exhaustive/Fallback
+
+
+@dataclass
+class DynamicWaitConfig:
+    """Configuration for dynamic waiting time calculations."""
+    min_wait_minutes: int = 15
+    max_wait_minutes: int = 240
+    beta: float = 0.5  # Curve factor for exponential wait limits
+    night_penalty_multiplier: float = 1.5 # Penalty for waits between 01:00-04:00
+    
+    # Phase-based max_wait multipliers
+    phase_multipliers: Dict[SearchPhase, float] = field(default_factory=lambda: {
+        SearchPhase.STRICT: 0.5,     # Only allow 50% of calculated max_wait
+        SearchPhase.MODERATE: 1.0,   # Standard max_wait
+        SearchPhase.RELAXED: 2.0     # Allow 2x max_wait for difficult routes
+    })
+
+
+@dataclass
+class TransferWindow:
+    """Holding bounds for a specific transfer."""
+    min_wait: int
+    max_wait: int
+    is_night_wait: bool = False
+    comfort_score: float = 1.0
 
 
 @dataclass
@@ -141,7 +186,15 @@ def ensure_datetime(val: Any) -> datetime:
 
 @dataclass
 class RouteSegment:
-    """Represents a single train journey segment (leg)."""
+    """[Task 20.1] Memory Optimized Route Segment using __slots__."""
+    __slots__ = (
+        'trip_id', 'departure_stop_id', 'arrival_stop_id', 'departure_time',
+        'arrival_time', 'duration_minutes', 'distance_km', 'departure_code',
+        'arrival_code', 'fare', 'train_name', 'train_number', 'service_mask',
+        'is_unconfirmed_allowed', 'has_pantry', 'departure_platform',
+        'arrival_platform', 'metadata', 'stop_sequence', '_cached_dict'
+    )
+    
     trip_id: Any
     departure_stop_id: int
     arrival_stop_id: int
@@ -149,23 +202,50 @@ class RouteSegment:
     arrival_time: Union[datetime, str]
     duration_minutes: int
     distance_km: float
-    departure_code: str = ""        # Station Code (e.g. NDLS)
-    arrival_code: str = ""          # Station Code
-    fare: float = 0.0               
-    train_name: str = ""
-    train_number: str = ""
-    service_mask: int = 127         # 7-bit mask for days of run
-    is_unconfirmed_allowed: bool = False 
-    has_pantry: bool = False 
-    departure_platform: Optional[str] = None
-    arrival_platform: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    departure_code: str
+    arrival_code: str
+    fare: float 
+    train_name: str 
+    train_number: str 
+    service_mask: int 
+    is_unconfirmed_allowed: bool 
+    has_pantry: bool 
+    departure_platform: Optional[str] 
+    arrival_platform: Optional[str] 
+    metadata: Dict[str, Any] 
+    stop_sequence: int
+    
+    def __init__(self, **kwargs):
+        # Define defaults for critical fields to avoid NoneType errors during calculations
+        defaults = {
+            'duration_minutes': 0,
+            'distance_km': 0.0,
+            'fare': 0.0,
+            'service_mask': 127,
+            'is_unconfirmed_allowed': False,
+            'has_pantry': False,
+            'train_name': "",
+            'train_number': "",
+            'departure_code': "",
+            'arrival_code': "",
+            'metadata': {}
+        }
+        for slot in self.__slots__:
+            if slot == '_cached_dict':
+                continue
+            val = kwargs.get(slot)
+            if val is None and slot in defaults:
+                val = defaults[slot]
+            setattr(self, slot, val)
+        self._cached_dict = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Unified API serialization."""
+        """[Task 20.3] Cached Serialization to avoid redundant processing."""
+        if self._cached_dict: return self._cached_dict
+        
         dep = self.departure_time
         arr = self.arrival_time
-        return {
+        self._cached_dict = {
             "trip_id": self.trip_id,
             "train_number": self.train_number,
             "train_name": self.train_name,
@@ -183,6 +263,7 @@ class RouteSegment:
             "arrival_stop_id": self.arrival_stop_id,
             "metadata": self.metadata
         }
+        return self._cached_dict
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'RouteSegment':
@@ -202,7 +283,10 @@ class RouteSegment:
             arrival_platform=data.get("arrival_platform"),
             has_pantry=data.get("has_pantry", False),
             departure_stop_id=data.get("departure_stop_id", 0),
-            arrival_stop_id=data.get("arrival_stop_id", 0)
+            arrival_stop_id=data.get("arrival_stop_id", 0),
+            metadata=data.get("metadata", {}),
+            service_mask=data.get("service_mask", 127),
+            is_unconfirmed_allowed=data.get("is_unconfirmed_allowed", False)
         )
 
 @dataclass
@@ -240,33 +324,60 @@ class TransferConnection:
 
 @dataclass
 class Route:
-    """Complete multi-transfer journey."""
-    segments: List[RouteSegment] = field(default_factory=list)
-    transfers: List[TransferConnection] = field(default_factory=list)
-    total_duration: int = 0
-    total_cost: float = 0.0
-    total_distance: float = 0.0
-    score: float = 0.0
-    reliability: float = 1.0
-    availability_probability: float = 1.0 
-    is_locked: bool = True  
-    is_featured: bool = False
-    highlight_label: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    visited_stations: Set[int] = field(default_factory=set)
+    """[Task 20.1] High-Performance Path with __slots__ and Pre-computation."""
+    __slots__ = (
+        'segments', 'transfers', 'total_duration', 'total_cost', 
+        'total_distance', 'score', 'reliability', 'availability_probability',
+        'is_locked', 'is_featured', 'highlight_label', 'metadata', 
+        'visited_stations', '_journey_id_cache', '_cached_dict'
+    )
+    
+    segments: List[RouteSegment]
+    transfers: List[TransferConnection]
+    total_duration: int
+    total_cost: float
+    total_distance: float
+    score: float
+    reliability: float
+    availability_probability: float
+    is_locked: bool
+    is_featured: bool
+    highlight_label: Optional[str]
+    metadata: Dict[str, Any]
+    visited_stations: Set[int]
 
-    def __post_init__(self):
+    def __init__(self, segments=None, transfers=None, **kwargs):
+        # Default initialization for RAPTOR/TBR hot-paths
+        self.segments = segments if segments is not None else kwargs.get('segments', [])
+        self.transfers = transfers if transfers is not None else kwargs.get('transfers', [])
+        
+        self.total_duration = kwargs.get('total_duration', 0)
+        self.total_cost = kwargs.get('total_cost', 0.0)
+        self.total_distance = kwargs.get('total_distance', 0.0)
+        self.score = kwargs.get('score', 0.0)
+        self.reliability = kwargs.get('reliability', 1.0)
+        self.availability_probability = kwargs.get('availability_probability', 1.0)
+        self.is_locked = kwargs.get('is_locked', False)
+        self.is_featured = kwargs.get('is_featured', False)
+        self.highlight_label = kwargs.get('highlight_label')
+        self.metadata = kwargs.get('metadata', {})
+        self.visited_stations = kwargs.get('visited_stations', set())
+        
+        self._journey_id_cache = None
+        self._cached_dict = None
+        
+        # Manually call post_init logic for derived fields
         if self.segments:
             for s in self.segments:
                 self.visited_stations.add(s.departure_stop_id)
                 self.visited_stations.add(s.arrival_stop_id)
             if self.total_duration == 0:
-                self.total_duration = sum(seg.duration_minutes for seg in self.segments) + \
-                                     sum(t.duration_minutes for t in self.transfers)
+                self.total_duration = sum(getattr(seg, 'duration_minutes', 0) for seg in self.segments) + \
+                                     sum(getattr(t, 'duration_minutes', 0) for t in self.transfers)
             if self.total_cost == 0:
-                self.total_cost = sum(seg.fare for seg in self.segments)
+                self.total_cost = sum(getattr(seg, 'fare', 0.0) for seg in self.segments)
             if self.total_distance == 0:
-                self.total_distance = sum(seg.distance_km for seg in self.segments)
+                self.total_distance = sum(getattr(seg, 'distance_km', 0.0) for seg in self.segments)
 
     def add_segment(self, segment: RouteSegment):
         self.segments.append(segment)
@@ -282,15 +393,16 @@ class Route:
 
     @property
     def journey_id(self) -> str:
-        """Deterministic ID for deduplication."""
+        """Deterministic ID with O(1) caching."""
+        if self._journey_id_cache: return self._journey_id_cache
         if not self.segments: return "unknown"
-        # Format: T12625_20260308_T12626_20260309
         parts = []
         for s in self.segments:
-            dep_dt = ensure_datetime(s.departure_time)
-            dep_str = dep_dt.strftime("%Y%m%d%H%M")
-            parts.append(f"{s.train_number or s.trip_id}_{dep_str}")
-        return "_".join(parts)
+            dep = s.departure_time
+            dt_obj = dep if isinstance(dep, datetime) else ensure_datetime(dep)
+            parts.append(f"{s.train_number or s.trip_id}_{dt_obj.strftime('%Y%m%d%H%M')}")
+        self._journey_id_cache = "_".join(parts)
+        return self._journey_id_cache
 
     def to_dict(self) -> Dict[str, Any]:
         """Master serialization matching SearchService expectations."""

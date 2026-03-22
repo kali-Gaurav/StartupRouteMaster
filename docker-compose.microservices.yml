@@ -1,0 +1,78 @@
+
+version: '3.8'
+
+services:
+  gateway:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - SERVICE_NAME=gateway
+      - SEARCH_SERVICE_URL=http://search-service:8002
+      - ROUTE_SERVICE_URL=http://route-service:8001
+    depends_on:
+      - search-service
+      - route-service
+
+  search-service:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/search_service/Dockerfile
+    ports:
+      - "8002:8002"
+    env_file: .env
+    environment:
+      - SERVICE_NAME=search-service
+      - ROUTE_SERVICE_URL=http://route-service:8001
+      - ML_SERVICE_URL=http://ml-service:8003
+    depends_on:
+      - route-service
+      - ml-service
+
+  route-service:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/route_service/Dockerfile
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      - SERVICE_NAME=route-service
+
+  ml-service:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/ml_service/Dockerfile
+    ports:
+      - "8003:8003"
+    env_file: .env
+    environment:
+      - SERVICE_NAME=ml-service
+
+  orchestrator:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/orchestrator/Dockerfile
+    env_file: .env
+    environment:
+      - SERVICE_NAME=orchestrator
+
+  auth-service:
+    build:
+      context: ./backend
+      dockerfile: ./microservices/auth_service/Dockerfile
+    ports:
+      - "8006:8006"
+    env_file: .env
+    environment:
+      - SERVICE_NAME=auth-service
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

@@ -26,6 +26,13 @@ class PredictionFeedbackLoop:
         self.lock = asyncio.Lock() # Thread safety
 
     async def record_prediction(self, client_id: str, intent: str, path: str):
+        # Task 36: Probabilistic Sampling for Feedback
+        from core.resource_monitor import resource_monitor
+        if resource_monitor.should_throttle_tasks():
+            import random
+            if random.random() > 0.2: # Only sample 20% during load
+                return
+
         async with self.lock:
             if client_id not in self.pending_verifications:
                 self.pending_verifications[client_id] = []
@@ -52,11 +59,17 @@ class PredictionFeedbackLoop:
                         from core.metrics import jit_metrics
                         jit_metrics.correct_predictions += 1
                         self.multipliers[attempt.intent] = min(1.2, self.multipliers[attempt.intent] + 0.01)
-                        logger.debug(f"🎯 Reward: {attempt.intent} -> {self.multipliers[attempt.intent]:.2f}")
+                        # Reduced logging for performance (Task 30 style)
+                        if random.random() < 0.1:
+                            logger.debug(f"🎯 Reward: {attempt.intent} -> {self.multipliers[attempt.intent]:.2f}")
 
     async def run_punishment_cycle(self):
         while True:
-            await asyncio.sleep(10)
+            # Task 36: Adaptive Cycle
+            from core.resource_monitor import resource_monitor
+            sleep_time = 30 if resource_monitor.should_throttle_tasks() else 10
+            await asyncio.sleep(sleep_time)
+            
             async with self.lock:
                 now = time.time()
                 to_remove_clients = []

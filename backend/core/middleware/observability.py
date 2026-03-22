@@ -18,16 +18,28 @@ class ObservabilityMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
 
-        from utils.structured_logging import request_id_var
-        
         # 1. Initialize metadata early to avoid UnboundLocalError
         method = scope.get("method", "UNKNOWN")
         path = scope.get("path", "UNKNOWN")
-        headers_dict = dict(scope.get("headers", []))
-        request_id = headers_dict.get(b"x-request-id", str(uuid.uuid4()).encode()).decode()
+        
+        # Efficiently extract x-request-id and x-correlation-id 
+        request_id = None
+        correlation_id = None
+        for k, v in scope.get("headers", []):
+            k_lower = k.lower()
+            if k_lower == b"x-request-id":
+                request_id = v.decode()
+            elif k_lower == b"x-correlation-id":
+                correlation_id = v.decode()
+        
+        if not request_id:
+            request_id = str(uuid.uuid4())
+        if not correlation_id:
+            correlation_id = request_id # Join by default
         
         # 2. Set ContextVar for downstream loggers
-        token = request_id_var.set(request_id)
+        from utils.structured_logging import request_id_var
+        token = request_id_var.set(f"{request_id}|{correlation_id}")
         start_time = time.perf_counter()
         
         status_code = [0] 
@@ -49,6 +61,16 @@ class ObservabilityMiddleware:
                         f"HTTP {method} {path} -> {status_code[0]} "
                         f"({duration:.2f}ms)"
                     )
+                    # [Task 13.8] Log to Heatmap
+                    from core.metrics import jit_metrics
+                    import asyncio
+                    asyncio.create_task(jit_metrics.record_latency(path, duration))
+
+                    # [Task 13.9] SLA Monitoring
+                    if duration > 2000: # 2s SLA
+                        from services.alert_service import alert_service
+                        import asyncio
+                        asyncio.create_task(alert_service.monitor_sla(duration, path))
 
         try:
             try:
@@ -59,6 +81,15 @@ class ObservabilityMiddleware:
                     f"EXCEPTION {method} {path} after {duration:.2f}ms: {e}", 
                     exc_info=True
                 )
+                # [Task 13.6] Critical Alert on unhandled crash
+                from services.alert_service import alert_service
+                import asyncio
+                asyncio.create_task(alert_service.send_alert(
+                    f"🔥 CRITICAL: {type(e).__name__} at {path}", 
+                    f"Method: {method}\nPath: {path}\nDuration: {duration:.2f}ms\nError: {str(e)}",
+                    level="CRITICAL",
+                    extra={"request_id": request_id}
+                ))
                 # Standardized internal crash response
                 from utils.responses import SafeJSONResponse
                 response = SafeJSONResponse(

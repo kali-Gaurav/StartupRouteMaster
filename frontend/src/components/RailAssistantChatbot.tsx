@@ -766,17 +766,18 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
   return (
     <div className={cn("fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none", className)}>
       
-      <AnimatePresence>
+      <AnimatePresence mode="wait">
         {isOpen && (
-          <motion.div 
-            ref={containerRef}
-            initial={{ scale: 0, opacity: 0, originX: 1, originY: 1 }}
+          <div ref={containerRef} className="contents pointer-events-auto">
+            <motion.div 
+              key="chatbot-main-panel"
+              initial={{ scale: 0.8, opacity: 0, originX: 1, originY: 1 }}
             animate={{ 
               scale: 1, 
               opacity: 1,
               x: isError ? [0, -10, 10, -10, 10, 0] : 0 
             }}
-            exit={{ scale: 0, opacity: 0, originX: 1, originY: 1 }}
+            exit={{ scale: 0.8, opacity: 0, originX: 1, originY: 1 }}
             transition={{ 
               type: "spring", 
               damping: 25, 
@@ -944,6 +945,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
           <AnimatePresence>
             {showNewMessageBadge && (
               <motion.button 
+                key="new-message-badge"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 20 }}
@@ -1048,6 +1050,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
             </div>
           </div>
         </motion.div>
+          </div>
         )}
       </AnimatePresence>
 

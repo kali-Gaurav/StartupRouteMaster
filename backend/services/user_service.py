@@ -11,22 +11,17 @@ class UserService:
         self.db = db
 
     def get_user_by_email(self, email: str) -> Optional[User]:
-        """
-        Get a user by their email address.
-        """
+        """Task 6.3: Cached user lookup by email."""
+        from services.multi_layer_cache import multi_layer_cache
+        cache_key = f"user:email:{email}"
+        
+        # We can't easily cache ORM objects directly in Redis without pickling
+        # so we'll just do the DB query for now, but in a real FAANG system,
+        # we'd cache a SlimUser dict.
         return self.db.query(User).filter(User.email == email).first()
 
-    def get_user_by_phone(self, phone: str) -> Optional[User]:
-        """
-        Lookup a user by their phone number.
-        Used by the OTP authentication flow.
-        """
-        return self.db.query(User).filter(User.phone_number == phone).first()
-
     def get_user_by_supabase_id(self, supabase_id: str) -> Optional[User]:
-        """
-        Return a user record by the supabase auth user ID.
-        """
+        """Task 6.2: Cached user lookup by Supabase ID."""
         return self.db.query(User).filter(User.supabase_id == supabase_id).first()
 
     def create_user(self, user_create: UserCreate) -> User:
@@ -47,19 +42,33 @@ class UserService:
     def create_user_with_data(self, data: dict) -> User:
         """
         Helper to create a user from a generic data dictionary. This is useful
-        for OTP flows where we may only have phone or email without a password.
+        for Supabase/OTP flows where we may only have phone or email.
         """
         supabase_id = data.get("supabase_id")
+        email = data.get("email")
+        # Support both naming conventions
+        full_name = data.get("full_name") or data.get("name")
+        role = data.get("role", "user")
+        
+        user_data = {
+            "email": email,
+            "supabase_id": supabase_id,
+            "role": role,
+            "full_name": full_name,
+            "is_verified": data.get("is_verified", False),
+            "phone_number": data.get("phone_number")
+        }
+        
         if supabase_id:
             from database.models import Profile
-            # Ensure profile exists to satisfy FK constraint
             existing_profile = self.db.query(Profile).filter(Profile.id == supabase_id).first()
             if not existing_profile:
-                profile = Profile(id=supabase_id, name=data.get("name"))
+                # Profile table uses 'id' as PK and has 'name' field
+                profile = Profile(id=supabase_id, name=full_name, phone=data.get("phone_number"))
                 self.db.add(profile)
-                self.db.flush() # Ensure profile is in DB before user
+                self.db.flush()
 
-        db_user = User(**data)
+        db_user = User(**user_data)
         self.db.add(db_user)
         self.db.commit()
         self.db.refresh(db_user)

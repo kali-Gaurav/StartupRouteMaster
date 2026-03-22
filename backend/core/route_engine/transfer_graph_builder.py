@@ -50,10 +50,14 @@ class TransferGraphBuilder:
 
     # Standard minimum transfer times by station type (minutes)
     MIN_TRANSFER_TIMES = {
-        'major_junction': 8,      # Large stations with clear transfers
-        'regular_station': 12,    # Standard stations
-        'small_station': 15,      # Small stations
-        'metros': 5,              # Metro/urban rail
+        'major_hub': 5,      # Major hub (elite)
+        'large': 10,         # Large station
+        'medium': 15,        # Medium station
+        'small': 20,         # Small station
+        'major_junction': 8, # Legacy mapping
+        'regular_station': 12, # Legacy mapping
+        'small_station': 15,   # Legacy mapping
+        'metros': 5,           # Metro/urban rail
     }
 
     # Maximum walking distance for implicit transfers (meters)
@@ -227,18 +231,21 @@ class TransferGraphBuilder:
         to_stop = self.session.query(Stop).filter(Stop.id == to_stop_id).first()
         
         def get_station_type(stop: Stop) -> str:
+            # Prefer new station_size attribute if present
+            if stop and hasattr(stop, 'station_size') and getattr(stop, 'station_size'):
+                return getattr(stop, 'station_size')
             if stop and stop.is_major_junction:
-                return 'major_junction'
+                return 'major_hub'
             # Could add more logic based on stop properties
-            return 'regular_station'
+            return 'medium'
         
-        from_type = get_station_type(from_stop) if from_stop else 'regular_station'
-        to_type = get_station_type(to_stop) if to_stop else 'regular_station'
+        from_type = get_station_type(from_stop) if from_stop else 'medium'
+        to_type = get_station_type(to_stop) if to_stop else 'medium'
         
         # Use worst case (longest time needed)
         return max(
-            self.MIN_TRANSFER_TIMES.get(from_type, 12),
-            self.MIN_TRANSFER_TIMES.get(to_type, 12)
+            self.MIN_TRANSFER_TIMES.get(from_type, 15),
+            self.MIN_TRANSFER_TIMES.get(to_type, 15)
         )
 
     @staticmethod

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class StationSuggestion:
+    id: int # Primary key for engines
     code: str
     name: str
     city: str
@@ -81,6 +82,7 @@ class StationSearchEngine:
                 if any(x in name.upper() for x in ['JN', 'CENTRAL', 'TERMINUS']): pop += 50
                 
                 s = StationSuggestion(
+                    id=row['id'],
                     code=code, name=name, city=city, state=row['state'],
                     latitude=float(row['latitude'] or 0.0),
                     longitude=float(row['longitude'] or 0.0),

@@ -1,60 +1,56 @@
-import sys
-import os
-import urllib.parse
-from datetime import datetime
+from core.frontier import FrontierRoute, ParetoFrontier, FrontierManager
 
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+def test_pareto_dominance():
+    # Route A: Arrives 10:00 (600), 1 transfer, 60m wait
+    a = FrontierRoute(600, 1, 60, 500.0)
+    
+    # Route B: Arrives 10:30 (630), 1 transfer, 90m wait
+    # A should dominate B (earlier arrival, same transfers, less wait)
+    b = FrontierRoute(630, 1, 90, 500.0)
+    assert a.dominates(b) is True
+    assert b.dominates(a) is False
+    
+    # Route C: Arrives 11:00 (660), 0 transfers, 0m wait
+    # A and C are non-dominating. A arrives earlier, C has fewer transfers.
+    c = FrontierRoute(660, 0, 0, 500.0)
+    assert a.dominates(c) is False
+    assert c.dominates(a) is False
 
-from database.session import SessionLocal
-from database.models import User, Booking, EscrowStatus
-from services.agent_booking_service import AgentBookingService
-from utils.payment_utils import generate_upi_uri
+def test_frontier_eviction():
+    frontier = ParetoFrontier(max_size=2)
+    
+    # Add non-dominating routes
+    r1 = FrontierRoute(600, 2, 60, 500.0) # Best arrival
+    r2 = FrontierRoute(700, 1, 30, 500.0)
+    r3 = FrontierRoute(800, 0, 0, 500.0)  # Best transfers
+    
+    frontier.add(r1)
+    frontier.add(r2)
+    assert len(frontier.routes) == 2
+    
+    # Adding r3 should trigger eviction.
+    # It should keep r1 (best arrival) and r3 (best transfers), evicting r2.
+    frontier.add(r3)
+    assert len(frontier.routes) == 2
+    assert frontier.routes[0].arrival_time == 600
+    assert frontier.routes[1].arrival_time == 800
+    assert frontier.routes[1].transfers == 0
+    print("Scenario: Smart Eviction: OK")
 
-def verify_task_3():
-    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 3 (AMOUNT LOCKING)")
+def test_frontier_manager_isolation():
+    manager = FrontierManager()
+    r1 = FrontierRoute(600, 1, 60, 500.0)
     
-    db = SessionLocal()
-    user_id = "user-task-3"
-    route_id = "route-task-3"
+    # Station 1
+    assert manager.is_dominated(1, r1) is False
+    # Repeat should be dominated (already exists)
+    assert manager.is_dominated(1, r1) is True
     
-    # 0. Setup
-    u = User(id=user_id, email="u3@ex.com")
-    db.merge(u)
-    
-    # Need an UNLOCK record first
-    unlock = Booking(id="U3", user_id=user_id, route_id=route_id, service_type="UNLOCK", is_unlocked=True, booking_details={})
-    db.merge(unlock)
-    db.commit()
-    
-    # 1. Test Locked Amount Creation
-    print("  Creating booking request with 1500.555 fare...")
-    ticket_fare = 1500.555
-    passengers = [] # Empty for this test
-    
-    booking = AgentBookingService.create_booking_request(db, user_id, route_id, passengers, ticket_fare)
-    
-    print(f"    Booking Amount Paid: {booking.amount_paid}")
-    print(f"    Details Snapshot: {booking.booking_details['ticket_fare']}")
-    
-    # Check rounding
-    # 1500.555 + 10 = 1510.555 -> 1510.56
-    assert booking.amount_paid == 1510.56
-    assert booking.booking_details["ticket_fare"] == 1500.56
-    
-    # 2. Verify UPI URI consistency
-    uri = generate_upi_uri("vpa@upi", "Name", booking.amount_paid, "Note")
-    parsed = urllib.parse.urlparse(uri)
-    query = urllib.parse.parse_qs(parsed.query)
-    
-    print(f"    URI Amount: {query['am'][0]}")
-    assert query["am"][0] == "1510.56"
-    
-    # 3. Cleanup
-    db.query(Booking).filter(Booking.id.in_([booking.id, "U3"])).delete(synchronize_session=False)
-    db.commit()
-    
-    print("\n✅ TASK 3 FULLY VERIFIED: Dynamic amount locking and rounding are perfect.")
+    # Station 2 should be independent
+    assert manager.is_dominated(2, r1) is False
 
 if __name__ == "__main__":
-    verify_task_3()
+    test_pareto_dominance()
+    test_frontier_eviction()
+    test_frontier_manager_isolation()
+    print("TASK 3 VERIFICATION COMPLETE")

@@ -1,6 +1,7 @@
 # Core FastAPI libraries
 fastapi==0.109.2
 uvicorn==0.24.0
+gunicorn==21.2.0
 pydantic==2.6.4
 pydantic-settings==2.2.1
 
@@ -70,3 +71,7 @@ pytest==8.0.2
 pytest-asyncio==0.23.5
 pytest-cov==4.1.0
 pre-commit==3.6.2
+
+boto3
+
+botocore

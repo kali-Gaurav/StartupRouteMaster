@@ -26,11 +26,19 @@ class ConstraintsEngine:
         """
         Creates a high-performance RouteConstraints object with persona-specific weights.
         """
-        # 1. Normalize Persona
-        try:
-            persona = Persona(persona_str.lower())
-        except ValueError:
-            persona = Persona.COMFORT
+        # 1. Normalize Persona [Task 25.9]
+        persona_map = {
+            "budget": Persona.BUDGET,
+            "economy": Persona.BUDGET,
+            "fast": Persona.FAST,
+            "emergency": Persona.EMERGENCY,
+            "comfort": Persona.COMFORT,
+            "premium": Persona.COMFORT,
+            "family": Persona.FAMILY,
+            "standard": Persona.STANDARD
+        }
+        
+        persona = persona_map.get(persona_str.lower(), Persona.STANDARD)
 
         # 2. Date Validation (Task 4.4)
         if travel_date:

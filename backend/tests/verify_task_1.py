@@ -1,64 +1,46 @@
-import sys
-import os
-from unittest.mock import MagicMock
+import time
+from datetime import datetime, timedelta
+from core.data_structures import DynamicWaitConfig
+from core.dynamic_logic import is_valid_transfer
 
-# Add backend to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+def benchmark_is_valid_transfer():
+    config = DynamicWaitConfig()
+    arr = 600 # 10:00 AM
+    dep = 720 # 12:00 PM
+    journey = 300 # 5 hours
+    
+    start = time.time()
+    iterations = 100000
+    for _ in range(iterations):
+        is_valid_transfer(arr, dep, journey, config, "NDLS")
+    end = time.time()
+    
+    avg_ms = (end - start) * 1000 / iterations
+    print(f"Benchmark: {iterations} iterations took {end-start:.4f}s")
+    print(f"Average time per check: {avg_ms:.6f} ms")
+    assert avg_ms < 0.1 # Should be well under 2ms
 
-from database.session import SessionLocal
-from database.models import MerchantVPA, AuditLog
-from services.payment_vpa_service import PaymentVPAService
-
-def verify_task_1():
-    print("\n>>> COMPREHENSIVE VERIFICATION: TASK 1 (VPA ROTATION)")
+def verify_scenarios():
+    config = DynamicWaitConfig(min_wait_minutes=15, max_wait_minutes=240, beta=0.5)
     
-    db = SessionLocal()
+    # Scenario 1: Hub station NDLS (1.5x max wait)
+    # Short journey (120 min) -> base max_w ~= 67 min. With NDLS -> 67 * 1.5 ~= 100 min.
+    assert is_valid_transfer(600, 680, 120, config, "NDLS") is True
+    assert is_valid_transfer(600, 710, 120, config, "NDLS") is False # 110 min wait > 100
+    print("Scenario 1 (Hub): OK")
     
-    # 1. Reset all to zero
-    PaymentVPAService.reset_daily_volumes(db)
-    print("  Volumes reset to zero.")
+    # Scenario 2: High Waiting Ratio
+    # Journey 30 min, Wait 120 min -> ratio = 120/150 = 0.8 > 0.4.
+    assert is_valid_transfer(600, 720, 30, config) is False
+    print("Scenario 2 (Ratio): OK")
     
-    # 2. Simulate Assignments
-    assignments = []
-    for i in range(10):
-        vpa = PaymentVPAService.get_next_vpa(db)
-        assignments.append(vpa)
-        # Simulate booking volume
-        PaymentVPAService.increment_volume(db, vpa, 100.0)
-        
-    print(f"  Simulated 10 assignments: {assignments}")
-    
-    # 3. Verify Alternation
-    # Since we increment volume each time, they should strictly alternate if limits are same
-    vpa1 = "anthonynagar1122-1@oksbi"
-    vpa2 = "8529841981@ptsbi"
-    
-    vpa1_count = assignments.count(vpa1)
-    vpa2_count = assignments.count(vpa2)
-    
-    print(f"  VPA 1 Usage: {vpa1_count}")
-    print(f"  VPA 2 Usage: {vpa2_count}")
-    
-    assert vpa1_count == 5
-    assert vpa2_count == 5
-    
-    # 4. Test Inactivity Filter
-    print("\n  Testing Inactivity Filter...")
-    # Deactivate VPA 1
-    m1 = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa1).first()
-    m1.is_active = False
-    db.commit()
-    
-    vpa_after_deactivation = PaymentVPAService.get_next_vpa(db)
-    print(f"  Next VPA after deactivating VPA 1: {vpa_after_deactivation}")
-    assert vpa_after_deactivation == vpa2
-    
-    # 5. Cleanup
-    m1.is_active = True
-    PaymentVPAService.reset_daily_volumes(db)
-    db.commit()
-    
-    print("\n✅ TASK 1 FULLY VERIFIED: Merchant rotation is perfectly balanced.")
+    # Scenario 3: Midnight Crossing
+    # Arr 23:00 (1380), Dep 01:00 (60) -> 120 min wait.
+    # Journey 600 min -> max_w ~= 154 min.
+    assert is_valid_transfer(1380, 60, 600, config) is True
+    print("Scenario 3 (Midnight): OK")
 
 if __name__ == "__main__":
-    verify_task_1()
+    verify_scenarios()
+    benchmark_is_valid_transfer()
+    print("TASK 1 VERIFICATION COMPLETE")

@@ -1,5 +1,6 @@
 import math
 import logging
+import numpy as np
 from typing import Dict, Optional, List
 from sqlalchemy import text
 
@@ -124,6 +125,16 @@ def calculate_fare(
         "distance": round(distance_km, 2),
         "class": coach_code
     }
+
+def calculate_fares_batch(distances: np.ndarray, coach_class: str, is_tatkal: bool = False, db=None) -> np.ndarray:
+    """[Task 28.2] Vectorized batch fare calculation using numpy."""
+    rates = {"SL": 0.6, "3A": 1.2, "2A": 2.5, "1A": 4.5}
+    rate = rates.get(coach_class, 0.6)
+    base_fares = distances * rate
+    agent_fee = 10.0
+    tatkal_charge = 150.0 if is_tatkal else 0.0
+    total_fares = base_fares + agent_fee + tatkal_charge
+    return np.round(total_fares, 2)
 
 def calculate_unlock_fee(db=None) -> float:
     """[7.11] Link fees to PlatformConfig."""

@@ -2,45 +2,48 @@ import logging
 import sys
 import os
 import time
+import asyncio
 from functools import lru_cache
-from typing import Union, Optional
+from typing import Union, Optional, Dict
 
 from fastapi import Depends, HTTPException, Header
 from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from jose import jwt, JWTError
 
 # Ensure correct pathing
 sys.path.insert(0, os.path.dirname(__file__))
 
-from database.session import SessionUser, get_auth_db, get_db
+from database.session import SessionUser, get_auth_db, get_db, get_async_auth_db
 from database.models import User, Profile
 from config import Config
 from utils.crypto import encrypt_pii
+from services.multi_layer_cache import multi_layer_cache
 
 logger = logging.getLogger(__name__)
 
+# --- REDIS SESSION CACHE (Task 15 / 19) ---
+# Replaces local _user_cache with high-performance, evicting Redis store via multi_layer_cache.
+
 # ============================================================================
-# AUTHENTICATION (Upgraded - Task 5 & Subtask 4.5)
+# AUTHENTICATION (Upgraded - Task 5 & Task 19)
 # ============================================================================
 
 async def get_current_user(
     authorization: Optional[str] = Header(None), 
-    db: Session = Depends(get_auth_db)
+    db: AsyncSession = Depends(get_async_auth_db)
 ) -> User:
     """
-    Upgraded Auth Sync Flow:
-    1. Validate JWT (exp, aud claims)
-    2. Atomic Sync (Transaction)
-    3. PII Encryption (Email/Phone)
+    Task 19: FAANG-Level Async Auth Pipeline.
+    Includes Redis Multi-Layer Caching and non-blocking AsyncSession lookups.
     """
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing Authorization Header")
     
     token = authorization.replace("Bearer ", "")
     
-    # --- 1. JWT Claims Validation (Real Implementation) ---
+    # 1. JWT Validation
     try:
-        # Decode and verify the token
         secret = Config.SUPABASE_JWT_SECRET
         if not secret:
             logger.error("SUPABASE_JWT_SECRET not set in Config")
@@ -69,38 +72,65 @@ async def get_current_user(
         logger.error(f"Unexpected Auth Error: {e}")
         raise HTTPException(status_code=401, detail="Authentication Failed")
 
-    # --- 2. Atomic Sync (Suggestion #2) ---
-    try:
-        # Check if user exists, if not create
-        user = db.query(User).filter(User.supabase_id == supabase_id).first()
-        
-        if not user:
-            logger.info(f"Creating encrypted local record for {supabase_id}")
+    # 2. Redis-Backed Multi-Layer Cache Check
+    cache_key = f"auth:user:{supabase_id}"
+    cached_user_data = await multi_layer_cache.get(cache_key)
+    
+    if cached_user_data:
+        # Rehydrate User object (minimal rehydration for dependency usage)
+        # Note: We return the cached dict if it's sufficient, or create a dummy model instance
+        user = User(**cached_user_data)
+        return user
+
+    # 3. Async Database Lookup & Sync
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    
+    async def get_or_create_user():
+        try:
+            result = await db.execute(
+                select(User).filter(User.supabase_id == supabase_id).options(selectinload(User.profile))
+            )
+            user = result.scalars().first()
             
-            # Use a nested transaction for atomic creation
-            with db.begin_nested(): 
-                # --- 3. PII Encryption (Suggestion #4) ---
+            if not user:
+                logger.info(f"Creating encrypted local record for {supabase_id}")
                 user = User(
                     supabase_id=supabase_id,
                     email=encrypt_pii(email),
                     role="user"
                 )
                 db.add(user)
-                db.flush() # Ensure user.id is generated
-                
+                await db.flush()
                 profile = Profile(id=supabase_id, user_id=user.id)
                 db.add(profile)
-            
-            db.commit() # Commit the creation
-        
-        return user
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Auth sync failed: {e}")
-        raise HTTPException(status_code=401, detail="Session Sync Failed")
+                await db.commit()
+            return user
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Auth sync failed: {e}")
+            raise HTTPException(status_code=401, detail="Session Sync Failed")
 
-@lru_cache(maxsize=1)
-def get_route_engine():
-    from core.route_engine.engine import RailwayRouteEngine
-    return RailwayRouteEngine()
+    user = await get_or_create_user()
+    
+    # 4. Update Redis Cache (Serialize to dict)
+    user_data = {
+        "id": user.id,
+        "supabase_id": user.supabase_id,
+        "email": user.email,
+        "role": user.role,
+        "is_verified": user.is_verified,
+        "full_name": user.full_name
+    }
+    await multi_layer_cache.put(cache_key, user_data, ttl=600) # 10 minutes cache
+    return user
+
+async def get_route_engine():
+    """
+    Task 19: Efficient Route Engine Injection.
+    Uses JIT to ensure engine is ready without blocking thread.
+    """
+    from services.jit_manager import jit_manager
+    await jit_manager.ensure_ready("GRAPH")
+    from core.route_engine import route_engine
+    return route_engine
