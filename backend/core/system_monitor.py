@@ -172,6 +172,11 @@ class SystemMonitor:
             self._state = SystemState.NORMAL
 
     @property
+    def current_state(self) -> SystemState:
+        """Returns the current calculated system state."""
+        return self._state
+
+    @property
     def stats(self) -> Dict[str, Any]:
         """Task 4.7 & 4.8: Expose metrics API / Prometheus format."""
         p99 = self.latency_tracker.get_percentile(99)

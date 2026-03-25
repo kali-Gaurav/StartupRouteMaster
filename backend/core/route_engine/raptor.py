@@ -73,7 +73,7 @@ class OptimizedRAPTOR:
         except (ValueError, OSError):
             return datetime(1980, 1, 1)
 
-    async def find_routes(self, source_stop_id: int, dest_stop_id: int,
+    async def find_routes(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
         self._nodes_explored = 0 
@@ -81,8 +81,10 @@ class OptimizedRAPTOR:
         
         # [Task 27.14] Distance-Aware Window Optimization
         if graph:
-            s_stop = graph.stop_cache.get(source_stop_id)
-            d_stop = graph.stop_cache.get(dest_stop_id)
+            s_id = source_stop_id[0] if isinstance(source_stop_id, list) else source_stop_id
+            d_id = dest_stop_id[0] if isinstance(dest_stop_id, list) else dest_stop_id
+            s_stop = graph.stop_cache.get(s_id)
+            d_stop = graph.stop_cache.get(d_id)
             if s_stop and d_stop:
                 # Simple Euclidean-ish distance check for window scaling
                 dist = ((s_stop.latitude - d_stop.latitude)**2 + (s_stop.longitude - d_stop.longitude)**2)**0.5 * 111
@@ -104,29 +106,64 @@ class OptimizedRAPTOR:
             # [Task 10] Depth Logging
             logger.info(f"RAPTOR Yield: {len(results)} routes, Traversal Depth: {self._nodes_explored} nodes.")
             return results
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.warning(f"RAPTOR search timed out. Returning partial results if available. Traversal Depth: {self._nodes_explored}")
-            # If it timed out, the sync method might have been interrupted.
-            # A more robust fix is to catch it inside the sync method to preserve the state.
-            pass
+            return []
         except Exception as e:
             logger.error(f"RAPTOR Search Error: {str(e)}")
             return []
-        
-        return []
 
-    def _find_routes_sync(self, source_stop_id: int, dest_stop_id: int,
+    def _find_routes_sync(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: TimeDependentGraph, check_timeout: Any) -> List[Route]:
         if not graph: return []
 
+        # [Task 5] Metro-Group Expansion for RAPTOR (Optimized: accept pre-resolved IDs)
+        from utils.station_utils import get_metro_group_codes
+        
+        if isinstance(source_stop_id, list):
+            src_ids = set(source_stop_id)
+        else:
+            src_stop = graph.stop_cache.get(source_stop_id)
+            src_ids = {source_stop_id}
+            if src_stop:
+                for code in get_metro_group_codes(src_stop.code):
+                    s = graph.get_stop_by_code(code)
+                    if s: src_ids.add(s.id)
+
+        if isinstance(dest_stop_id, list):
+            dest_ids = set(dest_stop_id)
+        else:
+            dest_stop = graph.stop_cache.get(dest_stop_id)
+            dest_ids = {dest_stop_id}
+            if dest_stop:
+                for code in get_metro_group_codes(dest_stop.code):
+                    d = graph.get_stop_by_code(code)
+                    if d: dest_ids.add(d.id)
+
         search_results = []
         try:
-            # 1. Multi-Departure Search
-            search_results = self._search_multi_departure_sync(graph, source_stop_id, dest_stop_id, departure_date, constraints, check_timeout)
+            # 1. Multi-Departure Search (Expanded)
+            # We iterate over all source stations in the group
+            for s_id in src_ids:
+                # We can share the same visited/frontier state across sources if we want to find *any* route
+                # But typically RAPTOR starts fresh. For "Any Source -> Any Dest", we can just run them sequentially
+                # and merge, OR initialize frontier with ALL of them (Standard RAPTOR).
+                # OptimizedRAPTOR seems designed for single-source frontier init.
+                # Let's run it for each source and merge, checking budget.
+                
+                # Update: _search_multi_departure_sync resets frontier. 
+                # Ideally, we should initialize frontier with ALL source stops.
+                # But refactoring _search_multi_departure_sync to take List[int] is safer.
+                pass # Placeholder logic, moving to _search_multi_departure_sync call below
+
+            # Actually, let's just pass the single source_stop_id for now if we don't want to refactor the whole method signature,
+            # BUT the task requires expansion.
+            # Best way: Refactor _search_multi_departure_sync to accept src_ids list.
+            search_results = self._search_multi_departure_sync(graph, list(src_ids), dest_ids, departure_date, constraints, check_timeout)
+
         except TimeoutError:
             logger.warning("RAPTOR search loop timed out. Proceeding to hydrate available routes.")
-            # We don't return here; we fall through to hydrate whatever is in routes_by_round
 
         # 2. Hydrate & Rank [Task 7]
         routes = [self._hydrate_route(sr, graph) for sr in search_results]
@@ -159,11 +196,12 @@ class OptimizedRAPTOR:
         routes.sort(key=lambda x: x.total_duration) # Requirement: Sort by travel time
         return routes[:constraints.max_results]
 
-    def _search_multi_departure_sync(self, graph: TimeDependentGraph, source_stop_id: int, dest_stop_id: int,
+    def _search_multi_departure_sync(self, graph: TimeDependentGraph, source_stop_ids: List[int], dest_stop_ids: Set[int],
                                       departure_dt: datetime, constraints: RouteConstraints, check_timeout: Any) -> List[SearchRoute]:
         """
         [Task 1a] Scan multi-departure window instead of single point.
         [Task 1b] Merge results from all departures in the window.
+        [Task 5] Support Multi-Source Multi-Target (MSMT).
         """
         # [Analysis Only] Surge level detection
         from core.resource_monitor import resource_monitor, SurgeLevel
@@ -175,61 +213,62 @@ class OptimizedRAPTOR:
         departure_ts = int(departure_dt.timestamp())
         self.frontier_manager.reset()
 
-        # Round 0
+        # Round 0: Initialize from ALL source stations
         lookahead = constraints.range_minutes if constraints.range_minutes > 0 else 1440
-        pattern_deps = graph.get_pattern_departures(source_stop_id, departure_dt, lookahead=lookahead)
+        
+        for src_id in source_stop_ids:
+            pattern_deps = graph.get_pattern_departures(src_id, departure_dt, lookahead=lookahead)
 
-        for pid, deps in pattern_deps.items():
-            check_timeout()
-            if self._nodes_explored > self.traversal_budget: break
-            
-            for dep_time, trip_id in deps:
-                # [Task 8] Bitset Pruning - Only prune if it's the LAST possible round
-                # and the trip doesn't reach the destination.
-                # For round 0, we almost always want to explore for transfers.
-                if self.max_transfers == 0:
-                    if not graph.can_reach_destination(trip_id, dest_stop_id): continue
+            for pid, deps in pattern_deps.items():
+                check_timeout()
+                if self._nodes_explored > self.traversal_budget: break
                 
-                # [Task 27.6] Overlay cancellation check
-                if graph.overlay.is_cancelled(trip_id): continue
+                for dep_time, trip_id in deps:
+                    # [Task 8] Bitset Pruning
+                    if self.max_transfers == 0:
+                        # Check if reaches ANY destination
+                        if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): continue
+                    
+                    # [Task 27.6] Overlay cancellation check
+                    if graph.overlay.is_cancelled(trip_id): continue
 
-                self._nodes_explored += 1
-                raw = graph.get_trip_segments_raw(trip_id)
-                if raw is None: continue
-                
-                weekday_bit = 1 << dep_time.weekday()
-                delay_secs = graph.overlay.get_trip_delay(trip_id) * 60
-                dep_ts_int = int(dep_time.timestamp())
-                start_found = False
-                total_dist_m = 0
-                
-                for row in raw:
-                    s_dep_sid, s_arr_sid = int(row[1]), int(row[2])
-                    s_dep_ts, s_arr_ts = int(row[3]) + delay_secs, int(row[4]) + delay_secs
+                    self._nodes_explored += 1
+                    raw = graph.get_trip_segments_raw(trip_id)
+                    if raw is None: continue
                     
-                    if not start_found:
-                        # [Audit Fix] Fuzzy match for timestamp to avoid precision jitter
-                        if s_dep_sid == source_stop_id and abs(s_dep_ts - dep_ts_int) < 2:
-                            if not (int(row[6]) & weekday_bit): break
-                            start_found = True
-                        else: continue
+                    weekday_bit = 1 << dep_time.weekday()
+                    delay_secs = graph.overlay.get_trip_delay(trip_id) * 60
+                    dep_ts_int = int(dep_time.timestamp())
+                    start_found = False
+                    total_dist_m = 0
+                    
+                    for row in raw:
+                        s_dep_sid, s_arr_sid = int(row[1]), int(row[2])
+                        s_dep_ts, s_arr_ts = int(row[3]) + delay_secs, int(row[4]) + delay_secs
+                        
+                        if not start_found:
+                            # [Audit Fix] Fuzzy match
+                            if s_dep_sid == src_id and abs(s_dep_ts - dep_ts_int) < 2:
+                                if not (int(row[6]) & weekday_bit): break
+                                start_found = True
+                            else: continue
 
-                    total_dist_m += int(row[5])
-                    arr_mins = (s_arr_ts - departure_ts) // 60
-                    wait_mins = (dep_ts_int - departure_ts) // 60
-                    
-                    # [Task 3] Frequency-Aware Sizing
-                    f_size = get_frequency_aware_sizer(s_arr_sid, graph)
-                    
-                    if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                        arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0
-                    ), max_size=f_size):
-                        sr = SearchRoute(trip_id=trip_id, from_stop_id=source_stop_id, to_stop_id=s_arr_sid,
-                                         departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts),
-                                         round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins)
-                        sr.add_to_bloom(source_stop_id); sr.add_to_bloom(s_arr_sid)
-                        routes_by_round[0].append(sr)
-                        if s_arr_sid == dest_stop_id: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+                        total_dist_m += int(row[5])
+                        arr_mins = (s_arr_ts - departure_ts) // 60
+                        wait_mins = (dep_ts_int - departure_ts) // 60
+                        
+                        # [Task 3] Frequency-Aware Sizing
+                        f_size = get_frequency_aware_sizer(s_arr_sid, graph)
+                        
+                        if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
+                            arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0
+                        ), max_size=f_size):
+                            sr = SearchRoute(trip_id=trip_id, from_stop_id=src_id, to_stop_id=s_arr_sid,
+                                             departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts),
+                                             round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins)
+                            sr.add_to_bloom(src_id); sr.add_to_bloom(s_arr_sid)
+                            routes_by_round[0].append(sr)
+                            if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
 
         # Onward Rounds
         for r in range(1, self.max_transfers + 1):
@@ -237,17 +276,17 @@ class OptimizedRAPTOR:
             if self._nodes_explored > self.traversal_budget: break
             for psr in routes_by_round[r-1]:
                 check_timeout()
-                if psr.to_stop_id == dest_stop_id: continue
-                new_found = self._process_transfers_sync(psr, graph, dest_stop_id, constraints, departure_dt, r, check_timeout)
+                if psr.to_stop_id in dest_stop_ids: continue
+                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout)
                 routes_by_round[r].extend(new_found)
 
         all_results = []
         for r_idx in range(self.max_transfers + 1):
             for sr in routes_by_round[r_idx]:
-                if sr.to_stop_id == dest_stop_id: all_results.append(sr)
+                if sr.to_stop_id in dest_stop_ids: all_results.append(sr)
         return self._deduplicate_search_routes(all_results)
 
-    def _process_transfers_sync(self, psr: SearchRoute, graph: TimeDependentGraph, dest_stop_id: int, 
+    def _process_transfers_sync(self, psr: SearchRoute, graph: TimeDependentGraph, dest_stop_ids: Set[int], 
                                  constraints: RouteConstraints, base_departure_dt: datetime, 
                                  round_num: int, check_timeout: Any) -> List[SearchRoute]:
         new_routes = []
@@ -266,7 +305,7 @@ class OptimizedRAPTOR:
                 check_timeout()
                 if self._nodes_explored > self.traversal_budget: break
                 for dep_t, trip_id in deps[:self.max_onward_departures]:
-                    if not graph.can_reach_destination(trip_id, dest_stop_id): continue
+                    if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): continue
                     if graph.overlay.is_cancelled(trip_id): continue
 
                     self._nodes_explored += 1
@@ -297,7 +336,7 @@ class OptimizedRAPTOR:
                                              round_num=round_num, parent=psr, transfer=tr,
                                              total_dist=total_dist, total_wait=total_wait, visited_bloom=psr.visited_bloom)
                             sr.add_to_bloom(s_arr_sid); new_routes.append(sr)
-                            if s_arr_sid == dest_stop_id: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+                            if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
         return new_routes
 
     def _hydrate_route(self, sr: SearchRoute, graph: TimeDependentGraph) -> Route:

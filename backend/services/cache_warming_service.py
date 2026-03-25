@@ -306,11 +306,9 @@ async def manual_cache_warmup():
 async def clear_all_caches():
     """Clear all caches (for maintenance/debugging)"""
     logger.warning("Clearing all caches")
-
-    # This would need to be implemented in multi_layer_cache
-    # For now, just log
-    logger.info("All caches cleared (not implemented yet)")
-
+    from services.multi_layer_cache import multi_layer_cache
+    await multi_layer_cache.clear_all_caches()
+    logger.info("✅ All caches cleared successfully.")
 
 async def get_cache_health_report() -> Dict:
     """Get comprehensive cache health report"""

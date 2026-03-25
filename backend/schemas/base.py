@@ -59,6 +59,13 @@ class RouteSegmentSchema(BaseModel):
     duration: str
     cost: float
     details: str
+    
+    # Standardized Fields (Task 3)
+    train_number: Optional[str] = None
+    train_name: Optional[str] = None
+    distance_km: Optional[float] = None
+    wait_time_minutes: Optional[int] = 0
+    engine_source: Optional[str] = "unknown"
 
     class Config:
         populate_by_name = True
@@ -72,6 +79,8 @@ class SearchRequestSchema(BaseModel):
     budget: str = Field("all", pattern="^(all|economy|standard|premium)$")
     multi_modal: bool = Field(True, description="Whether to include multi-modal planning suggestions")
     women_safety_mode: bool = Field(False, description="Prioritize safer routes and avoid night layovers")
+    engine: Optional[List[str]] = Field(None, description="Specific engines to query")
+    discovery: bool = Field(False, description="Run in discovery-only mode (skip hydration/pricing)")
 
     # Pagination & Session (Task 1.1)
     session_id: Optional[str] = Field(None, description="Unique session ID for paginated discovery")

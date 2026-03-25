@@ -12,8 +12,9 @@ from typing import Dict, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from ...database.models import Stop, Transfer, StopTime, Trip
+from database.models import Stop, Transfer, StopTime, Trip
 from core.data_structures import TransferConnection, RouteSegment
+from core.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,8 @@ class TransferEdge:
     is_same_platform: bool = False
     platform_from: Optional[str] = None
     platform_to: Optional[str] = None
-    transfer_type: int = 0  # GTFS: 0=recommended, 1=timed, 2=minimum time required, 3=impossible
+    transfer_type: str = "WALK" # WALK, METRO, TAXI, SHUTTLE
+    is_multi_station: bool = False
     
     @property
     def total_time_minutes(self) -> int:
@@ -48,24 +50,19 @@ class TransferGraphBuilder:
     5. Building passenger-useful transfer information
     """
 
-    # Standard minimum transfer times by station type (minutes)
-    MIN_TRANSFER_TIMES = {
-        'major_hub': 5,      # Major hub (elite)
-        'large': 10,         # Large station
-        'medium': 15,        # Medium station
-        'small': 20,         # Small station
-        'major_junction': 8, # Legacy mapping
-        'regular_station': 12, # Legacy mapping
-        'small_station': 15,   # Legacy mapping
-        'metros': 5,           # Metro/urban rail
+    # Standard minimum transfer times by station hierarchy (minutes)
+    TIERED_MIN_TIMES = {
+        'MEGA': 40,      # Huge station, multiple levels (NDLS, HWH)
+        'MAJOR': 25,     # Solid junctions (PUNE, BRC)
+        'REGIONAL': 15,  # Regional hubs
+        'SMALL': 10,     # Regular stations
     }
 
     # Maximum walking distance for implicit transfers (meters)
-    # Increased to capture city-level transfers (e.g., NDLS↔NZM ~3km)
-    MAX_WALKING_DISTANCE = 10000  # 10km
+    MAX_WALKING_DISTANCE = 5000  # 5km (Above this, use Inter-City taxi/metro)
 
-    # Maximum time to walk the max distance (minutes)
-    WALKING_SPEED_KMPH = 1.4  # ~4 min per 100m
+    # Realistic walking speed in Indian urban context (including stops/traffic)
+    WALKING_SPEED_KMPH = 3.5  # Realistic average for walking + baggage
 
     def __init__(self, session: Session):
         self.session = session
@@ -124,7 +121,8 @@ class TransferGraphBuilder:
                     walking_time_minutes=walking_time,
                     platform_from=getattr(t, 'platform_from', None),
                     platform_to=getattr(t, 'platform_to', None),
-                    transfer_type=t.transfer_type
+                    transfer_type="WALK",
+                    is_multi_station=(t.from_stop_id != t.to_stop_id)
                 )
                 transfers.append(transfer_edge)
                 
@@ -134,9 +132,15 @@ class TransferGraphBuilder:
         return transfers
 
     async def _compute_implicit_transfers(self) -> List[TransferEdge]:
-        """Compute implicit transfers between nearby stops (walking distances)"""
-        transfers = []
+        """
+        [Optimization] O(N log N) spatial search using Scikit-Learn BallTree.
+        Reduces 32M+ comparisons to efficient radial lookups.
+        [Task 7 Audit] Integrated Multi-Station Hierarchy Penalties.
+        """
+        import numpy as np
+        from sklearn.neighbors import BallTree
         
+        transfers = []
         try:
             # Get all stops with location information
             stops = self.session.query(Stop).filter(
@@ -144,45 +148,79 @@ class TransferGraphBuilder:
                 Stop.longitude != None
             ).all()
             
-            logger.debug(f"Computing implicit transfers for {len(stops)} stops with coordinates")
+            if not stops: return []
             
-            # Build spatial index (simple distance-based)
-            for i, from_stop in enumerate(stops):
-                for to_stop in stops[i+1:]:
-                    if from_stop.id == to_stop.id:
-                        continue
+            # 1. Build BallTree with Haversine metric (requires radians)
+            # Lat/Lng format: [lat, lng]
+            coords = np.deg2rad([[s.latitude, s.longitude] for s in stops])
+            # Earth radius in meters
+            EARTH_RADIUS = 6371000 
+            
+            logger.info(f"Building Spatial Index for {len(stops)} stops...")
+            tree = BallTree(coords, metric='haversine')
+            
+            # 2. Radial query for each stop (within MAX_WALKING_DISTANCE)
+            # Radius must be in radians (distance / Earth Radius)
+            radius = self.MAX_WALKING_DISTANCE / EARTH_RADIUS
+            indices = tree.query_radius(coords, r=radius)
+            
+            logger.info("Spatial clusters identified. Applying hierarchy-aware transfer logic...")
+            
+            for i, neighbors in enumerate(indices):
+                from_s = stops[i]
+                for j in neighbors:
+                    if i == j: continue # Skip self
+                    to_s = stops[j]
                     
+                    # Calculate true distance in meters
                     distance = self._haversine_distance(
-                        from_stop.latitude, from_stop.longitude,
-                        to_stop.latitude, to_stop.longitude
+                        from_s.latitude, from_s.longitude,
+                        to_s.latitude, to_s.longitude
                     )
                     
-                    # Only consider nearby stops
-                    if distance > self.MAX_WALKING_DISTANCE:
-                        continue
+                    # 3. Apply Multi-Station & Hierarchy Logic [Task 7 Audit]
+                    is_multi = (from_s.id != to_s.id)
+                    t_type = "WALK"
                     
-                    # Calculate walking time (assuming 1.4 km/h walking speed)
-                    walking_time = int((distance / 1000) / self.WALKING_SPEED_KMPH * 60)
+                    def get_tier(code):
+                        if code in MEGA_HUBS: return 'MEGA'
+                        if code in MAJOR_HUBS: return 'MAJOR'
+                        if code in REGIONAL_HUBS: return 'REGIONAL'
+                        return 'SMALL'
+
+                    tier_from = get_tier(from_s.code)
+                    tier_to = get_tier(to_s.code)
                     
-                    # Bidirectional transfers
-                    for direction in [(from_stop, to_stop), (to_stop, from_stop)]:
-                        from_s, to_s = direction
-                        
-                        # Get minimum transfer time for this station combo
-                        min_transfer_time = self._get_default_min_transfer_time(from_s.id, to_s.id)
-                        
-                        transfer_edge = TransferEdge(
-                            from_stop_id=from_s.id,
-                            to_stop_id=to_s.id,
-                            min_transfer_time_minutes=min_transfer_time,
-                            walking_time_minutes=walking_time,
-                            is_same_platform=False,
-                            transfer_type=0  # Recommended
-                        )
-                        transfers.append(transfer_edge)
-            
+                    # Exit/Entry Penalty based on hierarchy
+                    exit_penalty = self.TIERED_MIN_TIMES.get(tier_from, 10) // 2
+                    entry_penalty = self.TIERED_MIN_TIMES.get(tier_to, 10) // 2
+                    
+                    # 4. Mode Logic: METRO vs WALK
+                    effective_travel_time = int((distance / 1000) / self.WALKING_SPEED_KMPH * 60)
+                    
+                    # Inter-station transfers in MEGA hubs often use Metro
+                    if is_multi and tier_from == 'MEGA' and tier_to == 'MEGA' and distance > 1500:
+                        t_type = "METRO"
+                        metro_travel = int((distance / 1000) / 30 * 60) # 30km/h avg
+                        metro_wait = 10 
+                        effective_travel_time = metro_travel + metro_wait
+                    
+                    # Total duration = navigating out station 1 + travel + navigating in station 2
+                    total_min_time = exit_penalty + effective_travel_time + entry_penalty
+                    
+                    transfer_edge = TransferEdge(
+                        from_stop_id=from_s.id,
+                        to_stop_id=to_s.id,
+                        min_transfer_time_minutes=int(total_min_time),
+                        walking_time_minutes=int((distance / 1000) / self.WALKING_SPEED_KMPH * 60),
+                        is_same_platform=False,
+                        transfer_type=t_type,
+                        is_multi_station=is_multi
+                    )
+                    transfers.append(transfer_edge)
+                    
         except Exception as e:
-            logger.warning(f"Error computing implicit transfers: {e}")
+            logger.error(f"Error in optimized spatial transfer build: {e}", exc_info=True)
         
         return transfers
 
@@ -231,21 +269,18 @@ class TransferGraphBuilder:
         to_stop = self.session.query(Stop).filter(Stop.id == to_stop_id).first()
         
         def get_station_type(stop: Stop) -> str:
-            # Prefer new station_size attribute if present
-            if stop and hasattr(stop, 'station_size') and getattr(stop, 'station_size'):
-                return getattr(stop, 'station_size')
-            if stop and stop.is_major_junction:
-                return 'major_hub'
-            # Could add more logic based on stop properties
-            return 'medium'
+            if not stop: return 'SMALL'
+            if stop.code in MEGA_HUBS: return 'MEGA'
+            if stop.code in MAJOR_HUBS: return 'MAJOR'
+            if stop.code in REGIONAL_HUBS: return 'REGIONAL'
+            return 'SMALL'
         
-        from_type = get_station_type(from_stop) if from_stop else 'medium'
-        to_type = get_station_type(to_stop) if to_stop else 'medium'
+        from_type = get_station_type(from_stop)
+        to_type = get_station_type(to_stop)
         
-        # Use worst case (longest time needed)
         return max(
-            self.MIN_TRANSFER_TIMES.get(from_type, 15),
-            self.MIN_TRANSFER_TIMES.get(to_type, 15)
+            self.TIERED_MIN_TIMES.get(from_type, 15),
+            self.TIERED_MIN_TIMES.get(to_type, 15)
         )
 
     @staticmethod

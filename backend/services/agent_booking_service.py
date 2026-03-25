@@ -104,17 +104,9 @@ class AgentBookingService:
                 logger.warning(f"Booking {booking_id} already claimed by {booking.agent_id}")
                 return False
             
-            # [44.2] Commission Logging: Record ₹10 fee
-            from database.models import CommissionTracking
-            existing_comm = db.query(CommissionTracking).filter(CommissionTracking.booking_id == booking_id).first()
-            if not existing_comm:
-                commission = CommissionTracking(
-                    user_id=agent_id,
-                    booking_id=booking_id,
-                    amount=10.0,
-                    commission_type="FIXED_AGENT_FEE"
-                )
-                db.add(commission)
+            # [44.2] Commission Service: Record ₹10 fee
+            from services.commission_service import commission_service
+            commission_service.record_commission(db, booking_id, agent_id)
                 
             booking.agent_id = agent_id
             booking.escrow_status = EscrowStatus.BOOKING_INITIATED

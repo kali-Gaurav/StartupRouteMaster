@@ -6,6 +6,7 @@ Part of the 10X Evolution Plan (Task 1).
 import math
 from datetime import datetime, time, timedelta
 from typing import Tuple, Optional, Union, Any
+from functools import lru_cache
 from core.data_structures import DynamicWaitConfig, TransferWindow, SearchPhase
 
 def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -29,18 +30,19 @@ def calculate_journey_duration_heuristic(distance_km: float, avg_speed_kmh: floa
     hours = distance_km / avg_speed_kmh
     return int(hours * 60)
 
-from core.hubs import MAJOR_HUBS
-
-from functools import lru_cache
+from core.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
 
 @lru_cache(maxsize=1024)
 def get_station_size_modifier(station_code: str) -> float:
     """
-    Returns a multiplier for the maximum wait time based on station size/importance.
-    Subtask 1.11 / 1.15.
+    Returns a multiplier for the maximum wait time based on station hierarchy.
     """
+    if station_code in MEGA_HUBS:
+        return 1.8  # Large hubs (DDU, NDLS) - huge wait tolerance
     if station_code in MAJOR_HUBS:
-        return 1.5  # Hubs can handle 50% more waiting time comfortably
+        return 1.4  # Solid junctions
+    if station_code in REGIONAL_HUBS:
+        return 1.15 # Small junctions
     return 1.0
 
 from core.data_structures import DynamicWaitConfig, TransferWindow, SearchPhase
@@ -91,24 +93,47 @@ def is_valid_transfer(
     phase: SearchPhase = SearchPhase.MODERATE
 ) -> bool:
     """
-    Comprehensive transfer validation including dynamic windows and travel ratios.
-    Subtask 1.16 / 1.17 / 2.5.
+    Comprehensive transfer validation including dynamic size-aware windows.
+    Task 13: Refined size & penalty logic.
     """
     if isinstance(arrival_time, int) and isinstance(departure_time, int):
         wait_mins = (departure_time - arrival_time) % 1440
     else:
         wait_mins = (departure_time - arrival_time).total_seconds() / 60
     
+    # [Task 13] Dynamic Min Wait Budget based on Station Size
+    station_min_buffer = 15 # Standard
+    if station_code in MEGA_HUBS:
+        station_min_buffer = 40 # Need time in NDLS/HWH to switch platforms
+    elif station_code in MAJOR_HUBS:
+        station_min_buffer = 25
+    elif station_code in REGIONAL_HUBS:
+        station_min_buffer = 15
+    else:
+        station_min_buffer = 10 # Tiny station, walk across
+        
+    # [Yield Enhancement] If search is relaxed, we cut minimum buffer by half
+    if phase == SearchPhase.RELAXED:
+        station_min_buffer = max(10, station_min_buffer // 2)
+
     # 1. Basic window check
     min_w, max_w = compute_dynamic_window(journey_so_far_mins, config, station_code, phase)
     
-    # Hard bounds from config if dynamic window is too loose
-    if wait_mins < (min_w + transfer_penalty) or wait_mins > max_w:
+    # Apply station-specific minimum
+    effective_min = max(min_w + transfer_penalty, station_min_buffer)
+    
+    # [Yield Optimization] Increase floor for dynamic_max for short legs
+    max_w = max(max_w, 120 if phase != SearchPhase.STRICT else 60)
+    
+    if wait_mins < effective_min or wait_mins > max_w:
+        # logger.debug(f"Transfer Rejected (Window): wait={wait_mins}, min={effective_min}, max={max_w}, station={station_code}")
         return False
         
-    # 2. Waiting Ratio check (wait_mins / (journey + wait) < 0.4)
-    # Relaxed phase allows higher ratio (0.6)
-    max_ratio = 0.4 if phase != SearchPhase.RELAXED else 0.6
+    # 2. Waiting Ratio check
+    if phase == SearchPhase.RELAXED: max_ratio = 0.85
+    elif phase == SearchPhase.MODERATE: max_ratio = 0.7
+    else: max_ratio = 0.45 
+        
     if journey_so_far_mins > 0:
         ratio = wait_mins / (journey_so_far_mins + wait_mins)
         if ratio > max_ratio:

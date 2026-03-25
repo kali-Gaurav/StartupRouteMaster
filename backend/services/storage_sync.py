@@ -43,18 +43,19 @@ class R2SyncManager:
         
         logger.info(f"🔄 R2 Sync: Checking remote for {db_rel_path}...")
         
+        loop = asyncio.get_running_loop()
         try:
-            # 1. Get remote metadata
-            metadata = r2_storage.get_object_metadata(object_name)
+            # 1. Get remote metadata (Blocking S3)
+            metadata = await loop.run_in_executor(None, r2_storage.get_object_metadata, object_name)
             if not metadata:
                 logger.warning(f"⚠️ R2 Sync: No remote metadata found for {object_name}")
                 return False
 
             remote_sha = metadata.get('sha256')
             
-            # 2. Check local checksum
+            # 2. Check local checksum (Blocking IO)
             if local_path.exists():
-                local_sha = r2_storage.calculate_sha256(local_path)
+                local_sha = await loop.run_in_executor(None, r2_storage.calculate_sha256, local_path)
                 if remote_sha == local_sha:
                     logger.info(f"✅ R2 Sync: Local {db_rel_path} matches remote checksum. No download needed.")
                     return True
@@ -65,17 +66,20 @@ class R2SyncManager:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             
             zst_tmp = local_path.with_suffix(".zst.tmp")
-            if r2_storage.download_file(object_name, zst_tmp):
-                # Decompress to .tmp
-                with open(zst_tmp, 'rb') as ifh, open(tmp_path, 'wb') as ofh:
-                    self.dctx.copy_stream(ifh, ofh)
-                
-                # Atomic Replace
-                os.replace(tmp_path, local_path)
-                os.remove(zst_tmp)
-                logger.info(f"✅ R2 Sync: Successfully restored {db_rel_path}")
-                return True
-            return False
+            
+            def _download_and_decompress():
+                if r2_storage.download_file(object_name, zst_tmp):
+                    # Decompress to .tmp
+                    with open(zst_tmp, 'rb') as ifh, open(tmp_path, 'wb') as ofh:
+                        self.dctx.copy_stream(ifh, ofh)
+                    
+                    # Atomic Replace
+                    os.replace(tmp_path, local_path)
+                    os.remove(zst_tmp)
+                    return True
+                return False
+
+            return await loop.run_in_executor(None, _download_and_decompress)
 
         except Exception as e:
             logger.error(f"❌ R2 Sync Error (Download): {e}")
@@ -92,29 +96,34 @@ class R2SyncManager:
             logger.warning(f"⚠️ R2 Sync: Local file {local_path} does not exist. Skipping upload.")
             return False
 
+        loop = asyncio.get_running_loop()
         try:
             # 1. Calculate Local Checksum
-            local_sha = r2_storage.calculate_sha256(local_path)
+            local_sha = await loop.run_in_executor(None, r2_storage.calculate_sha256, local_path)
             
             # 2. Check if remote matches (Skip if same hash)
-            metadata = r2_storage.get_object_metadata(object_name)
+            metadata = await loop.run_in_executor(None, r2_storage.get_object_metadata, object_name)
             if metadata and metadata.get('sha256') == local_sha:
                 logger.debug(f"⏭️ R2 Sync: Remote {db_rel_path} already matches local hash. Skipping upload.")
                 return True
 
             # 3. Compress & Upload
             logger.info(f"📤 R2 Sync: Compressing & Uploading {db_rel_path}...")
-            with open(local_path, 'rb') as ifh, open(zst_path, 'wb') as ofh:
-                self.cctx.copy_stream(ifh, ofh)
-                
-            success = r2_storage.upload_file(
-                zst_path, 
-                object_name, 
-                metadata={'sha256': local_sha, 'original_name': str(local_path.name)}
-            )
             
-            if zst_path.exists(): os.remove(zst_path)
-            return success
+            def _compress_and_upload():
+                with open(local_path, 'rb') as ifh, open(zst_path, 'wb') as ofh:
+                    self.cctx.copy_stream(ifh, ofh)
+                    
+                success = r2_storage.upload_file(
+                    zst_path, 
+                    object_name, 
+                    metadata={'sha256': local_sha, 'original_name': str(local_path.name)}
+                )
+                
+                if zst_path.exists(): os.remove(zst_path)
+                return success
+
+            return await loop.run_in_executor(None, _compress_and_upload)
             
         except Exception as e:
             logger.error(f"❌ R2 Sync Error (Upload): {e}")

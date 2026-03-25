@@ -40,90 +40,67 @@ _unified_search_results: Dict[str, Any] = {}
 @limiter.limit("30/minute")
 async def unified_search(request: Request, search_payload: SearchRequest, db: Session = Depends(get_db)):
     """
-    Production-grade Unified Multi-Modal Search (V2).
-    Optimized with Single-Flight Coalescing, Pareto-Ranking, and Redis Caching.
+    [Task 50.1] V3 Master Orchestrator.
+    Integrates Project Shield, Zero-Latency Cache, and Scraper Sentinel.
     """
-    from core.unified_planner import UnifiedPlanner
-    from adapters.train_adapter import TrainAdapter
-    from schemas.unified_search import UnifiedSearchRequest
+    from services.fraud_service import fraud_service
+    from services.multi_layer_cache import multi_layer_cache, TTL_ROUTE_SEARCH, CACHE_VERSION
+    from services.scraper_sentinel import scraper_sentinel
     import time
+    import hashlib
 
     start_time = time.perf_counter()
-    cache_key = f"unified_v3:{search_payload.source.upper()}:{search_payload.destination.upper()}:{search_payload.date}"
+    
+    # [Task 50.1] Metadata Fingerprinting (Project Shield S2)
+    fingerprint = request.headers.get("x-device-fingerprint", "GUEST_FP")
+    origin_ip = request.client.host
+    
+    # 1. Block Scrapers/Bots Before CPU Work [45.1]
+    if not await fraud_service.validate_identity(db=db, user_id=None, fingerprint=fingerprint, city="UNKNOWN"):
+        raise HTTPException(status_code=403, detail="Security Filter: High-risk activity detected.")
 
-    # 1. Request Coalescing
-    if cache_key in _inflight_unified_searches:
-        logger.info(f"⚡ COALESCE: Joining unified search for {cache_key}")
-        await _inflight_unified_searches[cache_key].wait()
-        return _unified_search_results.get(cache_key)
+    # 2. Canonical V3 Fingerprint [47.1]
+    query_str = f"{search_payload.source}:{search_payload.destination}:{search_payload.date}:{CACHE_VERSION}"
+    cache_key = f"v3:search:{hashlib.md5(query_str.encode()).hexdigest()}"
 
-    # 2. Check Cache
-    from core.redis import async_redis_client
-    try:
-        cached = await async_redis_client.get(cache_key)
-        if cached:
-            logger.info(f"✅ CACHE HIT (Hot Path): {cache_key}")
-            return ORJSONResponse(content=json.loads(cached))
-    except Exception as e:
-        logger.warning(f"Cache check failed: {e}")
+    # 3. Dynamic Engine Filtering (Circuit Breaker Awareness) [48.7]
+    permitted = search_payload.engine or ["NTES", "RAPID"]
+    active_engines = [e for e in permitted if scraper_sentinel.is_available(e.lower())]
+    
+    if not active_engines and "RAPID" not in permitted:
+        raise HTTPException(status_code=503, detail="Circuit Breaker: All search sources temporarily offline.")
 
-    # Register in-flight search after cache check fails
-    _inflight_unified_searches[cache_key] = asyncio.Event()
-
-    try:
-        # 3. Execute Engines via Orchestrator
-        unified_req = UnifiedSearchRequest(
+    # 4. Zero-Latency Multi-Layer Cache with SWR/Thundering Herd Shield [47.2 & 47.3]
+    async def fetch_fresh():
+        """Master Orchestrator Worker."""
+        search_service = SearchService(db)
+        return await search_service.search_routes(
             source=search_payload.source,
             destination=search_payload.destination,
-            date=search_payload.date,
-            preferences="balanced"
+            travel_date=search_payload.date,
+            budget_category=search_payload.budget,
+            request=request,
+            permitted_engines=active_engines,
+            discovery_only=search_payload.discovery
+        )
+
+    try:
+        # [Task 47.3] Probabilistic Background Refresh & Distributed Lock Protection
+        response_data = await multi_layer_cache.get_or_set(
+            key=cache_key,
+            func=fetch_fresh,
+            ttl=TTL_ROUTE_SEARCH
         )
         
-        search_service = SearchService(db)
-        train_adapter = TrainAdapter(search_service)
-        planner = UnifiedPlanner(adapters=[train_adapter])
+        latency = (time.perf_counter() - start_time) * 1000
+        logger.info(f"🚀 V3 Master Orchestrator: {search_payload.source}->{search_payload.destination} | {latency:.2f}ms")
         
-        results = await planner.plan(unified_req)
-        
-        # 4. Map results
-        response_data = []
-        from services.journey_cache import save_journey
-        
-        for opt in results:
-            legs = [{
-                "mode": s.mode, "from": s.from_station, "to": s.to_station,
-                "departure": s.departure, "arrival": s.arrival,
-                "duration_min": s.duration_minutes, "cost": s.price,
-                "train_number": s.train_number, "train_name": s.train_name
-            } for s in opt.segments]
-            
-            journey_dict = {
-                "journey_id": opt.journey_id, "total_cost": opt.total_price,
-                "total_duration": opt.total_duration, "safety_score": opt.safety_score,
-                "legs": legs, "segments": [s.dict() for s in opt.segments],
-                "is_locked": opt.is_locked
-            }
-            await save_journey(opt.journey_id, journey_dict)
-            response_data.append(journey_dict)
-
-        # 5. Store in Cache
-        try:
-            await async_redis_client.setex(cache_key, 300, json.dumps(response_data))
-        except Exception:
-            pass
-
-        _unified_search_results[cache_key] = response_data
+        # [Task 6.1] Background Telemetry (Latency Tracking)
         return response_data
         
     except Exception as e:
-        logger.error(f"Unified Search Error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Signal and Cleanup
-        event = _inflight_unified_searches.pop(cache_key, None)
-        if event:
-            event.set()
-        asyncio.create_task(_cleanup_unified_results(cache_key))
+        logger.error(f"V3 Orchestrator Failure: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="V3 Orchestrator: Internal Error during plan generation.")
 
 async def _cleanup_unified_results(key: str):
     await asyncio.sleep(5)

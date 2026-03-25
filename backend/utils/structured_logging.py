@@ -114,7 +114,7 @@ def setup_logging():
     
     # Task 30: Adaptive log level
     log_level = getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO)
-    if Config.SLIM_MODE and log_level == logging.DEBUG:
+    if Config.SLIM_MODE and (log_level == logging.DEBUG or not os.getenv("LOG_LEVEL")):
         log_level = logging.INFO # Force INFO in slim mode
         
     root_logger.setLevel(log_level)
@@ -123,8 +123,9 @@ def setup_logging():
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    import io
-    handler = BufferedStreamHandler(sys.stdout, buffer_size=30, flush_interval=3.0)
+    # Use standard StreamHandler for now to avoid buffering/locking hangs [Task 30 FIX]
+    handler = logging.StreamHandler(sys.stdout)
+    # handler = BufferedStreamHandler(sys.stdout, buffer_size=30, flush_interval=3.0)
     handler.addFilter(RequestIDFilter())
     
     if Config.ENVIRONMENT == "production":

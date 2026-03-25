@@ -101,17 +101,11 @@ class VerificationService:
         try:
             trip_id = int(train_num)
         except ValueError:
-            # Fallback to segment_id if it's an integer
-            try:
-                trip_id = int(primary_segment.segment_id)
-            except ValueError:
-                trip_id = 1 # Default fallback
+            # If train_number is not an integer ID, we use it as is for API calls 
+            # (SeatVerificationService handles this). We don't use a mock 1.
+            trip_id = train_num
 
-        seg_id = 1
-        try:
-             seg_id = int(primary_segment.segment_id)
-        except ValueError:
-             pass
+        seg_id = primary_segment.segment_id
 
         dt_travel = datetime.combine(travel_date, datetime.min.time())
 
@@ -125,36 +119,55 @@ class VerificationService:
             to_station=primary_segment.arrival_code
         )
         sched_raw = await self.data_provider.verify_train_schedule_unified(trip_id, dt_travel)
-        fare_raw = await self.data_provider.verify_fare_unified(seg_id, coach_preference)
+        fare_raw = await self.data_provider.verify_fare_unified(
+            segment_id=seg_id, 
+            coach_preference=coach_preference,
+            train_number=train_num,
+            from_station=primary_segment.depart_code,
+            to_station=primary_segment.arrival_code
+        )
 
         seat_check = SeatCheckResult(
-            status=VerificationStatus(seats_raw["status"]),
-            total_seats=seats_raw["total_seats"],
-            available_seats=seats_raw["available_seats"],
-            booked_seats=seats_raw["booked_seats"],
-            message=seats_raw["message"]
+            status=VerificationStatus(seats_raw.get("status", "failed")),
+            total_seats=seats_raw.get("total_seats", 0),
+            available_seats=seats_raw.get("available_seats", 0),
+            booked_seats=seats_raw.get("booked_seats", 0),
+            message=seats_raw.get("message", "")
         )
         
         schedule_check = TrainScheduleCheckResult(
-            status=VerificationStatus(sched_raw["status"]),
+            status=VerificationStatus(sched_raw.get("status") or "failed"),
             scheduled_departure=primary_segment.depart_time,
             scheduled_arrival=primary_segment.arrival_time,
-            delay_minutes=sched_raw["delay_minutes"],
-            message=sched_raw["message"]
+            delay_minutes=sched_raw.get("delay_minutes", 0),
+            message=sched_raw.get("message", "")
         )
 
         fare_check = FareCheckResult(
-            status=VerificationStatus(fare_raw["status"]),
-            base_fare=fare_raw["base_fare"],
-            GST=fare_raw["GST"],
-            total_fare=fare_raw["total_fare"],
-            message=fare_raw["message"]
+            status=VerificationStatus(fare_raw.get("status") or "failed"),
+            base_fare=fare_raw.get("base_fare", 0.0),
+            GST=fare_raw.get("GST", 0.0),
+            total_fare=fare_raw.get("total_fare", 0.0),
+            message=fare_raw.get("message", "")
         )
 
         # Logic for restrictions and warnings remains (but driven by real data)
         restrictions = []
         warnings = []
-        is_bookable = True
+        
+        # Check for failures in components
+        if seat_check.status == VerificationStatus.FAILED:
+            restrictions.append(f"Seat Verification Failed: {seat_check.message}")
+        if fare_check.status == VerificationStatus.FAILED:
+            restrictions.append(f"Fare Verification Failed: {fare_check.message}")
+        if schedule_check.status == VerificationStatus.FAILED:
+            restrictions.append(f"Schedule Verification Failed: {schedule_check.message}")
+
+        is_bookable = (
+            seat_check.status in [VerificationStatus.VERIFIED, VerificationStatus.PENDING] and
+            fare_check.status in [VerificationStatus.VERIFIED, VerificationStatus.PENDING] and
+            schedule_check.status in [VerificationStatus.VERIFIED, VerificationStatus.PENDING]
+        )
 
         if seat_check.available_seats == 0:
             warnings.append("No seats available - Book for Waiting List")

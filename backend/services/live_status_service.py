@@ -1,93 +1,88 @@
+import asyncio
 import logging
-import requests
-import json
-from typing import Optional, Dict, Any
+from typing import Dict, Any, Optional
+from datetime import datetime
 
-from database.config import Config
-from services.realtime_ingestion.api_client import RappidAPIClient
-from core.redis import redis_client
+# --- Import necessary modules ---
+# Import Pydantic models and Gateway
+from backend.providers.models import UnifiedLiveStatus
+from backend.providers.gateway import provider_gateway
+from backend.providers.config import config as provider_config # Use gateway's config
+
+# Existing configuration and clients (which will be removed/deprecated)
+# from database.config import Config # Likely no longer needed for external URLs
+# from core.redis import async_redis_client # Gateway manages its cache interaction
 
 logger = logging.getLogger(__name__)
 
+# Existing request coalescing logic (now handled by ProviderGateway or to be removed)
+# _inflight_live_status: Dict[str, asyncio.Future] = {}
 
 class LiveStatusService:
-    """Fetches live running status from Rappid or RapidAPI fallback."""
+    """
+    Service responsible for providing live train status information.
+    Now delegates all fetching to the ProviderGateway.
+    """
+    # Removed aiohttp session management as it's no longer directly used for fetching.
+    # If the service needs to *use* the gateway's output, it will receive normalized data.
 
-    def __init__(self, config: Config = Config):
-        self.config = config
-        self.rappid_client = RappidAPIClient(cache_enabled=True)
-        self.rapid_url = "https://irctc1.p.rapidapi.com/api/v1/liveTrainStatus"
-        self.rapid_enabled = bool(config.RAPIDAPI_KEY)
-        self.rapid_headers = {
-            "x-rapidapi-key": getattr(config, "RAPIDAPI_KEY", ""),
-            "x-rapidapi-host": getattr(config, "RAPIDAPI_HOST", "irctc1.p.rapidapi.com")
-        }
-        self.timeout = getattr(config, "LIVE_API_TIMEOUT_MS", 10)
+    def __init__(self):
+        # The service now relies on the ProviderGateway for fetching.
+        # Any direct configuration like base_url or enabled flags might become
+        # implicit through the gateway's provider configuration or explicit checks.
+        
+        # We can use provider_config to check if providers are enabled, if needed.
+        # Example: Check if RapidAPI or NTES is configured.
+        self.is_live_status_provider_available = bool(provider_config.RAPIDAPI_KEY) or bool(Config.ENABLE_LIVE_STATUS) # Placeholder check. Actual check should be more robust.
+        
+        # Cache TTL is now managed by the ProviderGateway.
+        # self.cache_ttl = 60 # This line is removed.
 
-    def get_live_status(self, train_no: str) -> Optional[Dict[str, Any]]:
+        logger.info("LiveStatusService initialized. Fetching will be delegated to ProviderGateway.")
+
+    async def get_live_status(self, train_number: str) -> Optional[Dict[str, Any]]:
         """
-        Get live status prioritizing Rappid API (cheaper/faster), 
-        falling back to RapidAPI if needed.
+        Fetches live status for a specific train number by delegating to the ProviderGateway.
+        
+        This method now acts as a facade, calling the unified gateway and returning
+        its normalized data. It removes direct API calls, custom caching, and
+        request coalescing logic, as these are handled by the gateway.
         """
-        if not train_no:
+        # Check if live status fetching is generally enabled.
+        # This check might need refinement: does it mean if *any* provider is available, or if the service itself is enabled?
+        # For now, assume it means if we have *some* configured provider.
+        if not self.is_live_status_provider_available:
+            logger.warning("Live status fetching is disabled. No providers configured or enabled.")
+            return None
+            
+        # --- Delegate to ProviderGateway ---
+        # The ProviderGateway's get_live_status requires train_date.
+        # This service's original signature didn't have train_date.
+        # We need to decide how to obtain train_date here.
+        # For now, as a placeholder, we'll use today's date, but this needs to be addressed.
+        # A better approach might be to pass train_date if available, or infer it.
+        today_date_str = datetime.utcnow().strftime('%Y-%m-%d')
+        
+        logger.debug(f"Delegating live status fetch for train {train_number} to ProviderGateway.")
+        
+        # Call the gateway
+        unified_live_status = await provider_gateway.get_live_status(train_number, train_date=today_date_str)
+        
+        # The gateway returns a UnifiedLiveStatus object or None.
+        # If the downstream code expects a Dict[str, Any], we need to convert it.
+        if unified_live_status:
+            # Return the model's dictionary representation, matching old signature expectation
+            return unified_live_status.model_dump()
+        else:
+            logger.warning(f"ProviderGateway returned no live status for train {train_number}.")
             return None
 
-        status_data = None
+    # Removed _execute_fetch, _normalize_response, _inflight_live_status logic
+    # as they are now handled by the ProviderGateway and its clients/cache.
 
-        # 1. Try Rappid API first
-        try:
-            rappid_data = self.rappid_client.fetch_train_status(train_no)
-            if rappid_data and rappid_data.get("success"):
-                logger.info(f"✓ Live status from Rappid for {train_no}")
-                status_data = {
-                    "source": "rappid",
-                    "success": True,
-                    "train_no": train_no,
-                    "train_name": rappid_data.get("train_name"),
-                    "message": rappid_data.get("message"),
-                    "updated_time": rappid_data.get("updated_time"),
-                    "stations": rappid_data.get("data", []),
-                }
-        except Exception as e:
-            logger.warning(f"Rappid status failed for {train_no}: {e}")
+    # Removed cache and session management as they are now handled by ProviderGateway.
 
-        # 2. Fallback to RapidAPI
-        if not status_data and self.rapid_enabled:
-            try:
-                logger.info(f"📡 Falling back to RapidAPI for train {train_no}...")
-                params = {"trainNo": train_no, "startDay": "0"}
-                resp = requests.get(
-                    self.rapid_url, 
-                    headers=self.rapid_headers, 
-                    params=params, 
-                    timeout=self.timeout
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                
-                if data.get("success"):
-                    status_data = {
-                        "source": "rapidapi",
-                        "success": True,
-                        "train_no": train_no,
-                        "data": data.get("data")
-                    }
-            except Exception as e:
-                logger.error(f"RapidAPI fallback failed for {train_no}: {e}")
-
-        # --- PUB/SUB BROADCAST ---
-        if status_data and status_data.get("success"):
-            try:
-                # Publish update to Redis for WebSocket clients
-                channel = f"train_position:{train_no}"
-                redis_client.publish(channel, json.dumps(status_data))
-                
-                # Cache the last known position
-                cache_key = f"pos:last:{train_no}"
-                redis_client.setex(cache_key, 300, json.dumps(status_data))
-                
-                logger.debug(f"Broadcasted live status for {train_no} to {channel}")
-            except Exception as pe:
-                logger.warning(f"Failed to broadcast live status: {pe}")
-
-        return status_data or {"source": "live-status", "success": False, "message": "All live status providers failed"}
+# --- Singleton instance ---
+# This service would likely be instantiated and managed by the IoC container.
+# For demonstration, we assume it's instantiated somewhere.
+# live_status_service = LiveStatusService() 

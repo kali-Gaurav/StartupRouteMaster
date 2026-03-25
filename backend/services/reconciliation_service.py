@@ -1,72 +1,49 @@
-"""
-Reconciliation Service - Phase 5 Financial Audit
-Handles daily balancing of revenues and agent commissions.
-"""
-
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from database.models import Booking, CommissionTracking, DailyReconciliation, EscrowStatus
-from typing import Dict, Any
+from database.models import Subscription, AuditLog
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("reconciliation-service")
 
 class ReconciliationService:
+    """[Task 41.F] Automated Financial Reconciliation Service."""
+
     @staticmethod
-    def run_daily_recon(db: Session, target_date: date) -> DailyReconciliation:
+    def audit_discrepancies(db: Session) -> Dict[str, Any]:
         """
-        Subtask 49.2 & 49.7: Calculate balances for a specific date range.
+        Cross-references Subscription current state with the AuditLog.
+        Detects 'ghost' PRO status where AuditLog doesn't support the current tier.
         """
-        # Robust date range matching
-        start_of_day = datetime.combine(target_date, datetime.min.time())
-        end_of_day = datetime.combine(target_date, datetime.max.time())
+        subscriptions = db.query(Subscription).all()
+        discrepancies = []
         
-        # 1. Sum Total Revenue (Confirmed Payments)
-        total_rev = db.query(func.sum(Booking.amount_paid)).filter(
-            Booking.created_at >= start_of_day,
-            Booking.created_at <= end_of_day,
-            Booking.escrow_status.in_([EscrowStatus.VERIFIED, EscrowStatus.COMPLETED])
-        ).scalar() or 0.0
-        
-        # 2. Sum Agent Commissions
-        total_comm = db.query(func.sum(CommissionTracking.amount)).filter(
-            CommissionTracking.created_at >= start_of_day,
-            CommissionTracking.created_at <= end_of_day
-        ).scalar() or 0.0
-        
-        # 3. Sum Unlock Fees (₹49 blocks)
-        total_unlock = db.query(func.sum(Booking.amount_paid)).filter(
-            Booking.created_at >= start_of_day,
-            Booking.created_at <= end_of_day,
-            Booking.service_type == "UNLOCK",
-            Booking.escrow_status.in_([EscrowStatus.VERIFIED, EscrowStatus.COMPLETED])
-        ).scalar() or 0.0
-        
-        # 4. Create Recon Record
-        recon = DailyReconciliation(
-            recon_date=target_date,
-            total_revenue=float(total_rev),
-            total_agent_commissions=float(total_comm),
-            total_unlocked_fees=float(total_unlock),
-            status="MATCHED",
-            report_data={
-                "generated_at": datetime.utcnow().isoformat(),
-                "booking_count": db.query(Booking).filter(func.date(Booking.created_at) == target_date).count()
-            }
-        )
-        
-        # Upsert logic
-        existing = db.query(DailyReconciliation).filter(DailyReconciliation.recon_date == target_date).first()
-        if existing:
-            existing.total_revenue = recon.total_revenue
-            existing.total_agent_commissions = recon.total_agent_commissions
-            existing.total_unlocked_fees = recon.total_unlocked_fees
-            existing.report_data = recon.report_data
-            recon = existing
-        else:
-            db.add(recon)
+        for sub in subscriptions:
+            # Check if any upgrade log exists for this subscription
+            last_audit = db.query(AuditLog).filter(
+                AuditLog.entity_id == sub.id,
+                AuditLog.action == "TIER_UPGRADE"
+            ).order_by(AuditLog.timestamp.desc()).first()
             
-        db.commit()
-        db.refresh(recon)
-        return recon
+            if sub.plan_tier != "FREE" and not last_audit:
+                discrepancies.append({
+                    "user_id": sub.user_id,
+                    "tier": sub.plan_tier,
+                    "issue": "Tier mismatch: No corresponding AuditLog found."
+                })
+        
+        return {"discrepancies_found": len(discrepancies), "details": discrepancies}
+
+    @staticmethod
+    def calculate_mrr(db: Session) -> float:
+        """[Task 41.H] Aggregates Monthly Recurring Revenue from AuditLogs."""
+        # Simplified: Sum of all upgrades in the last 30 days
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        logs = db.query(AuditLog).filter(
+            AuditLog.action == "TIER_UPGRADE",
+            AuditLog.timestamp >= thirty_days_ago
+        ).all()
+        
+        # This is a simplified MRR calculator based on upgrade frequency.
+        # In a real app, integrate with Stripe/UPI settlement data.
+        return len(logs) * 499.0 # Assuming flat PRO fee for example

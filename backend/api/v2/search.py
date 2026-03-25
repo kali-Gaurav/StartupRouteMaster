@@ -14,6 +14,20 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["Routing & Discovery"])
 
+@router.get("/engines")
+async def list_engines():
+    """Lists all available routing engines for selection in Engine Filtering."""
+    return {
+        "engines": [
+            {"id": "HubTier0", "name": "Backbone (Hub-to-Hub)", "tier": 0},
+            {"id": "Turbo", "name": "Turbo (Direct SQL)", "tier": 1},
+            {"id": "UltraTurbo", "name": "UltraTurbo (Vectorized)", "tier": 1},
+            {"id": "TBR", "name": "TBR (Trip-Based Router)", "tier": 2},
+            {"id": "FastPath", "name": "FastPath (2-Transfer BFS)", "tier": 2},
+            {"id": "RAPTOR", "name": "RAPTOR (Discovery)", "tier": 3}
+        ]
+    }
+
 @router.get("/unified")
 async def unified_search(
     request: Request,
@@ -25,6 +39,8 @@ async def unified_search(
     limit: int = Query(15, ge=1, le=50),
     cursor: Optional[float] = Query(None, description="Score cursor for pagination"),
     quota: str = "GN",
+    engine: Optional[list[str]] = Query(None, description="Filter for specific engines"),
+    discovery: bool = Query(False, description="Run in discovery-only mode (skip hydration)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -69,7 +85,9 @@ async def unified_search(
                 quota=quota,
                 client_ip=client_ip,
                 geo_state=geo_state,
-                request=request # Pass request for disconnection detection
+                request=request,
+                permitted_engines=engine,
+                discovery_only=discovery
             ),
             timeout=adaptive_timeout # Subtask 1.3: Adaptive Timeout
         )
@@ -88,6 +106,8 @@ async def streaming_search(
     destination: str,
     date: str,
     budget: Optional[str] = None,
+    engine: Optional[list[str]] = Query(None, description="Filter for specific engines"),
+    discovery: bool = Query(False, description="Run in discovery-only mode (skip hydration)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -107,7 +127,12 @@ async def streaming_search(
 
     async def event_generator():
         try:
-            async for chunk in search_svc.search_routes_stream(source, destination, date, budget, chunk_size=chunk_size):
+            async for chunk in search_svc.search_routes_stream(
+                source, destination, date, budget, 
+                chunk_size=chunk_size, 
+                permitted_engines=engine, 
+                discovery_only=discovery
+            ):
                 # 1. Disconnection Check
                 if await request.is_disconnected():
                     logger.info("🛑 Streaming aborted: Client disconnected.")
@@ -145,9 +170,15 @@ async def explain_routing(
     source: str, 
     destination: str, 
     date: str,
-    engine=Depends(get_route_engine)
+    db: Session = Depends(get_db)
 ):
     """
-    Diagnostic endpoint to see engine-level details.
+    Diagnostic endpoint to see engine-level details and explain zero results.
     """
-    return {"message": "Explainer logic here"}
+    search_svc = SearchService(db)
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+    except:
+        dt = datetime.now()
+        
+    return await search_svc.explain_zero_results(source, destination, dt)

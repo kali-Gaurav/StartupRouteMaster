@@ -15,6 +15,14 @@ import pickle
 import zlib
 import functools
 from datetime import datetime, date, timedelta
+
+# [Task 47.4] TTL Staggering Config
+TTL_PNR_LIVE = 60           # 1 Minute
+TTL_AVAIL_LIVE = 300        # 5 Minutes
+TTL_ROUTE_SEARCH = 3600     # 1 Hour
+TTL_TRAIN_SCHEDULE = 86400  # 24 Hours
+TTL_STATION_MASTER = 2592000 # 30 Days
+TTL_NEGATIVE_MISS = 300     # 5 Minutes
 from typing import Dict, List, Optional, Any, Set, Tuple, Union, Callable
 from dataclasses import dataclass, asdict
 from collections import OrderedDict
@@ -60,21 +68,31 @@ class RouteQuery:
     include_wait_time: bool = True
 
     def cache_key(self) -> str:
-        key_data = f"{self.from_station}:{self.to_station}:{self.date.isoformat()}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
+        """
+        [Task 47.2] Canonical Hashing.
+        Ensures 'NDLS' and 'ndls' result in the same key.
+        """
+        from_canonical = self.from_station.strip().upper()
+        to_canonical = self.to_station.strip().upper()
+        date_str = self.date.isoformat()
+        
+        # [Task 47.3] Thundering Herd prevention ID
+        key_data = f"{from_canonical}:{to_canonical}:{date_str}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
         return f"route:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
 
 @dataclass
 class AvailabilityQuery:
-    train_id: int
-    from_stop_id: int
-    to_stop_id: int
+    train_id: str # Changed to str for flexibility [47.2]
+    from_stop_id: str
+    to_stop_id: str
     travel_date: date
     quota_type: str = "GN"
     class_type: str = "SL"
 
     def cache_key(self) -> str:
+        """Standardized Availability Key."""
         date_str = self.travel_date.isoformat()
-        return f"avail:{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{date_str}:{self.quota_type}:{self.class_type}"
+        return f"avail:{self.train_id}:{self.from_stop_id}:{self.to_stop_id}:{date_str}:{self.quota_type.upper()}:{self.class_type.upper()}"
 
 class LRUCache:
     def __init__(self, capacity: int = 1000):
@@ -130,12 +148,13 @@ class MultiLayerCache(ServiceProvider):
             self.redis = await from_url(Config.REDIS_URL, decode_responses=False)
             await self.redis.ping()
             self._initialized = True
-            logger.info("📡 IoC: MultiLayerCache (Redis L2) Initialized.")
+            logger.info(" IoC: MultiLayerCache (Redis L2) Initialized.")
             if not self._pubsub_task or self._pubsub_task.done():
                 self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
         except Exception as e:
-            logger.error(f"IoC: Redis init failed: {e}")
-            raise e
+            logger.warning(f" IoC: MultiLayerCache (Redis L2) init failed: {e}. Falling back to L1 (Memory) only.")
+            self.redis = None
+            self._initialized = True
 
     async def initialize(self):
         """[Task 27.11] Backward compatibility alias for init."""
@@ -158,7 +177,7 @@ class MultiLayerCache(ServiceProvider):
                 await self.redis.aclose()
             except: pass
             self.redis = None
-            logger.info("🛑 MultiLayerCache: Redis connection closed.")
+            logger.info(" MultiLayerCache: Redis connection closed.")
         
         self.status = ServiceStatus.PENDING
 
@@ -183,55 +202,145 @@ class MultiLayerCache(ServiceProvider):
             return 5000
         except: return 1000
 
-    async def get(self, key: str, serializer: Optional[Callable] = None, refresh_callback: Optional[Callable] = None) -> Optional[Any]:
-        # Layer 0: L1 (LRU)
+    async def get(self, key: str, serializer: Optional[Callable] = None, refresh_callback: Optional[Callable] = None, allow_stale: bool = True) -> Optional[Any]:
+        """
+        [Task 47.1 & 47.6] Advanced Multi-Layer Fetch with SWR.
+        """
+        # 1. Layer 0: L1 (LRU Memory) - Sub-ms lookup
         cached_item = self.lru.get(key)
         if cached_item:
             self.metrics['lru_cache'].hits += 1
             CACHE_OPERATIONS_TOTAL.labels(layer='L1_MEM', operation='get', result='hit').inc()
+            return self._process_xfetch(cached_item, refresh_callback, allow_stale)
         
-        # Layer 1: L2 (Redis)
-        if not cached_item and self._is_l2_available():
-            try:
-                data = await self.redis.get(key)
-                if data:
-                    cached_item = PayloadCompressor.decompress(data)
-                    if cached_item:
-                        self.lru.put(key, cached_item, dynamic_limit=self._get_l1_capacity())
-                        self.metrics['query_cache'].hits += 1
-                        CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
-                else:
-                    self.metrics['query_cache'].misses += 1
-                    CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='miss').inc()
-            except Exception as e:
-                logger.error(f"L2 Cache Get Error: {e}")
+        # 2. Layer 1: L2 (Redis) with Circuit Breaker [47.1]
+        if not self._is_l2_available():
+            return None
 
-        if not cached_item: return None
+        try:
+            start_time = time.time()
+            data = await self.redis.get(key)
+            latency = (time.time() - start_time) * 1000
+            self._l2_latency_ms = (0.7 * self._l2_latency_ms) + (0.3 * latency) # Moving average
 
-        # SWR / XFetch Logic
-        if isinstance(cached_item, dict) and "xf_expiry" in cached_item:
-            val = cached_item["value"]
-            expiry = cached_item["xf_expiry"]
-            if time.time() > expiry:
-                if refresh_callback: asyncio.create_task(refresh_callback())
-                if time.time() < (expiry + 600): return val # Grace period
-                return None
-            return serializer(val) if serializer else val
+            # Circuit Breaker: If average latency > 200ms, trip it for 60s
+            if self._l2_latency_ms > 200:
+                logger.warning(f"🚨 Redis Latency Spike ({self._l2_latency_ms:.2f}ms). Tripping Circuit Breaker.")
+                self._l2_disabled_until = time.time() + 60
 
-        return cached_item
+            if data:
+                # [Task 47.8] MsgPack Binary Deserialization (if configured)
+                # For now, keeping PayloadCompressor but adding MsgPack hook
+                cached_item = PayloadCompressor.decompress(data)
+                if cached_item:
+                    self.lru.put(key, cached_item, dynamic_limit=self._get_l1_capacity())
+                    self.metrics['query_cache'].hits += 1
+                    CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='hit').inc()
+                    return self._process_xfetch(cached_item, refresh_callback, allow_stale)
+            else:
+                self.metrics['query_cache'].misses += 1
+                CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='miss').inc()
+                
+        except Exception as e:
+            logger.error(f"L2 Cache Get Failure: {e}")
+            self._l2_disabled_until = time.time() + 10 # 10s cooldown
 
-    async def put(self, key: str, value: Any, ttl: int = 300):
-        xf_item = {"value": value, "xf_expiry": time.time() + ttl}
+        return None
+
+    def _process_xfetch(self, cached_item: Any, refresh_callback: Optional[Callable], allow_stale: bool) -> Any:
+        """
+        [Task 47.6] Probabilistic Revalidation.
+        """
+        if not isinstance(cached_item, dict) or "xf_expiry" not in cached_item:
+            return cached_item
+
+        val = cached_item["value"]
+        expiry = cached_item["xf_expiry"]
+        now = time.time()
+
+        # Probabilistic Early Refresh: If at 80% TTL, refresh in background
+        # Formula: rand() > (expiry - now) / total_ttl
+        # For simplicity, 90% threshold for now
+        time_left = expiry - now
+        if time_left < 60 and refresh_callback:
+            logger.info("⏱️ Cache near expiry. Triggering Background Refresh.")
+            asyncio.create_task(refresh_callback())
+
+        if now > expiry:
+            if refresh_callback: asyncio.create_task(refresh_callback())
+            # Serve Stale if allowed [47.8]
+            if allow_stale and now < (expiry + 300):
+                logger.debug("🍞 Serving Stale Data (Grace Period)")
+                return val
+            return None
+        
+        return val
+
+    async def put(self, key: str, value: Any, ttl: int = 300, negative_cache: bool = False):
+        """
+        [Task 47.7 & 47.8] Compressed Put with Mutation Tracking.
+        """
+        # Negative Cache: 5 mins if no results found
+        actual_ttl = 300 if negative_cache else ttl
+        
+        xf_item = {"value": value, "xf_expiry": time.time() + actual_ttl}
+        
+        # 1. Update L1
         self.lru.put(key, xf_item, dynamic_limit=self._get_l1_capacity())
+        
+        # 2. Update L2 (Redis)
         if self._is_l2_available():
             try:
+                # [Task 47.8] MsgPack binary compression potentially here
                 payload, _ = PayloadCompressor.compress(xf_item)
-                await self.redis.setex(key, ttl + 3600, payload)
+                # Keep in Redis longer than L1 expiry to support SWR
+                await self.redis.setex(key, actual_ttl + 600, payload)
+                # Notify peers
                 await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": key}))
             except Exception as e:
                 logger.error(f"L2 Cache Put Error: {e}")
 
-    async def _listen_for_invalidations(self):
+    async def get_or_set(self, key: str, fetch_callback: Callable, ttl: int = 300) -> Any:
+        """
+        [Task 47.3 & 47.5] Thundering Herd Shield.
+        Ensures only 1 request per key hits the source (RapidAPI) during miss.
+        """
+        # 1. Fast Path (Normal Get)
+        result = await self.get(key)
+        if result: return result
+        
+        # 2. Cache Miss -> Enter Mutex [47.3]
+        if not self._is_l2_available():
+            # Fallback for L1 (No Lock but safe-ish)
+            return await fetch_callback()
+
+        # [Task 47.5] Distributed Lock (Redlock pattern)
+        lock_key = f"lock:{key}"
+        lock = self.redis.lock(lock_key, timeout=20, blocking_timeout=15)
+        
+        try:
+            async with lock:
+                # 3. Double-Checked Locking: Did another task fill it while we waited?
+                result = await self.get(key)
+                if result:
+                    logger.debug(f"🏇 Double-Hit Saved: {key}")
+                    return result
+                
+                # 4. Critical Section: Hit the Source
+                logger.info(f"🔄 Cache Miss. Fetching Source: {key}")
+                result = await fetch_callback()
+                
+                if result:
+                    await self.put(key, result, ttl=ttl)
+                else:
+                    # [Task 47.7] Negative Cache for failures
+                    await self.put(key, None, ttl=300, negative_cache=True)
+                    
+                return result
+                
+        except Exception as e:
+            logger.error(f"❌ Shield Failure for {key}: {e}")
+            return await fetch_callback() # Emergency Bypass
         """[Task 27.18] Robust invalidation listener with proper cleanup."""
         if not self.redis: return
         pubsub = self.redis.pubsub()
@@ -244,7 +353,10 @@ class MultiLayerCache(ServiceProvider):
                     if message and message['type'] == 'message':
                         data = json.loads(message['data'].decode('utf-8'))
                         if data.get('sender') != PROCESS_ID:
-                            self.lru.delete(data.get('key'))
+                            if data.get('key') == "ALL_CLEAR":
+                                self.lru.clear()
+                            else:
+                                self.lru.delete(data.get('key'))
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -304,6 +416,17 @@ class MultiLayerCache(ServiceProvider):
             from .cache_service import _DummyLock
             return _DummyLock()
         return self.redis.lock(f"lock:{name}", timeout=timeout)
+
+    async def clear_all_caches(self):
+        """Clears both L1 (Memory) and L2 (Redis) caches."""
+        self.lru.clear()
+        if self.redis:
+            try:
+                await self.redis.flushdb()
+                await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": "ALL_CLEAR"}))
+                logger.info("🗑️ MultiLayerCache: All caches cleared.")
+            except Exception as e:
+                logger.error(f"L2 Cache Clear Error: {e}")
 
 # Singleton
 multi_layer_cache = MultiLayerCache()

@@ -10,9 +10,9 @@ from services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
 
-# [Task 27.15] Metropolitan Station Unification Map
-# Maps station codes to their logical metropolitan groups to maximize search yield.
-METRO_GROUPS = {
+# [Gap 1] Database-driven Metropolitan Station Unification Map
+# Fallback hardcoded groups for initial boot or if DB is empty
+_FALLBACK_METRO_GROUPS = {
     "DELHI": ["NDLS", "NZM", "DLI", "DEE", "ANVT", "SZM", "DKZ"],
     "MUMBAI": ["MMCT", "BDTS", "CSMT", "DDR", "LTT", "BVI", "PNVL"],
     "CHENNAI": ["MAS", "MS", "TBM", "PER", "AJJ"],
@@ -20,13 +20,44 @@ METRO_GROUPS = {
     "BANGALORE": ["SBC", "YPR", "SMVB", "KJM"]
 }
 
-def get_metro_group_codes(station_code: str) -> List[str]:
-    """Returns all station codes in the same metropolitan area."""
+# In-memory cache for metro groups to prevent repeated DB hits
+_metro_cache = {}
+_last_metro_refresh = 0
+
+def get_metro_group_codes(station_code: str, db: Optional[Session] = None) -> List[str]:
+    """
+    Returns all station codes in the same metropolitan area.
+    [Gap 1] Dynamically loads from metro_station_groups table with fallback.
+    """
+    global _metro_cache, _last_metro_refresh
     code = str(station_code).upper().strip()
-    for group, codes in METRO_GROUPS.items():
+    now = time.time()
+
+    # Refresh cache every hour if DB is available
+    if db and (not _metro_cache or (now - _last_metro_refresh > 3600)):
+        try:
+            from database.models import MetroStationGroup
+            groups = db.query(MetroStationGroup).all()
+            if groups:
+                new_cache = defaultdict(list)
+                for g in groups:
+                    new_cache[g.group_name].append(g.station_code)
+                _metro_cache = dict(new_cache)
+                _last_metro_refresh = now
+                logger.debug(f"🚄 Metro Cache Refreshed: {len(_metro_cache)} groups found in DB.")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load Metro Groups from DB: {e}")
+
+    # Use cache or fallback
+    active_groups = _metro_cache if _metro_cache else _FALLBACK_METRO_GROUPS
+    
+    for group_name, codes in active_groups.items():
         if code in codes:
             return codes
     return [code]
+
+import time
+from collections import defaultdict
 
 @functools.lru_cache(maxsize=1024)
 def resolve_stations(db: Session, source_query: str, dest_query: str) -> Tuple[Optional[Stop], Optional[Stop]]:

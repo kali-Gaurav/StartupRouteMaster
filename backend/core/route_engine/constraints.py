@@ -38,6 +38,9 @@ class RouteConstraints:
 
     # Compatibility / advanced options
     preferred_class: Optional[str] = None
+    # [Task 27] Multi-Class preference (e.g., ["3A", "SL"] to check 3A first, then SL)
+    preferred_classes: list[str] = field(default_factory=lambda: ["3A", "2A", "SL"])
+    
     include_wait_time: bool = False
 
     # Debug/diagnostics
@@ -47,6 +50,12 @@ class RouteConstraints:
     
     # Task 26.1: Quota support (GN, TQ, LD, etc.)
     quota: str = "GN"
+    
+    # [Task 10] Discovery-Only Mode (Skip Hydration/Pricing)
+    discovery_only: bool = False
+    
+    # [Task 1] Engine Filtering
+    permitted_engines: Optional[list[str]] = None
 
     @dataclass
     class Weights:

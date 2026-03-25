@@ -2,8 +2,11 @@ import { create } from 'zustand';
 
 export type SurgeLevel = 'Normal' | 'Elevated' | 'High' | 'Critical';
 
-interface SystemState {
+ interface SystemState {
   isOnline: boolean;
+  v3Core: boolean; // Task 50.1
+  scrapersPool: string; // Task 48.7
+  ledgerStatus: string; // Task 49.9
   surgeLevel: SurgeLevel;
   maintenanceMode: boolean;
   degradedFeatures: string[];
@@ -17,6 +20,9 @@ interface SystemState {
 
 export const useSystemStatus = create<SystemState>((set) => ({
   isOnline: true,
+  v3Core: false,
+  scrapersPool: "IDLE",
+  ledgerStatus: "PENDING",
   surgeLevel: 'Normal',
   maintenanceMode: false,
   degradedFeatures: [],

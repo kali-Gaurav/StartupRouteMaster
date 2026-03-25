@@ -66,8 +66,19 @@ class Config(metaclass=ConfigMeta):
             return f"sqlite:///{db_path}"
 
         if url and (cls.ENVIRONMENT == "production" or "postgresql" in url):
-            if is_async and url.startswith("postgresql://") and "asyncpg" not in url:
-                url = url.replace("postgresql://", "postgresql+asyncpg://")
+            if is_async and "postgresql" in url:
+                if "asyncpg" not in url:
+                    url = url.replace("postgresql://", "postgresql+asyncpg://")
+                # [Issue 7] asyncpg doesn't support query-param sslmode consistently across environments
+                # We strip it here and handle it in session.py connect_args
+                if "?" in url:
+                    url = url.split("?")[0]
+            
+            # [Task 2] Standard Postgres Sync handling (psycopg2)
+            elif "postgresql" in url and "sslmode" not in url:
+                separator = "&" if "?" in url else "?"
+                url = f"{url}{separator}sslmode=require"
+            
             return url
         
         filename = "user_store.db" if db_type == "user" else "transit_graph.db"
@@ -89,7 +100,11 @@ class Config(metaclass=ConfigMeta):
     @classmethod
     def validate(cls):
         if cls.ENVIRONMENT != "production": return
-        critical = ["DATABASE_URL", "REDIS_URL", "SUPABASE_URL", "SUPABASE_KEY", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY"]
+        critical = [
+            "DATABASE_URL", "REDIS_URL", "SUPABASE_URL", "SUPABASE_KEY", 
+            "RAPIDAPI_KEY", "RAPIDAPI_HOST",
+            "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY"
+        ]
         missing = [key for key in critical if not cls._get_env(key)]
         if missing: logger.error(f"❌ CRITICAL CONFIG MISSING: {', '.join(missing)}")
 

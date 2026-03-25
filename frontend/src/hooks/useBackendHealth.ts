@@ -31,6 +31,9 @@ export function useBackendHealth() {
           const data = await res.json();
           setSystemStatus({ 
             isOnline: true, 
+            v3Core: !!data.v3_core,
+            scrapersPool: data.components?.scrapers?.pool || "IDLE",
+            ledgerStatus: data.components?.ledger?.status || "PENDING",
             surgeLevel: (data.surge_level as SurgeLevel) || 'Normal',
             maintenanceMode: !!data.maintenance,
             degradedFeatures: data.degraded_features || [],

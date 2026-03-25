@@ -13,6 +13,18 @@ redis_client = redis.from_url(
     max_connections=50 # Increased pool size
 )
 
+import redis.asyncio as aioredis
+# Initialize async redis client
+async_redis_client = aioredis.from_url(
+    Config.REDIS_URL,
+    decode_responses=True,
+    ssl_cert_reqs=None,
+    socket_timeout=5.0,
+    socket_connect_timeout=5.0,
+    retry_on_timeout=True,
+    max_connections=50
+)
+
 import asyncio
 import time
 import logging

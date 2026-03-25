@@ -49,23 +49,36 @@ class DataProvider:
         self.config = config
         self.session = None # Lazy initialization
         
-        # Initialize RapidAPI client
+        # Initialize RapidAPI client (no longer used directly by unified methods)
         self.rapidapi_client = None
         if RAPIDAPI_AVAILABLE:
             rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
             if rapidapi_key:
                 try:
                     self.rapidapi_client = RapidAPIClient(rapidapi_key)
-                    logger.info("RapidAPI client initialized successfully")
                 except Exception as e:
                     logger.warning(f"Failed to initialize RapidAPI client: {e}")
-                    self.rapidapi_client = None
 
         # Initialize Rappid client (Task 28)
         self.rappid_client = None
         if RAPPID_AVAILABLE:
             self.rappid_client = AsyncRappidAPIClient()
             logger.info("Rappid.in client initialized successfully")
+
+        # High-level services for intelligent verification
+        from services.seat_verification import SeatVerificationService
+        from services.fare_service import FareService
+        self.seat_service = SeatVerificationService()
+        self.fare_service = FareService(config)
+
+    def detect_available_features(self):
+        """Legacy compatibility for VerificationService."""
+        logger.info("DataProvider: Unified features detected (Seat, Fare, Live)")
+        return True
+
+    def detect_features(self):
+        """Alias for detect_available_features."""
+        return self.detect_available_features()
 
     def _ensure_session(self):
         """Lazy load session to avoid initialization timing issues."""
@@ -217,112 +230,86 @@ class DataProvider:
         quota: str = "GN"
     ) -> Dict[str, Any]:
         """
-        Verify real availability via RapidAPI with 15-minute Redis caching.
-        Task 25: Circuit breaker integrated.
+        [PHASE 3] Unified seat check: Delegates to SeatVerificationService 
+        which handles multi-layer caching, request coalescing, and circuit breaking.
         """
-        from utils.external_api_health import api_health
+        if not train_number or not from_station or not to_station:
+            return {
+                "status": "failed", 
+                "available_seats": 0, 
+                "message": "Missing required parameters for seat verification",
+                "source": "error_validation"
+            }
+
+        date_str = travel_date.strftime("%Y-%m-%d")
+        class_mapping = {
+            "AC_THREE_TIER": "3A", "AC_TWO_TIER": "2A", "AC_FIRST_CLASS": "1A",
+            "SLEEPER": "SL", "CHAIR_CAR": "CC", "EXECUTIVE_CHAIR": "EC"
+        }
+        rapidapi_class = class_mapping.get(coach_preference, "SL")
         
-        if self.rapidapi_client and train_number and from_station and to_station:
-            if not await api_health.is_available():
-                logger.warning("RapidAPI is currently disabled by circuit breaker. Using DB fallback.")
-            else:
-                try:
-                    date_str = travel_date.strftime("%Y-%m-%d")
-                    class_mapping = {
-                        "AC_THREE_TIER": "3A", "AC_TWO_TIER": "2A", "AC_FIRST_CLASS": "1A",
-                        "SLEEPER": "SL", "CHAIR_CAR": "CC", "EXECUTIVE_CHAIR": "EC"
-                    }
-                    rapidapi_class = class_mapping.get(coach_preference, "SL")
-                    
-                    cache_key = f"verify_seat:{train_number}:{from_station}:{to_station}:{date_str}:{quota}:{rapidapi_class}"
-                    
-                    # Layer 1: Redis Cache
-                    if multi_layer_cache.redis:
-                        cached = await multi_layer_cache.redis.get(cache_key)
-                        if cached:
-                            logger.info(f"Cache hit for seat availability: {cache_key}")
-                            return json.loads(cached)
-                    
-                    # Layer 2: Live API
-                    logger.info(f"RapidAPI Call: {train_number} availability on {date_str}")
-                    api_start = time.perf_counter()
-                    result = await self.rapidapi_client.get_seat_availability(
-                        train_no=train_number, from_stn=from_station, to_stn=to_station,
-                        date=date_str, quota=quota, class_type=rapidapi_class
-                    )
-                    latency = (time.perf_counter() - api_start) * 1000
-                    
-                    if not result:
-                        logger.warning(f"RapidAPI seat check returned None for {train_number}")
-                        await api_health.record_failure("Null response from Seat API")
-                        return {"status": "verified", "available_seats": 5, "source": "database_fallback_null"}
+        try:
+            res = await self.seat_service.check_segment(
+                train_no=train_number,
+                from_code=from_station,
+                to_code=to_station,
+                date_str=date_str,
+                quota=quota,
+                class_type=rapidapi_class
+            )
+            
+            if res and res.get("success"):
+                return {
+                    "status": "verified",
+                    "available_seats": res.get("seats", 0),
+                    "booked_seats": res.get("booked", 0),
+                    "status_text": res.get("status", "UNKNOWN"),
+                    "fare": res.get("fare", 0),
+                    "message": res.get("status", ""),
+                    "source": "rapidapi_unified",
+                    "timestamp": res.get("last_updated", datetime.utcnow().isoformat())
+                }
+        except Exception as e:
+            logger.error(f"DataProvider: Intelligent seat verify failed, falling back to cache: {e}")
 
-                    if result.get("status") != "error":
-                        await api_health.record_success(latency_ms=latency)
-                        
-                        # [NEW] Align with verified IRCTC RapidAPI response structure
-                        # The API usually returns a list in 'data'
-                        api_items = result.get("data", [])
-                        if not isinstance(api_items, list): api_items = [api_items]
-                        
-                        # Find the requested date in the response
-                        day_data = None
-                        for item in api_items:
-                            if item.get("date") == date_str or item.get("date") == travel_date.strftime("%d-%m-%Y"):
-                                day_data = item
-                                break
-                        
-                        if not day_data and api_items:
-                            day_data = api_items[0]
-                            
-                        available_seats = 0
-                        status_text = "UNKNOWN"
-                        fare_val = 0
-                        
-                        if day_data:
-                            available_seats = day_data.get("seat_avl", 0)
-                            status_text = day_data.get("current_status", "UNKNOWN")
-                            fare_val = day_data.get("total_fare", 0)
+        # Real Fallback to database cache
+        db_res = self._get_cached_availability(train_number, from_station, to_station, date_str, quota, rapidapi_class)
+        if db_res:
+            return db_res
 
-                        verification_result = {
-                            "status": "verified",
-                            "available_seats": available_seats,
-                            "status_text": status_text,
-                            "fare": fare_val,
-                            "message": status_text,
-                            "source": "rapidapi",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                        
-                        if multi_layer_cache.redis:
-                            # [13.2] Dynamic TTL
-                            ttl = self._calculate_dynamic_ttl(travel_date)
-                            await multi_layer_cache.redis.setex(cache_key, ttl, json.dumps(verification_result))
-                        
-                        # [2.6] Save to local SQLite cache for long-term fallback (Async background task)
-                        asyncio.create_task(asyncio.to_thread(
-                            self._save_to_local_availability_cache,
-                            train_number, from_station, to_station, date_str, 
-                            rapidapi_class, quota, available_seats, status_text, fare_val, result
-                        ))
-                        
-                        return verification_result
-                    else:
-                        error_msg = result.get("message", "Unknown API error") if result else "Null response"
-                        await api_health.record_failure(error_msg)
-                        logger.warning(f"RapidAPI verification failed: {error_msg}")
-                except Exception as e:
-                    # [2.18] Suppress LocalProtocolError on client hangups
-                    if "LocalProtocolError" in str(e):
-                        logger.debug(f"Gracefully handled client hangup: {e}")
-                    else:
-                        await api_health.record_failure(str(e))
-                        logger.error(f"RapidAPI verification error: {e}")
-
-        # Fallback to database
         return {
-            "status": "verified",
-            "available_seats": 10, # Mocked DB fallback
+            "status": "pending",
+            "available_seats": 0, 
+            "message": "Live data unavailable and no cached records found",
+            "source": "database_fallback_empty"
+        }
+
+    async def verify_train_schedule_unified(self, trip_id: Any, travel_date: datetime) -> Dict[str, Any]:
+        """
+        [PHASE 3] Unified schedule check: Uses Rappid.in for real-time delay.
+        """
+        # trip_id is often the train number for this engine
+        train_no = str(trip_id)
+        if len(train_no) < 4: # Fallback lookup if trip_id is primary key
+            # Normally we'd look it up here, but assuming it's train_no for now as per VerificationService usage
+             pass
+
+        try:
+            live = await self.get_live_status(train_no)
+            if live:
+                return {
+                    "status": "verified",
+                    "delay_minutes": live.get("delay_mins", 0),
+                    "message": f"At {live.get('current_station', 'Unknown')}",
+                    "source": "rappid_unified"
+                }
+        except Exception as e:
+            logger.error(f"DataProvider: Schedule verification failed: {e}")
+
+        return {
+            "status": "pending",
+            "delay_minutes": 0,
+            "message": "Live delay data currently unavailable",
             "source": "database_fallback"
         }
 
@@ -334,89 +321,105 @@ class DataProvider:
         from_station: Optional[str] = None,
         to_station: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Verify fares via RapidAPI or DB fallback with circuit breaker."""
-        from utils.external_api_health import api_health
-        
+        """Verify fares via FareService (Unified Provider)."""
+        if not train_number or not from_station or not to_station:
+            return {
+                "status": "failed", 
+                "total_fare": 0.0, 
+                "base_fare": 0.0,
+                "GST": 0.0,
+                "message": "Missing required parameters for fare verification",
+                "source": "error_validation"
+            }
+
         class_mapping = {
             "AC_THREE_TIER": "3A", "AC_TWO_TIER": "2A", "AC_FIRST_CLASS": "1A",
             "SLEEPER": "SL", "CHAIR_CAR": "CC", "EXECUTIVE_CHAIR": "EC"
         }
         rapidapi_class = class_mapping.get(coach_preference, "SL")
         
-        cache_key = f"verify_fare:{train_number}:{from_station}:{to_station}:{rapidapi_class}"
-        
-        # 1. Check Redis Cache
-        if multi_layer_cache.redis:
-            cached = await multi_layer_cache.redis.get(cache_key)
-            if cached:
-                logger.info(f"Cache hit for fare: {cache_key}")
-                return json.loads(cached)
+        try:
+            res = await self.fare_service.get_fare(
+                train_no=train_number,
+                from_station=from_station,
+                to_station=to_station,
+                class_code=rapidapi_class
+            )
+            
+            if res and res.get("success"):
+                fare_data = res.get("data", {})
+                return {
+                    "status": "verified",
+                    "base_fare": fare_data.get("baseFare", 0),
+                    "GST": fare_data.get("serviceTax", 0),
+                    "total_fare": fare_data.get("totalFare", 0) or fare_data.get("fare", 0),
+                    "message": "Fare verified",
+                    "source": "rapidapi_unified",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+        except Exception as e:
+             logger.error(f"DataProvider: Intelligent fare verify failed: {e}")
 
-        # 2. Try RapidAPI
-        if self.rapidapi_client and train_number and from_station and to_station and await api_health.is_available():
-            try:
-                logger.info(f"RapidAPI Fare Call: {train_number} from {from_station} to {to_station}")
-                api_start = time.perf_counter()
-                result = await self.rapidapi_client.get_fare(
-                    train_no=train_number, from_stn=from_station, to_stn=to_station
-                )
-                latency = (time.perf_counter() - api_start) * 1000
-                
-                if not result:
-                    logger.warning(f"RapidAPI fare check returned None for {train_number}")
-                    await api_health.record_failure("Null response from Fare API")
-                    return {"status": "verified", "total_fare": 1500.0, "source": "database_fallback_null"}
-
-                if result and result.get("status") == "success":
-                    await api_health.record_success(latency_ms=latency)
-                    # ... rest of the parsing same as before ...
-                    fares_list = result.get("data", {}).get("fares", [])
-                    target_fare = None
-                    
-                    for f in fares_list:
-                        f_class = f.get("classType")
-                        f_total = float(f.get("totalFare", 0))
-                        f_base = float(f.get("baseFare", f_total))
-                        f_gst = float(f.get("serviceTax", 0))
-                        
-                        cls_key = f"verify_fare:{train_number}:{from_station}:{to_station}:{f_class}"
-                        cls_res = {
-                            "status": "verified",
-                            "total_fare": f_total,
-                            "base_fare": f_base,
-                            "gst": f_gst,
-                            "source": "rapidapi",
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                        if multi_layer_cache.redis:
-                            await multi_layer_cache.redis.setex(cls_key, 900, json.dumps(cls_res))
-                        
-                        # [2.6] Save Fare to local SQLite for long-term fallback
-                        asyncio.create_task(asyncio.to_thread(
-                            self._save_fare_to_local_cache,
-                            train_number, from_station, to_station, f_class, f_total, result
-                        ))
-
-                        if f_class == rapidapi_class:
-                            target_fare = cls_res
-                            
-                    if target_fare: return target_fare
-                else:
-                    await api_health.record_failure("Fare API returned error")
-            except Exception as e:
-                await api_health.record_failure(str(e))
-                logger.error(f"RapidAPI fare verification failed: {e}")
-
-        # 3. Fallback to pre-computed DB fares (Task 2 sync)
+        # Fallback to pre-computed DB fares
         db_fares = self._get_database_fares(segment_id)
-        db_class = rapidapi_class 
-        amount = db_fares.get(db_class, 1500.0)
+        amount = db_fares.get(rapidapi_class)
         
+        if amount is not None:
+             return {
+                "status": "verified",
+                "base_fare": float(amount),
+                "GST": 0.0,
+                "total_fare": float(amount),
+                "message": "Verified via database records",
+                "source": "database_fallback"
+            }
+
         return {
-            "status": "verified",
-            "total_fare": float(amount),
-            "source": "database_fallback"
+            "status": "failed",
+            "total_fare": 0.0,
+            "message": "Fare information not available in live API or database",
+            "source": "database_fallback_empty"
         }
+
+    def _get_cached_availability(self, train_no, from_code, to_code, date_str, quota, class_type) -> Optional[Dict[str, Any]]:
+        """Real database lookup for cached train availability."""
+        try:
+            self._ensure_session()
+            from database.models import TrainAvailabilityCache
+            from sqlalchemy import and_
+            
+            # Convert date_str to date object if needed
+            try:
+                if "-" in date_str and len(date_str.split("-")[0]) == 4:
+                    j_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                else:
+                    j_date = datetime.strptime(date_str, "%d-%m-%Y").date()
+            except:
+                j_date = datetime.utcnow().date()
+
+            record = self.session.query(TrainAvailabilityCache).filter(and_(
+                TrainAvailabilityCache.train_number == train_no,
+                TrainAvailabilityCache.from_station_code == from_code,
+                TrainAvailabilityCache.to_station_code == to_code,
+                TrainAvailabilityCache.journey_date == j_date,
+                TrainAvailabilityCache.class_type == class_type,
+                TrainAvailabilityCache.quota == quota
+            )).first()
+
+            if record:
+                return {
+                    "status": "verified",
+                    "available_seats": record.seats_available or 0,
+                    "booked_seats": 0,
+                    "status_text": record.status_text,
+                    "fare": record.fare or 0,
+                    "message": f"Cached: {record.status_text}",
+                    "source": "database_cache",
+                    "timestamp": record.last_updated_at.isoformat()
+                }
+        except Exception as e:
+            logger.error(f"Database availability cache lookup failed: {e}")
+        return None
 
     def _get_database_fares(self, segment_id: Any) -> Dict[str, float]:
         """Get fares from database for a segment or trip."""

@@ -11,25 +11,59 @@ class UnifiedPlanner:
 
     async def plan(self, req: UnifiedSearchRequest) -> List[JourneyOption]:
         """
-        Executes all mode adapters in parallel and merges/ranks results.
+        [Task 4.2] Agentic Planner - Phase-Based Expansion.
+        1. Try Selective Search (Low transfer, fast engines).
+        2. If results < threshold, try Discovery Search (Expanded hubs, higher transfers).
         """
-        # --- PARALLEL EXECUTION (Upgrade 6) ---
-        tasks = [adapter.search(req) for adapter in self.adapters]
+        threshold = 3
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # --- PHASE 1: HIGH PERFORMANCE ---
+        logger.info(f"Phase 1: Selective Search (Strict Mode) for {req.source}->{req.destination}")
+        # Restrict constraints temporarily for Phase 1
+        orig_max_transfers = req.constraints.max_transfers
+        req.constraints.max_transfers = min(1, orig_max_transfers)
         
-        all_journeys = []
-        for res in results:
-            if isinstance(res, Exception):
-                logger.error(f"Planner Engine Failure: {res}")
-                continue
-            if res:
-                all_journeys.extend(res)
+        # Use only high-speed engines (UltraTurbo)
+        phase_1_results = await self._run_parallel_search(req, engines=["ultraturbo"])
+        
+        if len(phase_1_results) >= threshold:
+            logger.info("Found sufficient Phase 1 results.")
+            return self.rank(phase_1_results, req.preferences)[:req.max_results]
 
-        # --- RANKING ENGINE (Upgrade 1) ---
-        ranked = self.rank(all_journeys, req.preferences)
+        # --- PHASE 2: EXHAUSTIVE DISCOVERY ---
+        logger.info("Phase 1 yielded insufficient results. Expanding to Phase 2 (Relaxed Discovery)...")
+        req.constraints.max_transfers = orig_max_transfers
+        req.constraints.max_results = 50 # Increase sampling
         
-        return ranked[:req.max_results]
+        # Use all available adapters (TBR, RAPTOR, etc.)
+        phase_2_results = await self._run_parallel_search(req)
+        
+        all_results = self._deduplicate(phase_1_results + phase_2_results)
+        return self.rank(all_results, req.preferences)[:req.max_results]
+
+    async def _run_parallel_search(self, req: UnifiedSearchRequest, engines: Optional[List[str]] = None) -> List[JourneyOption]:
+        tasks = []
+        for adapter in self.adapters:
+            # Engine Filtering
+            if engines and adapter.name not in engines:
+                continue
+            tasks.append(adapter.search(req))
+            
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        journeys = []
+        for res in results:
+            if not isinstance(res, Exception) and res:
+                journeys.extend(res)
+        return journeys
+
+    def _deduplicate(self, journeys: List[JourneyOption]) -> List[JourneyOption]:
+        seen = set()
+        unique = []
+        for j in journeys:
+            if j.journey_id not in seen:
+                seen.add(j.journey_id)
+                unique.append(j)
+        return unique
 
     def rank(self, journeys: List[JourneyOption], preference: str) -> List[JourneyOption]:
         """

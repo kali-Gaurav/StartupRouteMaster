@@ -1,0 +1,168 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.11.3, pytest-8.0.2, pluggy-1.6.0 -- C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\python.exe
+cachedir: .pytest_cache
+metadata: {'Python': '3.11.3', 'Platform': 'Windows-10-10.0.26200-SP0', 'Packages': {'pytest': '8.0.2', 'pluggy': '1.6.0'}, 'Plugins': {'anyio': '4.12.1', 'Faker': '20.1.0', 'langsmith': '0.7.17', 'locust': '2.43.2', 'asyncio': '0.23.5', 'cov': '4.1.0', 'html': '4.1.1', 'json-report': '1.5.0', 'metadata': '3.1.1', 'mock': '3.15.1', 'xdist': '3.5.0'}}
+rootdir: C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2
+plugins: anyio-4.12.1, Faker-20.1.0, langsmith-0.7.17, locust-2.43.2, asyncio-0.23.5, cov-4.1.0, html-4.1.1, json-report-1.5.0, metadata-3.1.1, mock-3.15.1, xdist-3.5.0
+asyncio: mode=Mode.STRICT
+collecting ... collected 3 items
+
+backend/tests/test_provider_resilience.py::test_rapidapi_failover_to_ntes PASSED [ 33%]
+backend/tests/test_provider_resilience.py::test_circuit_breaker_trip FAILED [ 66%]
+backend/tests/test_provider_resilience.py::test_budget_enforcement FAILED [100%]
+
+================================== FAILURES ===================================
+__________________________ test_circuit_breaker_trip __________________________
+
+gateway = <backend.providers.gateway.ProviderGateway object at 0x0000020BD48F9850>
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_trip(gateway):
+        gateway.rapidapi_client.get_live_status = AsyncMock(side_effect=Exception("API Error"))
+        gateway.ntes_client.get_live_status = AsyncMock(return_value=MOCK_NTES_DATA)
+    
+        # Threshold is 5.
+        for _ in range(5):
+            await gateway.get_live_status("12345", "2024-03-23")
+    
+        # Verify breaker is open by checking internal state
+>       assert gateway.rapidapi_breaker.state == "OPEN"
+E       AssertionError: assert 'CLOSED' == 'OPEN'
+E         
+E         - OPEN
+E         + CLOSED
+
+backend\tests\test_provider_resilience.py:52: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+Circuit Breaker 'rapidapi_irctc1' initialized: threshold=5, timeout=60.0s
+Circuit Breaker 'ntes_scraper' initialized: threshold=3, timeout=45.0s
+___________________________ test_budget_enforcement ___________________________
+
+gateway = <backend.providers.gateway.ProviderGateway object at 0x0000020BDA99CD10>
+
+    @pytest.mark.asyncio
+    async def test_budget_enforcement(gateway):
+        gateway._is_budget_ok = AsyncMock(return_value=False)
+        gateway.rapidapi_client.get_live_status = AsyncMock()
+        gateway.ntes_client.get_live_status = AsyncMock(return_value=MOCK_NTES_DATA)
+    
+        await gateway.get_live_status("12345", "2024-03-23")
+    
+        # Skip RapidAPI
+        assert not gateway.rapidapi_client.get_live_status.called
+>       assert gateway.ntes_client.get_live_status.called
+E       AssertionError: assert False
+E        +  where False = <AsyncMock id='2249935408336'>.called
+E        +    where <AsyncMock id='2249935408336'> = <backend.providers.clients.ntes_scraper.NtesScraperClient object at 0x0000020BDA99CE10>.get_live_status
+E        +      where <backend.providers.clients.ntes_scraper.NtesScraperClient object at 0x0000020BDA99CE10> = <backend.providers.gateway.ProviderGateway object at 0x0000020BDA99CD10>.ntes_client
+
+backend\tests\test_provider_resilience.py:74: AssertionError
+---------------------------- Captured stdout setup ----------------------------
+Circuit Breaker 'rapidapi_irctc1' initialized: threshold=5, timeout=60.0s
+Circuit Breaker 'ntes_scraper' initialized: threshold=3, timeout=45.0s
+============================== warnings summary ===============================
+backend\schemas\base.py:17
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:17: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class UserRead(UserBase):
+
+backend\schemas\base.py:45
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:45: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class ReviewRead(ReviewBase):
+
+backend\schemas\base.py:55
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:55: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class RouteSegmentSchema(BaseModel):
+
+backend\schemas\base.py:94
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:94: PydanticDeprecatedSince20: Pydantic V1 style `@validator` validators are deprecated. You should migrate to Pydantic V2 style `@field_validator` validators, see the migration guide for more details. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    @validator("destination")
+
+backend\schemas\base.py:114
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:114: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class SearchResponseDataSchema(BaseModel):
+
+backend\schemas\base.py:138
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:138: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class PassengerDetailsSchema(BaseModel):
+
+backend\schemas\base.py:170
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:170: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AvailabilityCheckResponseSchema(BaseModel):
+
+backend\schemas\base.py:187
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:187: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingResponseSchema(BaseModel):
+
+backend\schemas\base.py:219
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:219: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingListSchema(BaseModel):
+
+backend\schemas\base.py:252
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:252: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingCreateSchema(BaseModel):
+
+backend\schemas\base.py:280
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:280: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingStatusSchema(BaseModel):
+
+backend\schemas\base.py:294
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:294: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class RouteSummarySchema(BaseModel):
+
+backend\schemas\base.py:307
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:307: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class RouteDetailSchema(BaseModel):
+
+backend\schemas\base.py:323
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:323: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class PaymentOrderSchema(BaseModel):
+
+backend\schemas\base.py:361
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:361: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AdminBookingSchema(BaseModel):
+
+backend\schemas\base.py:459
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:459: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class SearchRoutesResponseSchema(BaseModel):
+
+backend\schemas\base.py:484
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:484: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingRequestPassengerSchema(BaseModel):
+
+backend\schemas\base.py:510
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:510: PydanticDeprecatedSince20: `min_items` is deprecated and will be removed, use `min_length` instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    passengers: List[BookingRequestPassengerSchema] = Field(..., min_items=1, max_items=6)
+
+backend\schemas\base.py:510
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:510: PydanticDeprecatedSince20: `max_items` is deprecated and will be removed, use `max_length` instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    passengers: List[BookingRequestPassengerSchema] = Field(..., min_items=1, max_items=6)
+
+backend\schemas\base.py:497
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:497: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingRequestCreateSchema(BaseModel):
+
+backend\schemas\base.py:534
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:534: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingRequestResponseSchema(BaseModel):
+
+backend\schemas\base.py:556
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:556: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingQueueResponseSchema(BaseModel):
+
+backend\schemas\base.py:571
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:571: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class BookingResultResponseSchema(BaseModel):
+
+backend\schemas\base.py:586
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:586: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class RefundRequestSchema(BaseModel):
+
+backend\schemas\base.py:600
+  C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\schemas\base.py:600: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class RefundResponseSchema(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED backend/tests/test_provider_resilience.py::test_circuit_breaker_trip
+FAILED backend/tests/test_provider_resilience.py::test_budget_enforcement - A...
+================== 2 failed, 1 passed, 25 warnings in 8.85s ===================

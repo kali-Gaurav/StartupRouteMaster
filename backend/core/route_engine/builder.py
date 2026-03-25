@@ -20,6 +20,7 @@ from database.models import (
 )
 from core.data_structures import RouteSegment, TransferConnection
 from .graph import TimeDependentGraph, StaticGraphSnapshot
+from .transfer_graph_builder import TransferGraphBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +267,18 @@ class GraphBuilder:
                         arrivals[sid].append((actual_arr_dt, tid))
                     
                     station_ids_by_trip[tid].add(sid)
+
+            # 3. Transfer Graph Generation (Audit: Integrated Step)
+            logger.info("Building full transfer graph (Audit Step)...")
+            # We wrap the async call in a sync bridge since we are in an executor
+            import asyncio
+            transfer_builder = TransferGraphBuilder(session)
+            # Create a temporary loop if needed or just use run_until_complete logic
+            # Since we are already in a thread, this is safe
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            transfer_graph = loop.run_until_complete(transfer_builder.build_transfer_graph())
+            loop.close()
 
             # Route Patterns
             for tid, nodes in trip_nodes_temp.items():

@@ -752,3 +752,65 @@ async def websocket_metrics(websocket: WebSocket):
             await websocket.send_json({"cpu": 12, "mem": 45, "p50": 0.12, "p99": 0.45, "alert": False})
             await asyncio.sleep(5)
     except: pass
+# ==============================================================================
+# PROFILING & RELIABILITY (Task 25/26)
+# ==============================================================================
+
+@router.get("/debug/budget")
+async def get_api_budgets(db: Session = Depends(get_db)):
+    """[Task 26] Fetch current API spending vs limits."""
+    from backend.database.models import APIBudget
+    budgets = db.query(APIBudget).all()
+    return [
+        {
+            "provider": b.provider_name,
+            "spent": float(b.current_spend),
+            "limit": float(b.monthly_limit),
+            "is_active": b.is_active,
+            "usage_percent": round((b.current_spend / b.monthly_limit) * 100, 2) if b.monthly_limit > 0 else 0
+        }
+        for b in budgets
+    ]
+
+@router.get("/debug/telemetry")
+async def get_jit_telemetry(db: Session = Depends(get_db)):
+    """[Task 25/4.5] Fetch internal TelemetryMetrics and Booking Queue status."""
+    from backend.core.metrics import jit_metrics
+    telemetry = jit_metrics.get_report()
+    
+    # [Task 4.5] Agent Queue Stats
+    from services.booking_queue_service import BookingQueueService
+    queue_service = BookingQueueService(db)
+    pending_queue = queue_service.get_pending_queue()
+    
+    telemetry.update({
+        "agent_queue": {
+            "pending_size": len(pending_queue),
+            "avg_wait_mins": 15 # Placeholder
+        }
+    })
+    return telemetry
+
+@router.get("/debug/gateway")
+async def get_gateway_health():
+    """[Task 25] Fetch circuit breaker and scraper statuses."""
+    from backend.providers.gateway import provider_gateway
+    return await provider_gateway.get_health()
+
+# [Task 41.4] Admin Subscription Assignment
+@router.post("/subscription/assign")
+async def assign_subscription(
+    user_id: str = Body(..., embed=True),
+    tier: str = Body("PRO", embed=True),
+    months: int = Body(1, embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually overrides a user's subscription tier.
+    """
+    from services.subscription_service import subscription_service
+    try:
+        sub = subscription_service.upgrade_user(db, user_id, tier, months)
+        return {"status": "success", "user_id": user_id, "tier": sub.plan_tier, "expires_at": sub.expires_at}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

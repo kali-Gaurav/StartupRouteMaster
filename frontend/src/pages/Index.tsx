@@ -24,6 +24,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { predictivePreloadService } from "@/services/predictivePreloadService";
 import { storageService } from "@/services/storageService";
+import { useSystemStatus } from "@/store/useSystemStatus";
 
 const Index = () => {
   const isBackendOnline = useBackendHealth();
@@ -41,6 +42,7 @@ const Index = () => {
   const [routeSource, setRouteSource] = useState<RouteSource>("live"); // "live" or "cached"
   const [dateWindow] = useState(1); // ±N days around travel date
   const [sortBy, setSortBy] = useState<"duration" | "cost" | "score">("duration");
+  const [discoveryOnly, setDiscoveryOnly] = useState(false);
   /** Client-side sort preset for results (instant, no re-fetch). */
   const [sortPreset, setSortPreset] = useState<"duration" | "cost" | "reliable">("duration");
   const [filterTransfers, setFilterTransfers] = useState<number | null>(null);
@@ -313,7 +315,8 @@ const Index = () => {
         date: travelDate || new Date().toISOString().slice(0, 10),
         dateWindow: travelDate ? dateWindow : 0,
         sortBy,
-        routeSource: routeSource, // Pass route source to backend
+        routeSource: routeSource,
+        discoveryOnly,
         ...(flowCorrelationIdRef.current && { correlationId: flowCorrelationIdRef.current }),
       });
 
@@ -578,6 +581,25 @@ const Index = () => {
         </div>
       )}
 
+      {isBackendOnline && (
+        <div className="bg-primary/90 text-primary-foreground text-center py-2 text-[10px] sm:text-xs font-bold flex flex-wrap items-center justify-center gap-4 animate-in slide-in-from-top-full duration-500">
+          <div className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-white/10">
+            <Sparkles className="w-3.5 h-3.5" />
+            V3 MASTER RELEASE ONLINE
+          </div>
+          <div className="h-4 w-px bg-white/20" />
+          <div className="flex items-center gap-1.5">
+            <Database className="w-3.5 h-3.5" />
+            SCRAPER POOL: {(useSystemStatus as any).getState().scrapersPool}
+          </div>
+          <div className="h-4 w-px bg-white/20" />
+          <div className="flex items-center gap-1.5">
+            <Shield className="w-3.5 h-3.5" />
+            LEDGER ENGINE: {(useSystemStatus as any).getState().ledgerStatus}
+          </div>
+        </div>
+      )}
+
       {recoverableSession && (
         <div className="fixed top-16 left-0 right-0 z-40 container mx-auto px-4 pt-2">
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-2 shadow-lg">
@@ -710,6 +732,18 @@ const Index = () => {
                     onChange={setRouteSource}
                     showStatus={true}
                   />
+                  <div className="flex items-center gap-2 mt-2 px-1">
+                    <input 
+                      type="checkbox" 
+                      id="discovery" 
+                      checked={discoveryOnly}
+                      onChange={(e) => setDiscoveryOnly(e.target.checked)}
+                      className="accent-primary w-3 h-3 cursor-pointer"
+                    />
+                    <label htmlFor="discovery" className="text-[10px] uppercase font-black text-muted-foreground cursor-pointer hover:text-primary transition-colors tracking-tighter">
+                      Discovery Mode (Baseline)
+                    </label>
+                  </div>
                 </div>
                 <div>
                   <label htmlFor="travelDate" className="block text-sm font-medium text-muted-foreground mb-2">Travel date *</label>

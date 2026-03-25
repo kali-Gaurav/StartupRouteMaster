@@ -32,23 +32,22 @@ class FareService:
             logger.debug("Fare lookup disabled or missing train number")
             return None
 
-        params = {
-            "trainNo": train_no,
-            "fromStationCode": from_station,
-            "toStationCode": to_station
-        }
-
         try:
-            response = requests.get(self.url, headers=self.headers, params=params, timeout=self.timeout)
-            response.raise_for_status()
-            payload = response.json()
-            return {
-                "source": "rapidapi",
-                "success": payload.get("success", True),
-                "quota": quota,
-                "class": class_code,
-                "data": payload
-            }
+            from services.rapidapi_provider import rapidapi_provider
+            import asyncio
+            
+            # Using v1 for now as per legacy logic, but we added v2 in provider
+            data = asyncio.run(rapidapi_provider.get_fare(train_no, from_station, to_station))
+            
+            if data:
+                return {
+                    "source": "rapidapi",
+                    "success": True,
+                    "quota": quota,
+                    "class": class_code,
+                    "data": data.dict(by_alias=True)
+                }
         except Exception as exc:
             logger.warning("Fare API failed for %s %s-%s: %s", train_no, from_station, to_station, exc)
             return {"source": "rapidapi", "success": False, "error": str(exc)}
+        return None

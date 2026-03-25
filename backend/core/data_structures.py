@@ -166,22 +166,34 @@ class PaginationMetadata:
         return asdict(self)
 
 
-def ensure_datetime(val: Any) -> datetime:
-    """Helper to ensure a value is a datetime object."""
+def ensure_datetime(val: Any, reference: Optional[datetime] = None) -> datetime:
+    """
+    [Task 29] Optimized datetime converter with Midnight Crossover awareness.
+    If reference is provided and val is a time-only string that is 'earlier' 
+    than reference time, it assumes next-day arrival.
+    """
     if isinstance(val, datetime):
         return val
+    
     if isinstance(val, str):
-        # Handle common formats: HH:MM:SS, HH:MM, or ISO
         try:
             if ":" in val and "-" not in val:
-                # Time only, assume today or arbitrary date (needed for duration)
-                from datetime import date
+                # Time only format (HH:MM or HH:MM:SS)
                 t = time.fromisoformat(val)
-                return datetime.combine(date.today(), t)
+                base_date = reference.date() if reference else date.today()
+                dt = datetime.combine(base_date, t)
+                
+                # Crossover Check: If arrival time is earlier than departure time on same day,
+                # it must be the following day.
+                if reference and dt < reference:
+                    dt += timedelta(days=1)
+                return dt
+                
             return datetime.fromisoformat(val)
         except (ValueError, TypeError):
-            return datetime.now() # Fallback
-    return datetime.now()
+            return reference or datetime.now()
+            
+    return reference or datetime.now()
 
 
 @dataclass
@@ -238,6 +250,19 @@ class RouteSegment:
                 val = defaults[slot]
             setattr(self, slot, val)
         self._cached_dict = None
+        
+    def validate(self) -> bool:
+        """
+        [Task 16] Checks if the segment is an 'empty leg' or logically invalid.
+        """
+        if self.departure_stop_id == self.arrival_stop_id or self.departure_code == self.arrival_code:
+            return False
+            
+        # [Task 9] Ensure duration is positive for travel segments
+        if self.duration_minutes <= 0 and self.departure_stop_id != 0:
+            return False
+            
+        return True
 
     def to_dict(self) -> Dict[str, Any]:
         """[Task 20.3] Cached Serialization to avoid redundant processing."""
@@ -291,8 +316,9 @@ class RouteSegment:
 
 @dataclass
 class TransferConnection:
-    # ... existing fields ...
+    """[Task 18/Audit] Station code included for size-aware scoring."""
     station_id: int
+    station_code: str
     arrival_time: datetime
     departure_time: datetime
     duration_minutes: int
@@ -301,24 +327,33 @@ class TransferConnection:
     safety_score: float = 50.0
     platform_from: Optional[str] = None
     platform_to: Optional[str] = None
+    # [Audit Added] Multi-station awareness
+    is_multi_station: bool = False
+    transfer_type: str = "WALK" # WALK, SHUTTLE, METRO, TAXI
 
     def to_dict(self) -> Dict[Any, Any]:
         return {
             "station_id": self.station_id,
+            "station_code": self.station_code,
             "station_name": self.station_name,
             "arrival_time": self.arrival_time.isoformat() if self.arrival_time != datetime.min else None,
             "departure_time": self.departure_time.isoformat() if self.departure_time != datetime.max else None,
-            "wait_minutes": self.duration_minutes
+            "wait_minutes": self.duration_minutes,
+            "is_multi_station": self.is_multi_station,
+            "transfer_type": self.transfer_type
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'TransferConnection':
         return cls(
-            station_id=data["station_id"],
-            station_name=data["station_name"],
+            station_id=data.get("station_id", 0),
+            station_code=data.get("station_code", ""),
+            station_name=data.get("station_name", ""),
             arrival_time=datetime.fromisoformat(data["arrival_time"]) if data.get("arrival_time") else datetime.min,
             departure_time=datetime.fromisoformat(data["departure_time"]) if data.get("departure_time") else datetime.max,
-            duration_minutes=data.get("wait_minutes", 0)
+            duration_minutes=data.get("wait_minutes", 0),
+            is_multi_station=data.get("is_multi_station", False),
+            transfer_type=data.get("transfer_type", "WALK")
         )
 
 
@@ -368,9 +403,17 @@ class Route:
         
         # Manually call post_init logic for derived fields
         if self.segments:
+            valid_segments = []
             for s in self.segments:
-                self.visited_stations.add(s.departure_stop_id)
-                self.visited_stations.add(s.arrival_stop_id)
+                if s.validate():
+                    valid_segments.append(s)
+                    self.visited_stations.add(s.departure_stop_id)
+                    self.visited_stations.add(s.arrival_stop_id)
+                else:
+                    import logging
+                    logging.getLogger("core.data").warning(f"Pruned empty leg segment: {s.departure_code}->{s.arrival_code}")
+            self.segments = valid_segments
+
             if self.total_duration == 0:
                 self.total_duration = sum(getattr(seg, 'duration_minutes', 0) for seg in self.segments) + \
                                      sum(getattr(t, 'duration_minutes', 0) for t in self.transfers)
@@ -380,6 +423,11 @@ class Route:
                 self.total_distance = sum(getattr(seg, 'distance_km', 0.0) for seg in self.segments)
 
     def add_segment(self, segment: RouteSegment):
+        if not segment.validate():
+            import logging
+            logging.getLogger("core.data").warning(f"Refused to add empty leg: {segment.departure_code}->{segment.arrival_code}")
+            return
+            
         self.segments.append(segment)
         self.total_duration += segment.duration_minutes
         self.total_distance += segment.distance_km

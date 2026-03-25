@@ -101,7 +101,7 @@ class CacheService:
             if not redis_url:
                 raise ValueError("REDIS_URL is not set")
             # Note: decode_responses=True is important for locks and general use
-            self.redis = redis.from_url(redis_url, decode_responses=True, ssl_cert_reqs=None)
+            self.redis = redis.from_url(redis_url, decode_responses=True, ssl_cert_reqs=None, socket_timeout=3.0, socket_connect_timeout=3.0)
             self.redis.ping()
             logger.info("Successfully connected to Redis.")
         except Exception as e:

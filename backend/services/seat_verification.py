@@ -11,30 +11,22 @@ from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
+from services.rapidapi_provider import rapidapi_provider
+
+logger = logging.getLogger(__name__)
+
 # Request coalescing for seat checks to prevent parallel duplicate calls
 _inflight_seat_checks: Dict[str, asyncio.Future] = {}
 
 class SeatVerificationService:
     """
     Quota-Optimized RapidIRCTC Seat Verification Service.
-    Uses api/v2 for bulk availability and aggressive multi-layer caching.
+    Uses RapidApiProvider for actual network calls and aggressive multi-layer caching.
     """
-    _session: Optional[aiohttp.ClientSession] = None
-
     # class-level cache of detected version (shared across instances)
     _detected_version: Optional[str] = None
 
     def __init__(self):
-        self.api_key = os.getenv("RAPID_API_KEY") or os.getenv("RAPIDAPI_KEY", "")
-        self.api_host = "irctc1.p.rapidapi.com"
-        # optional override from config
-        from database.config import Config
-        pref = getattr(Config, "RAPIDAPI_PREFERRED_VERSION", "")
-        self.preferred_version = pref.lower() if pref else None
-        self.base_url_v3 = f"https://{self.api_host}/api/v3"
-        self.base_url_v2 = f"https://{self.api_host}/api/v2"
-        self.base_url_v1 = f"https://{self.api_host}/api/v1"
-
         # proactively detect version in background so first user request isn't slowed
         if not SeatVerificationService._detected_version:
             try:
@@ -44,109 +36,76 @@ class SeatVerificationService:
                 # not in an event loop yet; detection will occur on first call
                 pass
 
-    @classmethod
-    async def get_session(cls) -> aiohttp.ClientSession:
-        if cls._session is None or cls._session.closed:
-            # 120s total timeout for the entire session
-            cls._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120))
-        return cls._session
-
-    @classmethod
-    async def close_session(cls):
-        if cls._session and not cls._session.closed:
-            await cls._session.close()
-            cls._session = None
-
     async def _detect_working_version(self) -> str:
         """Determine which API version actually responds successfully.
         Result is cached in the class variable so subsequent calls skip detection.
-        The detection flow honours the configured `preferred_version` override if set.
         """
         if SeatVerificationService._detected_version:
             return SeatVerificationService._detected_version
-        # honour explicit override first
-        if self.preferred_version in ("v3", "v2", "v1"):
-            SeatVerificationService._detected_version = self.preferred_version
-            logger.debug(f"Using preferred RapidAPI version {self.preferred_version}")
+
+        # honour explicit override from config
+        from database.config import Config
+        pref = getattr(Config, "RAPIDAPI_PREFERRED_VERSION", "")
+        if pref.lower() in ("v3", "v2", "v1"):
+            SeatVerificationService._detected_version = pref.lower()
             return SeatVerificationService._detected_version
 
-        # simple probe using a known train/date that has given data in the past
+        # simple probe
         probe_params = {
-            "trainNo": "16378", "fromStationCode": "PGT", "toStationCode": "BNC",
-            "date": "04-03-2026", "quota": "GN", "classType": "2S"
+            "train_no": "16378", "from_station": "PGT", "to_station": "BNC",
+            "date": "04-03-2026", "quota": "GN", "class_type": "2S"
         }
-        headers = {"X-RapidAPI-Key": self.api_key, "X-RapidAPI-Host": self.api_host}
-        session = await self.get_session()
-        request_timeout = aiohttp.ClientTimeout(total=10)
-        for ver in ("v3", "v2", "v1"):
-            url = f"https://{self.api_host}/api/{ver}/checkSeatAvailability"
-            try:
-                logger.debug(f"🔍 probing RapidAPI {ver} endpoint")
-                async with session.get(url, headers=headers, params=probe_params, timeout=request_timeout) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data.get("status"):
-                            SeatVerificationService._detected_version = ver
-                            logger.debug(f"🛠 detected working RapidAPI version {ver}")
-                            break
-                    else:
-                        logger.info(f"probe {ver} returned {resp.status}")
-            except Exception as e:
-                logger.info(f"probe {ver} exception: {e}")
-        if not SeatVerificationService._detected_version:
-            SeatVerificationService._detected_version = "v1"
-            logger.info("defaulting to RapidAPI v1")
-        # Optionally persist to redis so other workers know
+        
+        # Try v2 first (preferred)
         try:
-            await async_redis_client.set("rapidapi:version", SeatVerificationService._detected_version)
-        except Exception:
-            pass
-        return SeatVerificationService._detected_version
+            res = await rapidapi_provider.check_seat_availability(**probe_params)
+            if res:
+                SeatVerificationService._detected_version = "v2"
+                return "v2"
+        except: pass
+
+        # Fallback to v1
+        SeatVerificationService._detected_version = "v1"
+        return "v1"
 
     async def _execute_check_raw_multi(self, train_no, from_code, to_code, date, quota, class_type) -> Optional[Dict]:
-        """Perform a single API request using the detected/preferred version.
-
-        This replaces the previous multi‑trial logic which was burning
-        quota hitting v3/v2 on every query.
-        """
-        if not self.api_key:
-            return None
-
-        headers = {"X-RapidAPI-Key": self.api_key, "X-RapidAPI-Host": self.api_host}
+        """Perform a single API request using the RapidApiProvider."""
+        version = await self._detect_working_version()
+        
         params = {
-            "trainNo": train_no,
-            "fromStationCode": from_code,
-            "toStationCode": to_code,
+            "train_no": train_no,
+            "from_station": from_code,
+            "to_station": to_code,
             "date": date,
             "quota": quota,
-            "classType": class_type,
+            "class_type": class_type
         }
-        # ensure date is dd-mm-yyyy
-        try:
-            # if passed a datetime or date object
-            if hasattr(date, 'strftime'):
-                params['date'] = date.strftime("%d-%m-%Y")
-        except Exception:
-            pass
 
-        version = await self._detect_working_version()
-        url = f"https://{self.api_host}/api/{version}/checkSeatAvailability"
-        session = await self.get_session()
-        timeout = aiohttp.ClientTimeout(total=60)
         try:
-            logger.info(f"📡 RapidAPI {version} request for {train_no}")
-            async with session.get(url, headers=headers, params=params, timeout=timeout) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("status"):
-                        logger.info(f"✅ RapidAPI {version} success for {train_no}")
-                        return data
+            if version == "v2":
+                res = await rapidapi_provider.check_seat_availability(**params)
+            else:
+                res = await rapidapi_provider.check_seat_availability_v1(**params)
+            
+            if res:
+                # Convert back to dict for the rest of the legacy logic (like bulk persistence)
+                # Use dict() for compatibility with both Pydantic v1 and v2
+                availability_dicts = []
+                for item in res.availability:
+                    if hasattr(item, "model_dump"):
+                        availability_dicts.append(item.model_dump(by_alias=True))
                     else:
-                        logger.warning(f"RapidAPI {version} returned non-OK status for {train_no}: {data}")
-                else:
-                    logger.warning(f"RapidAPI {version} HTTP {resp.status} for {train_no}: {await resp.text()}")
+                        availability_dicts.append(item.dict(by_alias=True))
+                
+                return {
+                    "status": True, 
+                    "data": availability_dicts, 
+                    "trainNumber": res.train_number, 
+                    "trainName": res.train_name
+                }
         except Exception as e:
-            logger.error(f"RapidAPI {version} request failed for {train_no}: {e}")
+            logger.error(f"RapidAPI {version} request failed via provider for {train_no}: {e}")
+        
         return None
 
     async def get_7day_summary(self, train_no: str, from_code: str, to_code: str) -> Dict[str, Any]:
@@ -225,7 +184,7 @@ class SeatVerificationService:
         # simple input validation: train number should be digits
         if not train_no or not train_no.isdigit():
             logger.debug(f"Skipping seat verification, bad train number '{train_no}'")
-            return {"available": True, "status": "UNKNOWN", "seats": 0, "fare": 0, "success": False}
+            return {"available": False, "status": "INVALID_TRAIN", "seats": 0, "fare": 0, "success": False}
 
         # 1. Hot Cache (Redis)
         query = AvailabilityQuery(
@@ -340,8 +299,13 @@ class SeatVerificationService:
                     "success": True
                 }
             else:
-                # If API fails, we don't want to block the user, but we mark it as unverified
-                result = {"available": True, "status": "UNKNOWN", "success": False, "error": api_data.get("message") if api_data else "API Timeout"}
+                # If API fails, we return success=False so downstream knows it's unverified
+                result = {
+                    "available": False, 
+                    "status": "UNKNOWN", 
+                    "success": False, 
+                    "error": api_data.get("message") if api_data else "API Timeout"
+                }
             
             # Cache the requested day in Redis immediately
             await multi_layer_cache.set_availability(query, result)

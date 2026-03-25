@@ -14,7 +14,7 @@ from core.data_structures import Route, RouteSegment, TransferConnection, ensure
 from core.route_engine.constraints import RouteConstraints
 from core.route_engine.graph import TimeDependentGraph, MemMapManager
 from core.frontier import FrontierManager, FrontierRoute
-from utils.station_utils import get_metro_group_codes, METRO_GROUPS
+from utils.station_utils import get_metro_group_codes
 
 logger = logging.getLogger("tbr_router")
 
@@ -78,15 +78,30 @@ class TripBasedRouter:
         from .engine import route_engine
         return route_engine._get_current_graph(date)
 
-    async def find_routes(self, source_stop_id: int, dest_stop_id: int,
+    async def find_routes(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None,
                          load_more: bool = False) -> List[Route]:
         if not graph: 
             graph = await self.get_graph(departure_date)
             
+        # [Gap 3] Adaptive Search Budget based on distance
+        s_id = source_stop_id[0] if isinstance(source_stop_id, list) else source_stop_id
+        d_id = dest_stop_id[0] if isinstance(dest_stop_id, list) else dest_stop_id
+        src_stop = graph.stop_cache.get(s_id)
+        dst_stop = graph.stop_cache.get(d_id)
+        
+        base_budget = 50000 if not load_more else 100000
+        if src_stop and dst_stop:
+            dist = haversine(src_stop.latitude, src_stop.longitude, dst_stop.latitude, dst_stop.longitude)
+            # Scale budget: 1 extra node for every 10 meters of distance, capped at 4x
+            distance_multiplier = min(4.0, max(1.0, dist / 500.0)) 
+            self.traversal_budget = int(base_budget * distance_multiplier)
+            logger.debug(f"TBR: Adaptive Budget set to {self.traversal_budget} (Dist: {dist:.1f}km)")
+        else:
+            self.traversal_budget = base_budget
+
         self._nodes_explored = 0
-        self.traversal_budget = 100000 if load_more else 50000
         start_time = _time.perf_counter()
         timeout_sec = (constraints.timeout_ms / 1000.0) if constraints.timeout_ms else 10.0
         
@@ -100,16 +115,16 @@ class TripBasedRouter:
                 departure_date, constraints, graph, check_timeout, load_more
             )
             latency = (_time.perf_counter() - start_time) * 1000
-            logger.info(f"🚀 TBR Final: {len(results)} routes in {latency:.2f}ms. (Load More: {load_more})")
+            logger.info(f"TBR Final: {len(results)} routes in {latency:.2f}ms. (Load More: {load_more})")
             return results
-        except TimeoutError:
-            logger.warning(f"⌛ TBR search timed out after {timeout_sec}s.")
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(f"TBR search timed out after {timeout_sec}s.")
             return []
         except Exception as e:
-            logger.error(f"❌ TBR Search Error: {str(e)}", exc_info=True)
+            logger.error(f"TBR Search Error: {str(e)}", exc_info=True)
             return []
 
-    def _find_routes_sync(self, source_id: int, dest_id: int,
+    def _find_routes_sync(self, source_id: Union[int, List[int]], dest_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: TimeDependentGraph, check_timeout: Any,
                          load_more: bool = False) -> List[Route]:
@@ -119,19 +134,25 @@ class TripBasedRouter:
         s_index = getattr(graph.snapshot, 'tbr_stop_index', {}) 
         if trip_nodes is None or not t_index: return []
 
-        src_stop = graph.stop_cache.get(source_id)
-        src_ids = {source_id}
-        if src_stop:
-            for code in get_metro_group_codes(src_stop.code):
-                s = graph.get_stop_by_code(code)
-                if s: src_ids.add(s.id)
+        if isinstance(source_id, list):
+            src_ids = set(source_id)
+        else:
+            src_stop = graph.stop_cache.get(source_id)
+            src_ids = {source_id}
+            if src_stop:
+                for code in get_metro_group_codes(src_stop.code):
+                    s = graph.get_stop_by_code(code)
+                    if s: src_ids.add(s.id)
 
-        dst_stop = graph.stop_cache.get(dest_id)
-        dst_ids = {dest_id}
-        if dst_stop:
-            for code in get_metro_group_codes(dst_stop.code):
-                d = graph.get_stop_by_code(code)
-                if d: dst_ids.add(d.id)
+        if isinstance(dest_id, list):
+            dst_ids = set(dest_id)
+        else:
+            dst_stop = graph.stop_cache.get(dest_id)
+            dst_ids = {dest_id}
+            if dst_stop:
+                for code in get_metro_group_codes(dst_stop.code):
+                    d = graph.get_stop_by_code(code)
+                    if d: dst_ids.add(d.id)
 
         # 1. Local Caches and Variables
         local_stop_cache = {sid: graph.stop_cache.get(sid) for sid in dst_ids}
@@ -421,7 +442,7 @@ class TripBasedRouter:
                 arrival_stop_id=l_end.stop_id,
                 departure_time=graph.safe_fromtimestamp(l_start.dep_ts),
                 arrival_time=graph.safe_fromtimestamp(l_end.arr_ts),
-                duration_minutes=int((l_end.arr_ts - l_start.dep_ts)//60),
+                duration_minutes=int((l_end.arr_ts - l_start.dep_ts)//60) if l_end.arr_ts >= l_start.dep_ts else int((l_end.arr_ts + 86400 - l_start.dep_ts)//60),
                 departure_code=src_stop.code if src_stop else str(l_start.stop_id),
                 arrival_code=dst_stop.code if dst_stop else str(l_end.stop_id),
                 train_number=train_no

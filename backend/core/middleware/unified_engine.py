@@ -21,8 +21,8 @@ class RouteCategory(IntEnum):
     CRITICAL = 1  # Auth, User Profile
     STANDARD = 2  # Stations, Static Data
     HEAVY = 3     # Search, Analytics, ML
-
 class UnifiedSmartMiddlewareEngine:
+
     """
     Task 1: The Unified Smart Middleware Engine.
     Replaces 15+ redundant middlewares with a single intelligent pipeline.
@@ -39,7 +39,10 @@ class UnifiedSmartMiddlewareEngine:
         self.heavy_semaphore = asyncio.Semaphore(max_concurrent_heavy)
         self.base_timeout = base_timeout
         self.base_body_limit = base_body_limit
-        self.origins = ["*"] # Should be configured from env
+        # Task 1 & 4: Load allowed origins from environment
+        import os
+        origins_env = os.getenv("CORS_ORIGINS", "*")
+        self.origins = [o.strip() for o in origins_env.split(",")]
         
         # Task 7 Audit: Persistent Client Pool to prevent socket churn
         import httpx
@@ -180,7 +183,7 @@ class UnifiedSmartMiddlewareEngine:
                     if path.startswith("/api"):
                         # Lazy load core services via IoC
                         await container.get("cache", timeout=5.0)
-                        # await container.get("db", timeout=5.0) # To be implemented
+                        await container.get("db", timeout=5.0) 
                     return await self._execute_app(scope, receive, send, category, state.name)
         except (asyncio.TimeoutError, TimeoutError):
             return await self._error_response(scope, send, 504, f"Request timed out.")

@@ -130,8 +130,15 @@ export interface BackendRoutesResponse {
       three_plus_transfer: BackendJourney[];
       alternative_sorted: BackendJourney[];
     };
-    pagination: any;
-    next_cursor?: number;
+    pagination: {
+      total_results: number;
+      current_page: number;
+      limit: number;
+      has_next: boolean;
+      total_pages: number;
+      session_id?: string;
+    };
+    next_cursor?: string | number;
   };
   stations?: Record<string, Station>;
   journey_message?: string;
@@ -139,7 +146,12 @@ export interface BackendRoutesResponse {
   message?: string;
   reasons?: string[];
   suggestions?: string[];
-  session_id?: string;
+  metadata?: {
+    engine?: string;
+    latency_ms?: number;
+    cached?: boolean;
+    surge_level?: number;
+  };
 }
 
 export async function searchStationsApi(q: string, signal?: AbortSignal): Promise<Station[]> {
@@ -168,6 +180,7 @@ export interface SearchRoutesParams {
   sortBy?: 'duration' | 'cost' | 'score';
   correlationId?: string;
   routeSource?: string;
+  discoveryOnly?: boolean;
 }
 
 function defaultDate(): string {
@@ -186,27 +199,36 @@ export async function searchRoutesApi(
   const dest = String(destination ?? '').trim();
   const date = params?.date?.trim() || defaultDate();
 
-  const payload = {
+  const queryParams = new URLSearchParams({
     source: src,
     destination: dest,
     date: date,
     budget: params?.sortBy === 'cost' ? 'economy' : 'all',
-    multi_modal: false,
-    journey_type: 'single'
-  };
+    multi_modal: 'true',
+    limit: _maxResults.toString()
+  });
+
+  if (params?.routeSource) {
+    queryParams.append('source_type', params.routeSource);
+  }
+
+  if (params?.discoveryOnly) {
+    queryParams.append('discovery_only', 'true');
+  }
+
+  const url = getRailwayApiUrl(`/api/v2/search/unified?${queryParams.toString()}`);
   
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  const headers: HeadersInit = { 'Accept': 'application/json' };
   if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;
   
-  const res = await fetch(getRailwayApiUrl('/search/'), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload)
+  const res = await fetch(url, {
+    method: 'GET',
+    headers
   });
   
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `Routes search failed: ${res.status}`);
+    throw new Error(err.message || `Routes search (V2) failed: ${res.status}`);
   }
 
   return (await res.json()) as BackendRoutesResponse;
@@ -233,10 +255,16 @@ export function mapBackendRoutesToRoutes(
   };
 
   const backendJourneys = data.data?.journeys || [];
+  const mostOptimalIds = new Set((data.data?.grouped_journeys?.top_5_optimal || []).map((j: BackendJourney) => j.journey_id));
   
-  backendJourneys.forEach(j => {
+  backendJourneys.forEach(j => {``
     const rid = j.journey_id;
-    const category = j.num_transfers === 0 ? 'DIRECT' : `${j.num_transfers} TRANSFER${j.num_transfers > 1 ? 'S' : ''}`;
+    let category = j.num_transfers === 0 ? 'DIRECT' : `${j.num_transfers} TRANSFER${j.num_transfers > 1 ? 'S' : ''}`;
+    
+    // If it's in the most_optimal group, override category
+    if (mostOptimalIds.has(rid)) {
+      category = 'OPTIMAL';
+    }
     
     const segments: RouteSegment[] = [];
     if (j.legs) {

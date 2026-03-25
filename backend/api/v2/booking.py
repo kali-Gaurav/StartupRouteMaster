@@ -51,6 +51,13 @@ async def mock_escrow_pipeline(booking_id: str):
             booking.escrow_status = EscrowStatus.COMPLETED
             booking.escrow_message = "✅ Route Details Unlocked! Check your dashboard."
             booking.is_unlocked = True
+            
+            # [Task 43.C] Referral Conversion Trigger
+            user = db.query(User).filter(User.id == booking.user_id).first()
+            if user and user.referral_status == "INITIATED":
+                from services.karma_service import karma_service
+                karma_service.process_referral_conversion(db, user.id)
+                
             db.commit()
         await ws_manager.broadcast_log(booking_id, "✅ Route Details Unlocked!", "COMPLETED")
         return
@@ -60,7 +67,21 @@ async def mock_escrow_pipeline(booking_id: str):
     
     # Task 20: Admin Notification (Console & Logic)
     logger.info(f"🚨 ADMIN ALERT: New AGENT_BOOKING ready for processing! ID: {booking_id}")
-    print(f"\n{'='*50}\n🚨 NEW BOOKING REQUEST\nBooking ID: {booking_id}\nAction: Please process via Admin API /docs\n{'='*50}\n")
+    
+    # [Task 42.D] CREDIT_TOPUP Auto-Fulfillment
+    if service_type == "CREDIT_TOPUP":
+        from services.credit_service import credit_service
+        with SessionLocal() as db:
+            booking = db.query(Booking).filter(Booking.id == booking_id).first()
+            if booking:
+                bundle_id = booking.booking_details.get("bundle_id", "STARTER_5")
+                # Add paid credits
+                credit_service.top_up_credits(db, booking.user_id, bundle_id, booking.id)
+                booking.escrow_status = EscrowStatus.COMPLETED
+                booking.escrow_message = f"✅ Credits Added! New Balance available."
+                db.commit()
+                await ws_manager.broadcast_log(booking_id, "✅ Credits Successfully Added to Pocket!", "COMPLETED")
+        return
 
 @router.post("/initiate")
 async def initiate_service(
@@ -76,28 +97,106 @@ async def initiate_service(
     """
     await multi_layer_cache.initialize()
     
+    # [Task 45.3] Project Shield: ANTI-SCRAPER HONEYPOT
+    if journey_id == "RM_HONEYPOT_BETA_99":
+        from services.fraud_service import fraud_service
+        # Instantly mark user as HIGH RISK
+        fraud_service.create_alert(db, user.id, "SCRAPER_HONEYPOT_TRIGGER", "CRITICAL", {"ip": "AUTOMATED"})
+        raise HTTPException(status_code=403, detail="Automated access detected. Your IP is being logged.")
+
     # 1. Fetch Journey Data (From cache populated by search)
     from services.journey_cache import get_journey
     journey = await get_journey(journey_id)
     if not journey:
         raise HTTPException(status_code=400, detail="Journey expired or invalid. Please search again.")
 
-    # 2. Determine Amount (Subtask 25.3: Dynamic Fees)
-    from services.platform_config_service import PlatformConfigService
-    unlock_fee = PlatformConfigService.get_fee(db, "UNLOCK_FEE")
+    # [Task 42.C] TOKEN ECONOMY: Check for Credits
+    from services.credit_service import credit_service
+    balances = credit_service.get_user_balance(db, user.id)
+    has_credits = balances["total"] >= 1
+    
+    # [Task 41.2] Subscription-Aware Pricing
+    is_pro = (user.subscription and user.subscription.plan_tier in ["PRO", "ELITE"] 
+              and (not user.subscription.expires_at or user.subscription.expires_at > datetime.utcnow()))
+    
+    # DECISION: Free or Credit or Paid
+    use_credit = False
+    if is_pro:
+        unlock_fee = 0.0
+    elif has_credits:
+        unlock_fee = 0.0
+        use_credit = True
+    else:
+        unlock_fee = PlatformConfigService.get_fee(db, "UNLOCK_FEE")
+        
     agent_fee = PlatformConfigService.get_fee(db, "AGENT_BOOKING_FEE")
 
     if service_type == "UNLOCK":
         base_fee = unlock_fee
-        escrow_msg = f"Awaiting payment to UNLOCK route details (Fee: ₹{unlock_fee})."
+        if is_pro:
+            escrow_msg = "Free Reward: Route Unlocked via Pro Subscription."
+        else:
+            escrow_msg = f"Awaiting payment to UNLOCK route details (Fee: ₹{unlock_fee})."
     else:
         # AGENT_BOOKING logic: Ticket + Unlock + Agent assist
         fare = journey.get("total_fare", 0.0)
-        base_fee = fare + unlock_fee + agent_fee
+        # Pro users don't pay the unlock portion, but they pay for the ticket and agent labor
+        base_fee = fare + (0.0 if is_pro else unlock_fee) + agent_fee
         escrow_msg = "Awaiting payment for AGENT-ASSISTED booking."
 
-    # 3. Generate UPI URI
+    # 3. Calculate Final Amount
     from utils.payments import generate_upi_uri, get_unique_paisa_amount
+    merchant_info = merchant_vpa_service.get_next_vpa()
+    total_amount = get_unique_paisa_amount(base_fee, db, merchant_info["vpa"]) if base_fee > 0 else 0.0
+
+    if total_amount <= 0:
+        # [41.2] AUTO-UNLOCK EXEMPTION for PRO Users OR [42.C] Credit Consumption
+        msg = "✅ [PRO-EXCLUSIVE] Free Unlock!" if is_pro else "🎟️ Credit Applied!"
+        
+        # [Task 42.C HARDENING] Deduct Credit BEFORE creating record for non-pro users
+        if not is_pro and use_credit:
+            from services.credit_service import credit_service
+            # Atomic deduction check
+            deducted = credit_service.consume_credit(db, user.id, "PENDING")
+            if not deducted:
+                raise HTTPException(status_code=402, detail="Token deduction failed. Please check your balance.")
+
+        new_booking = Booking(
+            id=booking_id_placeholder,
+            user_id=user.id,
+            service_type=service_type,
+            escrow_status=EscrowStatus.COMPLETED,
+            escrow_message=msg,
+            amount_paid=0.0,
+            is_unlocked=True,
+            booking_details=journey,
+            created_at=datetime.utcnow()
+        )
+        db.add(new_booking)
+
+        # Update Credit Transaction with real booking_id instead of "PENDING" placeholder
+        if not is_pro and use_credit:
+             from database.models import CreditTransaction
+             last_tx = db.query(CreditTransaction).filter(
+                 CreditTransaction.user_id == user.id, 
+                 CreditTransaction.reference_entity_id == "PENDING"
+             ).order_by(CreditTransaction.timestamp.desc()).first()
+             if last_tx: last_tx.reference_entity_id = new_booking.id
+
+        # [Task 43.C] REFERRAL CONVERSION
+        if user.referral_status == "INITIATED":
+            from services.karma_service import karma_service
+            karma_service.process_referral_conversion(db, user.id)
+
+        db.commit()
+        return {
+            "id": new_booking.id,
+            "amount": 0.0,
+            "status": "COMPLETED",
+            "message": "Route Unlocked via Subscription or Credits!"
+        }
+
+    # (Else, continue with UPI generation as before...)
     merchant = merchant_vpa_service.get_next_vpa()
     upi_id = merchant["vpa"]
     

@@ -5,12 +5,22 @@ Major Indian Railway Hubs for multi-modal/multi-train connectivity.
 
 from typing import List, Dict
 
-# [6.1] Major Railway Hubs in India (A1 Tier)
-MAJOR_HUBS = [
-    "NDLS", "HWH", "MAS", "CSMT", "BRC", "CNB", "PNBE", "KGP", "VGLJ", "BPL",
-    "AGC", "JP", "ADI", "SC", "SBC", "BSB", "DDU", "ET", "NGP", "LKO", "MTJ",
-    "PGT", "KOTA", "GHY", "PUNE", "MMCT", "BCT", "NZM"
-]
+# [6.1] Major Railway Hubs in India (A1 Tier - MEGA HUBS)
+MEGA_HUBS = {
+    "NDLS", "HWH", "MAS", "CSMT", "LKO", "DDU", "PNBE", "SC", "SBC", "ADI", "JP"
+}
+
+# (Tier 1 - MAJOR HUBS)
+MAJOR_HUBS = {
+    "BRC", "CNB", "KGP", "VGLJ", "BPL", "AGC", "BSB", "ET", "NGP", "MTJ",
+    "PGT", "KOTA", "GHY", "PUNE", "MMCT", "BCT", "NZM", "TATA", "JSG", "VSKP", "NED"
+}
+
+# (Tier 2 - REGIONAL HUBS)
+REGIONAL_HUBS = {
+    "R", "BSP", "REWA", "JBP", "STA", "BINA", "BKN", "BME", "RE", "GKP", "GD", "CPR"
+}
+
 
 # Hub coordinates for proximity search (Simplified mapping)
 HUB_COORDINATES = {

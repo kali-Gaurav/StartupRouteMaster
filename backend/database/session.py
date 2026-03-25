@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Optional, List, Any
 
-from .config import Config
+from database.config import Config
 
 logger = logging.getLogger("database-session")
 
@@ -94,6 +94,7 @@ async def init_raw_transit_pool():
         return
 
     for _ in range(_RAW_POOL_SIZE):
+        # Ensure db_path is clean of any query parameters for aiosqlite
         conn = await aiosqlite.connect(db_path)
         conn.row_factory = aiosqlite.Row
         await _raw_transit_pool.put(conn)
@@ -105,7 +106,13 @@ import contextlib
 async def get_raw_transit_conn():
     """Context manager for acquiring and releasing raw connections."""
     if _raw_transit_pool.empty() and not _pools_initialized:
-        raise RuntimeError("Raw pool not initialized.")
+        # Fallback: if called before full IoC, try to init pool now
+        try:
+            await init_raw_transit_pool()
+        except Exception as e:
+            logger.error(f"Failed to JIT initialize raw pool: {e}")
+            raise RuntimeError("Raw pool not initialized.")
+            
     conn = await _raw_transit_pool.get()
     try:
         yield conn
@@ -283,7 +290,7 @@ async def initialize_database_pools():
     global async_engine_user, async_engine_transit, async_engine_auth, async_engine_read
     global _SessionUser, _SessionTransit, _SessionAuth, _SessionRead
     global _AsyncSessionUser, _AsyncSessionTransit, _AsyncSessionAuth, _AsyncSessionRead
-    global _pools_initialized
+    global _pools_initialized, engine
     import importlib
     manager_mod = importlib.import_module("database.manager")
     db_manager = manager_mod.db_manager
@@ -302,37 +309,49 @@ async def initialize_database_pools():
         transit_db_url_sync = Config.GET_SQLALCHEMY_URL("transit", is_async=False)
         user_db_url_async = Config.GET_SQLALCHEMY_URL("user", is_async=True)
         transit_db_url_async = Config.GET_SQLALCHEMY_URL("transit", is_async=True)
+        user_db_url_async = Config.GET_SQLALCHEMY_URL("user", is_async=True)
+        transit_db_url_async = Config.GET_SQLALCHEMY_URL("transit", is_async=True)
+        with open("tmp_db_trace.txt", "a") as f:
+            f.write(f"USER_ASYNC: {user_db_url_async}\n")
+            f.write(f"TRANSIT_ASYNC: {transit_db_url_async}\n")
         
-        pool_size = Config.DB_POOL_SIZE
-        max_overflow = Config.DB_MAX_OVERFLOW
-        # [Task 11.2] Query Timeout (30s)
+        # [Task 2] Robust Pool Configuration & SSL Fix
+        def get_engine_args(url, is_async=False):
+            args = {"execution_options": execution_options}
+            is_sqlite = "sqlite" in url
+            
+            if is_sqlite:
+                args["connect_args"] = {"check_same_thread": False}
+                # SQLite doesn't support pool_size/max_overflow in typical QueuePool-less configs
+                # but SQLAlchemy handles it. However, let's be explicit.
+                if not is_async:
+                    args["pool_size"] = 5
+                    args["max_overflow"] = 2
+            else:
+                # PostgreSQL / Production
+                args["pool_size"] = Config.DB_POOL_SIZE
+                args["max_overflow"] = Config.DB_MAX_OVERFLOW
+                args["pool_pre_ping"] = True
+                
+                if is_async and "postgresql" in url:
+                    # asyncpg prefers SSL parameters in connect_args for some environments
+                    import ssl
+                    args["connect_args"] = {
+                        "ssl": ssl.create_default_context(ssl.Purpose.SERVER_AUTH),
+                        "timeout": 30,
+                        "prepared_statement_cache_size": 0 # Essential for PgBouncer/Supabase
+                    }
+                    # Disable sslmode in URL if we pass ssl context
+                    # url = url.split("?")[0] # This would be radical, better just handle context
+            return args
+
         execution_options = {"timeout": 30}
 
         # 2. Sync Engines with Profiling
-        engine_user = create_engine(
-            user_db_url_sync, 
-            pool_size=pool_size, max_overflow=max_overflow, 
-            connect_args={"check_same_thread": False} if "sqlite" in user_db_url_sync else {},
-            execution_options=execution_options
-        )
-        engine_transit = create_engine(
-            transit_db_url_sync,
-            pool_size=pool_size, max_overflow=max_overflow,
-            connect_args={"check_same_thread": False} if "sqlite" in transit_db_url_sync else {},
-            execution_options=execution_options
-        )
-        engine_read = create_engine(
-            transit_db_url_sync, # Points to transit but optimized for reads
-            pool_size=pool_size, max_overflow=max_overflow,
-            connect_args={"check_same_thread": False} if "sqlite" in transit_db_url_sync else {},
-            execution_options=execution_options
-        )
-        engine_auth = create_engine(
-            user_db_url_sync, 
-            pool_size=5, max_overflow=0,
-            connect_args={"check_same_thread": False} if "sqlite" in user_db_url_sync else {},
-            execution_options=execution_options
-        )
+        engine_user = create_engine(user_db_url_sync, **get_engine_args(user_db_url_sync))
+        engine_transit = create_engine(transit_db_url_sync, **get_engine_args(transit_db_url_sync))
+        engine_read = create_engine(transit_db_url_sync, **get_engine_args(transit_db_url_sync))
+        engine_auth = create_engine(user_db_url_sync, **get_engine_args(user_db_url_sync))
         
         # [Task 11.3] Instrument sync engines
         db_manager.instrument_engine(engine_user)
@@ -340,10 +359,10 @@ async def initialize_database_pools():
         db_manager.instrument_engine(engine_read)
 
         # 3. Async Engines with Profiling
-        async_engine_user = create_async_engine(user_db_url_async, pool_pre_ping=True, execution_options=execution_options)
-        async_engine_transit = create_async_engine(transit_db_url_async, pool_pre_ping=True, execution_options=execution_options)
-        async_engine_auth = create_async_engine(user_db_url_async, pool_pre_ping=True, execution_options=execution_options)
-        async_engine_read = create_async_engine(transit_db_url_async, pool_pre_ping=True, execution_options=execution_options)
+        async_engine_user = create_async_engine(user_db_url_async, **get_engine_args(user_db_url_async, is_async=True))
+        async_engine_transit = create_async_engine(transit_db_url_async, **get_engine_args(transit_db_url_async, is_async=True))
+        async_engine_auth = create_async_engine(user_db_url_async, **get_engine_args(user_db_url_async, is_async=True))
+        async_engine_read = create_async_engine(transit_db_url_async, **get_engine_args(transit_db_url_async, is_async=True))
 
         # [Task 11.3] Instrument async engines
         db_manager.instrument_engine(async_engine_user)
@@ -369,6 +388,10 @@ async def initialize_database_pools():
         
         # Subtask 1.1: Initialize Raw Pool for Ultra-Turbo
         await init_raw_transit_pool()
+        
+        # [Task 50.1] Map engine alias for V3 Audit
+        global engine
+        engine = engine_user
         
         _pools_initialized = True
         logger.info("✅ All Database pools active and instrumented with DBManager (Task 11 Group 5 complete).")
@@ -615,10 +638,12 @@ async def init_db(target_tables: Optional[List[str]] = None):
         async with engine.begin() as conn:
             if targets:
                 # Filter metadata to only include requested tables
-                # (Simplified for this subtask)
                 logger.info(f"🗄️ JIT: Reflecting specific tables: {targets}")
-                pass
-            await conn.run_sync(metadata.create_all)
+                # SQLAlchemy metadata.create_all(tables=[...])
+                target_tables = [metadata.tables[t] for t in targets if t in metadata.tables]
+                await conn.run_sync(metadata.create_all, tables=target_tables)
+            else:
+                await conn.run_sync(metadata.create_all)
 
     await create_target(async_engine_user, UserBase.metadata, target_tables)
     await create_target(async_engine_transit, TransitBase.metadata, target_tables)

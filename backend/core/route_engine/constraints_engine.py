@@ -21,7 +21,9 @@ class ConstraintsEngine:
         travel_date: Optional[date] = None,
         time_priority: float = 0.5,
         cost_priority: float = 0.5,
-        quota: str = "GN"
+        quota: str = "GN",
+        permitted_engines: Optional[List[str]] = None,
+        discovery_only: bool = False
     ) -> RouteConstraints:
         """
         Creates a high-performance RouteConstraints object with persona-specific weights.
@@ -54,7 +56,9 @@ class ConstraintsEngine:
             persona=persona,
             time_priority=time_priority,
             cost_priority=cost_priority,
-            quota=quota.upper().strip()
+            quota=quota.upper().strip(),
+            permitted_engines=permitted_engines,
+            discovery_only=discovery_only
         )
 
         # 4. Apply Overrides (Task 4.6, 4.7)

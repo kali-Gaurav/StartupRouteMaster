@@ -26,7 +26,7 @@ class ServiceContainer:
     def register(self, service: ServiceProvider):
         """Registers a service provider in the container."""
         self.services[service.name] = service
-        logger.info(f"🧱 IoC: Registered '{service.name}' v{service.version}")
+        logger.info(f" IoC: Registered '{service.name}' v{service.version}")
 
     async def get(self, name: str, timeout: float = 30.0, retry_limit: int = 2) -> Any:
         """
@@ -51,12 +51,12 @@ class ServiceContainer:
             for attempt in range(retry_limit + 1):
                 try:
                     async with asyncio.timeout(timeout):
-                        logger.info(f"⚡ IoC: Initializing '{name}' (Attempt {attempt+1})...")
+                        logger.info(f" IoC: Initializing '{name}' (Attempt {attempt+1})...")
                         await service.init()
                         service.status = ServiceStatus.HEALTHY
                         return service
                 except Exception as e:
-                    logger.warning(f"⚠️ IoC: '{name}' init failed: {e}")
+                    logger.warning(f" IoC: '{name}' init failed: {e}")
                     if attempt < retry_limit:
                         await asyncio.sleep(1.0 * (attempt + 1))
                     else:
@@ -66,12 +66,33 @@ class ServiceContainer:
                         await service.fallback()
                         return service
 
+    def get_all_status(self) -> Dict[str, Any]:
+        """Returns the status and version of all services in the container."""
+        statuses = {
+            name: {
+                "status": service.status.value,
+                "version": service.version,
+                "error": service.error
+            }
+            for name, service in self.services.items()
+        }
+        # Aggregate status: online if all healthy/degraded, otherwise failed
+        system_status = "online"
+        if any(s.status == ServiceStatus.FAILED for s in self.services.values()):
+            system_status = "degraded"
+        
+        return {
+            "status": system_status,
+            "services": statuses,
+            "timestamp": time.time()
+        }
+
     async def shutdown_all(self):
         """Graceful shutdown of all services."""
         for name, service in self.services.items():
             try:
                 await service.shutdown()
-                logger.info(f"🛑 IoC: Shut down '{name}'.")
+                logger.info(f" IoC: Shut down '{name}'.")
             except Exception as e:
                 logger.error(f"IoC: Error shutting down '{name}': {e}")
 

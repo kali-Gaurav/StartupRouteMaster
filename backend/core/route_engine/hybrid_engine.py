@@ -76,11 +76,13 @@ class HybridRouteEngine:
                     wait_mins = int((seg.departure_time - prev_seg.arrival_time).total_seconds() / 60)
                     tc = TransferConnection(
                         station_id=seg.departure_stop_id,
-                        station_name=seg.departure_code,
+                        station_code=seg.departure_code,
                         arrival_time=prev_seg.arrival_time,
                         departure_time=seg.departure_time,
-                        duration_minutes=wait_mins
+                        duration_minutes=wait_mins,
+                        station_name=seg.departure_code
                     )
+
                     rt.add_transfer(tc)
             
             rt.metadata["engine"] = "hybrid_csa"

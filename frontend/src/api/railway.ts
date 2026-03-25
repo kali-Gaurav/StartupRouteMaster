@@ -48,7 +48,7 @@ export async function searchStations(q: string): Promise<Station[]> {
 export async function searchRoutes(
   source: string,
   destination: string,
-  params?: { date?: string; max_transfers?: number; max_results?: number; sort_by?: string; correlationId?: string; budget?: string }
+  params?: { date?: string; max_transfers?: number; max_results?: number; sort_by?: string; correlationId?: string; budget?: string; discovery_only?: boolean }
 ): Promise<BackendRoutesResponse> {
   const src = String(source ?? "").trim().toUpperCase();
   const dest = String(destination ?? "").trim().toUpperCase();
@@ -62,6 +62,7 @@ export async function searchRoutes(
     max_results: params?.max_results ?? 50,
     sort_by: params?.sort_by,
     budget: params?.budget,
+    discovery_only: params?.discovery_only ?? false,
   };
 
   const headers: HeadersInit = { "Content-Type": "application/json" };

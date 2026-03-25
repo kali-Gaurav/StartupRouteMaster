@@ -35,19 +35,46 @@ class PlatformConfigService:
         logger.info(f"Platform Config Updated: {key} = {value}")
 
     @staticmethod
+    def get_dynamic_fee(db: Session, fee_type: str, context: Optional[dict] = None) -> float:
+        """
+        [Task 4.4] Dynamic Adjuster - Adjusts fees based on demand (Tatkal, Emergency, Timing).
+        """
+        base_fee = PlatformConfigService.get_fee(db, fee_type)
+        if not context:
+            return base_fee
+            
+        multiplier = 1.0
+        
+        # 1. High Demand Window (e.g. searching for today's travel)
+        travel_date = context.get("travel_date")
+        if travel_date:
+            try:
+                days_away = (datetime.strptime(travel_date, "%Y-%m-%d").date() - date.today()).days
+                if days_away <= 1: multiplier += 0.5 # 50% surge for last-minute
+            except: pass
+            
+        # 2. Tatkal Window (e.g. 10AM - 12PM IST)
+        if context.get("is_tatkal"):
+            multiplier += 1.0 # Double the agent fee for Tatkal
+            
+        return round(base_fee * multiplier, 2)
+
+    @staticmethod
     def get_fee(db: Session, fee_type: str) -> float:
         """
         Helper to get standardized fees.
         Types: 'UNLOCK_FEE', 'AGENT_BOOKING_FEE'
         """
+        # (Rest of existing get_fee implementation...)
         val = PlatformConfigService.get_config(db, fee_type)
         if val:
             try: return float(val)
             except: pass
         
-        # Defaults if not in DB
         defaults = {
             "UNLOCK_FEE": 49.0,
             "AGENT_BOOKING_FEE": 10.0
         }
         return defaults.get(fee_type, 0.0)
+
+from datetime import datetime, date

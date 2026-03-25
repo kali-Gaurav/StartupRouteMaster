@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, status, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
@@ -30,8 +30,9 @@ oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/users/token", auto_
 
 async def get_current_user(
     request: Request,
-    token: str = Depends(oauth2_scheme_optional),
-    db: Session = Depends(get_async_auth_db)
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme)
 ) -> User:
     """
     [Task 10 Upgrade] Unified IoC-managed Authentication.
@@ -67,6 +68,26 @@ async def get_current_user(
 
     # 5. [Task 10.4] Track Activity
     auth_manager.track_session(user.id, request)
+
+    # 6. [Task 45.1 & 45.C] Project Shield HARDENING
+    from services.fraud_service import fraud_service
+    from services.multi_layer_cache import multi_layer_cache
+    await multi_layer_cache.initialize()
+    
+    # Check Blacklist first (Zero DB hits for banned users)
+    if await multi_layer_cache.redis.get(f"blacklist:user:{user.id}"):
+        logger.warning(f"🚫 BLOCKED REQUEST from blacklisted user: {user.id}")
+        raise HTTPException(status_code=403, detail="Account locked due to security risk. Please contact support.")
+
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown")
+    # In Task 45.A, we'd also pull X-Fingerprint-Meta from headers
+    device_meta = request.headers.get("X-Fingerprint-Meta")
+    
+    risk_score = await fraud_service.validate_identity(db, user, client_ip, user_agent, background_tasks=background_tasks, metadata=device_meta)
+    if risk_score >= 0.8:
+        raise HTTPException(status_code=403, detail="Security risk detected. Session terminated.")
+
     return user
 
 def require_role(allowed_roles: List[str]):

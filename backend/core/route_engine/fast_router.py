@@ -1,6 +1,6 @@
 import time
 import logging
-from typing import List, Dict, Tuple, Set
+from typing import List, Dict, Tuple, Set, Union
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -47,35 +47,46 @@ class FastPathRouter:
             self.major_hubs = [1, 10, 50, 100]
             self._hubs_initialized = True
 
-    def find_routes(self, source_id: int, dest_id: int, date: datetime, constraints: RouteConstraints) -> List[Route]:
+    def find_routes(self, source_id: Union[int, List[int]], dest_id: Union[int, List[int]], date: datetime, constraints: RouteConstraints) -> List[Route]:
         self._ensure_hubs_initialized()
         
         # [Task 27.15] Metropolitan Group Expansion
         from utils.station_utils import get_metro_group_codes
         
-        src_stop = self.graph.stop_cache.get(source_id)
-        dst_stop = self.graph.stop_cache.get(dest_id)
+        if isinstance(source_id, list):
+            src_ids = set(source_id)
+        else:
+            src_stop = self.graph.stop_cache.get(source_id)
+            src_ids = {source_id}
+            if src_stop:
+                for code in get_metro_group_codes(src_stop.code):
+                    s = self.graph.get_stop_by_code(code)
+                    if s: src_ids.add(s.id)
+
+        if isinstance(dest_id, list):
+            dst_ids = set(dest_id)
+        else:
+            dest_stop = self.graph.stop_cache.get(dest_id)
+            dst_ids = {dest_id}
+            if dest_stop:
+                for code in get_metro_group_codes(dest_stop.code):
+                    d = self.graph.get_stop_by_code(code)
+                    if d: dst_ids.add(d.id)
         
-        src_ids = {source_id}
-        dst_ids = {dest_id}
-        
-        if src_stop:
-            for code in get_metro_group_codes(src_stop.code):
-                s = self.graph.get_stop_by_code(code)
-                if s: src_ids.add(s.id)
-        if dst_stop:
-            for code in get_metro_group_codes(dst_stop.code):
-                d = self.graph.get_stop_by_code(code)
-                if d: dst_ids.add(d.id)
+        # Skipping manual expansion if already provided
 
         # Fallback to city clusters if no metro group found or to complement it
         if self.graph and self.graph.snapshot:
-            if src_stop and src_stop.city:
-                for sid in self.graph.snapshot.city_clusters.get(src_stop.city.lower().strip(), []):
-                    src_ids.add(sid)
-            if dst_stop and dst_stop.city:
-                for sid in self.graph.snapshot.city_clusters.get(dst_stop.city.lower().strip(), []):
-                    dst_ids.add(sid)
+            if not isinstance(source_id, list):
+                src_stop = self.graph.stop_cache.get(source_id)
+                if src_stop and src_stop.city:
+                    for sid in self.graph.snapshot.city_clusters.get(src_stop.city.lower().strip(), []):
+                        src_ids.add(sid)
+            if not isinstance(dest_id, list):
+                dst_stop = self.graph.stop_cache.get(dest_id)
+                if dst_stop and dst_stop.city:
+                    for sid in self.graph.snapshot.city_clusters.get(dst_stop.city.lower().strip(), []):
+                        dst_ids.add(sid)
 
         src_ids_list = list(src_ids)
         dst_ids_list = list(dst_ids)
@@ -131,7 +142,8 @@ class FastPathRouter:
                 hub_id = pt['station_id']
                 
                 # Fetch departures from hub after Leg 1 arrival
-                arr_1 = ensure_datetime(pt['arrival']) if pt['arrival'] else dep_1
+                # [Task 29] Midnight Crossover Check
+                arr_1 = ensure_datetime(pt['arrival'], reference=dep_1) if pt['arrival'] else dep_1
                 hub_deps = self.graph.get_departures_from_stop(hub_id, arr_1, 720)
                 
                 for dep_2, tid_2 in hub_deps:
@@ -143,7 +155,9 @@ class FastPathRouter:
                             s1 = self._get_segments(tid_1, source_id, hub_id)
                             s2 = self._get_segments(tid_2, hub_id, d_id)
                             if s1 and s2:
-                                wait = (ensure_datetime(s2[0].departure_time) - ensure_datetime(s1[-1].arrival_time)).total_seconds() / 60
+                                # Leg 2 departure must be > Leg 1 arrival
+                                dep_2_dt = ensure_datetime(s2[0].departure_time, reference=s1[-1].arrival_time)
+                                wait = (dep_2_dt - s1[-1].arrival_time).total_seconds() / 60
                                 # [Task 6] Use station-size aware transfer time
                                 min_tr_time = constraints.min_transfer_time
                                 stop = self.graph.stop_cache.get(hub_id)
@@ -180,7 +194,8 @@ class FastPathRouter:
                 if h1_id == h2_id: continue
                 
                 # Leg 2: Hub 1 to Hub 2
-                arr_1 = ensure_datetime(info1['arr_time'])
+                # [Task 29]
+                arr_1 = ensure_datetime(info1['arr_time'], reference=ensure_datetime(info1.get('dep_time', arr_1)))
                 h1_deps = self.graph.get_departures_from_stop(h1_id, arr_1, 720)
                 
                 for dep_mid, tid_mid in h1_deps:

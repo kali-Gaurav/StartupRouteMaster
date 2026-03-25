@@ -160,19 +160,14 @@ class YieldManagementEngine:
         occupancy_rate: float,
         demand_score: float,
         time_to_departure_hours: float,
+        train_number: Optional[str] = None,
+        db: Optional[Any] = None,
         competitor_price: Optional[float] = None,
         is_peak_season: bool = False,
         is_holiday: bool = False,
     ) -> Dict:
         """
         Calculate optimal price for an OD (origin-destination) pair.
-        
-        Factors considered:
-        - Current occupancy
-        - Demand forecast
-        - Time to departure
-        - Competitor pricing
-        - Seasonality
         """
         segment_key = (origin, destination)
         
@@ -218,15 +213,38 @@ class YieldManagementEngine:
         factors['final_multiplier'] = multiplier
         factors['final_price'] = round(price, 2)
         
+        # [Task 45 Integration] Fetch real-time metrics
+        seats_available = 0
+        total_seats = 100
+        booking_velocity = 0.0
+        
+        if db and train_number:
+            try:
+                # 1. Get Inventory
+                from database.models import SeatInventory
+                inv = db.query(SeatInventory).filter(
+                    SeatInventory.train_number == train_number
+                ).first()
+                if inv:
+                    seats_available = inv.available_seats
+                    total_seats = inv.total_seats
+                
+                # 2. Get Velocity
+                from services.booking_service import BookingService
+                bs = BookingService(db)
+                booking_velocity = bs.get_booking_velocity(train_number)
+            except Exception as e:
+                logger.error(f"Failed to fetch real-time yield metrics: {e}")
+
         # Record segment revenue
         self.segment_revenues[segment_key] = SegmentRevenue(
             origin_code=origin,
             destination_code=destination,
             base_fare=base_fare,
             current_price=price,
-            seats_available=0,  # TODO: get from inventory
-            total_seats=100,    # TODO: get from train config
-            booking_velocity=0.0,  # TODO: get from booking service
+            seats_available=seats_available,
+            total_seats=total_seats,
+            booking_velocity=booking_velocity,
             demand_forecast=demand_score,
             competitor_price=competitor_price,
             revenue=price  # Simplified; actual would be price * expected_bookings

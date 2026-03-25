@@ -162,6 +162,30 @@ class BookingService:
         logger.error("Failed to create booking after multiple retries due to serialization failures.")
         return None
 
+    def _init_monitoring(self, db: Session, booking: Booking):
+        """Helper to initialize monitoring for a confirmed booking."""
+        try:
+            from database.models import BookingMonitor
+            existing = db.query(BookingMonitor).filter(BookingMonitor.booking_id == booking.id).first()
+            if not existing:
+                new_monitor = BookingMonitor(
+                    booking_id=booking.id,
+                    user_id=booking.user_id,
+                    pnr_number=booking.pnr_number,
+                    train_number=booking.train_number,
+                    travel_date=booking.travel_date,
+                    is_monitoring_active=True,
+                    alert_preferences={
+                        "notify_on_delay_minutes": 30, 
+                        "notify_on_cancellation": True,
+                        "notify_on_pnr_change": True
+                    }
+                )
+                db.add(new_monitor)
+                logger.info(f"🛰️ Monitoring initialized for Booking {booking.id}")
+        except Exception as e:
+            logger.error(f"⚠️ Failed to init monitoring: {e}")
+
     def confirm_booking(self, booking_id: str) -> bool:
         """
         Confirm a pending booking (after payment is successful).
@@ -184,6 +208,8 @@ class BookingService:
                 return False
             
             booking.booking_status = "confirmed"
+            self._init_monitoring(self.db, booking)
+            
             self.db.commit()
             logger.info(f"Booking confirmed: {booking.pnr_number}")
             return True
@@ -441,6 +467,17 @@ class BookingService:
 
         return stats
 
+    def get_booking_velocity(self, train_number: str, hours: int = 24) -> float:
+        """
+        Calculate booking velocity (bookings per hour) for a specific train.
+        """
+        since = datetime.utcnow() - timedelta(hours=hours)
+        count = self.db.query(Booking).filter(
+            Booking.train_number == train_number,
+            Booking.created_at >= since
+        ).count()
+        return count / hours if hours > 0 else 0.0
+
     def create_escrow_booking(
         self,
         user_id: str,
@@ -534,6 +571,22 @@ class BookingService:
                 booking.escrow_status = EscrowStatus.COMPLETED
                 booking.pnr_number = generate_pnr()
                 booking.booking_status = "confirmed"
+                
+                # Mock usage of the monitor helper
+                from database.models import BookingMonitor
+                existing = db.query(BookingMonitor).filter(BookingMonitor.booking_id == booking_id).first()
+                if not existing:
+                    new_monitor = BookingMonitor(
+                        booking_id=booking.id,
+                        user_id=booking.user_id,
+                        pnr_number=booking.pnr_number,
+                        train_number=booking.train_number,
+                        travel_date=booking.travel_date,
+                        is_monitoring_active=True,
+                        alert_preferences={"notify_on_delay_minutes": 30, "notify_on_cancellation": True}
+                    )
+                    db.add(new_monitor)
+                
                 db.commit()
         except Exception as e:
             logger.error(f"Error in mock verification: {e}")

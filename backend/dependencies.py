@@ -77,9 +77,11 @@ async def get_current_user(
     cached_user_data = await multi_layer_cache.get(cache_key)
     
     if cached_user_data:
-        # Rehydrate User object (minimal rehydration for dependency usage)
-        # Note: We return the cached dict if it's sufficient, or create a dummy model instance
+        # Rehydrate User object with profile
+        profile_data = cached_user_data.pop("profile", None)
         user = User(**cached_user_data)
+        if profile_data:
+            user.profile = Profile(**profile_data)
         return user
 
     # 3. Async Database Lookup & Sync
@@ -105,6 +107,11 @@ async def get_current_user(
                 profile = Profile(id=supabase_id, user_id=user.id)
                 db.add(profile)
                 await db.commit()
+                # Re-fetch to ensure profile is loaded correctly
+                result = await db.execute(
+                    select(User).filter(User.id == user.id).options(selectinload(User.profile))
+                )
+                user = result.scalars().first()
             return user
         except Exception as e:
             await db.rollback()
@@ -113,14 +120,20 @@ async def get_current_user(
 
     user = await get_or_create_user()
     
-    # 4. Update Redis Cache (Serialize to dict)
+    # 4. Update Redis Cache (Serialize to dict including profile)
     user_data = {
         "id": user.id,
         "supabase_id": user.supabase_id,
         "email": user.email,
         "role": user.role,
         "is_verified": user.is_verified,
-        "full_name": user.full_name
+        "full_name": user.full_name,
+        "profile": {
+            "id": user.profile.id,
+            "name": user.profile.name,
+            "avatar_url": user.profile.avatar_url,
+            "ai_memory": user.profile.ai_memory
+        } if user.profile else None
     }
     await multi_layer_cache.put(cache_key, user_data, ttl=600) # 10 minutes cache
     return user

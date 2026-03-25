@@ -185,12 +185,12 @@ class LoopWatchdog:
         self.last_check_in = time.time()
 
     def _watch_loop(self):
-        logger.info("🛡️ Watchdog Thread: Monitoring event loop health...")
+        logger.info("Watchdog Thread: Monitoring event loop health...")
         while self.is_running:
             time.sleep(1) 
             silence_duration = time.time() - self.last_check_in
             if silence_duration > 1.0:
-                logger.warning(f"🐢 EVENT LOOP BLOCKED: {silence_duration:.2f}s!")
+                logger.warning(f"EVENT LOOP BLOCKED: {silence_duration:.2f}s!")
                 if silence_duration > self.timeout:
                     import faulthandler
                     import sys

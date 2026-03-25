@@ -36,6 +36,11 @@ class TelemetryMetrics:
         self._last_surge_level = SurgeLevel.NORMAL
         self._surge_override: Optional[SurgeLevel] = None 
         self.start_time = time.time()
+        
+        # [Task 25] Provider Failover Metrics
+        self.provider_calls: Dict[str, int] = {"rapidapi": 0, "ntes_scraper": 0, "fallback": 0}
+        self.provider_failures: Dict[str, int] = {"rapidapi": 0, "ntes_scraper": 0, "fallback": 0}
+        self.provider_latency_sum: Dict[str, float] = {"rapidapi": 0.0, "ntes_scraper": 0.0}
 
     @property
     def cpu_usage_percent(self) -> float:
@@ -82,8 +87,30 @@ class TelemetryMetrics:
                 "hydrations": self.total_hydrations,
                 "prewarms_triggered": self.prewarms_triggered,
                 "prewarms_skipped": self.prewarms_skipped
+            },
+            "providers": {
+                "calls": self.provider_calls,
+                "failures": self.provider_failures,
+                "avg_latency": {
+                    k: round(v / max(1, self.provider_calls.get(k, 1)), 2)
+                    for k, v in self.provider_latency_sum.items()
+                }
             }
         }
+
+    def record_provider_call(self, provider: str, success: bool, latency_ms: float = 0.0):
+        """[Task 25] Unified provider metrics telemetry."""
+        p = provider.lower()
+        if p not in self.provider_calls: 
+            self.provider_calls[p] = 0
+            self.provider_failures[p] = 0
+            
+        self.provider_calls[p] += 1
+        if not success:
+            self.provider_failures[p] += 1
+        
+        if p in self.provider_latency_sum:
+            self.provider_latency_sum[p] += latency_ms
 
     def get_adaptive_timeout(self, base_timeout: float = 30.0) -> float:
         latency_factor = 1.0

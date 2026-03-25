@@ -1,14 +1,14 @@
 from sqlalchemy import (
-    Column, String, Integer, Float, DateTime, Boolean, ForeignKey, JSON, Text, 
+    Column, String, Integer, BigInteger, Float, DateTime, Boolean, ForeignKey, JSON, Text, 
     LargeBinary, CheckConstraint, UniqueConstraint, Date, Index, Time, Enum as SQLEnum
 )
-from sqlalchemy.orm import relationship, Session
+from sqlalchemy.orm import relationship, declarative_base, backref, Session
 from datetime import datetime
 import uuid
 import enum
 import logging
 
-from .session import UserBase, TransitBase
+from database.session import UserBase, TransitBase
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +36,7 @@ class User(UserBase):
     email = Column(String(255), unique=True, nullable=True, index=True)
     supabase_id = Column(String(255), unique=True, nullable=True, index=True)
     phone_number = Column(String(20), nullable=True)
-    full_name = Column(String(255), nullable=True)
     role = Column(String(50), default="user")
-    is_verified = Column(Boolean, default=False)
     verified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_active_at = Column(DateTime, default=datetime.utcnow)
@@ -54,9 +52,17 @@ class User(UserBase):
     creds_iv = Column(LargeBinary, nullable=True)
     opt_in_persistent_creds = Column(Boolean, default=False)
     
-    # [30.1] Agent State
-    is_available = Column(Boolean, default=False)
-    last_heartbeat = Column(DateTime, nullable=True)
+    # [Task 42.A] Token Economy
+    credit_balance = Column(Integer, default=0)
+    bonus_credit_balance = Column(Integer, default=0)
+    total_lifetime_credits = Column(Integer, default=0)
+    
+    # [Task 43.A] Referral & Karma Engine
+    referral_code = Column(String(12), unique=True, index=True)
+    referred_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    karma_score = Column(Integer, default=0)
+    referral_status = Column(String(20), default="INITIATED") # INITIATED, CONVERTED
+    last_fingerprint = Column(String(64), nullable=True) # [45.1]
 
     bookings = relationship("Booking", back_populates="user", foreign_keys="[Booking.user_id]")
     profile = relationship("Profile", back_populates="user", uselist=False)
@@ -128,6 +134,7 @@ class Booking(UserBase):
     
     amount_paid = Column(Float, default=0.0)
     upi_tx_id = Column(String(100), unique=True, index=True)
+    upi_utr_hash = Column(String(64), unique=True, nullable=True, index=True) # [45.7]
     utr_number = Column(String(12), unique=True, nullable=True, index=True)
     merchant_vpa = Column(String(100), nullable=True) # The rotated VPA used for this booking
     
@@ -155,6 +162,29 @@ class Booking(UserBase):
 
     user = relationship("User", back_populates="bookings", foreign_keys=[user_id])
     passenger_details = relationship("PassengerDetails", back_populates="booking")
+
+class BookingMonitor(UserBase):
+    """
+    Task 15: Database model for booking monitoring and alerting state.
+    """
+    __tablename__ = "booking_monitors"
+    booking_id = Column(String(36), primary_key=True) # References Booking.id
+    user_id = Column(String(36), ForeignKey("users.id"))
+    pnr_number = Column(String(10), index=True, nullable=True)
+    train_number = Column(String(20), index=True, nullable=True)
+    travel_date = Column(Date, index=True, nullable=True)
+    
+    # Last known status snapshots for change detection
+    last_known_live_status = Column(JSON, nullable=True)
+    last_known_pnr_status = Column(JSON, nullable=True)
+    last_known_fare_details = Column(JSON, nullable=True)
+    
+    # Monitoring controls
+    is_monitoring_active = Column(Boolean, default=True)
+    last_check_timestamp = Column(DateTime, nullable=True)
+    alert_preferences = Column(JSON, default={}) 
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     def validate_escrow_transition(self, new_status: EscrowStatus) -> bool:
         allowed = {
@@ -276,6 +306,20 @@ class AuditLog(UserBase):
     reason = Column(String(255), nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
+class CreditTransaction(UserBase):
+    """
+    [Task 42.A] Tracks all credit consumption and top-ups.
+    """
+    __tablename__ = "credit_transactions"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    amount = Column(Integer, nullable=False) # Positive for top-up, negative for consumption
+    transaction_type = Column(String(20)) # PURCHASE, CONSUMPTION, BONUS, REFUND, MOMENTUM_BONUS
+    balance_before = Column(Integer)
+    balance_after = Column(Integer)
+    reference_entity_id = Column(String(36), nullable=True) # Booking ID or Payment ID
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
 class PlatformConfig(UserBase):
     """
     Subtask 25.1: Dynamic Platform Configuration.
@@ -371,6 +415,13 @@ class Subscription(UserBase):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"))
     is_pro = Column(Boolean, default=False)
+    
+    # [Task 41.1] Multi-Tier Multi-Quota
+    plan_tier = Column(String(20), default="FREE") # FREE, PRO, ELITE
+    features = Column(JSON, default={}) # {"max_unlocks": 100, "priority_agent": true}
+    
+    expires_at = Column(DateTime, nullable=True) # [41.3] For subscription expiry
+    
     user = relationship("User", back_populates="subscription")
 
 class UnlockedRoute(UserBase):
@@ -396,11 +447,27 @@ class CommissionTracking(UserBase):
     booking_id = Column(String(36), ForeignKey('bookings.id'), unique=True)
     amount = Column(Float, default=10.0)
     commission_type = Column(String(50), default="FIXED_AGENT_FEE")
+    status = Column(String(20), default="PENDING") # PENDING, SETTLED, DISPUTED, CANCELLED
     created_at = Column(DateTime, default=datetime.utcnow)
     settled_at = Column(DateTime, nullable=True)
+    disputed_at = Column(DateTime, nullable=True) # [44.6]
     payout_id = Column(String(100), nullable=True)
     
     user = relationship("User", back_populates="commission_tracks")
+    booking = relationship("Booking")
+
+class AgentWallet(UserBase):
+    """
+    [Task 44.3] Aggregated balance for agents.
+    """
+    __tablename__ = "agent_wallets"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), unique=True, index=True)
+    total_earned = Column(Float, default=0.0)
+    pending_commission = Column(Float, default=0.0)
+    last_payout_at = Column(DateTime, nullable=True)
+    
+    user = relationship("User", backref=backref("wallet", uselist=False))
 
 class PaymentSession(UserBase):
     __tablename__ = "payment_sessions"
@@ -415,6 +482,37 @@ class PaymentSession(UserBase):
     verification_details = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)
+
+class IdentityFingerprint(UserBase):
+    """
+    [Task 45.1] Device Fingerprinting for Fraud Prevention.
+    Stores cryptographic hashes of browser/OS/IP combos.
+    """
+    __tablename__ = "identity_fingerprints"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    fingerprint_hash = Column(String(64), unique=True, index=True)
+    ip_address = Column(String(45))
+    user_agent = Column(Text)
+    is_trusted = Column(Boolean, default=True)
+    risk_score = Column(Float, default=0.0) # 0.0 - 1.0
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref=backref("fingerprints", cascade="all, delete-orphan"))
+
+class FraudAlert(UserBase):
+    """
+    [Task 45.10] Log of suspicious activities.
+    """
+    __tablename__ = "fraud_alerts"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    alert_type = Column(String(50)) # IMPOSSIBLE_TRAVEL, SYBIL_ATTACK, REPEAT_UTR
+    severity = Column(String(20)) # LOW, MEDIUM, HIGH, CRITICAL
+    status = Column(String(20), default="OPEN") # OPEN, UNDER_REVIEW, RESOLVED, BANNED
+    metadata_json = Column(JSON, default={})
+    timestamp = Column(DateTime, default=datetime.utcnow)
 
 class WebhookEvent(UserBase):
     __tablename__ = "webhook_events"
@@ -437,6 +535,80 @@ class DailyReconciliation(UserBase):
     status = Column(String(20), default="MATCHED") # MATCHED, VARIANCE, PENDING
     report_data = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class NotificationToken(UserBase):
+    """
+    [Task 46.1] Multi-channel notification registry (FCM, Telegram, etc).
+    """
+    __tablename__ = "notification_tokens"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    channel = Column(String(20)) # WEB_PUSH, TELEGRAM, MOBILE_APP
+    token = Column(Text, nullable=False) # FCM Token or Chat ID
+    is_active = Column(Boolean, default=True)
+    last_used_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref=backref("notification_tokens", cascade="all, delete-orphan"))
+
+class UserAlert(UserBase):
+    """
+    [Task 46.1] In-app notification center history.
+    """
+    __tablename__ = "user_alerts"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    title = Column(String(100))
+    body = Column(Text)
+    alert_type = Column(String(20)) # BOOKING, PNR, SYSTEM, FRAUD, PROMOTION
+    priority = Column(Integer, default=10) # 0 = CRITICAL (SOS), 10 = Normal
+    is_read = Column(Boolean, default=False)
+    payload = Column(JSON, default={})
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref=backref("alerts", cascade="all, delete-orphan"))
+
+class NotificationPreference(UserBase):
+    """
+    [Task 46.1] Granular user DND/Opt-out controls.
+    """
+    __tablename__ = "notification_preferences"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), unique=True)
+    enable_pnr_updates = Column(Boolean, default=True)
+    enable_promotions = Column(Boolean, default=True)
+    enable_security_alerts = Column(Boolean, default=True) # Usually forced true
+    quiet_hours_start = Column(Time, nullable=True) # Suggestion 2
+    quiet_hours_end = Column(Time, nullable=True)
+    
+    user = relationship("User", backref=backref("notification_prefs", uselist=False))
+
+class FinancialLedger(UserBase):
+    """
+    [Task 49.1] Double-Entry Ledger with Cryptographic Hash Chain.
+    This is the core for Project Sentinel S3 (Audit Log).
+    """
+    __tablename__ = "financial_ledger"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    transaction_uuid = Column(String(36), index=True, default=lambda: str(uuid.uuid4()))
+    
+    # Double-entry accounts
+    debit_account = Column(String(50), index=True)  # e.g., 'CASH_ESCROW', 'USER_WALLET'
+    credit_account = Column(String(50), index=True) # e.g., 'AGENT_BALANCE', 'PLATFORM_REVENUE'
+    
+    user_id = Column(String(36), ForeignKey("users.id"), index=True, nullable=True)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="INR")
+    
+    transaction_type = Column(String(50)) # CREDIT_BUY, REFUND, COMMISSION_SETTLE
+    metadata_json = Column(JSON, default={})
+    
+    # [Task 49.9] Cryptographic Tamper-Detection
+    previous_row_hash = Column(String(64), nullable=True) # Hash of row ID-1
+    cumulative_hash = Column(String(64), index=True)     # Hash(CurrentData + PreviousRowHash)
+    
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="ledger_entries")
 
 # ==============================================================================
 # TRANSIT GRAPH MODELS (transit_graph.db)
@@ -680,3 +852,54 @@ class StationHealthIndex(TransitBase):
     safety_score = Column(Float, default=0.0)
     cleanliness_score = Column(Float, default=0.0)
     last_audited = Column(DateTime, default=datetime.utcnow)
+
+# --- GAP FIX MODELS ---
+
+class APIBudget(UserBase):
+    """
+    Task 13: Observability System - Cost Management.
+    Tracks budget limits and current spending for paid APIs (e.g., RapidAPI).
+    """
+    __tablename__ = "api_budgets"
+    id = Column(Integer, primary_key=True)
+    provider_name = Column(String(50), unique=True, index=True) # e.g. 'RapidAPI'
+    monthly_limit = Column(Float, default=100.0) # $ USD
+    current_spend = Column(Float, default=0.0)
+    last_reset_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    cost_per_request = Column(Float, default=0.01) # Default avg cost per success
+    
+    # Alert thresholds
+    warning_threshold_percent = Column(Float, default=80.0) # Alert dev at 80%
+    critical_threshold_percent = Column(Float, default=95.0) # Cut off at 95%
+    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class MetroStationGroup(TransitBase):
+    """[Gap 1] Database-driven metropolitan station groups."""
+    __tablename__ = "metro_station_groups"
+    id = Column(Integer, primary_key=True)
+    group_name = Column(String(100), index=True) # e.g., 'DELHI'
+    station_code = Column(String(20), index=True) # e.g., 'NDLS'
+    is_primary = Column(Boolean, default=False)
+
+class StationClusterMapping(TransitBase):
+    """[Gap 19] GTFS-level clusters (e.g., same physical station, multiple codes)."""
+    __tablename__ = "station_cluster_mapping"
+    cluster_id = Column(Integer, primary_key=True)
+    station_id = Column(Integer, ForeignKey("stops.id"), primary_key=True)
+
+class StationTypeConfig(TransitBase):
+    """[Gap 2] Standardized transfer penalties by station size."""
+    __tablename__ = "station_type_configs"
+    station_size = Column(String(50), primary_key=True) # e.g., 'major_hub'
+    transfer_penalty_minutes = Column(Integer, nullable=False)
+    description = Column(String(255))
+
+class StationTransitIndexBin(TransitBase):
+    """[Gap 5] Binary transit index with versioning."""
+    __tablename__ = "station_transit_index_bin"
+    station_code = Column(String(20), primary_key=True)
+    transit_blob = Column(LargeBinary, nullable=False)
+    version = Column(Integer, default=3) # V3 or V4
+    last_updated = Column(DateTime, default=datetime.utcnow)

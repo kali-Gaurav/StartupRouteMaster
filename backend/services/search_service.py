@@ -107,7 +107,15 @@ class SearchService:
                     await multi_layer_cache.redis.hincrby(f"metrics:engine_success:{today}", engine_name, 1)
         except: pass
 
-    async def search_routes(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, page: int = 1, limit: int = 15, quota: str = "GN", client_ip: Optional[str] = None, geo_state: Optional[str] = None, session_id: Optional[str] = None, cursor: Optional[float] = None, request: Optional[Request] = None) -> Dict[Any, Any]:
+    async def search_routes(
+        self, source: str, destination: str, travel_date: str, 
+        budget_category: Optional[str] = None, page: int = 1, limit: int = 15, 
+        quota: str = "GN", client_ip: Optional[str] = None, geo_state: Optional[str] = None, 
+        session_id: Optional[str] = None, cursor: Optional[float] = None, 
+        request: Optional[Request] = None,
+        permitted_engines: Optional[list[str]] = None,
+        discovery_only: bool = False
+    ) -> Dict[Any, Any]:
         overall_start = time.time()
         
         # Task 44: Concurrency-Aware Search Depth
@@ -171,7 +179,9 @@ class SearchService:
             c = ConstraintsEngine.initialize_constraints(
                 persona_str=persona.value,
                 travel_date=dt.date(),
-                quota=quota
+                quota=quota,
+                permitted_engines=permitted_engines,
+                discovery_only=discovery_only
             )
 
             # 3. GATHER ALL POSSIBLE ROUTES (Tiers 0, 1, 2, 3) - [2.1] & [2.6] Parallel Expansion
@@ -584,6 +594,7 @@ class SearchService:
         # 1. Prepare Deep Queries (Every segment of top 3)
         deep_tasks = []
         for r in top_fastest:
+            # Task 40: Call RapidAPI for verification
             deep_tasks.append(self._verify_single_route_logic(r, travel_date, quota))
             
         # 2. Prepare Shallow Queries (First segment of the rest for batching)
@@ -591,21 +602,31 @@ class SearchService:
         for r in the_rest:
             if not r.segments: continue
             s = r.segments[0]
+            # Task 40: Prepare data for RapidAPI call
             shallow_queries.append({
                 "train_number": s.train_number,
-                "from_station": s.departure_code,
-                "to_station": s.arrival_code,
-                "date": (travel_date + timedelta(days=r.metadata.get("day_offset", 0))).strftime("%Y-%m-%d"),
+                "class_code": s.class_code, # Assuming class_code exists on segment
                 "quota": quota,
+                "from_station_code": s.departure_code,
+                "to_station_code": s.arrival_code,
+                "date": (travel_date + timedelta(days=r.metadata.get("day_offset", 0))).strftime("%Y-%m-%d"),
                 "journey_id": r.journey_id
             })
             
         # [Task 13.9] Execute verify with strict timeout protection
         try:
-            deep_results, batch_results = await asyncio.wait_for(
+            from services.rapidapi_provider import rapidapi_provider
+            
+            # Use gather to run deep verification and RapidAPI batch call concurrently
+            deep_results, rapidapi_batch_results = await asyncio.wait_for(
                 asyncio.gather(
                     asyncio.gather(*deep_tasks, return_exceptions=True),
-                    self.data_provider.verify_seat_availability_batch(shallow_queries)
+                    asyncio.gather(*[
+                        rapidapi_provider.check_seat_availability(
+                            q["train_number"], q["class_code"], q["quota"], 
+                            q["from_station_code"], q["to_station_code"], q["date"]
+                        ) for q in shallow_queries
+                    ], return_exceptions=True)
                 ),
                 timeout=5.0 # HARD TIMEOUT
             )
@@ -622,18 +643,31 @@ class SearchService:
         except asyncio.TimeoutError:
             logger.warning("🕒 Verification Bypassed: Threshold exceeded (5.0s). Returning candidates only.")
             deep_results = top_fastest
-            batch_results = []
+            rapidapi_batch_results = []
             for r in deep_results: r.metadata["is_verified"] = False
             
         # Map batch results back to 'the_rest'
-        res_map = {shallow_queries[i]["journey_id"]: batch_results[i] for i in range(len(batch_results or []))}
+        res_map = {}
+        for i, res in enumerate(rapidapi_batch_results):
+            if not isinstance(res, Exception) and res:
+                res_map[shallow_queries[i]["journey_id"]] = res
         
         verified_rest = []
         for r in the_rest:
-            v_res = res_map.get(r.journey_id)
-            if v_res:
-                r.availability_probability = 0.95 if v_res.get("available_seats", 0) > 0 else 0.4
+            rapidapi_res = res_map.get(r.journey_id)
+            if rapidapi_res:
+                # Task 41: Add verification data to metadata
+                r.metadata["verification"] = rapidapi_res.dict()
+                # Simplified probability based on external API
+                if rapidapi_res.availability and rapidapi_res.availability[0].availability_status == "AVAILABLE":
+                    r.availability_probability = 0.95
+                elif rapidapi_res.availability and rapidapi_res.availability[0].availability_status == "WAITLIST":
+                    r.availability_probability = 0.4
+                else:
+                    r.availability_probability = 0.2
                 r.metadata["is_verified"] = True
+            else:
+                r.metadata["is_verified"] = False
             verified_rest.append(r)
             
         # Combine: Deeply Verified Top 3 + Batched Rest + Unverified Remaining
@@ -743,7 +777,13 @@ class SearchService:
                 if attempt == 1: raise e
         return [None, None, None]
 
-    async def search_routes_stream(self, source: str, destination: str, travel_date: str, budget_category: Optional[str] = None, quota: str = "GN", chunk_size: int = 3):
+    async def search_routes_stream(
+        self, source: str, destination: str, travel_date: str, 
+        budget_category: Optional[str] = None, quota: str = "GN", 
+        chunk_size: int = 3,
+        permitted_engines: Optional[list[str]] = None,
+        discovery_only: bool = False
+    ):
         """
         [Task 30.1/30.8] True Asynchronous Streaming.
         Consumes the orchestrator's stream_all_tiers generator and pushes
@@ -763,7 +803,11 @@ class SearchService:
         
         orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
         persona = Persona(budget_category or "comfort")
-        c = ConstraintsEngine.initialize_constraints(persona.value, dt.date(), quota=quota)
+        c = ConstraintsEngine.initialize_constraints(
+            persona.value, dt.date(), quota=quota, 
+            permitted_engines=permitted_engines, 
+            discovery_only=discovery_only
+        )
 
         yield {"status": "searching", "message": "Starting multi-engine discovery..."}
         

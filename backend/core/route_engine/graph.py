@@ -26,6 +26,19 @@ class MemMapManager:
         path = os.path.join(Config.MEMMAP_DIR, filename)
         meta_path = os.path.join(Config.MEMMAP_DIR, f"{name}.meta")
         
+        # [Gap 17] Garbage Collection: Keep only last 3 versions
+        try:
+            files = sorted([f for f in os.listdir(Config.MEMMAP_DIR) if f.startswith(name + "_") and f.endswith(".dat")])
+            for old_file in files[:-3]:
+                old_path = os.path.join(Config.MEMMAP_DIR, old_file)
+                try: 
+                    if os.path.exists(old_path): os.remove(old_path)
+                except OSError as e:
+                    # Log but continue - don't crash the save process
+                    logger.debug(f"MemMap GC: Could not remove {old_file} (likely locked): {e}")
+        except Exception as e:
+            logger.warning(f"MemMap GC failed: {e}")
+
         dtype_desc = array.dtype.descr if array.dtype.names else str(array.dtype)
         
         with open(meta_path, 'w') as f:
@@ -51,30 +64,53 @@ class MemMapManager:
     def load_array(name: str, mode: str = 'r') -> Optional[np.ndarray]:
         from database.config import Config
         meta_path = os.path.join(Config.MEMMAP_DIR, f"{name}.meta")
-        if not os.path.exists(meta_path): return None
+        if not os.path.exists(meta_path): 
+            logger.debug(f"MemMap: No meta file for {name} at {meta_path}")
+            return None
             
         try:
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
             
-            path = os.path.join(Config.MEMMAP_DIR, meta.get("latest_file"))
-            if not os.path.exists(path): return None
+            latest_file = meta.get("latest_file")
+            if not latest_file: return None
+            
+            # [Task 8] Robust Path Construction
+            path = os.path.join(Config.MEMMAP_DIR, os.path.basename(latest_file))
+            if not os.path.exists(path): 
+                logger.warning(f"MemMap: Meta exists but data file missing: {path}")
+                return None
 
             def _restore_tuples(obj):
                 if isinstance(obj, list):
-                    if len(obj) > 0 and not isinstance(obj[0], list):
-                        return tuple(_restore_tuples(i) for i in obj)
-                    return [_restore_tuples(i) for i in obj]
+                    return tuple(_restore_tuples(i) for i in obj)
                 return obj
 
-            dtype_obj = np.dtype(_restore_tuples(meta['dtype']))
-            for attempt in range(5):
+            dtype_raw = meta.get('dtype')
+            if isinstance(dtype_raw, list):
+                dtype_obj = np.dtype(_restore_tuples(dtype_raw))
+            else:
+                dtype_obj = np.dtype(dtype_raw)
+                
+            shape = tuple(meta.get('shape', ()))
+            if not shape: return None
+            
+            # [Task 8] Integrity check: verify file size matches expected shape
+            expected_size = int(np.prod(shape)) * dtype_obj.itemsize
+
+            for attempt in range(3):
                 try:
-                    return np.memmap(path, dtype=dtype_obj, mode=mode, shape=tuple(meta['shape']))
-                except OSError:
-                    time.sleep(0.5)
+                    if os.path.exists(path) and os.path.getsize(path) != expected_size:
+                        logger.warning(f"MemMap: Integrity check failed for {name}. Size mismatch for {path}")
+                        return None
+                        
+                    mmap = np.memmap(path, dtype=dtype_obj, mode=mode, shape=shape)
+                    return mmap
+                except (OSError, ValueError) as e:
+                    logger.debug(f"MemMap Load Attempt {attempt+1} failed for {name}: {e}")
+                    time.sleep(0.1)
         except Exception as e:
-            logger.error(f"Error loading {name} meta: {e}")
+            logger.error(f"Error loading {name} memmap: {e}")
         return None
 
 @dataclass
@@ -111,6 +147,10 @@ class StaticGraphSnapshot:
     city_clusters: Dict[str, List[int]] = field(default_factory=lambda: defaultdict(list))
     hub_direct_adj: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     station_time_index: Dict[int, List[List[Tuple[datetime, int]]]] = field(default_factory=lambda: defaultdict(lambda: [[] for _ in range(24)]))
+    
+    # [Task 1] Mapping for Real-time Propagation
+    trip_to_train: Dict[int, str] = field(default_factory=dict)
+    train_to_trips: Dict[str, List[int]] = field(default_factory=lambda: defaultdict(list))
     
     # Legacy fallbacks (For Builder process)
     departures_by_stop: Dict[int, List[Tuple[datetime, int]]] = field(default_factory=lambda: defaultdict(list))
@@ -205,7 +245,44 @@ class StaticGraphSnapshot:
             MemMapManager.save_array(f"reach_{ts}", reach_bits)
             self._trip_reachability_bitset = MemMapManager.load_array(f"reach_{ts}")
 
-        # 3. TBR Data
+        # 3. Transformed Transfers (Audit: Added Vectorization)
+        if self.transfer_graph:
+            all_transfers = []
+            stop_ids = sorted(self.transfer_graph.keys())
+            t_idx = np.zeros((len(stop_ids), 2), dtype=np.int32)
+            t_off = 0
+            self._transfer_stop_map = {sid: i for i, sid in enumerate(stop_ids)}
+            
+            # [Task 1] Build Trip-to-Train mappings for faster Overlay sync
+            for tid, segs in self.trip_segments.items():
+                if segs:
+                    t_no = segs[0].train_number
+                    self.trip_to_train[tid] = t_no
+                    self.train_to_trips[t_no].append(tid)
+            
+            # Type map: WALK=0, METRO=1, TAXI=2, SHUTTLE=3
+            t_type_map = {"WALK": 0, "METRO": 1, "TAXI": 2, "SHUTTLE": 3}
+
+            for i, sid in enumerate(stop_ids):
+                edges = self.transfer_graph[sid]
+                t_idx[i] = [t_off, len(edges)]
+                for e in edges:
+                    # [Audit] Handling both TransferEdge and legacy dicts
+                    to_sid = getattr(e, 'to_stop_id', e.get('to_stop_id') if isinstance(e, dict) else 0)
+                    dur = getattr(e, 'duration_minutes', e.get('duration_minutes', 15) if isinstance(e, dict) else 15)
+                    multi = 1 if getattr(e, 'is_multi_station', False) else 0
+                    t_type_str = getattr(e, 'transfer_type', "WALK")
+                    t_type_idx = t_type_map.get(t_type_str, 0)
+                    
+                    all_transfers.append([to_sid, dur, multi, t_type_idx])
+                t_off += len(edges)
+            
+            MemMapManager.save_array(f"transfers_{ts}", np.array(all_transfers, dtype=np.int32))
+            self._transfers_data = MemMapManager.load_array(f"transfers_{ts}")
+            MemMapManager.save_array(f"transfers_idx_{ts}", t_idx)
+            self._transfers_index = MemMapManager.load_array(f"transfers_idx_{ts}")
+
+        # 4. TBR Data
         if tbr_data:
             self.tbr_trip_nodes = tbr_data.get('tbr_trip_nodes')
             self.tbr_trip_index = tbr_data.get('tbr_trip_index', {})
@@ -225,14 +302,61 @@ class RealtimeOverlay:
     def get_trip_delay(self, tid: int) -> int: return self.delays.get(tid, 0)
     def is_cancelled(self, tid: int) -> bool: return tid in self.cancellations
 
-    async def sync_with_db(self, db, travel_date: date):
+    async def sync_with_db(self, db, travel_date: date, snapshot: Optional['StaticGraphSnapshot'] = None):
+        """
+        [Task 1.3] Consolidated Real-time Sync.
+        Fetches cancellations and delays mapping them to Trip IDs.
+        """
         from sqlalchemy import text
+        from datetime import datetime, timedelta
         ds = travel_date.strftime("%Y-%m-%d")
         try:
+            # 1. Cancellations
+            self.cancellations = set()
             rows = db.execute(text("SELECT train_no FROM cancelled_trains WHERE travel_date = :dt"), {"dt": ds}).fetchall()
-            for r in rows: self.cancellations.add(int(r[0]))
+            # If we have a snapshot, map train_no to trip_ids
+            for r in rows:
+                t_no = str(r[0])
+                if snapshot:
+                    for tid in snapshot.train_to_trips.get(t_no, []):
+                        self.cancellations.add(tid)
+                else:
+                    try: self.cancellations.add(int(t_no))
+                    except: pass
+            
+            # 2. GTFS Scheduled Cancellations
+            gtfs_rows = db.execute(text("""
+                SELECT t.id 
+                FROM calendar_dates cd 
+                JOIN trips t ON cd.service_id = t.service_id 
+                WHERE cd.date = :dt AND cd.exception_type = 2
+            """), {"dt": ds}).fetchall()
+            for r in gtfs_rows: self.cancellations.add(int(r[0]))
+
+            # 3. Delays (Fresh updates only - last 4 hours)
+            fresh_cutoff = datetime.utcnow() - timedelta(hours=4)
+            delay_rows = db.execute(text("""
+                SELECT train_number, delay_minutes 
+                FROM train_live_updates 
+                WHERE recorded_at >= :cutoff 
+                ORDER BY recorded_at DESC
+            """), {"cutoff": fresh_cutoff}).fetchall()
+            
+            live_train_delays = {}
+            for row in delay_rows:
+                if row[0] not in live_train_delays:
+                    live_train_delays[row[0]] = int(row[1])
+            
+            # Apply to delays mapping
+            self.delays = {}
+            if snapshot:
+                for t_no, d in live_train_delays.items():
+                    for tid in snapshot.train_to_trips.get(str(t_no), []):
+                        self.delays[tid] = d
+            
             self.version += 1
-        except: pass
+        except Exception as e: 
+            logger.warning(f"Overlay sync failed: {e}")
 
 class TimeDependentGraph:
     def __init__(self, snapshot: Optional[StaticGraphSnapshot] = None, overlay: Optional[RealtimeOverlay] = None):
@@ -298,18 +422,35 @@ class TimeDependentGraph:
 
     def get_transfers_from_stop(self, sid: int, arr: datetime, min_transfer_time: int = 15, incoming_trip_id: int = None) -> List[TransferConnection]:
         feasible = []
+        # 1. In-station transfer (buffer time)
         if sid in self.stop_cache:
             s = self.stop_cache[sid]
-            feasible.append(TransferConnection(sid, datetime(1980,1,1), datetime(2030,1,1), max(min_transfer_time, 45), s.name))
+            feasible.append(TransferConnection(sid, s.code, datetime.min, datetime.max, max(min_transfer_time, 15), s.name, is_multi_station=False))
+            
+        # 2. Vectorized inter-station/complex transfers
         if self.snapshot and self.snapshot._transfers_data is not None:
             t_idx = self.snapshot._transfer_stop_map.get(sid)
             if t_idx is not None:
                 off, count = self.snapshot._transfers_index[t_idx]
+                t_type_rev = {0: "WALK", 1: "METRO", 2: "TAXI", 3: "SHUTTLE"}
+                
                 for row in self.snapshot._transfers_data[off : off + count]:
+                    target_sid = int(row[0])
                     dur = int(row[1])
+                    is_multi = bool(row[2])
+                    t_type = t_type_rev.get(int(row[3]), "WALK")
+                    
                     if min_transfer_time <= dur <= 1440:
-                        target = self.stop_cache.get(int(row[0]))
-                        feasible.append(TransferConnection(int(row[0]), datetime(1980,1,1), datetime(2030,1,1), dur, target.name if target else f"Stop {row[0]}"))
+                        target = self.stop_cache.get(target_sid)
+                        feasible.append(TransferConnection(
+                            target_sid, 
+                            target.code if target else "", 
+                            datetime.min, datetime.max, 
+                            dur, 
+                            target.name if target else f"Stop {target_sid}",
+                            is_multi_station=is_multi,
+                            transfer_type=t_type
+                        ))
         return feasible
 
     def get_trip_segments_raw(self, tid: int) -> Optional[np.ndarray]:
@@ -326,14 +467,25 @@ class TimeDependentGraph:
         delay = self.overlay.get_trip_delay(tid) * 60
         res = []
         for row in raw:
-            res.append(RouteSegment(trip_id=int(row[0]), departure_stop_id=int(row[1]), arrival_stop_id=int(row[2]),
-                                    departure_time=self.safe_fromtimestamp(int(row[3]) + delay),
-                                    arrival_time=self.safe_fromtimestamp(int(row[4]) + delay),
-                                    duration_minutes=int((row[4]-row[3])//60), distance_km=float(row[5]/1000.0), service_mask=int(row[6])))
+            # [Task 9 Standardized Duration]
+            duration = int((row[4] - row[3]) // 60)
+            if duration < 0: duration += 1440 # Handle midnight wraparound if timestamp is time-of-day
+            
+            res.append(RouteSegment(
+                trip_id=int(row[0]), 
+                departure_stop_id=int(row[1]), 
+                arrival_stop_id=int(row[2]),
+                departure_time=self.safe_fromtimestamp(int(row[3]) + delay),
+                arrival_time=self.safe_fromtimestamp(int(row[4]) + delay),
+                duration_minutes=duration, 
+                distance_km=float(row[5]/1000.0), 
+                service_mask=int(row[6]),
+                train_number=self.snapshot.trip_to_train.get(int(row[0]), "") if self.snapshot else ""
+            ))
         return res
 
     def get_train_path(self, tid: int) -> List[Dict[str, Any]]:
-        return self.snapshot.train_path.get(tid, [])
+        return self.snapshot.train_path.get(tid, []) if self.snapshot else []
 
     def get_station_schedule(self, sid: int) -> List[Dict[str, Any]]:
-        return self.snapshot.station_schedule.get(sid, [])
+        return self.snapshot.station_schedule.get(sid, []) if self.snapshot else []
