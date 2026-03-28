@@ -19,6 +19,7 @@ export interface RouteSegment {
   liveSeatAvailability: string;
   liveFare: number;
   seatAvailable: boolean;
+  pnr?: string;
   // for booking/availability requests the frontend may occasionally
   // carry numeric stop ids obtained from backend. they are optional
   // because most of the route search responses only contain codes.

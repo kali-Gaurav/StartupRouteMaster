@@ -65,6 +65,7 @@ aiofiles==23.2.1
 deep-translator==1.11.4
 langdetect==1.0.9
 reverse-geocoder==1.5.1
+sse-starlette==2.0.0
 
 # Development and testing
 pytest==8.0.2

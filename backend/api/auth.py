@@ -233,100 +233,39 @@ async def google_auth(
     Syncs with Supabase and creates local user record.
     """
     if not payload.id_token:
-        raise HTTPException(
-            status_code=400,
-            detail="id_token is required"
-        )
+        raise HTTPException(status_code=400, detail="id_token is required")
     
-    try:
-        import json
-        import base64
-        from datetime import timedelta, datetime as dt
-        from database.models import Profile
-        
-        # Decode JWT (without verification for now - TODO: use google-auth library)
-        parts = payload.id_token.split('.')
-        if len(parts) != 3:
-            raise HTTPException(status_code=400, detail="Invalid token format")
-        
-        # Decode payload (middle part)
-        payload_part = parts[1]
-        # Add padding if needed
-        padding = 4 - len(payload_part) % 4
-        if padding != 4:
-            payload_part += '=' * padding
-        
-        try:
-            google_payload = json.loads(base64.urlsafe_b64decode(payload_part))
-        except:
-            raise HTTPException(status_code=400, detail="Invalid token payload")
-        
-        google_id = google_payload.get("sub")
-        email = google_payload.get("email")
-        name = google_payload.get("name", email.split('@')[0] if email else "User")
-        
-        if not google_id or not email:
-            raise HTTPException(status_code=400, detail="Invalid token data")
-        
-        # Create or get user
-        user = db.query(User).filter(User.email == email).first()
-        is_new_user = False
-        
-        if not user:
-            is_new_user = True
-            user = User(
-                email=email,
-                full_name=name,
-                role="user"
-            )
-            db.add(user)
-            db.flush()
-            
-            profile = Profile(id=user.id, user_id=user.id)
-            db.add(profile)
-            db.commit()
-            logger.info(f"New user created via Google: {email}")
-        else:
-            db.commit()
-        
-        # Generate JWT token
-        token = jwt.encode(
-            {
-                "sub": str(user.id),
-                "email": user.email,
-                "exp": dt.utcnow() + timedelta(days=7),
-                "iat": dt.utcnow(),
-                "aud": "authenticated"
-            },
-            Config.SUPABASE_JWT_SECRET,
-            algorithm="HS256"
-        )
-        
-        # Cache user session
-        cache_key = f"auth:user:{user.id}"
-        await multi_layer_cache.put(cache_key, {
-            "id": user.id,
-            "email": user.email,
-            "role": user.role,
-            "full_name": user.full_name
-        }, ttl=86400)
-        
-        return AuthResponse(
-            success=True,
-            message="Google authentication successful",
-            token=token,
-            user={"id": str(user.id), "email": user.email, "name": user.full_name},
-            is_new_user=is_new_user
-        )
+    # [Elite] Verify Identity vs just base64 decoding
+    google_payload = await verify_google_token(payload.id_token)
+    if not google_payload:
+        raise HTTPException(status_code=401, detail="Invalid Google Identity Token")
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Google auth error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Google authentication failed"
-        )
+    email = google_payload.get("email")
+    name = google_payload.get("name", "Google User")
+    
+    user = db.query(User).filter(User.email == email).first()
+    is_new_user = False
+    
+    if not user:
+        is_new_user = True
+        user = User(email=email, full_name=name, role="user")
+        db.add(user); db.flush()
+        db.add(Profile(id=user.id, user_id=user.id))
+        logger.info(f"Verified Google User Created: {email}")
+    
+    db.commit()
+
+    # [Elite] JWT Fingerprinting
+    fingerprint = hashlib.sha256(request.headers.get("user-agent", "").encode()).hexdigest()[:8]
+    token = jwt.encode(
+        {"sub": str(user.id), "email": user.email, "exp": dt.utcnow() + timedelta(days=7), "fp": fingerprint},
+        Config.SUPABASE_JWT_SECRET, algorithm="HS256"
+    )
+    
+    return AuthResponse(
+        success=True, message="Google identity verified.", token=token,
+        user={"id": str(user.id), "name": user.full_name}, is_new_user=is_new_user
+    )
 
 @router.post("/telegram", response_model=AuthResponse)
 @limiter.limit("20/minute")
@@ -335,90 +274,35 @@ async def telegram_auth(
     payload: TelegramAuthRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Authenticate via Telegram Mini App.
-    Validates init_data hash and creates/syncs user.
-    """
-    if not payload.init_data or not payload.user:
-        raise HTTPException(
-            status_code=400,
-            detail="init_data and user are required"
-        )
+    """[Task 116 Upgrade] Verified Telegram Integration."""
+    bot_token = Config._get_env("TELEGRAM_BOT_TOKEN")
+    if not verify_telegram_auth(payload.init_data, bot_token):
+        raise HTTPException(status_code=401, detail="Forged Telegram Authentication Data prevented.")
     
-    try:
-        from datetime import timedelta, datetime as dt
-        from database.models import Profile
-        
-        # TODO: Validate Telegram init_data hash
-        
-        # Extract Telegram user ID
-        telegram_id = str(payload.user.get("id"))
-        telegram_username = payload.user.get("username", "")
-        telegram_first_name = payload.user.get("first_name", "Telegram User")
-        
-        if not telegram_id:
-            raise HTTPException(status_code=400, detail="Invalid Telegram user")
-        
-        # Create or get user
-        email = f"{telegram_id}@telegram.safesafar.app"
-        user = db.query(User).filter(User.email == email).first()
-        is_new_user = False
-        
-        if not user:
-            is_new_user = True
-            user = User(
-                email=email,
-                full_name=telegram_first_name,
-                role="user"
-            )
-            db.add(user)
-            db.flush()
-            
-            profile = Profile(id=user.id, user_id=user.id)
-            db.add(profile)
-            db.commit()
-            logger.info(f"New user created via Telegram: {telegram_username or telegram_id}")
-        else:
-            db.commit()
-        
-        # Generate JWT token
-        token = jwt.encode(
-            {
-                "sub": str(user.id),
-                "email": user.email,
-                "exp": dt.utcnow() + timedelta(days=7),
-                "iat": dt.utcnow(),
-                "aud": "authenticated"
-            },
-            Config.SUPABASE_JWT_SECRET,
-            algorithm="HS256"
-        )
-        
-        # Cache user session
-        cache_key = f"auth:user:{user.id}"
-        await multi_layer_cache.put(cache_key, {
-            "id": user.id,
-            "email": user.email,
-            "role": user.role,
-            "full_name": user.full_name
-        }, ttl=86400)
-        
-        return AuthResponse(
-            success=True,
-            message="Telegram authentication successful",
-            token=token,
-            user={"id": str(user.id), "email": user.email, "name": user.full_name},
-            is_new_user=is_new_user
-        )
+    telegram_id = str(payload.user.get("id"))
+    email = f"tg_{telegram_id}@safesafar.app"
     
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Telegram auth error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Telegram authentication failed"
-        )
+    user = db.query(User).filter(User.email == email).first()
+    is_new_user = False
+    
+    if not user:
+        is_new_user = True
+        user = User(email=email, full_name=payload.user.get("first_name", "TG User"), role="user")
+        db.add(user); db.flush()
+        db.add(Profile(id=user.id, user_id=user.id))
+        logger.info(f"Verified Telegram User Created: {telegram_id}")
+    
+    db.commit()
+    
+    token = jwt.encode(
+        {"sub": str(user.id), "email": user.email, "exp": dt.utcnow() + timedelta(days=7)},
+        Config.SUPABASE_JWT_SECRET, algorithm="HS256"
+    )
+    
+    return AuthResponse(
+        success=True, message="Telegram identity verified.", token=token,
+        user={"id": str(user.id), "name": user.full_name}, is_new_user=is_new_user
+    )
 
 # ============================================================================
 # USER INFO & LOGOUT

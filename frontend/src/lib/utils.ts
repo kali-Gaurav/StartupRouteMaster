@@ -47,7 +47,9 @@ export const getRailwayApiUrl = (path: string): string => {
     import.meta.env.VITE_API_URL ??
     import.meta.env.RAILWAY_BACKEND_URL ??
     import.meta.env.VITE_RAILWAY_API_URL ??
-    ("http://localhost:8000");
+    "";
+
+  if (!baseUrl) return apiPath;
 
   const normalizedBase = baseUrl.replace(/\/$/, "");
   return `${normalizedBase}${apiPath}`;

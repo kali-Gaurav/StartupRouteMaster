@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText, WifiOff, ShieldAlert } from "lucide-react";
+import { ArrowLeftRight, CalendarDays, Search, Sparkles, Train, MapPin, Filter, Zap, DollarSign, Shield, Database, FileText, WifiOff, ShieldAlert, LayoutDashboard } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { StationSearch } from "@/components/StationSearch";
@@ -574,32 +574,6 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <Navbar />
 
-      {!isBackendOnline && (
-        <div className="bg-orange-600 text-white text-center py-2 text-[10px] sm:text-xs font-bold flex items-center justify-center gap-2 animate-in slide-in-from-top-full duration-500">
-          <WifiOff className="w-4 h-4" />
-          OFFLINE MODE: Using local station database and cached journeys. Some AI features may be limited.
-        </div>
-      )}
-
-      {isBackendOnline && (
-        <div className="bg-primary/90 text-primary-foreground text-center py-2 text-[10px] sm:text-xs font-bold flex flex-wrap items-center justify-center gap-4 animate-in slide-in-from-top-full duration-500">
-          <div className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-white/10">
-            <Sparkles className="w-3.5 h-3.5" />
-            V3 MASTER RELEASE ONLINE
-          </div>
-          <div className="h-4 w-px bg-white/20" />
-          <div className="flex items-center gap-1.5">
-            <Database className="w-3.5 h-3.5" />
-            SCRAPER POOL: {(useSystemStatus as any).getState().scrapersPool}
-          </div>
-          <div className="h-4 w-px bg-white/20" />
-          <div className="flex items-center gap-1.5">
-            <Shield className="w-3.5 h-3.5" />
-            LEDGER ENGINE: {(useSystemStatus as any).getState().ledgerStatus}
-          </div>
-        </div>
-      )}
-
       {recoverableSession && (
         <div className="fixed top-16 left-0 right-0 z-40 container mx-auto px-4 pt-2">
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-2 shadow-lg">
@@ -627,7 +601,7 @@ const Index = () => {
       )}
 
       {/* Hero Section - IRCTC-style layout */}
-      <section className="relative pt-20 pb-16 overflow-hidden">
+      <section className="relative pt-28 pb-16 overflow-hidden">
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div className="absolute -top-40 -right-40 w-80 h-80 rounded-full bg-primary/10 blur-3xl" />
           <div className="absolute -bottom-40 -left-40 w-80 h-80 rounded-full bg-accent/10 blur-3xl" />
@@ -656,12 +630,21 @@ const Index = () => {
 
             <div className="bg-white dark:bg-card rounded-2xl border-2 border-border shadow-xl overflow-hidden">
               {/* Dark header like IRCTC */}
-              <div className="flex gap-1 px-6 pt-4 pb-2 bg-[#0f172a] dark:bg-[#0c4a6e]">
-                <button className="px-4 py-2 text-sm font-semibold text-white border-b-2 border-white">
+              <div className="flex flex-wrap gap-1 px-6 pt-0 bg-[#0f172a] dark:bg-[#0c4a6e]">
+                <button className="px-4 py-3 text-xs font-bold text-white border-b-4 border-orange-500 bg-white/10 uppercase tracking-tighter">
                   BOOK TICKET
                 </button>
-                <a href="/sos" className="px-4 py-2 text-sm font-medium text-white/80 hover:text-white transition-colors">
+                <a href="/track" className="px-4 py-3 text-xs font-bold text-white/70 hover:text-white hover:bg-white/5 transition-all uppercase tracking-tighter flex items-center gap-2">
+                  <Train className="w-3 h-3" />
+                  LIVE STATUS
+                </a>
+                <a href="/sos" className="px-4 py-3 text-xs font-bold text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all uppercase tracking-tighter flex items-center gap-2">
+                  <ShieldAlert className="w-3 h-3" />
                   SOS
+                </a>
+                <a href="/dashboard" className="hidden sm:flex px-4 py-3 text-xs font-bold text-white/70 hover:text-white hover:bg-white/5 transition-all uppercase tracking-tighter items-center gap-2">
+                  <LayoutDashboard className="w-3 h-3" />
+                  DASHBOARD
                 </a>
               </div>
               <h2 className="text-xl font-bold text-foreground mb-6 px-6 pt-4">BOOK TICKET</h2>
@@ -1005,6 +988,7 @@ const Index = () => {
                           key={route.id}
                           route={route}
                           index={idx}
+                          travelDate={travelDate}
                           isRecommended={viewMode === "optimal" && idx === 0 && !selectedCategory}
                           badges={routeBadges.get(route.id)}
                           isUnlocked={unlockedRouteIds.has(route.id)}

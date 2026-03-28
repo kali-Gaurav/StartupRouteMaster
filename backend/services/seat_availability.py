@@ -4,7 +4,7 @@ from datetime import date
 import asyncio
 
 # Import the ProviderGateway and its models
-from backend.providers.gateway import provider_gateway
+from providers.gateway import provider_gateway
 # We will use UnifiedAvailability if it's defined, otherwise adapt from gateway's availability data structure.
 # For now, let's assume gateway's unlock_route_details provides availability data in a usable list of dicts.
 # from backend.providers.models import UnifiedAvailability 

@@ -21,11 +21,14 @@ class R2SyncManager:
     Supports bi-directional sync and periodic backups.
     """
     def __init__(self, db_paths: Optional[List[str]] = None):
-        # Default databases to sync
+        # Default critical data to sync for Nexus Fiber
         self.db_paths = db_paths or [
-            "transit.db",
-            "backend/database/transit_graph.db",
-            "backend/railway_data.db"
+            "database/user_store.db",
+            "database/transit_graph.db",
+            "database/railway_data.db",
+            "snapshots/graph_snapshot_20260328.pkl",
+            "snapshots/graph_snapshot_20260330.pkl",
+            "nexus_vitals.mmap"
         ]
         self.sync_interval = 3600 # 1 hour
         self._is_syncing = False
@@ -41,14 +44,14 @@ class R2SyncManager:
         object_name = f"backups/{db_rel_path.replace('/', '_')}.zst"
         tmp_path = local_path.with_suffix(".tmp")
         
-        logger.info(f"🔄 R2 Sync: Checking remote for {db_rel_path}...")
+        logger.info(f"R2 Sync: Checking remote for {db_rel_path}...")
         
         loop = asyncio.get_running_loop()
         try:
             # 1. Get remote metadata (Blocking S3)
             metadata = await loop.run_in_executor(None, r2_storage.get_object_metadata, object_name)
             if not metadata:
-                logger.warning(f"⚠️ R2 Sync: No remote metadata found for {object_name}")
+                logger.warning(f"R2 Sync: No remote metadata found for {object_name}")
                 return False
 
             remote_sha = metadata.get('sha256')
@@ -57,11 +60,11 @@ class R2SyncManager:
             if local_path.exists():
                 local_sha = await loop.run_in_executor(None, r2_storage.calculate_sha256, local_path)
                 if remote_sha == local_sha:
-                    logger.info(f"✅ R2 Sync: Local {db_rel_path} matches remote checksum. No download needed.")
+                    logger.info(f"R2 Sync: Local {db_rel_path} matches remote checksum. No download needed.")
                     return True
             
             # 3. Atomic Download & Decompress
-            logger.info(f"📥 R2 Sync: Downloading & Decompressing {object_name}...")
+            logger.info(f"R2 Sync: Downloading & Decompressing {object_name}...")
             # Ensure parent directory exists
             local_path.parent.mkdir(parents=True, exist_ok=True)
             
@@ -82,7 +85,7 @@ class R2SyncManager:
             return await loop.run_in_executor(None, _download_and_decompress)
 
         except Exception as e:
-            logger.error(f"❌ R2 Sync Error (Download): {e}")
+            logger.error(f"R2 Sync Error (Download): {e}")
             if tmp_path.exists(): os.remove(tmp_path)
             return False
 
@@ -93,7 +96,7 @@ class R2SyncManager:
         zst_path = local_path.with_suffix(".zst.tmp")
 
         if not local_path.exists():
-            logger.warning(f"⚠️ R2 Sync: Local file {local_path} does not exist. Skipping upload.")
+            logger.warning(f"R2 Sync: Local file {local_path} does not exist. Skipping upload.")
             return False
 
         loop = asyncio.get_running_loop()
@@ -104,11 +107,11 @@ class R2SyncManager:
             # 2. Check if remote matches (Skip if same hash)
             metadata = await loop.run_in_executor(None, r2_storage.get_object_metadata, object_name)
             if metadata and metadata.get('sha256') == local_sha:
-                logger.debug(f"⏭️ R2 Sync: Remote {db_rel_path} already matches local hash. Skipping upload.")
+                logger.debug(f"R2 Sync: Remote {db_rel_path} already matches local hash. Skipping upload.")
                 return True
 
             # 3. Compress & Upload
-            logger.info(f"📤 R2 Sync: Compressing & Uploading {db_rel_path}...")
+            logger.info(f"R2 Sync: Compressing & Uploading {db_rel_path}...")
             
             def _compress_and_upload():
                 with open(local_path, 'rb') as ifh, open(zst_path, 'wb') as ofh:
@@ -126,28 +129,28 @@ class R2SyncManager:
             return await loop.run_in_executor(None, _compress_and_upload)
             
         except Exception as e:
-            logger.error(f"❌ R2 Sync Error (Upload): {e}")
+            logger.error(f"R2 Sync Error (Upload): {e}")
             if zst_path.exists(): os.remove(zst_path)
             return False
 
     async def full_sync_down(self):
         """Sync ALL databases from R2 to local."""
-        logger.info("🚀 R2 Sync: Starting full download sync...")
+        logger.info("R2 Sync: Starting full download sync...")
         tasks = [self.sync_from_r2(path) for path in self.db_paths]
         await asyncio.gather(*tasks)
-        logger.info("✅ R2 Sync: Full download sync complete.")
+        logger.info("R2 Sync: Full download sync complete.")
 
     async def full_sync_up(self):
         """Sync ALL databases from local to R2."""
-        logger.info("🚀 R2 Sync: Starting full backup sync...")
+        logger.info("R2 Sync: Starting full backup sync...")
         tasks = [self.sync_to_r2(path) for path in self.db_paths]
         await asyncio.gather(*tasks)
-        logger.info("✅ R2 Sync: Full backup sync complete.")
+        logger.info("R2 Sync: Full backup sync complete.")
 
     async def run_periodic_sync(self):
         """Background task for periodic backups with orchestrator feedback."""
         from core.orchestrator import orchestrator
-        logger.info(f"⏱️ R2 Sync: Periodic backup worker started (Interval: {self.sync_interval}s)")
+        logger.info(f"R2 Sync: Periodic backup worker started (Interval: {self.sync_interval}s)")
         
         while not orchestrator.is_shutting_down:
             await asyncio.sleep(self.sync_interval)
@@ -164,7 +167,7 @@ class R2SyncManager:
                 # Task 2.3: Report Health
                 duration = time.time() - last_start
                 # You could add generic metrics here if needed
-                logger.info(f"📊 R2 Sync: Periodic sync took {duration:.2f}s")
+                logger.info(f"R2 Sync: Periodic sync took {duration:.2f}s")
             except Exception as e:
                 logger.error(f"Periodic Sync Failure: {e}")
 

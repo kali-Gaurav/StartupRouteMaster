@@ -46,7 +46,7 @@ class SeatVerificationService:
         # honour explicit override from config
         from database.config import Config
         pref = getattr(Config, "RAPIDAPI_PREFERRED_VERSION", "")
-        if pref.lower() in ("v3", "v2", "v1"):
+        if pref and pref.lower() in ("v3", "v2", "v1"):
             SeatVerificationService._detected_version = pref.lower()
             return SeatVerificationService._detected_version
 

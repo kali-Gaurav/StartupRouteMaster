@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Body
 from typing import Dict, List, Any, Optional
 from services.multi_layer_cache import multi_layer_cache
 from dependencies import get_route_engine, get_db
@@ -561,6 +561,9 @@ async def get_system_health():
     usage = psutil.disk_usage(".")
     from utils.geo_utils import is_tatkal_window
     
+    from core.nexus.audit.triage import nexus_triage
+    triage_report = await nexus_triage.get_deep_diagnostics()
+    
     return {
         "cpu_usage_percent": psutil.cpu_percent(), 
         "uptime_human": get_uptime_string(), 
@@ -568,7 +571,9 @@ async def get_system_health():
         "is_tatkal_window": is_tatkal_window(), 
         "process_id": os.getpid(),
         "services": container.get_all_status(),
-        "system_state": (await control_plane.get_level()).name
+        "system_state": (await control_plane.get_level()).name,
+        "backoff_factor": triage_report["backoff_factor"],
+        "triage_status": triage_report["node_status"]
     }
 
 @router.get("/system/resource-history")
@@ -759,7 +764,7 @@ async def websocket_metrics(websocket: WebSocket):
 @router.get("/debug/budget")
 async def get_api_budgets(db: Session = Depends(get_db)):
     """[Task 26] Fetch current API spending vs limits."""
-    from backend.database.models import APIBudget
+    from database.models import APIBudget
     budgets = db.query(APIBudget).all()
     return [
         {
@@ -775,7 +780,7 @@ async def get_api_budgets(db: Session = Depends(get_db)):
 @router.get("/debug/telemetry")
 async def get_jit_telemetry(db: Session = Depends(get_db)):
     """[Task 25/4.5] Fetch internal TelemetryMetrics and Booking Queue status."""
-    from backend.core.metrics import jit_metrics
+    from core.metrics import jit_metrics
     telemetry = jit_metrics.get_report()
     
     # [Task 4.5] Agent Queue Stats
@@ -794,7 +799,7 @@ async def get_jit_telemetry(db: Session = Depends(get_db)):
 @router.get("/debug/gateway")
 async def get_gateway_health():
     """[Task 25] Fetch circuit breaker and scraper statuses."""
-    from backend.providers.gateway import provider_gateway
+    from providers.gateway import provider_gateway
     return await provider_gateway.get_health()
 
 # [Task 41.4] Admin Subscription Assignment

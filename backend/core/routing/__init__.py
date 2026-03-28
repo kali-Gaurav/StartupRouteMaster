@@ -22,7 +22,7 @@ def register_routers(app: FastAPI):
     if not Config.SLIM_MODE:
         instrumentator.instrument(app).expose(app, endpoint="/api/v2/monitoring/metrics")
     else:
-        logger.info("📊 Metrics: Slim Mode Active. Skipping full Prometheus instrumentation.")
+        logger.info("Metrics: Slim Mode Active. Skipping full Prometheus instrumentation.")
 
     # --- V2 API ROUTES ---
     from api.v2 import (
@@ -53,6 +53,14 @@ def register_routers(app: FastAPI):
     app.include_router(karma.router, prefix=V2_PREFIX)
     app.include_router(admin_commissions.router, prefix=V2_PREFIX)
     app.include_router(admin_fraud.router, prefix=V2_PREFIX)
+
+    # --- V3 ELITE API ROUTES ---
+    from api.v3 import search as search_v3, transit as transit_v3, governor as governor_v3, system as system_v3
+    V3_PREFIX = "/api/v3"
+    app.include_router(search_v3.router, prefix=V3_PREFIX)
+    app.include_router(transit_v3.router, prefix=V3_PREFIX)
+    app.include_router(governor_v3.router, prefix=V3_PREFIX)
+    app.include_router(system_v3.router, prefix=V3_PREFIX)
 
     # --- V1 API ROUTES ---
     from api import (

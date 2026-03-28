@@ -44,3 +44,28 @@ class EscrowBookingCreateSchema(BaseModel):
     passenger_age: int
     train_number: str
     amount: float
+
+class IRCTCLinkRequest(BaseModel):
+    train_number: str
+    from_code: str
+    to_code: str
+    date: str  # YYYY-MM-DD
+
+class IRCTCLinkResponse(BaseModel):
+    url: str
+
+class SavePNRRequest(BaseModel):
+    journey_id: str
+    segment_index: int
+    train_number: str
+    pnr: str
+
+class SegmentPNRResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    journey_id: str
+    segment_index: int
+    train_number: str
+    pnr: str
+    status: str
+    created_at: datetime

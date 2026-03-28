@@ -217,9 +217,11 @@ class SearchService:
             # [2.2] Multi-Day Expansion Engine: UPGRADED Yield Threshold (Task 2.2)
             # If we found fewer than 15 routes (was 5), expand to neighboring days.
             expansion_triggered = False
+            from core.nexus.audit.triage import nexus_triage
+            
             if len(all_unique_routes) < 15:
-                if DegradationManager.should_skip_heavy_expansion():
-                    logger.info("Graceful Degradation: Skipping multi-day expansion due to high system load.")
+                if nexus_triage.current_backoff > 0.65 or DegradationManager.should_skip_heavy_expansion():
+                    logger.info(f"🚦 [NEXUS LATCH] System Pressure: {nexus_triage.current_backoff*100:.1f}%. Halting Multi-Day Memory Flood.")
                 else:
                     expansion_triggered = True
                     logger.info(f"Moderate yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search.")
@@ -259,7 +261,7 @@ class SearchService:
             # [6.2] Hub-Only Routing Fallback (Zero Yield)
             if len(all_unique_routes) == 0:
                 logger.info(f"Zero yield for {source}->{destination}. Triggering Hub Fallback [6.4].")
-                from core.route_engine.hubs import get_hubs_near
+                from core.hubs import get_hubs_near
                 
                 # Find closest hubs to source and destination
                 src_hubs = get_hubs_near(source_stop.latitude, source_stop.longitude, limit=3) # Increased to 3
@@ -312,15 +314,9 @@ class SearchService:
                                 
                                 all_unique_routes[merged.journey_id] = merged
                                 if len(all_unique_routes) >= 20: break # Increased to 20
-            # --- TASK 7: Microservice Extraction ---
-            # Discovery Phase - Unified Orchestrator entry point
-            orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
-            candidate_list = await orchestrator.search_all_tiers(
-                source, destination, dt, c, limit=limit*3, 
-                db=self.transit_db, skip_heavy=jit_metrics.should_throttle_tasks()
-            )
-            
-            all_unique_routes = {rt.journey_id: rt for rt in candidate_list}
+            # [Task 7 Check] If we already have results from search_res_target/expansion, use them.
+            # Otherwise, we use the candidate_list from the expansion merged set.
+            candidate_list = list(all_unique_routes.values())
             
             # [Task 7] Verification Microservice Pattern
             # Split into Discovery -> Verification -> Ranking
@@ -415,15 +411,20 @@ class SearchService:
             )
 
             latency = (time.time() - overall_start) * 1000
+            # Combine structures for multi-version frontend support
             final_response = {
                 "status": "success",
                 "source": source, "destination": destination, "session_id": session_id,
+                "routes": categories, # Flat structure for legacy/standard frontend
                 "data": {
                     "journeys": masked_journeys,
                     "grouped_journeys": {k: ([UnlockService.mask_route(r) for r in v] if isinstance(v, list) else v) for k, v in categories.items()},
                     "pagination": pagination.to_dict(),
                     "next_cursor": next_cursor
                 },
+                "total_available": pagination.total_results,
+                "latency_ms": int((time.time() - overall_start) * 1000),
+                "jit_status": "NORMAL",
                 "metadata": {
                     "expansion_triggered": expansion_triggered,
                     "latency_ms": latency,
@@ -432,9 +433,16 @@ class SearchService:
                 }
             }
 
-            # Log search
+            # Log search with correct Date type for SQLite/SQLAlchemy
             from database.models import RouteSearchLog
-            log = RouteSearchLog(src=source, dst=destination, date=search_date, latency_ms=latency, ip_address=client_ip, geo_state=geo_state)
+            log = RouteSearchLog(
+                src=source, 
+                dst=destination, 
+                date=dt.date(), # Use datetime.date object instead of string
+                latency_ms=latency, 
+                ip_address=client_ip, 
+                geo_state=geo_state
+            )
             self.db.add(log)
             self.db.commit()
             
@@ -587,9 +595,15 @@ class SearchService:
         
         # Sort by total duration to find the "Fastest" for deep verification
         sorted_by_speed = sorted(routes, key=lambda x: x.total_duration)
-        top_fastest = sorted_by_speed[:3]
-        the_rest = sorted_by_speed[3:30]
-        remaining = sorted_by_speed[30:]
+        
+        # [Nexus 100] Dynamic Verification Storm Pruning based on VPS RAM
+        from core.nexus.audit.triage import nexus_triage
+        deep_verify = 1 if nexus_triage.current_backoff > 0.6 else 3
+        shallow_verify = deep_verify + (5 if nexus_triage.current_backoff > 0.6 else 27)
+        
+        top_fastest = sorted_by_speed[:deep_verify]
+        the_rest = sorted_by_speed[deep_verify:shallow_verify]
+        remaining = sorted_by_speed[shallow_verify:]
         
         # 1. Prepare Deep Queries (Every segment of top 3)
         deep_tasks = []
@@ -602,10 +616,19 @@ class SearchService:
         for r in the_rest:
             if not r.segments: continue
             s = r.segments[0]
+            
+            # [Audit Fix] Handle missing class_code gracefully
+            cls_code = getattr(s, 'class_code', None)
+            if not cls_code:
+                # Map persona to a sensible default class for verification
+                persona_to_class = {"budget": "SL", "economy": "SL", "fast": "3A", "comfort": "2A", "emergency": "3A", "standard": "SL"}
+                p = r.metadata.get('persona', 'standard') if isinstance(r.metadata, dict) else 'standard'
+                cls_code = persona_to_class.get(str(p).lower(), "SL")
+
             # Task 40: Prepare data for RapidAPI call
             shallow_queries.append({
                 "train_number": s.train_number,
-                "class_code": s.class_code, # Assuming class_code exists on segment
+                "class_code": cls_code, 
                 "quota": quota,
                 "from_station_code": s.departure_code,
                 "to_station_code": s.arrival_code,
@@ -784,13 +807,8 @@ class SearchService:
         permitted_engines: Optional[list[str]] = None,
         discovery_only: bool = False
     ):
-        """
-        [Task 30.1/30.8] True Asynchronous Streaming.
-        Consumes the orchestrator's stream_all_tiers generator and pushes
-        Server-Sent Events (SSE) instantly as each engine finishes.
-        """
-        source = source.upper().strip()
-        destination = destination.upper().strip()
+        """Unified Search Implementation."""
+        db = self.db
         try:
             dt = datetime.strptime(travel_date, "%Y-%m-%d")
         except:

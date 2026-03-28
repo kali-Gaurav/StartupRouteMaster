@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional, Any, Dict
 
 import aiohttp
@@ -10,6 +11,8 @@ from database.config import Config
 from services.multi_layer_cache import multi_layer_cache
 from schemas.rapidapi_models import *
 from core.container import container
+from core.nexus.audit.governor import nexus_governor
+from core.nexus.audit.triage import nexus_triage, SystemStatus
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,11 @@ class RapidApiProvider(ServiceProvider):
         self.http_session: Optional[aiohttp.ClientSession] = None
         # Correctly initialize the circuit breaker
         self.breaker = CircuitBreaker(fail_max=5, reset_timeout=60)
+        
+        # [Phase 6: Task 6] RapidAPI Quota Sentinel
+        self.monthly_call_count = 0
+        self.monthly_limit = 7000  # Default Free/Basic Tier
+        self.quota_latch_active = False
 
     async def init(self):
         """Initializes the shared aiohttp session."""
@@ -43,17 +51,66 @@ class RapidApiProvider(ServiceProvider):
         return self.status == ServiceStatus.HEALTHY and self.http_session and not self.http_session.closed
 
     async def _execute_request(self, method: str, url: str, params: Optional[Dict]) -> Optional[Dict]:
-        """Internal method that executes the HTTP request."""
-        async with self.http_session.request(method, url, params=params, timeout=30) as response:
-            if response.status != 200:
-                try:
-                    error_data = await response.json()
-                    error_message = error_data.get("message", "No message from API.")
-                    logger.error(f"RapidAPI request failed ({response.status}) for {url}: {error_message}")
-                except Exception:
-                    logger.error(f"RapidAPI request failed ({response.status}) for {url} and error response was not valid JSON.")
+        """[Task 104] Elite Orchestrated Request with Triage/Governor Sync."""
+        # 1. Governor Latch (Phase 9/Task 83)
+        stats = await nexus_governor.get_stats()
+        if stats["throttle_factor"] > 0.8:
+             logger.warning(f"⏩ [NEXUS:SKIP] Skipping RapidAPI call due to critical system pressure ({stats['throttle_factor']:.2f}).")
+             return None
+
+        # 2. Quota Budget Sentinel
+        try:
+            r_key = f"nexus:quota:rapidapi:{datetime.now().strftime('%Y-%m')}"
+            current_quota = await multi_layer_cache.get(r_key) or 0
+            if int(current_quota) >= self.monthly_limit * 0.98:
+                if not self.quota_latch_active:
+                    logger.critical(f"🛑 [NEXUS:SENTINEL] RapidAPI HARD BUDGET REACHED ({current_quota}). Latching service.")
+                    self.quota_latch_active = True
                 return None
-            return await response.json()
+        except Exception as e:
+            logger.error(f"Quota check failure: {e}")
+
+        # 3. Request Execution with Adaptive Backoff
+        import random
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Inject trace headers if available
+            headers = {}
+            # (Note: In a real middleware we'd grab X-Request-ID from ContextVars)
+            
+            async with self.http_session.request(method, url, params=params, timeout=30, headers=headers) as response:
+                
+                if response.status == 429:
+                    # Signal system congestion (Task 28 sync)
+                    await nexus_triage.report_latency(15000) # Artificially increase latency signal
+                    
+                    if attempt < max_retries - 1:
+                        backoff = (2 ** attempt) + random.uniform(0.1, 0.5)
+                        logger.warning(f"⚠️ [NEXUS:SENTINEL] RapidAPI 429 Rate Limit. Backing off {backoff:.2f}s (Iter {attempt+1})")
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.error("❌ RapidAPI 429 Rate Limit Exhausted. Signaling SEVERED if continuous.")
+                        return None
+                        
+                # Successful or Non-429 request consumes quota
+                try:
+                    r_key = f"nexus:quota:rapidapi:{datetime.now().strftime('%Y-%m')}"
+                    await multi_layer_cache.redis.incr(r_key)
+                    # Set expiry for first hit of the month
+                    if int(await multi_layer_cache.get(r_key) or 1) == 1:
+                        await multi_layer_cache.redis.expire(r_key, 32 * 24 * 3600)
+                except: pass
+                
+                if response.status != 200:
+                    try:
+                        error_data = await response.json()
+                        error_message = error_data.get("message", "No message from API.")
+                        logger.error(f"RapidAPI request failed ({response.status}) for {url}: {error_message}")
+                    except Exception:
+                        logger.error(f"RapidAPI request failed ({response.status}) for {url} and error response was not valid JSON.")
+                    return None
+                return await response.json()
 
     async def _make_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """

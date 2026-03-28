@@ -153,10 +153,30 @@ export async function createBookingRequest(data: BookingRequestCreate): Promise<
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error((error as { message?: string; detail?: string }).message || (error as { detail?: string }).detail || "Failed to create booking request");
+    throw new Error((error as { message?: string; detail?: string }).message || (error as { detail?: string }).detail || "Booking request failed");
   }
   return res.json();
 }
+
+export interface SegmentPNR {
+  id: string;
+  journey_id: string;
+  segment_index: number;
+  train_number: string;
+  pnr: string;
+  status: string;
+  created_at: string;
+}
+
+export async function getSegmentPnrs(journeyId: string): Promise<SegmentPNR[]> {
+  const res = await fetchWithAuth(`/api/v1/booking/segment-pnrs/${encodeURIComponent(journeyId)}`);
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error((error as { message?: string; detail?: string }).message || (error as { detail?: string }).detail || "Failed to fetch segment PNRs");
+  }
+  return res.json();
+}
+
 
 export async function getBookingRequest(requestId: string): Promise<BookingRequest> {
   const res = await fetchWithAuth(`/api/v1/booking/request/${encodeURIComponent(requestId)}`, {

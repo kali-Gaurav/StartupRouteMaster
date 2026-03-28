@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from sse_starlette.sse import EventSourceResponse
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from database.session import get_db

@@ -8,22 +8,27 @@ from database.models import Stop
 from services.station_search_service import station_search_engine
 from services.cache_service import cache_service
 
-logger = logging.getLogger(__name__)
+import time
+from collections import defaultdict
 
 # [Gap 1] Database-driven Metropolitan Station Unification Map
-# Fallback hardcoded groups for initial boot or if DB is empty
+# Fallback hardcoded groups for initial boot or if DB is empty (Task 121: Yield Expansion)
 _FALLBACK_METRO_GROUPS = {
     "DELHI": ["NDLS", "NZM", "DLI", "DEE", "ANVT", "SZM", "DKZ"],
     "MUMBAI": ["MMCT", "BDTS", "CSMT", "DDR", "LTT", "BVI", "PNVL"],
     "CHENNAI": ["MAS", "MS", "TBM", "PER", "AJJ"],
     "KOLKATA": ["HWH", "KOAA", "SDAH", "SHM"],
-    "BANGALORE": ["SBC", "YPR", "SMVB", "KJM"]
+    "BANGALORE": ["SBC", "YPR", "SMVB", "KJM"],
+    "HYDERABAD": ["SC", "HYB", "KCG", "LPI"],
+    "PUNE": ["PUNE", "HDP", "CCH"],
+    "AHMEDABAD": ["ADI", "SBT", "GER"]
 }
 
 # In-memory cache for metro groups to prevent repeated DB hits
 _metro_cache = {}
 _last_metro_refresh = 0
 
+@functools.lru_cache(maxsize=2048)
 def get_metro_group_codes(station_code: str, db: Optional[Session] = None) -> List[str]:
     """
     Returns all station codes in the same metropolitan area.

@@ -15,8 +15,9 @@ class SnapshotManager:
     Task 19: High-Performance Snapshot Management.
     Handles persistence of graph state across RAM, Redis, and Disk.
     """
-    def __init__(self, snapshot_dir: str = "snapshots"):
-        self.snapshot_dir = snapshot_dir
+    def __init__(self, snapshot_dir: Optional[str] = None):
+        from database.config import Config
+        self.snapshot_dir = snapshot_dir or Config.SNAPSHOT_DIR
         if not os.path.exists(self.snapshot_dir):
             os.makedirs(self.snapshot_dir)
 
@@ -60,11 +61,23 @@ class SnapshotManager:
                 # [Task 27.18] Version Validation
                 if getattr(snapshot, 'version', None) != StaticGraphSnapshot.version:
                     logger.warning(f"🔄 Disk snapshot version mismatch. Forcing rebuild.")
-                    os.remove(filename) # Clean up stale file
+                    try: os.remove(filename) 
+                    except: pass
                 else:
                     logger.info(f"💾 Loaded snapshot for {date_str} from disk (v{snapshot.version}).")
+                    
+                    # [Task 121: Elite JIT Patching] Ensure Nexus MemMaps are re-linked
+                    is_legacy = not hasattr(snapshot, '_trip_to_pid') or snapshot._trip_to_pid is None
+                    is_empty = not hasattr(snapshot, '_trip_reachability_bitset') or snapshot._trip_reachability_bitset is None
+                    
+                    if is_legacy or is_empty:
+                        logger.info(f"⚡ [NEXUS:JIT] Hydrating snapshot {date_str} MemMaps/Indices...")
+                        try: snapshot.vectorize()
+                        except Exception as e: logger.error(f"Nexus JIT Hydration Failed: {e}")
+                    
                     # Proactive Hydration: Save to Redis for next time
-                    await self.save_snapshot(snapshot)
+                    try: await multi_layer_cache.set_graph_snapshot(date_str, snapshot)
+                    except: pass
                     return snapshot
             except Exception as e:
                 logger.error(f"Failed to load snapshot from disk: {e}")

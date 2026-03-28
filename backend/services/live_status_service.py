@@ -5,12 +5,10 @@ from datetime import datetime
 
 # --- Import necessary modules ---
 # Import Pydantic models and Gateway
-from backend.providers.models import UnifiedLiveStatus
-from backend.providers.gateway import provider_gateway
-from backend.providers.config import config as provider_config # Use gateway's config
-
-# Existing configuration and clients (which will be removed/deprecated)
-# from database.config import Config # Likely no longer needed for external URLs
+from providers.models import UnifiedLiveStatus
+from providers.gateway import provider_gateway
+from providers.config import config as provider_config
+from database.config import Config
 # from core.redis import async_redis_client # Gateway manages its cache interaction
 
 logger = logging.getLogger(__name__)

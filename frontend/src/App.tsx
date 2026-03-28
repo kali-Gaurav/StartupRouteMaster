@@ -37,6 +37,7 @@ const Privacy = lazy(() => import("./pages/Privacy"));
 const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
+const IrctcRedirect = lazy(() => import("./pages/IrctcRedirect"));
 const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const AdminOperations = lazy(() => import("./pages/AdminOperations"));
@@ -160,6 +161,7 @@ const AppContent = () => {
             <Route path="/safety" element={<Safety />} />
             <Route path="/track" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
+            <Route path="/redirect/irctc" element={<IrctcRedirect />} />
             <Route path="/ops/sos" element={<SOSDashboard />} />
             
             {/* High-Tech Admin Portals (Task 10) */}

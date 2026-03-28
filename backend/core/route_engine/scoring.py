@@ -227,10 +227,8 @@ class RouteScorer:
             "survival": float(survival_prob)
         }
         
-        # Use sync wrapper for the async predict in this sync context (if possible)
-        # In scoring.py, we are usually in a sync context. 
-        # I'll use a direct call for template-based classifier for performance.
-        story = asyncio.run(journey_story_model.predict(features))
+        # Use sync direct call for the template-based classifier for 10X performance.
+        story = journey_story_model.predict_sync(features)
         route.metadata["story"] = story
         
         # [Task 22.1] The actual score returned incorporates the live reliability factors

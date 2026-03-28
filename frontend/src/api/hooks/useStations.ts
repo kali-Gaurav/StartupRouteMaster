@@ -15,6 +15,7 @@ export function useStations(query: string) {
     queryKey: [STATIONS_QUERY_KEY, trimmed.toLowerCase()],
     queryFn: () => searchStationsApi(trimmed),
     enabled,
-    staleTime: 1000 * 60, // 1 min – station list is fairly static
+    staleTime: 1000 * 60 * 30, // 30 mins – station list is mostly static
+    gcTime: 1000 * 60 * 60, // 1 hour
   });
 }

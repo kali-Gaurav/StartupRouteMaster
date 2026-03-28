@@ -24,13 +24,18 @@ class Config(metaclass=ConfigMeta):
     BASE_DIR = str(Path(__file__).resolve().parent.parent)
     _base_path = Path(BASE_DIR)
     
+    # [User Request] Reverted to Project-Relative Storage
+    DATA_DIR = os.path.join(BASE_DIR, "database")
+    _data_path = Path(DATA_DIR)
+    
     # Determine if we are in SLIM_MODE (VPS optimized)
     SLIM_MODE = os.getenv("SLIM_MODE", "true").lower() in ("1", "true", "yes")
     ENVIRONMENT = os.getenv("ENVIRONMENT", "production").lower()
     
-    # Task 41: Performance Paths
-    MEMMAP_DIR = os.path.join(BASE_DIR, "data", "memmap")
-    SNAPSHOT_DIR = os.path.join(BASE_DIR, "data", "snapshots")
+    # Task 41: Performance Paths (Now within project directory)
+    MEMMAP_DIR = os.path.join(DATA_DIR, "memmap")
+    SNAPSHOT_DIR = os.path.join(DATA_DIR, "snapshots")
+    DB_DIR = DATA_DIR # Root database folder
 
     @classmethod
     def _get_env(cls, key: str, default: Any = None, cast_type: type = str) -> Any:
@@ -59,9 +64,14 @@ class Config(metaclass=ConfigMeta):
     @classmethod
     def GET_SQLALCHEMY_URL(cls, db_type: str = "user", is_async: bool = True) -> str:
         url = cls._get_env("DATABASE_URL", "")
-        # Force SQLite for local verification of transit data
+        
+        # Simplified path resolution using project DIR
+        def resolve_db_path(filename):
+            return Path(cls.DB_DIR) / filename
+            
+        # Transit DB [Task 121]
         if db_type == "transit":
-            db_path = cls._base_path / "database" / "transit_graph.db"
+            db_path = resolve_db_path("transit_graph.db")
             if is_async: return f"sqlite+aiosqlite:///{db_path}"
             return f"sqlite:///{db_path}"
 
@@ -82,7 +92,7 @@ class Config(metaclass=ConfigMeta):
             return url
         
         filename = "user_store.db" if db_type == "user" else "transit_graph.db"
-        db_path = cls._base_path / "database" / filename
+        db_path = resolve_db_path(filename)
         
         # [Issue 7] Sanitize SQLite URL: Strip query params (like sslmode) that break aiosqlite/sqlite3
         if is_async:

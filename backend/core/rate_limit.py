@@ -19,9 +19,14 @@ class HybridRateLimiter:
 
     async def is_allowed(self, key: str, limit: int, window: int) -> bool:
         """
-        Check if request is allowed.
-        Optimized for VPS: minimize Redis round-trips.
+        Check if request is allowed. Supports dynamic tier-based limits for API keys.
         """
+        # [Task 110.2] Key-based Tier Detection
+        actual_limit = limit
+        if key.startswith("rm_key_"):
+            actual_limit = self._get_tier_limit(key)
+            window = 3600 # One-hour window for enterprise keys
+            
         now = int(time.time())
         window_key = f"{key}:{now // window}"
         
@@ -30,7 +35,7 @@ class HybridRateLimiter:
             self._local_counters[window_key] = {"count": 0, "expires": now + window}
             
         counter = self._local_counters[window_key]
-        if counter["count"] >= limit:
+        if counter["count"] >= actual_limit:
             return False
             
         # 2. Increment Local
@@ -39,10 +44,16 @@ class HybridRateLimiter:
         # 3. Probabilistic Redis Sync (L2) - 5% chance or if local is high
         # This keeps Redis updated without constant I/O
         import random
-        if counter["count"] > (limit * 0.8) or random.random() < 0.05:
+        if counter["count"] > (actual_limit * 0.8) or random.random() < 0.05:
             asyncio.create_task(self._sync_to_redis(window_key, counter["count"], window))
             
         return True
+
+    def _get_tier_limit(self, api_key: str) -> int:
+        """[Task 112] Lookup the rate limit based on the API key prefix or metadata."""
+        if "_ent_" in api_key: return 50000 # 50k / hr for enterprise
+        if "_adm_" in api_key: return 1000000 # Unlimited-ish for admin
+        return 500 # Default tier
 
     async def _sync_to_redis(self, key: str, local_count: int, window: int):
         try:

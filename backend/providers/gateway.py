@@ -10,8 +10,8 @@ from typing import Optional, Dict, Any, List, Callable, Coroutine
 from datetime import datetime
 
 from sqlalchemy import select, update
-from backend.database.session import AsyncSessionUser
-from backend.database.models import APIBudget
+from database.session import AsyncSessionUser
+from database.models import APIBudget
 
 from .models import UnifiedLiveStatus, UnifiedFare, UnifiedPNRStatus, UnifiedSchedule
 from .clients.rapidapi import RapidApiClient, to_unified_live_status as rapidapi_to_unified
@@ -122,7 +122,7 @@ class ProviderGateway:
             try:
                 raw_data = await self._safe_fetch_rapidapi(self.rapidapi_client.get_live_status, train_number, train_date=train_date)
                 lat = (time.perf_counter() - start) * 1000
-                from backend.core.metrics import jit_metrics
+                from core.metrics import jit_metrics
                 
                 if raw_data:
                     jit_metrics.record_provider_call("rapidapi", True, lat)
@@ -135,7 +135,7 @@ class ProviderGateway:
                     jit_metrics.record_provider_call("rapidapi", False, lat)
             except Exception as e:
                 lat = (time.perf_counter() - start) * 1000
-                from backend.core.metrics import jit_metrics
+                from core.metrics import jit_metrics
                 jit_metrics.record_provider_call("rapidapi", False, lat)
                 logger.warning(f"RapidAPI failover trigger: {str(e)[:50]}")
 
@@ -144,7 +144,7 @@ class ProviderGateway:
         try:
             raw_data = await self._safe_fetch_ntes(self.ntes_client.get_live_status, train_number)
             lat = (time.perf_counter() - start) * 1000
-            from backend.core.metrics import jit_metrics
+            from core.metrics import jit_metrics
             
             if raw_data:
                 jit_metrics.record_provider_call("ntes_scraper", True, lat)
@@ -156,7 +156,7 @@ class ProviderGateway:
                 jit_metrics.record_provider_call("ntes_scraper", False, lat)
         except Exception as e:
             lat = (time.perf_counter() - start) * 1000
-            from backend.core.metrics import jit_metrics
+            from core.metrics import jit_metrics
             jit_metrics.record_provider_call("ntes_scraper", False, lat)
             logger.error(f"NTES failover trigger: {e}")
         return None

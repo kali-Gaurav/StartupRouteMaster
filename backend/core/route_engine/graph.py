@@ -88,7 +88,8 @@ class MemMapManager:
 
             dtype_raw = meta.get('dtype')
             if isinstance(dtype_raw, list):
-                dtype_obj = np.dtype(_restore_tuples(dtype_raw))
+                # JSON saves [["f1", "i4"]] -> need [("f1", "i4")] for np.dtype
+                dtype_obj = np.dtype([tuple(i) if isinstance(i, list) else i for i in dtype_raw])
             else:
                 dtype_obj = np.dtype(dtype_raw)
                 
@@ -128,8 +129,13 @@ class StaticGraphSnapshot:
     _pattern_deps_data: Optional[np.ndarray] = None
     _pattern_deps_index: Optional[np.ndarray] = None
 
-    _segments_data: Optional[np.ndarray] = None
-    _segments_index: Optional[np.ndarray] = None
+    _pattern_segments_data: Optional[np.ndarray] = None
+    _pattern_segments_index: Optional[np.ndarray] = None
+    _pattern_id_map: Dict[int, int] = field(default_factory=dict)
+    
+    # Nexus Indices
+    _trip_stop_pos_map: Dict[int, Dict[int, int]] = field(default_factory=dict)
+    _trip_to_pid: Dict[int, int] = field(default_factory=dict)
     _trip_id_map: Dict[int, int] = field(default_factory=dict)
     _trip_reachability_bitset: Optional[np.ndarray] = None
 
@@ -176,17 +182,31 @@ class StaticGraphSnapshot:
     def vectorize(self, tbr_data: Optional[Dict] = None):
         ts = int(self.date.timestamp())
         
-        # 1. Departures & Patterns
+        # [Nexus Patch] Ensure objects loaded from old pickles have space for new indices
+        if tbr_data:
+            self.tbr_trip_nodes = tbr_data.get('tbr_trip_nodes')
+            self.tbr_trip_index = tbr_data.get('tbr_trip_index')
+            self.tbr_stop_index = tbr_data.get('tbr_stop_index')
+
+        nexus_attrs = ['_trip_stop_pos_map', '_trip_to_pid', '_pattern_id_map', '_pattern_segments_data', '_pattern_segments_index']
+        for attr in nexus_attrs:
+            if not hasattr(self, attr) or getattr(self, attr) is None:
+                is_dict = "map" in attr or "pid" in attr
+                setattr(self, attr, {} if is_dict else None)
+
+        # 1. Global Stop Mapping (Ensures consistency across departures and arrivals)
+        all_sids = sorted(list(set(self.departures_by_stop.keys()) | set(self.arrivals_by_stop.keys())))
+        self._stop_id_map = {sid: i for i, sid in enumerate(all_sids)}
+        NUM_STOPS = len(all_sids)
+
         if self.departures_by_stop:
             all_deps = []; all_p_deps = []
-            stop_ids = sorted(self.departures_by_stop.keys())
-            idx = np.zeros((len(stop_ids), 2), dtype=np.int32)
-            p_idx = np.zeros((len(stop_ids), 2), dtype=np.int32)
+            idx = np.zeros((len(all_sids), 2), dtype=np.int32)
+            p_idx = np.zeros((len(all_sids), 2), dtype=np.int32)
             off = 0; p_off = 0
-            self._stop_id_map = {sid: i for i, sid in enumerate(stop_ids)}
             
-            for i, sid in enumerate(stop_ids):
-                deps = self.departures_by_stop[sid]
+            for i, sid in enumerate(all_sids):
+                deps = self.departures_by_stop.get(sid, [])
                 idx[i] = [off, len(deps)]
                 p_map = defaultdict(list)
                 for dt, tid in deps:
@@ -195,13 +215,15 @@ class StaticGraphSnapshot:
                     p_map[pid].append([pid, int(dt.timestamp()), tid])
                 off += len(deps)
                 
-                p_count = 0
-                for pid in sorted(p_map.keys()):
-                    entries = p_map[pid]
-                    all_p_deps.extend(entries)
-                    p_count += len(entries)
-                p_idx[i] = [p_off, p_count]
-                p_off += p_count
+                # [FIX] Sort by timestamp within the stop slice to enable bisect search
+                stop_p_deps = []
+                for pid in p_map:
+                    stop_p_deps.extend(p_map[pid])
+                stop_p_deps.sort(key=lambda x: x[1]) # Sort by ts (index 1)
+                
+                all_p_deps.extend(stop_p_deps)
+                p_idx[i] = [p_off, len(stop_p_deps)]
+                p_off += len(stop_p_deps)
             
             MemMapManager.save_array(f"deps_{ts}", np.array(all_deps, dtype=np.int64))
             self._departures_data = MemMapManager.load_array(f"deps_{ts}")
@@ -213,35 +235,97 @@ class StaticGraphSnapshot:
             MemMapManager.save_array(f"p_deps_idx_{ts}", p_idx)
             self._pattern_deps_index = MemMapManager.load_array(f"p_deps_idx_{ts}")
 
-        # 2. Segments & Bitsets
-        if self.trip_segments:
-            all_segs = []
-            tids = sorted(self.trip_segments.keys())
-            t_idx = np.zeros((len(tids), 2), dtype=np.int32)
-            t_off = 0
-            self._trip_id_map = {tid: i for i, tid in enumerate(tids)}
+        # 1.1 Arrivals (New Vectorized Store)
+        if self.arrivals_by_stop:
+            all_arrs = []
+            idx = np.zeros((len(all_sids), 2), dtype=np.int32)
+            off = 0
             
-            NUM_STOPS = 32768
+            for i, sid in enumerate(all_sids):
+                arrs = self.arrivals_by_stop.get(sid, [])
+                idx[i] = [off, len(arrs)]
+                for dt, tid in arrs:
+                    all_arrs.append([int(dt.timestamp()), tid])
+                off += len(arrs)
+            
+            MemMapManager.save_array(f"arrs_{ts}", np.array(all_arrs, dtype=np.int64))
+            self._arrivals_data = MemMapManager.load_array(f"arrs_{ts}")
+            MemMapManager.save_array(f"arrs_idx_{ts}", idx)
+            self._arrivals_index = MemMapManager.load_array(f"arrs_idx_{ts}")
+
+        # 2. Pattern-Based Segments & Bitsets
+        if self.trip_segments:
+            pattern_to_segs = {}
+            pattern_to_trips = defaultdict(list)
+            
+            # Group trips by unique stop sequence
+            for tid, segs in self.trip_segments.items():
+                # [Task 121: Elite Nexus Map] O(1) Trip-Stop Position Map
+                pos_map = {}
+                for idx, seg in enumerate(segs):
+                    pos_map[seg.departure_stop_id] = idx
+                if segs:
+                    pos_map[segs[-1].arrival_stop_id] = len(segs)
+                self._trip_stop_pos_map[tid] = pos_map
+                
+                p_key = self.pattern_for_trip(tid)
+                if p_key not in pattern_to_segs:
+                    pattern_to_segs[p_key] = segs
+                pattern_to_trips[p_key].append(tid)
+
+            # Vectorize Patterns
+            all_pattern_segs = []
+            sorted_patterns = sorted(pattern_to_segs.keys())
+            p_idx = np.zeros((len(sorted_patterns), 2), dtype=np.int32)
+            p_off = 0
+            
+            for i, p_key in enumerate(sorted_patterns):
+                segs = pattern_to_segs[p_key]
+                p_idx[i] = [p_off, len(segs)]
+                pid = hash(p_key) & 0x7FFFFFFF
+                self._pattern_id_map[pid] = i
+                
+                # [Task 121: Elite Yield] Link all trips to this pattern
+                for tid in pattern_to_trips[p_key]:
+                    self._trip_to_pid[tid] = pid
+
+                for s in segs:
+                    all_pattern_segs.append([
+                        0, s.departure_stop_id, s.arrival_stop_id, 
+                        int(s.departure_time.timestamp()) % 86400, # Relative time
+                        int(s.arrival_time.timestamp()) % 86400,
+                        int(s.distance_km * 1000), s.service_mask, s.stop_sequence
+                    ])
+                p_off += len(segs)
+
+            ts = int(self.date.timestamp())
+            MemMapManager.save_array(f"p_segs_{ts}", np.array(all_pattern_segs, dtype=np.int64))
+            self._pattern_segments_data = MemMapManager.load_array(f"p_segs_{ts}")
+            MemMapManager.save_array(f"p_segs_idx_{ts}", p_idx)
+            self._pattern_segments_index = MemMapManager.load_array(f"p_segs_idx_{ts}")
+
+            # Bitsets (Trip-specific)
+            tids = sorted(self.trip_segments.keys())
+            self._trip_id_map = {tid: i for i, tid in enumerate(tids)}
+            NUM_STOPS = 65536 # Expanded limit
             BITSET_WORDS = (NUM_STOPS // 64) + 1
             reach_bits = np.zeros((len(tids), BITSET_WORDS), dtype=np.uint64)
 
             for i, tid in enumerate(tids):
-                segs = self.trip_segments[tid]
-                t_idx[i] = [t_off, len(segs)]
-                for s in segs:
-                    all_segs.append([
-                        tid, s.departure_stop_id, s.arrival_stop_id, 
-                        int(s.departure_time.timestamp()), int(s.arrival_time.timestamp()), 
-                        int(s.distance_km * 1000), s.service_mask, s.stop_sequence
-                    ])
-                    for sid in [s.departure_stop_id, s.arrival_stop_id]:
-                        if sid < NUM_STOPS: reach_bits[i, sid // 64] |= np.uint64(1) << np.uint64(sid % 64)
-                t_off += len(segs)
+                # [Nexus: Elite Reach Fix] include ALL stops in bitset for perfect discovery
+                pos_map = self._trip_stop_pos_map.get(tid, {})
+                sids = []
+                if pos_map:
+                    sids = list(pos_map.keys())
+                elif self.tbr_trip_index and tid in self.tbr_trip_index:
+                    off, count = self.tbr_trip_index[tid]
+                    sids = [int(self.tbr_trip_nodes[off + j]['stop_id']) for j in range(count)]
+                
+                for sid in sids:
+                    s_idx = self._stop_id_map.get(sid)
+                    if s_idx is not None and s_idx < NUM_STOPS:
+                        reach_bits[i, s_idx // 64] |= np.uint64(1) << np.uint64(s_idx % 64)
             
-            MemMapManager.save_array(f"segs_{ts}", np.array(all_segs, dtype=np.int64))
-            self._segments_data = MemMapManager.load_array(f"segs_{ts}")
-            MemMapManager.save_array(f"segs_idx_{ts}", t_idx)
-            self._segments_index = MemMapManager.load_array(f"segs_idx_{ts}")
             MemMapManager.save_array(f"reach_{ts}", reach_bits)
             self._trip_reachability_bitset = MemMapManager.load_array(f"reach_{ts}")
 
@@ -282,6 +366,20 @@ class StaticGraphSnapshot:
             MemMapManager.save_array(f"transfers_idx_{ts}", t_idx)
             self._transfers_index = MemMapManager.load_array(f"transfers_idx_{ts}")
 
+        # [Nexus Patch] Only clear if we actually had source data to vectorize from
+        has_source = bool(self.trip_segments or self.departures_by_stop)
+        if has_source:
+             self.departures_by_stop.clear()
+             self.arrivals_by_stop.clear()
+             self.trip_segments.clear()
+             self.transfer_graph.clear()
+             self.train_path.clear()
+             self.station_schedule.clear()
+             self.station_ids_by_trip.clear()
+             logger.info(f"✅ Graph Vectorization Complete. Legacy data cleared.")
+        else:
+             logger.debug("⚠️ [NEXUS] Vectorize called on already-vectorized or empty snapshot. Skipping clear.")
+
         # 4. TBR Data
         if tbr_data:
             self.tbr_trip_nodes = tbr_data.get('tbr_trip_nodes')
@@ -300,7 +398,14 @@ class RealtimeOverlay:
         self.version: int = 0
 
     def get_trip_delay(self, tid: int) -> int: return self.delays.get(tid, 0)
+    def set_trip_delay(self, tid: int, delay: int):
+        self.delays[tid] = delay
+        self.version += 1
+        
     def is_cancelled(self, tid: int) -> bool: return tid in self.cancellations
+    def mark_cancelled(self, tid: int):
+        self.cancellations.add(tid)
+        self.version += 1
 
     async def sync_with_db(self, db, travel_date: date, snapshot: Optional['StaticGraphSnapshot'] = None):
         """
@@ -373,8 +478,20 @@ class TimeDependentGraph:
     def can_reach_destination(self, tid: int, dst_id: int) -> bool:
         if not self.snapshot or self.snapshot._trip_reachability_bitset is None: return True
         t_idx = self.snapshot._trip_id_map.get(tid)
-        if t_idx is None or dst_id >= 32768: return True
-        return bool(self.snapshot._trip_reachability_bitset[t_idx, dst_id // 64] & (np.uint64(1) << np.uint64(dst_id % 64)))
+        dst_idx = self.snapshot._stop_id_map.get(dst_id)
+        
+        if t_idx is None or dst_idx is None:
+            # logger.debug(f"Reach: Missing tid={tid}({t_idx}) or sid={dst_id}({dst_idx})")
+            return True
+            
+        words = self.snapshot._trip_reachability_bitset.shape[1]
+        word_idx = dst_idx // 64
+        if word_idx >= words:
+            return True
+            
+        mask = np.uint64(1) << np.uint64(dst_idx % 64)
+        word = self.snapshot._trip_reachability_bitset[t_idx, word_idx]
+        return bool(word & mask)
 
     @staticmethod
     def safe_fromtimestamp(ts: Union[int, float]) -> datetime:
@@ -388,37 +505,65 @@ class TimeDependentGraph:
         if not self.snapshot or self.snapshot._pattern_deps_data is None:
             base = self.get_departures_from_stop(stop_id, after_time, lookahead)
             for dt, tid in base:
-                pid = hash(str(tid)) & 0x7FFFFFFF
+                pid = hash(str(tid)) & 0x7FFFFFFF # Hashing trip_id to get pid for legacy
                 results[pid].append((dt, tid))
             return results
+            
         s_idx = self.snapshot._stop_id_map.get(stop_id)
         if s_idx is None: return {}
+        
         off, count = self.snapshot._pattern_deps_index[s_idx]
-        data = self.snapshot._pattern_deps_data[off : off + count]
-        after_ts = int(after_time.timestamp()); limit_ts = after_ts + (lookahead * 60)
-        for pid, ts, tid in data:
-            if after_ts <= ts <= limit_ts:
-                if not self.overlay.is_cancelled(tid):
-                    eff_ts = ts + (self.overlay.get_trip_delay(tid) * 60)
-                    if after_ts <= eff_ts <= limit_ts:
-                        results[int(pid)].append((self.safe_fromtimestamp(eff_ts), int(tid)))
+        data_slice = self.snapshot._pattern_deps_data[off : off + count]
+        
+        after_ts = int(after_time.timestamp())
+        limit_ts = after_ts + (lookahead * 60)
+        
+        # Use bisect_left to find the starting index
+        # data_slice is structured as (pid, ts, tid), so we compare against ts (index 1)
+        
+        # Create a dummy array for bisect search.
+        # This is a bit of a hack. A better way would be to store timestamps separately
+        # or have a specialized bisect for structured arrays.
+        timestamps = data_slice[:, 1] # Assuming ts is the second column
+        
+        start_pos = bisect_left(timestamps, after_ts)
+        
+        for i in range(start_pos, count):
+            pid, ts, tid = data_slice[i]
+            if ts > limit_ts: break # Stop if beyond lookahead
+            
+            if not self.overlay.is_cancelled(tid):
+                eff_ts = ts + (self.overlay.get_trip_delay(tid) * 60)
+                if after_ts <= eff_ts <= limit_ts:
+                    results[int(pid)].append((self.safe_fromtimestamp(eff_ts), int(tid)))
         return results
 
     def get_departures_from_stop(self, sid: int, after: datetime, lookahead: int = 1440) -> List[Tuple[datetime, int]]:
         if not self.snapshot or self.snapshot._departures_data is None: return []
         s_idx = self.snapshot._stop_id_map.get(sid)
         if s_idx is None: return []
+        
         off, count = self.snapshot._departures_index[s_idx]
-        data = self.snapshot._departures_data[off : off + count]
-        after_ts = int(after.timestamp()); limit_ts = after_ts + (lookahead * 60)
+        data_slice = self.snapshot._departures_data[off : off + count]
+        
+        after_ts = int(after.timestamp())
+        limit_ts = after_ts + (lookahead * 60)
+        
         res = []
-        for ts, tid in data:
-            if after_ts <= ts <= limit_ts:
-                if not self.overlay.is_cancelled(tid):
-                    eff_ts = ts + (self.overlay.get_trip_delay(tid) * 60)
-                    if after_ts <= eff_ts <= limit_ts:
-                        res.append((self.safe_fromtimestamp(eff_ts), int(tid)))
-        return sorted(res, key=lambda x: x[0])
+        
+        # Use bisect_left to find the starting index
+        timestamps = data_slice[:, 0] # Assuming ts is the first column
+        start_pos = bisect_left(timestamps, after_ts)
+        
+        for i in range(start_pos, count):
+            ts, tid = data_slice[i]
+            if ts > limit_ts: break # Stop if beyond lookahead
+            
+            if not self.overlay.is_cancelled(tid):
+                eff_ts = ts + (self.overlay.get_trip_delay(tid) * 60)
+                if after_ts <= eff_ts <= limit_ts:
+                    res.append((self.safe_fromtimestamp(eff_ts), int(tid)))
+        return res
 
     def get_transfers_from_stop(self, sid: int, arr: datetime, min_transfer_time: int = 15, incoming_trip_id: int = None) -> List[TransferConnection]:
         feasible = []
@@ -453,12 +598,24 @@ class TimeDependentGraph:
                         ))
         return feasible
 
+    def get_pattern_segments(self, pid: int) -> Optional[np.ndarray]:
+        if self.snapshot and self.snapshot._pattern_segments_data is not None:
+            p_idx = self.snapshot._pattern_id_map.get(pid)
+            if p_idx is None: return None
+            off, count = self.snapshot._pattern_segments_index[p_idx]
+            return self.snapshot._pattern_segments_data[off : off + count]
+        return None
+
+    def get_stop_sequence_in_trip(self, tid: int, sid: int) -> int:
+        if not self.snapshot or not self.snapshot._trip_stop_pos_map: return -1
+        # [Task 121: Elite O(1) Lookup]
+        return self.snapshot._trip_stop_pos_map.get(tid, {}).get(sid, -1)
+
     def get_trip_segments_raw(self, tid: int) -> Optional[np.ndarray]:
-        if self.snapshot and self.snapshot._segments_data is not None:
-            t_idx = self.snapshot._trip_id_map.get(tid)
-            if t_idx is None: return None
-            off, count = self.snapshot._segments_index[t_idx]
-            return self.snapshot._segments_data[off : off + count]
+        if not self.snapshot or not self.snapshot._trip_to_pid: return None
+        pid = self.snapshot._trip_to_pid.get(tid)
+        if pid is not None:
+            return self.get_pattern_segments(pid)
         return None
 
     def get_trip_segments(self, tid: int) -> List[RouteSegment]:
@@ -472,7 +629,7 @@ class TimeDependentGraph:
             if duration < 0: duration += 1440 # Handle midnight wraparound if timestamp is time-of-day
             
             res.append(RouteSegment(
-                trip_id=int(row[0]), 
+                trip_id=tid, 
                 departure_stop_id=int(row[1]), 
                 arrival_stop_id=int(row[2]),
                 departure_time=self.safe_fromtimestamp(int(row[3]) + delay),
@@ -480,7 +637,7 @@ class TimeDependentGraph:
                 duration_minutes=duration, 
                 distance_km=float(row[5]/1000.0), 
                 service_mask=int(row[6]),
-                train_number=self.snapshot.trip_to_train.get(int(row[0]), "") if self.snapshot else ""
+                train_number=self.snapshot.trip_to_train.get(tid, "") if self.snapshot else ""
             ))
         return res
 

@@ -2,6 +2,10 @@ import logging
 import time
 import struct
 import json
+import math
+import os
+import gc
+import asyncio # Added this import
 from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime
 from sqlalchemy import text
@@ -13,6 +17,9 @@ from core.dynamic_logic import is_valid_transfer
 from core.data_structures import DynamicWaitConfig, SearchPhase
 from core.frontier import FrontierManager, FrontierRoute
 from database.config import Config
+
+# Define search phases for the main loop
+SEARCH_PHASES = [SearchPhase.STRICT, SearchPhase.MODERATE, SearchPhase.RELAXED]
 
 class TurboRouter:
     # [Task 11.5] Static Cache for Hub Adjacency
@@ -63,14 +70,14 @@ class TurboRouter:
         
         ids = set()
         for code in metro_codes:
-            # 1. Base Station
+            # 1. Base Station (Task 118: Table Alignment - Use 'stops' for GTFS IDs)
             base_query = "SELECT id, city FROM stops WHERE code = :code"
             base_row = db.execute(text(base_query), {"code": code.upper()}).fetchone()
             if not base_row: continue
             base_id, city = base_row[0], base_row[1]
             ids.add(base_id)
 
-            # 2. GTFS Cluster
+            # 2. GTFS Cluster mapping
             query_gtfs = """
                 SELECT scm2.station_id
                 FROM station_cluster_mapping scm1
@@ -92,8 +99,12 @@ class TurboRouter:
         return list(ids)
 
     def _get_station_code(self, db, station_id: int) -> str:
-        res = db.execute(text("SELECT code FROM stops WHERE id = :i"), {"i": station_id}).fetchone()
-        return res[0] if res else str(station_id)
+        """Fetch the clean GTFS station code for a given numeric database ID."""
+        try:
+            res = db.execute(text("SELECT code FROM stops WHERE id = :i"), {"i": station_id}).fetchone()
+            return res[0] if res else str(station_id)
+        except:
+            return str(station_id)
 
     # [Gap 2] Static Cache for Transfer Penalties
     _penalty_cache = {}
@@ -145,19 +156,34 @@ class TurboRouter:
         
         return 120 # Conservative default for station change
 
-    def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
-        import gc
-        from core.data_structures import SearchPhase
-        gc.disable() # Subtask 5.3
+    async def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
+        # Use asyncio.to_thread to run the synchronous DB logic in a separate thread
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._find_routes_sync, source_code, dest_code, departure_date, limit),
+                timeout=5.0 # Max 5 seconds for Turbo search
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"TurboRouter search for {source_code}->{dest_code} timed out.")
+            return []
+        except Exception as e:
+            logger.error(f"TurboRouter Failure for {source_code}->{dest_code}: {e}", exc_info=True)
+            return []
+
+    def _find_routes_sync(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
+        start_ts = time.perf_counter()
+        gc.disable() # Disable garbage collection during hot path
         db = self.db_factory()
         self.frontier_manager.reset() # Reset for new search
         try:
             src_ids = self._get_city_cluster(db, source_code)
             dst_ids = self._get_city_cluster(db, dest_code)
             
+            if not src_ids or not dst_ids:
+                logger.warning(f"Turbo: Could not resolve station clusters for {source_code}->{dest_code}")
+                return []
+                
             day_mask = (1 << departure_date.weekday())
-            # [Task 27.11 Audit Fix] Use YYYYMMDD for binary index lookups
-            db_date_str = departure_date.strftime("%Y%m%d")
             
             all_routes = []
             seen_journey_ids = set()
@@ -211,68 +237,9 @@ class TurboRouter:
                             )
                     if len(all_routes) >= limit: break
             
-            # 2. Multi-Phase 1-Transfer Search (Task 2)
-            if len(all_routes) < limit:
-                from utils.hub_utils import get_top_centrality_hubs
-                all_hubs = get_top_centrality_hubs(limit=250)
-                
-                # [Gap 4] Dynamic Hub Selection: Filter hubs by Bounding Box
-                # Ensures we don't search Bangalore hubs for a Delhi-Mumbai journey.
-                s_stop = db.execute(text("SELECT latitude, longitude FROM stops WHERE id = :i"), {"i": src_ids[0]}).fetchone()
-                d_stop = db.execute(text("SELECT latitude, longitude FROM stops WHERE id = :i"), {"i": dst_ids[0]}).fetchone()
-                
-                hubs = []
-                if s_stop and d_stop:
-                    min_lat, max_lat = sorted([s_stop[0], d_stop[0]])
-                    min_lon, max_lon = sorted([s_stop[1], d_stop[1]])
-                    # Add 1.5 degree (~150km) buffer for transfers
-                    buffer = 1.5
-                    hub_rows = db.execute(text("""
-                        SELECT code FROM stops 
-                        WHERE code IN (SELECT value FROM json_each(:hubs))
-                          AND latitude BETWEEN :min_lat - :buf AND :max_lat + :buf
-                          AND longitude BETWEEN :min_lon - :buf AND :max_lon + :buf
-                    """), {
-                        "hubs": json.dumps(all_hubs), 
-                        "min_lat": min_lat, "max_lat": max_lat,
-                        "min_lon": min_lon, "max_lon": max_lon,
-                        "buf": buffer
-                    }).fetchall()
-                    hubs = [r[0] for r in hub_rows]
-                
-                if not hubs: hubs = all_hubs[:50]
-                
-                # [Gap 2] Preload Transfer Penalties to avoid N+1 queries
-                # We need penalties between all hub pairs (inter-station transfers)
-                # This is tricky because we iterate hubs. 
-                # Optimization: We only check penalties if hubs are different.
-                # Let's load the entire distance matrix for these hubs + src/dst if manageable.
-                # Or just rely on the LRU cache in _get_transfer_penalty (which we should add).
-                
-                for phase in search_phases:
-                    if len(all_routes) >= limit: break
-
-                    # [Task 29.3] Context-Aware Checkpoint
-                    from core.context import check_timeout
-                    try: check_timeout()
-                    except TimeoutError: break
-
-                    if phase == SearchPhase.RELAXED and len(all_routes) >= 15:
-                        break
-
-                    logger.info(f"TurboRouter: Entering Search Phase: {phase}")
-                    phase_routes = self._search_one_transfer_binary(
-                        db, src_ids, dst_ids, src_codes, dst_codes, day_mask, 
-                        limit - len(all_routes), hubs, gtfs_cancelled, gtfs_adds, phase
-                    )
-                    
-                    for r in phase_routes:
-                        jid = f"1t_{r['legs'][0]['train']}_{r['legs'][1]['train']}_{r['legs'][0]['dep']}"
-                        if jid not in seen_journey_ids:
-                            r['phase_found'] = phase
-                            all_routes.append(r)
-                            seen_journey_ids.add(jid)
-                
+            # 2. Multi-Phase 1-Transfer Search (DEPRECATED: Use TBR for Transfers)
+            logger.info("TurboRouter: 1-Transfer search deprecated. Use TBR for transfers.")
+            
             # [Task Group 1 Constraint] Show routes in order of travel time
             all_routes.sort(key=lambda x: x.get('duration', 999999))
             return all_routes[:limit]
@@ -280,66 +247,37 @@ class TurboRouter:
             db.close()
             gc.enable() # Subtask 5.3
 
-    def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int) -> List[Dict[str, Any]]:
-        """[Gap 25] Batched version of _search_direct_binary."""
+    def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int]) -> List[Dict[str, Any]]:
+        """[Elite] Direct Intersection Logic using Binary Fiber Index."""
         try:
             if src not in blob_map or dst not in blob_map: return []
-            
             src_trains = self._unpack_trains(blob_map[src])
             dst_trains = self._unpack_trains(blob_map[dst])
-
             results = []
             common_trips = set(src_trains.keys()).intersection(dst_trains.keys())
-            
-            query_weekday = math.log2(mask) if mask > 0 else 0 
-            
+            query_weekday = math.log2(mask) if mask > 0 else 0
             for tid in common_trips:
                 s_data, d_data = src_trains[tid], dst_trains[tid]
-                
                 src_day_offset = s_data['dep'] // 1440
-                required_start_day = (int(query_weekday) - src_day_offset) % 7
-                required_mask = (1 << required_start_day)
-                
-                if (s_data['mask'] & required_mask) and s_data['seq'] < d_data['seq']:
-                    # [Gap 20] Fix duration for modulo wraparound
-                    # If arr < dep (e.g. 01:00 < 23:00), it means next day.
-                    # Unpacked 'arr' and 'dep' are usually minutes from midnight.
-                    # But if they include day offset (e.g. 1500), then simple subtraction works.
-                    # _unpack_trains uses IHHBBH. HH is unsigned short (max 65535).
-                    # If builder stores absolute minutes, we are good.
-                    # If builder stores modulo 1440, we need to add 1440.
-                    # Assuming builder stores *absolute* minutes from trip start or Day 0.
-                    # Let's assume standard behavior: if arr < dep, add 1440 * (days).
-                    # But we don't know days if it's modulo.
-                    # NOTE: Current builder likely stores absolute minutes from Day 0 of trip.
-                    # So 25:00 is 1500.
-                    
-                    duration = d_data['arr'] - s_data['dep']
+                required_mask = (1 << ((int(query_weekday) - src_day_offset) % 7))
+                if ((s_data['mask'] & required_mask) or int(tid) in gtfs_adds) and s_data['seq'] < d_data['seq']:
                     day_offset = (d_data['arr'] // 1440) - (s_data['dep'] // 1440)
-                    
                     results.append({
-                        "type": "direct",
-                        "train_no": str(tid),
-                        "dep": self._min_to_time(s_data['dep']),
-                        "arr": self._min_to_time(d_data['arr']),
-                        "duration": duration,
-                        "day_offset": day_offset,
-                        "distance": float(d_data['dist'] - s_data['dist']),
-                        "score": 100
+                        "type": "direct", "train_no": str(tid), "dep": self._min_to_time(s_data['dep']),
+                        "arr": self._min_to_time(d_data['arr']), "duration": (d_data['arr'] - s_data['dep']),
+                        "day_offset": day_offset, "distance": float(d_data['dist'] - s_data['dist']), "score": 100
                     })
             return sorted(results, key=lambda x: x['duration'])[:limit]
         except Exception as e:
-            logger.error(f"Direct Batched Error: {e}")
-            return []
+            logger.error(f"Binary Search Error: {e}"); return []
 
     def _time_to_min(self, time_str: str) -> int:
-        h, m = map(int, time_str.split(':')[:2])
-        return h * 60 + m
+        parts = time_str.split(':')
+        return int(parts[0]) * 60 + int(parts[1])
 
     # [Task 17] Pre-compile struct formats for V3/V4 unpacking
     _V3_STRUCT = struct.Struct("IHHBBH")
     _V4_STRUCT = struct.Struct("IHHBBHf")
-    _STRUCT_FORMATS = {12: _V3_STRUCT, 16: _V4_STRUCT}
 
     def _unpack_trains(self, blob: bytes) -> Dict[int, Dict]:
         """
@@ -347,72 +285,21 @@ class TurboRouter:
         Supports V3 (12 bytes: IHHBBH) and V4 (16 bytes: IHHBBHf).
         """
         if not blob: return {}
-        records = {}
-        
-        record_size = len(blob) % 16 or 16 # Detect V4 (16 bytes) or V3 (12 bytes)
-        fmt_struct = self._STRUCT_FORMATS.get(record_size)
-        if not fmt_struct: return {}
-
-        for i in range(0, len(blob), record_size):
-            chunk = blob[i:i+record_size]
-            if len(chunk) < record_size: break
-            
-            unpacked = fmt_struct.unpack(chunk)
-            tid, dep, arr, mask, seq, dist = unpacked[:6]
-            price = unpacked[6] if record_size == 16 else 0.0
-            
-            records[tid] = {
-                'dep': dep, 'arr': arr, 'mask': mask, 'seq': seq, 'dist': dist, 'price': price
-            }
+        records, size = {}, len(blob)
+        if size % 16 == 0: struct_type, r_size = self._V4_STRUCT, 16
+        elif size % 12 == 0: struct_type, r_size = self._V3_STRUCT, 12
+        else: return {}
+        for i in range(0, size, r_size):
+            chunk = blob[i:i+r_size]
+            try:
+                unpacked = struct_type.unpack(chunk)
+                tid, dep, arr, mask, seq, dist = unpacked[:6]
+                records[tid] = {'dep': dep, 'arr': arr, 'mask': mask, 'seq': seq, 'dist': dist, 'price': unpacked[6] if r_size == 16 else 0}
+            except: continue
         return records
 
-    def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int]) -> List[Dict[str, Any]]:
-        """Fastest binary intersection using V3 index."""
-        try:
-            res = db.execute(text(
-                "SELECT station_code, transit_blob FROM station_transit_index_bin WHERE station_code IN (:src, :dst)"
-            ), {"src": src, "dst": dst}).fetchall()
-            
-            if len(res) < 2: return []
-            
-            binary_map = {row[0]: row[1] for row in res}
-            src_trains = self._unpack_trains(binary_map.get(src))
-            dst_trains = self._unpack_trains(binary_map.get(dst))
-
-            results = []
-            common_trips = set(src_trains.keys()).intersection(dst_trains.keys())
-            
-            # [Task 6] Fix Midnight Crossover Logic
-            # We must check if the train runs on the day it *started* relative to our query date.
-            query_weekday = math.log2(mask) if mask > 0 else 0 # Extract weekday index from mask (1<<weekday)
-            
-            for tid in common_trips:
-                s_data, d_data = src_trains[tid], dst_trains[tid]
-                
-                # Calculate which day the train must have started to reach src on query date
-                src_day_offset = s_data['dep'] // 1440
-                required_start_day = (int(query_weekday) - src_day_offset) % 7
-                required_mask = (1 << required_start_day)
-                
-                if (s_data['mask'] & required_mask) and s_data['seq'] < d_data['seq']:
-                    day_offset = (d_data['arr'] // 1440) - (s_data['dep'] // 1440)
-                    results.append({
-                        "type": "direct",
-                        "train_no": str(tid),
-                        "dep": self._min_to_time(s_data['dep']),
-                        "arr": self._min_to_time(d_data['arr']),
-                        "duration": (d_data['arr'] - s_data['dep']), # Full duration including days
-                        "day_offset": day_offset,
-                        "distance": float(d_data['dist'] - s_data['dist']),
-                        "score": 100
-                    })
-            return sorted(results, key=lambda x: x['duration'])[:limit]
-        except Exception as e:
-            logger.error(f"Direct Binary Error: {e}")
-            return []
-
     def _search_one_transfer_binary(self, db, src_ids: List[int], dst_ids: List[int], src_codes: List[str], dst_codes: List[str], mask: int, limit: int, hubs: List[str], gtfs_cancelled: Set[int], gtfs_adds: Set[int], phase: SearchPhase = SearchPhase.MODERATE) -> List[Dict[str, Any]]:
-        """[4.1-4.13] Refactored 1-transfer binary search with Metro Hub logic."""
+        """[Elite] Refactored 1-transfer binary search with Metro Hub logic."""
         try:
             # [4.12] Use Hub Caching for performance
             codes_to_fetch = list(set(src_codes + dst_codes + hubs))
@@ -471,7 +358,7 @@ class TurboRouter:
                 # Let's populate the internal cache for these specific pairs.
                 pass # Logic kept in _get_transfer_penalty but improved with LRU
 
-            results = []
+            results, query_weekday = [], math.log2(mask) if mask > 0 else 0
             for h in hubs:
                 # [Task 29.3] Context-Aware Checkpoint
                 from core.context import check_timeout
@@ -491,7 +378,6 @@ class TurboRouter:
                     
                     # Leg 1: Source -> Hub (h)
                     t1_options = set(s_trains.keys()).intersection(h_arrival_trains.keys())
-                    query_weekday = math.log2(mask) if mask > 0 else 0
                     
                     for tid1 in t1_options:
                         # [Task 27.3] Cancellation check for leg 1

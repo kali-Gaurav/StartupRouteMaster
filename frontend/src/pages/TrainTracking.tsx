@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
@@ -8,38 +8,20 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Train, MapPin, Clock, AlertTriangle, RefreshCcw, ArrowLeft, Navigation, Search, Zap, Activity, ShieldAlert } from "lucide-react";
-import { getTrainStatusApi } from "@/services/railwayBackApi";
-import { toast } from "sonner";
+import { useTrainStatus } from "@/api/hooks/useTrainStatus";
 import { cn } from "@/lib/utils";
 
 export default function TrainTracking() {
   const { trainNumber } = useParams();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
-  const [statusData, setStatusData] = useState<any>(null);
-  const [refreshKey, setRefreshCcw] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
 
-  useEffect(() => {
-    async function fetchStatus() {
-      if (!trainNumber) {
-        setLoading(false);
-        setStatusData(null);
-        return;
-      }
-      setLoading(true);
-      try {
-        const data = await getTrainStatusApi(trainNumber);
-        setStatusData(data);
-      } catch (err: any) {
-        console.error("Tracking error:", err);
-        toast.error("Failed to fetch live train status");
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchStatus();
-  }, [trainNumber, refreshKey]);
+  const {
+    data: statusData,
+    isLoading: loading,
+    refetch,
+    isRefetching
+  } = useTrainStatus(trainNumber || "");
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -135,8 +117,8 @@ export default function TrainTracking() {
             <ArrowLeft className="w-4 h-4" /> New Search
           </Button>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={() => setRefreshCcw(prev => prev + 1)} className="gap-2 font-bold border-2 rounded-xl">
-              <RefreshCcw className={cn("w-4 h-4", loading ? 'animate-spin' : '')} /> Refresh
+            <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2 font-bold border-2 rounded-xl">
+              <RefreshCcw className={cn("w-4 h-4", isRefetching ? 'animate-spin' : '')} /> Refresh
             </Button>
           </div>
         </div>

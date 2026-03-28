@@ -30,8 +30,10 @@ def get_cpu_executor():
     return _cpu_executor
 
 # Standard ThreadPool for I/O and lightweight concurrent logic
+import os
+workers = min(4, (os.cpu_count() or 4))
 ROUTING_POOL = ThreadPoolExecutor(
-    max_workers=32,
+    max_workers=workers,
     thread_name_prefix="routing_io_worker"
 )
 
@@ -86,7 +88,7 @@ class UnifiedRoutingOrchestrator:
         self.engine = route_engine_instance
         self.ultra_turbo = UltraTurboDirectEngine()
         self.turbo_router = TurboRouter()
-        self.fast_router = FastPathRouter(None) 
+        self.fast_router = FastPathRouter(None) # Graph will be set dynamically
         self.raptor = OptimizedRAPTOR()
         self.tbr_router = TripBasedRouter() # [Task 27.17]
         
@@ -108,11 +110,23 @@ class UnifiedRoutingOrchestrator:
         constraints: RouteConstraints,
         limit: int = 15,
         db=None,
-        skip_heavy: bool = False,
         source_stop=None,
         dest_stop=None
     ):
-        """[Task 30] Async generator yielding results as they arrive from parallel engines."""
+        """[Task 30/105] Elite Resource-Aware Streaming Orchestrator."""
+        # [Task 122 Refined] Nexus Governor Integration
+        from core.nexus.audit.governor import nexus_governor
+        gov_stats = await nexus_governor.get_stats()
+        
+        # Determine which heavy engines to skip based on real-time system health
+        skip_heavy = False
+        if gov_stats["cpu_percent"] > 85 or gov_stats["ram_percent"] > 90:
+            skip_heavy = True
+            logger.warning(
+                f"⚖️ [ORCHESTRATOR:GOVERNOR] High load detected (CPU: {gov_stats['cpu_percent']}%, RAM: {gov_stats['ram_percent']}%). "
+                "Skipping heavy engines (RAPTOR, FastPath)."
+            )
+
         start_time = time.perf_counter()
         from utils.station_utils import resolve_stations
 
@@ -129,7 +143,9 @@ class UnifiedRoutingOrchestrator:
         try:
             # Sync overlay & fetch cancelled
             graph = await self.engine._get_current_graph(departure_date)
+            # Ensure all graph-dependent routers have the latest graph
             self.fast_router.graph = graph
+            self.raptor.graph = graph 
             
             await graph.overlay.sync_with_db(db, departure_date.date(), graph.snapshot)
             date_str = departure_date.strftime("%Y-%m-%d")
@@ -143,27 +159,42 @@ class UnifiedRoutingOrchestrator:
 
             # [Task 5] Metro-Group Expansion: Resolve all stations in the metropolitan area
             from utils.station_utils import get_metro_group_codes
-            src_codes = get_metro_group_codes(source_stop.code)
-            dst_codes = get_metro_group_codes(dest_stop.code)
             
-            # Resolve all codes to their DB numeric IDs
-            def resolve_all_ids(codes: List[str]) -> List[int]:
-                ids = []
-                for c in codes:
-                    s = db.execute(text("SELECT id FROM stops WHERE code = :c"), {"c": c}).fetchone()
-                    if s: ids.append(s[0])
-                return ids
+            def _resolve_cluster_ids_sync(code: str, session) -> List[int]:
+                if isinstance(code, int): return [code]
+                c_str = str(code).upper().strip()
+                codes = get_metro_group_codes(c_str)
+                
+                ids = set()
+                q_stops = f"SELECT id FROM stops WHERE code IN ({','.join([':c'+str(i) for i in range(len(codes))])})"
+                params = {f"c{i}": c for i, c in enumerate(codes)}
+                for r in session.execute(text(q_stops), params).fetchall():
+                    ids.add(r[0])
+                if not ids: return []
+                
+                q_clusters = f"""
+                    SELECT scm2.station_id 
+                    FROM station_cluster_mapping scm1 
+                    JOIN station_cluster_mapping scm2 ON scm1.cluster_id = scm2.cluster_id 
+                    WHERE scm1.station_id IN ({','.join([':s'+str(i) for i in range(len(ids))])})
+                """
+                params_cl = {f"s{i}": sid for i, sid in enumerate(ids)}
+                try:
+                    for r in session.execute(text(q_clusters), params_cl).fetchall():
+                        ids.add(r[0])
+                except: pass # Table might not exist
+                return list(ids)
 
-            src_cluster_ids = await asyncio.to_thread(resolve_all_ids, src_codes)
-            dst_cluster_ids = await asyncio.to_thread(resolve_all_ids, dst_codes)
+            # Resolve clusters using the primary DB session
+            src_cluster_ids = await asyncio.to_thread(_resolve_cluster_ids_sync, source_code, db)
+            dst_cluster_ids = await asyncio.to_thread(_resolve_cluster_ids_sync, destination_code, db)
             
-            # Fallback to single ID if cluster resolve failed (safety)
             if not src_cluster_ids: src_cluster_ids = [source_stop.id]
             if not dst_cluster_ids: dst_cluster_ids = [dest_stop.id]
 
-            # Convert back to codes for engines that prefer codes (Turbo)
-            src_cluster_codes = src_codes
-            dst_cluster_codes = dst_codes
+            # Resolved codes for engines that prefer codes
+            src_cluster_codes = get_metro_group_codes(source_code)
+            dst_cluster_codes = get_metro_group_codes(destination_code)
 
             from core.context import request_timeout_ctx
             total_timeout = request_timeout_ctx.get() or 5.0
@@ -178,12 +209,13 @@ class UnifiedRoutingOrchestrator:
                     if not res: return []
                     
                     all_raw = []
-                    if isinstance(res[0], dict):
-                        # Fix engine tagging for Turbo
-                        raw_routes = self._hydrate_turbo_results(res, source_stop.code, dest_stop.code, departure_date)
-                        for r in raw_routes: r.metadata["engine"] = f"turbo_{r.metadata.get('engine_type', 'unknown')}"
+                    if name in ("Turbo", "UltraTurbo") and isinstance(res[0], dict):
+                        # These engines return raw dicts, hydrate them
+                        raw_routes = self._hydrate_turbo_results(res, source_code, destination_code, departure_date)
+                        for r in raw_routes: r.metadata["engine"] = f"{name.lower()}_{r.metadata.get('engine_type', 'unknown')}"
                         all_raw.extend(raw_routes)
                     else:
+                        # Other engines return Route objects
                         for r in res: 
                             if isinstance(r, Route): r.metadata["engine"] = name.lower()
                         all_raw.extend(res)
@@ -231,17 +263,17 @@ class UnifiedRoutingOrchestrator:
                 tasks.append(asyncio.create_task(process_and_yield("HubTier0", self._search_tier_0_hubs_async(source_stop.id, dest_stop.id, departure_date, db), total_timeout)))
             
             if is_allowed("Turbo"):
-                tasks.append(asyncio.create_task(process_and_yield("Turbo", asyncio.to_thread(self.turbo_router.find_routes, source_code, destination_code, departure_date, engine_limit), total_timeout)))
+                tasks.append(asyncio.create_task(process_and_yield("Turbo", self.turbo_router.find_routes(source_code, destination_code, departure_date, engine_limit), total_timeout)))
             
             if is_allowed("UltraTurbo"):
-                tasks.append(asyncio.create_task(process_and_yield("UltraTurbo", self.ultra_turbo._collect_day_results(db, src_cluster_ids, dst_cluster_ids, departure_date.date(), engine_limit, None, {}, 0), total_timeout)))
+                tasks.append(asyncio.create_task(process_and_yield("UltraTurbo", self.ultra_turbo.find_routes(source_code, destination_code, departure_date.date(), engine_limit), total_timeout)))
             
             if is_allowed("TBR"):
                 tasks.append(asyncio.create_task(process_and_yield("TBR", self.tbr_router.find_routes(src_cluster_ids, dst_cluster_ids, departure_date, constraints, graph), total_timeout)))
 
             if not skip_heavy:
                 if is_allowed("FastPath"):
-                    tasks.append(asyncio.create_task(process_and_yield("FastPath", asyncio.to_thread(self.fast_router.find_routes, src_cluster_ids, dst_cluster_ids, departure_date, constraints), total_timeout * 0.8)))
+                    tasks.append(asyncio.create_task(process_and_yield("FastPath", self.fast_router.find_routes(src_cluster_ids, dst_cluster_ids, departure_date, constraints), total_timeout * 0.8)))
                 if is_allowed("RAPTOR"):
                     tasks.append(asyncio.create_task(process_and_yield("RAPTOR", self.raptor.find_routes(src_cluster_ids, dst_cluster_ids, departure_date, constraints, graph), total_timeout * 0.9)))
 
@@ -319,8 +351,10 @@ class UnifiedRoutingOrchestrator:
             if not source_stop or not dest_stop: return []
 
             # [Task 27.13] Pre-resolve all cluster IDs once for efficiency
-            src_cluster_ids = self.ultra_turbo._resolve_cluster_ids(db, source_stop.code)
-            dst_cluster_ids = self.ultra_turbo._resolve_cluster_ids(db, dest_stop.code)
+            from database.session import get_raw_transit_conn
+            async with get_raw_transit_conn() as conn:
+                src_cluster_ids = await self.ultra_turbo._resolve_cluster_ids(conn, source_stop.code)
+                dst_cluster_ids = await self.ultra_turbo._resolve_cluster_ids(conn, dest_stop.code)
             
             # Convert to codes for Turbo
             src_cluster_codes = [self.turbo_router._get_station_code(db, sid) for sid in src_cluster_ids]
@@ -365,38 +399,58 @@ class UnifiedRoutingOrchestrator:
                     if not constraints.permitted_engines: return True
                     return any(e.lower() in name_.lower() for e in constraints.permitted_engines)
 
-                t0 = t1 = t2 = tbr_task = t3 = t4 = None
-                async with asyncio.TaskGroup() as tg:
-                    if is_allowed("HubTier0"):
-                        t0 = tg.create_task(wrapped_search("HubTier0", self._search_tier_0_hubs_async(source_stop.id, dest_stop.id, departure_date, db), priority=0))
-                    
-                    if is_allowed("Turbo"):
-                        t1 = tg.create_task(wrapped_search("Turbo", asyncio.to_thread(self.turbo_router.find_routes, source_code, destination_code, departure_date, engine_limit), priority=1))
-                    
-                    if is_allowed("UltraTurbo"):
-                        t2 = tg.create_task(wrapped_search("UltraTurbo", self.ultra_turbo._collect_day_results(db, src_cluster_ids, dst_cluster_ids, departure_date.date(), engine_limit, None, {}, 0), priority=1))
-                    
+                # 3. Parallel Search Execution (Task 121: Elastic Collection)
+                all_tasks = {}
+                
+                # Tier 0 & 1: Ultra-Fast
+                if is_allowed("HubTier0"):
+                    all_tasks["HubTier0"] = asyncio.create_task(wrapped_search("HubTier0", self._search_tier_0_hubs_async(source_stop.id, dest_stop.id, departure_date, db), priority=0))
+                
+                if is_allowed("Turbo"):
+                    all_tasks["Turbo"] = asyncio.create_task(wrapped_search("Turbo", self.turbo_router.find_routes(source_code, destination_code, departure_date, engine_limit), priority=1))
+                
+                if is_allowed("UltraTurbo"):
+                    async def run_ultra_turbo():
+                        async with get_raw_transit_conn() as conn:
+                            cancelled = constraints.metadata.get("cancelled_trip_ids", set())
+                            direct_task = self.ultra_turbo._collect_day_results(conn, src_cluster_ids, dst_cluster_ids, departure_date.date(), engine_limit, cancelled, {}, 0)
+                            transfer_task = self.ultra_turbo._collect_1t_results(conn, src_cluster_ids, dst_cluster_ids, departure_date, engine_limit, cancelled, {})
+                            results = await asyncio.gather(direct_task, transfer_task)
+                            return results[0] + results[1]
+                    all_tasks["UltraTurbo"] = asyncio.create_task(wrapped_search("UltraTurbo", run_ultra_turbo(), priority=1))
+
+                # Tier 2 & 3: Deep Search
+                if not skip_heavy:
                     if is_allowed("TBR"):
-                        # [Task 27.17] TBR Discovery Integration
-                        tbr_task = tg.create_task(wrapped_search("TBR", self.tbr_router.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph), priority=2))
+                        all_tasks["TBR"] = asyncio.create_task(wrapped_search("TBR", self.tbr_router.find_routes(src_cluster_ids, dst_cluster_ids, departure_date, constraints, graph), priority=2))
+                    if is_allowed("FastPath"):
+                        all_tasks["FastPath"] = asyncio.create_task(wrapped_search("FastPath", asyncio.to_thread(self.fast_router.find_routes, src_cluster_ids, dst_cluster_ids, departure_date, constraints), priority=2))
+                    if is_allowed("RAPTOR"):
+                        all_tasks["RAPTOR"] = asyncio.create_task(wrapped_search("RAPTOR", self.raptor.find_routes(src_cluster_ids, dst_cluster_ids, departure_date, constraints, graph), priority=2))
 
-                    if not skip_heavy:
-                        if is_allowed("FastPath"):
-                            t3 = tg.create_task(wrapped_search("FastPath", asyncio.to_thread(self.fast_router.find_routes, source_stop.id, dest_stop.id, departure_date, constraints), priority=2))
-                        if is_allowed("RAPTOR"):
-                            t4 = tg.create_task(wrapped_search("RAPTOR", self.raptor.find_routes(source_stop.id, dest_stop.id, departure_date, constraints, graph), priority=3))
+                trace["engines_launched"] = time.perf_counter()
 
-                trace["engines_done"] = time.perf_counter()
-
-                # 4. Result Collection & Deduplication
+                # [Task 121: Elite Short-Circuit] Wait for results with a hard global timeout
+                # 10s is plenty for Tier 0/1 even on slow I/O.
+                done, pending = await asyncio.wait(all_tasks.values(), timeout=10.0)
+                
+                if pending:
+                    logger.warning(f"⏰ {len(pending)} engines (including {[k for k,v in all_tasks.items() if v in pending]}) timed out. Returning partial results.")
+                    # Let them run in background (or they will be cancelled by the next request's resource sem)
+                
+                # 4. Result Collection & Hydration
                 all_raw = []
-                for t in [t0, t1, t2, tbr_task, t3, t4]:
-                    if t is None: continue
-                    res = t.result()
-                    if not res: continue
-                    if isinstance(res[0], dict):
-                        all_raw.extend(self._hydrate_turbo_results(res, source_stop.code, dest_stop.code, departure_date))
-                    else: all_raw.extend(res)
+                for name, task in all_tasks.items():
+                    if task in done and not task.cancelled():
+                        try:
+                            res = task.result()
+                            if res:
+                                if name in ("Turbo", "UltraTurbo") and isinstance(res[0], dict):
+                                    all_raw.extend(self._hydrate_turbo_results(res, source_stop.code, dest_stop.code, departure_date))
+                                else:
+                                    all_raw.extend(res)
+                        except Exception as e:
+                            logger.error(f"Engine {name} failed: {e}")
 
                 all_routes = [r for r in all_raw if self._is_valid_route(r)]
                 
@@ -511,12 +565,15 @@ class UnifiedRoutingOrchestrator:
                     # [Task 28] Static Heatmap Fallback
                     # Logic: Fast trains (12xxx) usually use lower PFs; Slow trains use higher ones.
                     t_no = str(s.train_number)
-                    if t_no.startswith(("12", "22")): 
-                         pf = (int(s.train_number) % 3) + 1 # PFs 1, 2, 3
+                    if t_no.isdigit():
+                        if t_no.startswith(("12", "22")): 
+                             pf = (int(t_no) % 3) + 1 # PFs 1, 2, 3
+                        else:
+                             pf = (int(t_no) % 5) + 4 # PFs 4, 5, 6, 7, 8
+                        s.metadata["platform_predicted"] = pf
                     else:
-                         pf = (int(s.train_number) % 5) + 4 # PFs 4, 5, 6, 7, 8
+                        s.metadata["platform_predicted"] = "TBD"
                     
-                    s.metadata["platform_predicted"] = pf
                     s.metadata["platform_note"] = "Historical Heuristic"
 
     def _step_amenities(self, routes: List[Route], constraints: RouteConstraints, graph, db):
@@ -677,18 +734,31 @@ class UnifiedRoutingOrchestrator:
             if not row: return []
             trains = json.loads(row[0])
             results = []
-            for t in trains[:20]: 
+            for t in json.loads(row[0]): 
                 rt = Route()
-                # [Gap 14] Fix trip_id type (ensure int)
-                try: tid_int = int(t['tid'])
-                except: tid_int = 0
+                # [Task 175] Hydrate from Backbone Hyper-Edge Metadata
+                tid = t.get('tid', 0)
+                tno = t.get('tno', str(tid))
                 
-                seg = RouteSegment(trip_id=tid_int, departure_stop_id=src_id, arrival_stop_id=dst_id,
-                                   departure_time=self._parse_turbo_time(t['dep'], date),
-                                   arrival_time=self._parse_turbo_time(t['arr'], date),
-                                   duration_minutes=0, distance_km=0.0, train_number=str(t['tid']),
-                                   fare=0.0, service_mask=127, metadata={})
-                rt.add_segment(seg); rt.metadata["engine"] = "hub_tier_0"
+                seg = RouteSegment(
+                    trip_id=tid, 
+                    departure_stop_id=src_id, 
+                    arrival_stop_id=dst_id,
+                    departure_time=self._parse_turbo_time(t['dep'], date),
+                    arrival_time=self._parse_turbo_time(t['arr'], date),
+                    duration_minutes=int(t.get('duration', 0)), 
+                    distance_km=float(t.get('dist', 0.0)), 
+                    train_number=tno,
+                    train_name=t.get('tname', ""),
+                    departure_code=t.get('scode', ""),
+                    arrival_code=t.get('dcode', ""),
+                    fare=0.0, 
+                    service_mask=127, 
+                    metadata={"tier": 0}
+                )
+                rt.add_segment(seg)
+                rt.metadata["engine"] = "hub_tier_0"
+                rt.metadata["tier"] = 0
                 results.append(rt)
             return results
         except: return []

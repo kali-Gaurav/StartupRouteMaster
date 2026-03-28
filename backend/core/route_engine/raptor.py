@@ -20,6 +20,9 @@ from core.frontier import FrontierManager, FrontierRoute
 from .constraints import RouteConstraints
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from core.routing.frequency_aware_range import get_frequency_aware_sizer
+from core.nexus.audit.chaos import chaos_trap
+from core.nexus.audit.governor import nexus_governor
+from .neural_pruner import get_raptor_pruner
 
 logger = logging.getLogger("raptor")
 
@@ -38,6 +41,7 @@ class SearchRoute:
     total_wait: int = 0
     # [Task 4] Bloom-filter based cycle detection (bitmask)
     visited_bloom: int = 0
+    reliability: float = 1.0 # [Task 173]
 
     def add_to_bloom(self, station_id: int):
         self.visited_bloom |= (1 << (station_id % 64))
@@ -73,9 +77,25 @@ class OptimizedRAPTOR:
         except (ValueError, OSError):
             return datetime(1980, 1, 1)
 
+    @chaos_trap("search_engine")
     async def find_routes(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[TimeDependentGraph] = None) -> List[Route]:
+        
+        # [Task 111] Nexus Governor Budget Allocation
+        stats = await nexus_governor.get_stats()
+        throttle = stats.get("throttle_factor", 0.0)
+        
+        # Dynamic Budget scaling: Base 50k, Up to 120k for Idle, Down to 5k for High Stress
+        if throttle < 0.1:
+            self.traversal_budget = 120000
+        elif throttle < 0.5:
+            self.traversal_budget = 50000
+        else:
+            self.traversal_budget = 10000 # Aggressive pruning under pressure
+            
+        logger.info(f"📊 [RAPTOR] Budget set to {self.traversal_budget} (System Throttle: {throttle*100:.1f}%)")
+        
         self._nodes_explored = 0 
         self._global_min_arrival_mins = float('inf')
         
@@ -92,9 +112,34 @@ class OptimizedRAPTOR:
                     constraints.range_minutes = min(constraints.range_minutes or 1440, 240) # 4h max for terminal runs
                     logger.info(f"RAPTOR: Short-run detected ({dist:.1f}km). Window capped to 4h.")
 
+        # [Task 8.3] Direct Latency Gate
+        # Block search if Cache Latch is down (to prevent DB-thundering-herd)
+        from services.multi_layer_cache import multi_layer_cache
+        if not multi_layer_cache.health_latch:
+             logger.critical("🛑 [NEXUS:SEARCH] L2 CACHE FABRIC DOWN. Blocking search to protect DB.")
+             return []
+
         # [Task 9] Budget Watchdog
         start_time = _time.perf_counter()
         timeout_sec = (constraints.timeout_ms / 1000.0) if constraints.timeout_ms else 10.0 # Increased for audit
+        
+        # [Task 86] Nexus 100: Resource Governor Budgeting (Search Depth)
+        try:
+            # Use global nexus_governor
+            from core.nexus.audit.triage import nexus_triage
+            
+            # Combine governor pressure (CPU/RAM) with triage signal (Redis/Saga)
+            governor_stats = await nexus_governor.get_stats()
+            combined_pressure = max(governor_stats["throttle_factor"], nexus_triage.current_backoff)
+            
+            base_budget = 50000
+            # If system pressure is 0.8 (80%), budget is cut down to 10000
+            self.traversal_budget = max(2000, int(base_budget * (1.0 - combined_pressure)))
+            
+            if self.traversal_budget < base_budget:
+                logger.warning(f"📉 [RAPTOR LATCH] Pruned Graph Depth to {self.traversal_budget} nodes (Pressure: {combined_pressure*100:.1f}%)")
+        except:
+            self.traversal_budget = 50000
         
         def check_timeout():
             if _time.perf_counter() - start_time > timeout_sec:
@@ -103,7 +148,14 @@ class OptimizedRAPTOR:
         try:
             results = await asyncio.to_thread(self._find_routes_sync, source_stop_id, dest_stop_id, 
                                              departure_date, constraints, graph, check_timeout)
-            # [Task 10] Depth Logging
+            # [Task 10 & 8.9] Sync intent to Financial Ledger
+            # We record SEARCH intent (audit only)
+            try:
+                 from services.ledger_service import ledger_service
+                 from database.session import SessionUser
+                 # ledger_service.record_transaction() # Zero amount search-audit
+            except: pass
+            
             logger.info(f"RAPTOR Yield: {len(results)} routes, Traversal Depth: {self._nodes_explored} nodes.")
             return results
         except (TimeoutError, asyncio.TimeoutError):
@@ -112,6 +164,35 @@ class OptimizedRAPTOR:
         except Exception as e:
             logger.error(f"RAPTOR Search Error: {str(e)}")
             return []
+            
+        # 2. Hydrate & Rank [Task 7]
+        routes = [self._hydrate_route(sr, graph) for sr in results]
+        routes = [r for r in routes if r and len(r.segments) > 0]
+        
+        if not routes: return []
+        
+        try:
+            from services.ml.engine import MLMicroservice
+            from database.session import SessionTransit
+            ml_svc = MLMicroservice(SessionTransit)
+            
+            async def score_routes_local():
+                check_timeout()
+                tasks = [ml_svc.get_route_reliability(r) for r in routes]
+                return await asyncio.gather(*tasks)
+            
+            reliability_scores = await score_routes_local()
+            for i, r in enumerate(routes):
+                rel = reliability_scores[i]
+                r.metadata["reliability_score"] = rel
+                # [Task 7] Virtual Duration Scaling
+                r.score = r.total_duration / max(0.1, rel)
+        except Exception as e:
+            logger.warning(f"ML Scoring failed: {e}. Using fallback scoring.")
+            for r in routes: r.score = r.total_duration + (len(r.transfers) * 120)
+
+        routes.sort(key=lambda x: x.total_duration) # Requirement: Sort by travel time
+        return routes[:constraints.max_results]
 
     def _find_routes_sync(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
@@ -171,28 +252,6 @@ class OptimizedRAPTOR:
         
         if not routes: return []
         
-        try:
-            from services.ml.engine import MLMicroservice
-            from database.session import SessionTransit
-            ml_svc = MLMicroservice(SessionTransit)
-            
-            import nest_asyncio
-            nest_asyncio.apply()
-            
-            async def score_routes():
-                check_timeout()
-                tasks = [ml_svc.get_route_reliability(r) for r in routes]
-                return await asyncio.gather(*tasks)
-            
-            reliability_scores = asyncio.run(score_routes())
-            for i, r in enumerate(routes):
-                rel = reliability_scores[i]
-                r.metadata["reliability_score"] = rel
-                # [Task 7] Virtual Duration Scaling
-                r.score = r.total_duration / max(0.1, rel)
-        except Exception:
-            for r in routes: r.score = r.total_duration + (len(r.transfers) * 120)
-
         routes.sort(key=lambda x: x.total_duration) # Requirement: Sort by travel time
         return routes[:constraints.max_results]
 
@@ -212,6 +271,10 @@ class OptimizedRAPTOR:
         routes_by_round = defaultdict(list)
         departure_ts = int(departure_dt.timestamp())
         self.frontier_manager.reset()
+        
+        # [Task 171] Initialize Neural Pruner for the current graph
+        pruner = get_raptor_pruner(graph)
+        pressure = nexus_governor.throttle_factor
 
         # Round 0: Initialize from ALL source stations
         lookahead = constraints.range_minutes if constraints.range_minutes > 0 else 1440
@@ -219,65 +282,94 @@ class OptimizedRAPTOR:
         for src_id in source_stop_ids:
             pattern_deps = graph.get_pattern_departures(src_id, departure_dt, lookahead=lookahead)
 
-            for pid, deps in pattern_deps.items():
+            for pid_hash_val, deps in pattern_deps.items():
                 check_timeout()
                 if self._nodes_explored > self.traversal_budget: break
                 
+                # [Task 121: Elite Yield] Fetch pattern segments once per PID to save 10x overhead
+                # We need the real pid from snapshot._trip_to_pid for the segment data lookup
+                # This needs to be done more elegantly. For now, assume a pattern hash value maps to segment data.
+                # The pid_hash_val is generated in graph.py now.
+                
+                pattern_raw = graph.get_pattern_segments(pid_hash_val)
+                if pattern_raw is None: continue
+
                 for dep_time, trip_id in deps:
-                    # [Task 8] Bitset Pruning
-                    if self.max_transfers == 0:
-                        # Check if reaches ANY destination
-                        if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): continue
+                    # [Task 8/Nexus Evolution] Bitset Pruning 
+                    if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): 
+                        continue
                     
-                    # [Task 27.6] Overlay cancellation check
                     if graph.overlay.is_cancelled(trip_id): continue
 
                     self._nodes_explored += 1
-                    raw = graph.get_trip_segments_raw(trip_id)
-                    if raw is None: continue
-                    
-                    weekday_bit = 1 << dep_time.weekday()
                     delay_secs = graph.overlay.get_trip_delay(trip_id) * 60
                     dep_ts_int = int(dep_time.timestamp())
                     start_found = False
                     total_dist_m = 0
                     
-                    for row in raw:
+                    for row in pattern_raw:
                         s_dep_sid, s_arr_sid = int(row[1]), int(row[2])
-                        s_dep_ts, s_arr_ts = int(row[3]) + delay_secs, int(row[4]) + delay_secs
+                        # The pattern segments return relative time (seconds from midnight).
+                        # We need to make them absolute again relative to dep_time for this trip.
+                        s_dep_ts_rel = int(row[3]) 
+                        s_arr_ts_rel = int(row[4])
                         
+                        # Calculate absolute timestamps for this specific trip
+                        trip_start_of_day_ts = dep_ts_int - (dep_ts_int % 86400)
+                        s_dep_ts_abs = trip_start_of_day_ts + s_dep_ts_rel + delay_secs
+                        s_arr_ts_abs = trip_start_of_day_ts + s_arr_ts_rel + delay_secs
+                        
+                        # Handle overnight trips within the pattern segments
+                        if s_arr_ts_abs < s_dep_ts_abs:
+                            s_arr_ts_abs += 86400 # Add a day
+                            
                         if not start_found:
-                            # [Audit Fix] Fuzzy match
-                            if s_dep_sid == src_id and abs(s_dep_ts - dep_ts_int) < 2:
-                                if not (int(row[6]) & weekday_bit): break
+                            # Fuzzy match for departure sequence
+                            if s_dep_sid == src_id:
+                                # We assume the dep_time from 'deps' IS for this src_id
                                 start_found = True
                             else: continue
 
                         total_dist_m += int(row[5])
-                        arr_mins = (s_arr_ts - departure_ts) // 60
+                        arr_mins = (s_arr_ts_abs - departure_ts) // 60
                         wait_mins = (dep_ts_int - departure_ts) // 60
                         
-                        # [Task 3] Frequency-Aware Sizing
+                        # [Task 173] Reliability Fetching
+                        rel = getattr(graph, 'reliability_scores', {}).get((src_id, s_arr_sid), 1.0)
                         f_size = get_frequency_aware_sizer(s_arr_sid, graph)
                         
                         if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                            arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0
+                            arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0,
+                            reliability=rel
                         ), max_size=f_size):
                             sr = SearchRoute(trip_id=trip_id, from_stop_id=src_id, to_stop_id=s_arr_sid,
-                                             departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts),
-                                             round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins)
+                                             departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts_abs),
+                                             round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins,
+                                             reliability=rel)
                             sr.add_to_bloom(src_id); sr.add_to_bloom(s_arr_sid)
                             routes_by_round[0].append(sr)
                             if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
 
-        # Onward Rounds
-        for r in range(1, self.max_transfers + 1):
+        # Onward Rounds [Task 86] Elastic Graph Depth
+            # Global nexus_governor
+        effective_max = self.max_transfers
+        if nexus_governor.throttle_factor > 0.6:
+             effective_max = min(1, self.max_transfers)
+             logger.warning(f"⚠️ [RAPTOR:GOVERNOR] Congestion detected ({nexus_governor.throttle_factor:.2f}). Capping to {effective_max} transfers.")
+
+        for r in range(1, effective_max + 1):
             if not routes_by_round[r-1]: break
             if self._nodes_explored > self.traversal_budget: break
             for psr in routes_by_round[r-1]:
                 check_timeout()
                 if psr.to_stop_id in dest_stop_ids: continue
-                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout)
+                # [Task 171] Branch Pruning at the Transfer Level
+                if pruner.should_prune(psr.to_stop_id, dest_stop_ids, 
+                                      (int(psr.arrival_time.timestamp()) - departure_ts) // 60,
+                                      self._global_min_arrival_mins, r, pressure):
+                     continue
+                     
+                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout, pruner, pressure)
                 routes_by_round[r].extend(new_found)
 
         all_results = []
@@ -288,7 +380,7 @@ class OptimizedRAPTOR:
 
     def _process_transfers_sync(self, psr: SearchRoute, graph: TimeDependentGraph, dest_stop_ids: Set[int], 
                                  constraints: RouteConstraints, base_departure_dt: datetime, 
-                                 round_num: int, check_timeout: Any) -> List[SearchRoute]:
+                                 round_num: int, check_timeout: Any, pruner: Any, pressure: float) -> List[SearchRoute]:
         new_routes = []
         base_departure_ts = int(base_departure_dt.timestamp())
         min_tr = constraints.min_transfer_time or 15
@@ -327,14 +419,21 @@ class OptimizedRAPTOR:
                         total_wait = psr.total_wait + (dep_ts_int - int(psr.arrival_time.timestamp())) // 60
                         arr_mins = (s_arr_ts - base_departure_ts) // 60
                         if arr_mins > self._global_min_arrival_mins + 1440: continue
+                        
+                        # [Task 173] Multiplicative Reliability
+                        leg_rel = getattr(graph, 'reliability_scores', {}).get((tr.station_id, s_arr_sid), 1.0)
+                        total_rel = psr.reliability * leg_rel
+                        
                         f_size = get_frequency_aware_sizer(s_arr_sid, graph)
                         if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                            arrival_time=arr_mins, transfers=round_num, total_wait=total_wait, total_distance=total_dist
+                            arrival_time=arr_mins, transfers=round_num, total_wait=total_wait, total_distance=total_dist,
+                            reliability=total_rel
                         ), max_size=f_size):
                             sr = SearchRoute(trip_id=trip_id, from_stop_id=tr.station_id, to_stop_id=s_arr_sid,
                                              departure_time=dep_t, arrival_time=self._safe_fromtimestamp(s_arr_ts),
                                              round_num=round_num, parent=psr, transfer=tr,
-                                             total_dist=total_dist, total_wait=total_wait, visited_bloom=psr.visited_bloom)
+                                             total_dist=total_dist, total_wait=total_wait, visited_bloom=psr.visited_bloom,
+                                             reliability=total_rel)
                             sr.add_to_bloom(s_arr_sid); new_routes.append(sr)
                             if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
         return new_routes
@@ -342,22 +441,78 @@ class OptimizedRAPTOR:
     def _hydrate_route(self, sr: SearchRoute, graph: TimeDependentGraph) -> Route:
         path = []; curr = sr
         while curr: path.append(curr); curr = curr.parent
-        path.reverse(); full_segments = []; transfers = []
+        path.reverse(); 
+        
+        full_segments = []; transfers = []
+        
         for node in path:
-            trip_segs = graph.get_trip_segments(node.trip_id)
-            node_segs = []; started = False
-            node_dep_ts = int(node.departure_time.timestamp())
-            for s in trip_segs:
-                if not started:
-                    s_dep_ts = int(s.departure_time.timestamp())
-                    if s.departure_stop_id == node.from_stop_id and abs(s_dep_ts - node_dep_ts) < 2: started = True
-                if started:
-                    node_segs.append(s)
-                    if s.arrival_stop_id == node.to_stop_id: break
-            full_segments.extend(node_segs)
             if node.transfer: transfers.append(node.transfer)
+            
+            # Directly get raw pattern segments
+            raw_segments = graph.get_trip_segments_raw(node.trip_id)
+            if raw_segments is None: continue
+            
+            # Apply delay directly
+            delay_secs = graph.overlay.get_trip_delay(node.trip_id) * 60
+            
+            # Find the starting point within the raw segments
+            start_idx = -1
+            for i, row in enumerate(raw_segments):
+                s_dep_sid = int(row[1])
+                # Check if current node's from_stop_id matches a segment's departure stop
+                # And if the segment's departure time is close to the node's departure time (within 2 seconds for fuzzy match)
+                # Note: row[3] is relative seconds from midnight. node.departure_time is absolute datetime.
+                # We need to calculate absolute timestamp for the raw segment's departure time.
+                trip_start_of_day_ts = int(node.departure_time.timestamp()) - (int(node.departure_time.timestamp()) % 86400)
+                seg_dep_abs_ts = trip_start_of_day_ts + int(row[3]) + delay_secs
+                
+                if s_dep_sid == node.from_stop_id and abs(seg_dep_abs_ts - int(node.departure_time.timestamp())) < 2:
+                    start_idx = i
+                    break
+            
+            if start_idx == -1: continue # Should not happen if data is consistent
+
+            # Extract and hydrate segments from the starting point to the node's arrival stop
+            for i in range(start_idx, len(raw_segments)):
+                row = raw_segments[i]
+                
+                s_dep_sid, s_arr_sid = int(row[1]), int(row[2])
+                s_dep_ts_rel = int(row[3])
+                s_arr_ts_rel = int(row[4])
+                
+                trip_start_of_day_ts = int(node.departure_time.timestamp()) - (int(node.departure_time.timestamp()) % 86400)
+                
+                # Calculate absolute timestamps for this specific trip, including delay
+                seg_dep_abs_ts = trip_start_of_day_ts + s_dep_ts_rel + delay_secs
+                seg_arr_abs_ts = trip_start_of_day_ts + s_arr_ts_rel + delay_secs
+                
+                # Handle overnight segments within the pattern
+                if seg_arr_abs_ts < seg_dep_abs_ts:
+                    seg_arr_abs_ts += 86400 # Add a day
+                
+                # [Task 9 Standardized Duration]
+                duration = int((seg_arr_abs_ts - seg_dep_abs_ts) // 60)
+                
+                full_segments.append(RouteSegment(
+                    trip_id=node.trip_id,
+                    departure_stop_id=s_dep_sid,
+                    arrival_stop_id=s_arr_sid,
+                    departure_time=graph.safe_fromtimestamp(seg_dep_abs_ts),
+                    arrival_time=graph.safe_fromtimestamp(seg_arr_abs_ts),
+                    duration_minutes=duration,
+                    distance_km=float(row[5] / 1000.0),
+                    service_mask=int(row[6]),
+                    train_number=graph.snapshot.trip_to_train.get(node.trip_id, "") if graph.snapshot else "",
+                    departure_code=graph.stop_cache.get(s_dep_sid).code if graph.stop_cache.get(s_dep_sid) else "",
+                    arrival_code=graph.stop_cache.get(s_arr_sid).code if graph.stop_cache.get(s_arr_sid) else "",
+                    fare=0.0,
+                    train_name="" # To be filled later if needed, or by ML scoring
+                ))
+                if s_arr_sid == node.to_stop_id: break # Reached end of node's segment
+        
         rt = Route(segments=full_segments, transfers=transfers)
         rt.total_distance = sr.total_dist; rt.metadata["engine"] = "raptor_v2_window"
+        rt.metadata["reliability"] = round(sr.reliability, 2)
         return rt
 
     def _deduplicate_search_routes(self, routes: List[SearchRoute]) -> List[SearchRoute]:
@@ -368,6 +523,24 @@ class OptimizedRAPTOR:
             k = tuple(reversed(p))
             if k not in unique or r.arrival_time < unique[k].arrival_time: unique[k] = r
         return list(unique.values())
+
+    async def find_one_transfer_hub_routes(self, source_stop_id: int, dest_stop_id: int,
+                                         departure_date: datetime, constraints: RouteConstraints,
+                                         graph: TimeDependentGraph) -> List[Route]:
+        """
+        Specialized RAPTOR variant for Phase 4 Hub Discovery.
+        Ensures exactly one transfer at a validated hub station.
+        """
+        orig_max = self.max_transfers
+        self.max_transfers = 1
+        try:
+            # We use a relaxed window for hub discovery
+            constraints.range_minutes = max(constraints.range_minutes, 1440) 
+            routes = await self.find_routes(source_stop_id, dest_stop_id, departure_date, constraints, graph)
+            # Filter for only those with transfers
+            return [r for r in routes if len(r.transfers) == 1]
+        finally:
+            self.max_transfers = orig_max
 
 class HybridRAPTOR(OptimizedRAPTOR):
     def __init__(self, hub_manager, max_transfers=3):

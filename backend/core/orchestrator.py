@@ -136,10 +136,24 @@ class ManagedTask:
         try:
             logger.info(f"🚀 Task '{self.name}' starting (P{self.priority})...")
             while True:
+                # [Nexus Phase 5: Task 1 & 6] Dynamic ETL Pausing / Triage Force-Sleep
+                from core.nexus.audit.triage import nexus_triage
+                if self.priority > 5 and nexus_triage.current_backoff > 0.6:
+                    self.is_paused = True
+                    logger.warning(f"🛑 [NEXUS SHIELD] Auto-pausing background ETL '{self.name}' due to VPS pressure.")
+
                 if self.is_paused:
                     await asyncio.sleep(5)
                     continue
                 
+                # [Phase 5: Task 8] Universal Analytics/Kafka Polling Throttling
+                if self.priority <= 5 and nexus_triage.current_backoff > 0.4:
+                    await asyncio.sleep(nexus_triage.current_backoff * 3.0)
+                
+                # [Phase 6: Task 10] Background Task Heartbeat Tracking
+                from core.nexus.bootstrapper import nexus_boot
+                nexus_boot.recovery.record_heartbeat(f"bg_task_{self.name}")
+
                 await self.coro_func()
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
@@ -323,6 +337,71 @@ class SystemOrchestrator:
                     break
             except: pass
 
+    async def _zombie_task_reaper(self):
+        """[Task 77] Scans managed tasks for stagnation or excessive failures."""
+        while not self.is_shutting_down:
+            await asyncio.sleep(300) # Check every 5 mins
+            for name, task in list(self.tasks.items()):
+                if task.failure_count > 10:
+                    logger.critical(f"🧟 [NEXUS:REAPER] Task '{name}' has {task.failure_count} failures. FORCING STOP.")
+                    task.stop()
+                    # Mark as zombie for remediation
+                    self._mark_zombie(name)
+
+    def _mark_zombie(self, name: str):
+        # Placeholder for reporting to external monitor
+        pass
+
+    async def _zombie_connection_reaper(self):
+        """[Phase 5: Task 5 & 9] Kill idle SQLAlchemy pools and force JIT GC."""
+        while not self.is_shutting_down:
+            await asyncio.sleep(120)
+            try:
+                from database.session import engine
+                engine.dispose()
+                import gc; gc.collect()
+                logger.info("🧹 [NEXUS SHIELD] Reaped zombie DB connections & Forced GC sweep.")
+            except: pass
+
+    async def _ghost_mode_monitor(self):
+        """[Phase 5: Task 2 & Task 10] Track DB/L2 Health & Trigger Ghost Mode."""
+        from core.nexus.bootstrapper import nexus_boot, SystemState
+        from services.multi_layer_cache import multi_layer_cache
+        from database.session import AsyncSessionLocal
+        from sqlalchemy import text
+        while not self.is_shutting_down:
+            await asyncio.sleep(15)
+            # Check DB health
+            db_ok = True
+            try:
+                async with AsyncSessionLocal() as session:
+                    await asyncio.wait_for(session.execute(text("SELECT 1")), timeout=3.0)
+            except Exception as e:
+                db_ok = False
+            
+            # Check Redis Health
+            try: redis_ok = await multi_layer_cache.health_check()
+            except: redis_ok = False
+            
+            # State transitions
+            if not db_ok and not redis_ok:
+                if getattr(nexus_boot, 'state', None) != SystemState.SEVERED:
+                    logger.critical("👻 [NEXUS SHIELD] DB & Redis DEAD. Entering GHOST MODE (SEVERED).")
+                    nexus_boot.state = SystemState.SEVERED
+            elif not db_ok or not redis_ok:
+                if getattr(nexus_boot, 'state', None) != SystemState.DEGRADED:
+                    logger.warning("⚠️ [NEXUS SHIELD] Partial Outage. Entering DEGRADED mode.")
+                    nexus_boot.state = SystemState.DEGRADED
+            else:
+                if getattr(nexus_boot, 'state', None) in [SystemState.SEVERED, SystemState.DEGRADED]:
+                    logger.info("☀️ [NEXUS SHIELD] Outage Resolved. Restoring READY state.")
+                    nexus_boot.state = SystemState.READY
+            
+            # [Task 10] OS Latch File to prevent Docker Restart Loops
+            try:
+                with open("/tmp/nexus_healthy.lock", "w") as f: f.write(str(time.time()))
+            except: pass
+
     async def _watchdog_checkin_loop(self):
         while not self.is_shutting_down:
             self.watchdog.check_in()
@@ -336,6 +415,9 @@ class SystemOrchestrator:
         asyncio.create_task(self._watchdog_checkin_loop())
         asyncio.create_task(self._sleep_monitor_loop())
         asyncio.create_task(self._worker_memory_watchdog())
+        asyncio.create_task(self._zombie_task_reaper())
+        asyncio.create_task(self._zombie_connection_reaper())
+        asyncio.create_task(self._ghost_mode_monitor())
         from services.multi_layer_cache import multi_layer_cache
         self.penalty_box.redis = multi_layer_cache.redis
         sorted_tasks = sorted(self.tasks.values(), key=lambda x: x.priority)

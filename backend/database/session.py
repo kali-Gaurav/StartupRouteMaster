@@ -35,12 +35,16 @@ def with_db_retry(max_retries: int = 5, initial_delay: float = 0.05):
                 delay = initial_delay
                 while True:
                     try:
+                        from core.nexus.audit.chaos import nexus_chaos
+                        await nexus_chaos.apply_trap("db_io")
                         return await func(*args, **kwargs)
                     except Exception as e:
                         err_str = str(e).lower()
                         if ("locked" in err_str or "busy" in err_str) and retries < max_retries:
                             retries += 1
-                            logger.warning(f"⏳ DB Locked (Async): Retrying {retries}/{max_retries} in {delay}s...")
+                            from core.nexus.database.watchdog import database_watchdog
+                            database_watchdog.report_lock_event(func.__name__)
+                            logger.warning(f"DB Locked (Async): Retrying {retries}/{max_retries} in {delay}s...")
                             await asyncio.sleep(delay)
                             delay *= 2 # Exponential backoff
                         else:
@@ -53,12 +57,16 @@ def with_db_retry(max_retries: int = 5, initial_delay: float = 0.05):
                 delay = initial_delay
                 while True:
                     try:
+                        from core.nexus.audit.chaos import nexus_chaos
+                        nexus_chaos.apply_trap_sync("db_io")
                         return func(*args, **kwargs)
                     except Exception as e:
                         err_str = str(e).lower()
                         if ("locked" in err_str or "busy" in err_str) and retries < max_retries:
                             retries += 1
-                            logger.warning(f"⏳ DB Locked (Sync): Retrying {retries}/{max_retries} in {delay}s...")
+                            from core.nexus.database.watchdog import database_watchdog
+                            database_watchdog.report_lock_event(func.__name__)
+                            logger.warning(f"DB Locked (Sync): Retrying {retries}/{max_retries} in {delay}s...")
                             time.sleep(delay)
                             delay *= 2
                         else:
@@ -88,9 +96,9 @@ async def init_raw_transit_pool():
     raw_url = Config.GET_SQLALCHEMY_URL("transit", is_async=False)
     # [Issue 7] Fix sslmode for aiosqlite (remove params)
     db_path = raw_url.split("?")[0].replace("sqlite:///", "") 
-    logger.info(f"⚡ Initializing Ultra-Turbo Raw Pool (Size: {_RAW_POOL_SIZE}) at {db_path}")
+    logger.info(f"Initializing Ultra-Turbo Raw Pool (Size: {_RAW_POOL_SIZE}) at {db_path}")
     if "postgresql" in raw_url:
-        logger.info("⚡ Skipping raw pool for PostgreSQL")
+        logger.info("Skipping raw pool for PostgreSQL")
         return
 
     for _ in range(_RAW_POOL_SIZE):
@@ -98,7 +106,7 @@ async def init_raw_transit_pool():
         conn = await aiosqlite.connect(db_path)
         conn.row_factory = aiosqlite.Row
         await _raw_transit_pool.put(conn)
-    logger.info(f"⚡ Ultra-Turbo Raw Pool Initialized (Size: {_RAW_POOL_SIZE})")
+    logger.info(f"Ultra-Turbo Raw Pool Initialized (Size: {_RAW_POOL_SIZE})")
 
 import contextlib
 
@@ -148,7 +156,7 @@ class DatabaseServiceProvider(ServiceProvider):
     async def init(self):
         """IoC Lifecycle: Initialize all pools and tuning."""
         await initialize_database_pools()
-        await pre_warm_connections()
+        # await pre_warm_connections()
         
         # Start background maintenance tasks
         if not self._pool_scaler_task:
@@ -156,14 +164,14 @@ class DatabaseServiceProvider(ServiceProvider):
         if not self._vacuum_task:
             self._vacuum_task = asyncio.create_task(run_vacuum_worker())
         
-        logger.info("🗄️ IoC: Database Service Initialized and background workers started.")
+        logger.info("IoC: Database Service Initialized and background workers started.")
 
     async def shutdown(self):
         """IoC Lifecycle: Dispose all pools."""
         await _dispose_all_pools()
         if self._pool_scaler_task: self._pool_scaler_task.cancel()
         if self._vacuum_task: self._vacuum_task.cancel()
-        logger.info("🗄️ IoC: Database Service shutdown.")
+        logger.info("IoC: Database Service shutdown.")
 
 class AtomicSessionFactoryProxy:
     """
@@ -178,23 +186,20 @@ class AtomicSessionFactoryProxy:
     def __call__(self, *args, **kwargs):
         factory = globals().get(self._internal_name)
         if factory is None:
-            # Task 8: Trigger IoC if called in a context where async is possible,
-            # but for sync factories called from FastAPI deps, we rely on the 
-            # middleware having already done container.get("db").
+            # Task 11 & Subtask 3.1: Enforce Single Source of Truth
             if not _pools_initialized:
-                 # Fallback for sync contexts: this might fail if loop isn't running
-                 try:
-                     loop = asyncio.get_event_loop()
-                     if loop.is_running():
-                         # We can't easily 'await' here in a sync __call__, 
-                         # so we rely on the fact that JIT/IoC should have run.
-                         pass
-                 except: pass
+                 from core.container import container
+                 # Instead of JIT'ing here, we rely on the Lifespan or Container having run.
+                 # If we are in a context where its NOT initialized, it's an architectural failure.
+                 logger.warning(f"JIT Access to {self._internal_name} before initialization! Waiting for core boot...")
+                 # For sync contexts, we can't easily wait, so we raise a clear error to find gaps.
+                 if not _pools_initialized:
+                     raise RuntimeError(f"Database factory {self._internal_name} not yet initialized. The startup flow must be audited.")
                  
             factory = globals().get(self._internal_name)
         
         if factory is None:
-            raise RuntimeError(f"Database factory {self._internal_name} not initialized. Call container.get('db') first.")
+            raise RuntimeError(f"Database factory {self._internal_name} not initialized.")
             
         return factory(*args, **kwargs)
 
@@ -232,17 +237,18 @@ async def tune_db_performance(engine):
 
     import psutil
     mem = psutil.virtual_memory()
-    # 256MB if > 1GB RAM, else 64MB
-    mmap_size = 256 * 1024 * 1024 if mem.total > 1024 * 1024 * 1024 else 64 * 1024 * 1024
+    # 512MB if > 2GB RAM, else 128MB (Hardened for Hostinger KVM 2)
+    mmap_size = 512 * 1024 * 1024 if mem.total > 2048 * 1024 * 1024 else 128 * 1024 * 1024
 
     async with engine.connect() as conn:
         await conn.execute(text(f"PRAGMA mmap_size = {mmap_size};"))
-        await conn.execute(text("PRAGMA cache_size = -64000;")) # 64MB cache
+        await conn.execute(text("PRAGMA cache_size = -128000;")) # 128MB cache
         await conn.execute(text("PRAGMA synchronous = NORMAL;"))
         await conn.execute(text("PRAGMA journal_mode = WAL;"))
+        await conn.execute(text("PRAGMA temp_store = MEMORY;"))
         await conn.commit()
 
-    logger.debug(f"⚙️ DB Tuned: mmap={mmap_size//1024//1024}MB, sync=NORMAL, mode=WAL")
+    logger.info(f"[NEXUS:CACHE] DB Tuned (P5.1): mmap={mmap_size//1024//1024}MB, sync=NORMAL, mode=WAL")
 
 
 async def tune_db_read_performance(engine):
@@ -256,7 +262,7 @@ async def tune_db_read_performance(engine):
             await conn.execute(text("PRAGMA mmap_size = 536870912;")) # 512MB for reads
         except: pass
         await conn.commit()
-    logger.debug("📖 Read-Replica Tuned: query_only=ON")
+    logger.debug("Read-Replica Tuned: query_only=ON")
 
 async def run_vacuum_worker():
     """
@@ -270,14 +276,14 @@ async def run_vacuum_worker():
         
         if not _pools_initialized: continue
         
-        logger.info("🧹 DB Maintenance: Running VACUUM/ANALYZE on SQLite databases...")
+        logger.info("DB Maintenance: Running VACUUM/ANALYZE on SQLite databases...")
         try:
             for eng in [async_engine_user, async_engine_transit]:
                 if "sqlite" in str(eng.url):
                     async with eng.begin() as conn:
                         await conn.execute(text("VACUUM;"))
                         await conn.execute(text("ANALYZE;"))
-            logger.info("✅ DB Maintenance: Optimized successfully.")
+            logger.info("DB Maintenance: Optimized successfully.")
         except Exception as e:
             logger.error(f"DB Maintenance Error: {e}")
 
@@ -302,7 +308,7 @@ async def initialize_database_pools():
         if _pools_initialized:
             return
 
-        logger.info("🗄️ JIT: Initializing optimized database connection pools (Group 5)...")
+        logger.info("JIT: Initializing optimized database connection pools (Group 5)...")
 
         # 1. URLs and Config
         user_db_url_sync = Config.GET_SQLALCHEMY_URL("user", is_async=False)
@@ -315,34 +321,40 @@ async def initialize_database_pools():
             f.write(f"USER_ASYNC: {user_db_url_async}\n")
             f.write(f"TRANSIT_ASYNC: {transit_db_url_async}\n")
         
+        # Removed OneDrive/Dropbox Warning per User Request (Task 118 Revoke)
+        pass
+
         # [Task 2] Robust Pool Configuration & SSL Fix
         def get_engine_args(url, is_async=False):
             args = {"execution_options": execution_options}
             is_sqlite = "sqlite" in url
             
             if is_sqlite:
-                args["connect_args"] = {"check_same_thread": False}
-                # SQLite doesn't support pool_size/max_overflow in typical QueuePool-less configs
-                # but SQLAlchemy handles it. However, let's be explicit.
+                args["connect_args"] = {"check_same_thread": False, "timeout": 20}
+                # [Elite] LIFO pool for SQLite avoids unnecessary file locks
+                args["pool_use_lifo"] = True
                 if not is_async:
-                    args["pool_size"] = 5
-                    args["max_overflow"] = 2
+                    args["pool_size"] = 5 # Task 118: Increased to 5 to avoid re-entrant deadlocks
+                    args["max_overflow"] = 0 # Strictly NO overflow to cap the RAM
             else:
-                # PostgreSQL / Production
+                # PostgreSQL / Supabase
                 args["pool_size"] = Config.DB_POOL_SIZE
                 args["max_overflow"] = Config.DB_MAX_OVERFLOW
                 args["pool_pre_ping"] = True
                 
+                # [Task 118] Supabase Recycle Guard (Avoid TCP timeouts)
+                args["pool_recycle"] = int(os.getenv("DB_RECYCLE", 1800))
+                args["pool_use_lifo"] = True 
+
                 if is_async and "postgresql" in url:
-                    # asyncpg prefers SSL parameters in connect_args for some environments
                     import ssl
                     args["connect_args"] = {
                         "ssl": ssl.create_default_context(ssl.Purpose.SERVER_AUTH),
                         "timeout": 30,
-                        "prepared_statement_cache_size": 0 # Essential for PgBouncer/Supabase
+                        "command_timeout": 60, # Elite hard-timeout for hung queries
+                        "prepared_statement_cache_size": 0,
+                        "statement_cache_size": 0 
                     }
-                    # Disable sslmode in URL if we pass ssl context
-                    # url = url.split("?")[0] # This would be radical, better just handle context
             return args
 
         execution_options = {"timeout": 30}
@@ -386,15 +398,15 @@ async def initialize_database_pools():
         _AsyncSessionAuth = sessionmaker(async_engine_auth, class_=AsyncSession, expire_on_commit=False)
         _AsyncSessionRead = sessionmaker(async_engine_read, class_=AsyncSession, expire_on_commit=False)
         
-        # Subtask 1.1: Initialize Raw Pool for Ultra-Turbo
-        await init_raw_transit_pool()
+        # Subtask 1.1: Initialize Raw Pool for Ultra-Turbo (Placeholder Removed in Task 118)
+        # await init_raw_transit_pool()
         
         # [Task 50.1] Map engine alias for V3 Audit
         global engine
         engine = engine_user
         
         _pools_initialized = True
-        logger.info("✅ All Database pools active and instrumented with DBManager (Task 11 Group 5 complete).")
+        logger.info("All Database pools active and instrumented with DBManager (Task 11 Group 5 complete).")
 
 async def pre_warm_connections():
     """
@@ -404,7 +416,7 @@ async def pre_warm_connections():
     if not _pools_initialized:
         await initialize_database_pools()
         
-    logger.debug("🔥 Predictive Pre-warming: Firing TCP handshakes (SELECT 1)...")
+    logger.debug("Predictive Pre-warming: Firing TCP handshakes (SELECT 1)...")
     try:
         # Fire concurrent SELECT 1 against user and transit DBs
         async def ping_db(engine):
@@ -415,71 +427,77 @@ async def pre_warm_connections():
                 [ping_db(async_engine_transit) for _ in range(2)]
         await asyncio.gather(*tasks)
     except Exception as e:
-        logger.error(f"⚠️ Pre-warm failed: {e}")
+        logger.error(f"Pre-warm failed: {e}")
+
+async def _has_active_connections() -> bool:
+    """[Task 118] Elite Pool Safety Check. Prevents closing engines that are processing data."""
+    try:
+        from core.nexus.audit.governor import nexus_governor
+        # 1. Governor Latch
+        stats = await nexus_governor.get_stats()
+        if stats["is_under_pressure"]: return True # Safety: Don't dispose during high pressure
+        
+        # 2. Connection Pool Introspection
+        for eng in [async_engine_user, async_engine_transit, async_engine_auth]:
+            if eng and hasattr(eng, 'pool'):
+                # checkedout tells us if any sessions are currently in use
+                if eng.pool.checkedout() > 0:
+                    return True
+        return False
+    except: return False # Fallback to safety
 
 async def run_pool_scaler():
-    """
-    Subtask 2.1: Advanced Dynamic Pool Sizing.
-    Optimizes VPS RAM by disposing pools during idle periods
-    and pre-warming them during surge detection.
-    """
-    from core.metrics import jit_metrics
-    last_load_state = False # False = Idle, True = Surge
+    """[Task 118 Upgrade] Advanced Governor-Aware Pool Scaling."""
+    from core.nexus.audit.governor import nexus_governor
+    last_load_state = False 
     
     while True:
-        await asyncio.sleep(15) # Check more frequently for scaling
+        await asyncio.sleep(20) 
         if not _pools_initialized: continue
         
-        current_load_state = jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20
+        gov_stats = await nexus_governor.get_stats()
+        current_load_state = gov_stats["is_under_pressure"] or gov_stats["throttle_factor"] > 0.4
         
         if current_load_state and not last_load_state:
-            # Transition: Idle -> Surge
-            logger.info("📈 Pool Scaler: System load detected. Pre-warming database pools...")
+            logger.info("⚖️ Pool Scaler: System Pressure Detected. Pre-warming database connections.")
             await pre_warm_connections()
             last_load_state = True
             
         elif not current_load_state and last_load_state:
-            # Transition: Surge -> Idle
-            # We wait for a sustained idle period before shrinking
-            await asyncio.sleep(45)
-            # Re-check load
-            if not (jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20):
-                logger.info("📉 Pool Scaler: System idle. Shrinking DB pools to save VPS RAM.")
+            # Sustained idle check (Task 118: 60s)
+            await asyncio.sleep(60)
+            if not await _has_active_connections():
+                logger.info("📉 Pool Scaler: System Cooldown. Safe Repository Disposal.")
                 await _dispose_all_pools()
                 last_load_state = False
         
-        # [Issue 8] Memory-Aware Dynamic Sizing with Hysteresis
-        if not current_load_state and not last_load_state:
-            import psutil
-            mem_usage = psutil.virtual_memory().percent
-            # Hysteresis: only downscale above 85%, upscale above 70% was handled by pre-warm
-            # But the 'idle heartbeat' should be more intelligent
-            if mem_usage > 90:
-                logger.info("🧹 Pool Scaler: High RAM pressure (>90%). Forcing disposal.")
-                await _dispose_all_pools()
-                import gc; gc.collect()
-            elif mem_usage < 60:
-                # If memory is very free, we can stay warmer or do nothing
-                pass
-            elif mem_usage > 80:
-                # Intermediate pressure: only kill if idle for a while (already handled by sleep)
-                pass
+        # [Elite] OOM Emergency Override
+        import psutil
+        if psutil.virtual_memory().percent > 92:
+             logger.critical("🚨 [NEXUS:OOM] Memory Critical (>92%). Forcing Emergency DB Disposal.")
+             await _dispose_all_pools(force=True)
+             import gc; gc.collect()
+        # [Task 118] Hygiene Flush every 10 min if idle
+        if not current_load_state and time.time() % 600 < 20: 
+             if not await _has_active_connections():
+                 await _dispose_all_pools()
 
-async def run_ghost_connection_killer():
-    """
-    Subtask 2.4: Ghost Connection Killer.
-    Aggressively disposes idle pools every 60 seconds if system is not under load.
-    Prevents lingering RAM bloat from stagnant connections.
-    """
-    from core.metrics import jit_metrics
-    while True:
-        await asyncio.sleep(60)
-        if not _pools_initialized: continue
-        
-        # Only kill if NOT in surge and NOT currently processing high traffic
-        if not (jit_metrics.is_overloaded or jit_metrics.event_loop_latency_ms > 20):
-            logger.info("👻 Ghost Killer: System idle. Disposing stagnant DB pools.")
-            await _dispose_all_pools()
+async def _dispose_all_pools(force: bool = False):
+    """Helper to dispose all active database engines. Task 118: Added active safe-lock."""
+    if not force and await _has_active_connections():
+        logger.debug("Skipping pool disposal: Active connections detected.")
+        return
+
+    try:
+        if async_engine_user: await async_engine_user.dispose()
+        if async_engine_transit: await async_engine_transit.dispose()
+        if async_engine_auth: await async_engine_auth.dispose()
+        if engine_user: engine_user.dispose()
+        if engine_transit: engine_transit.dispose()
+        if engine_auth: engine_auth.dispose()
+        logger.info(f"DB Engines Disposed {'(FORCED)' if force else '(IDLE)'}.")
+    except Exception as e:
+        logger.error(f"Error during pool disposal: {e}")
 
 async def run_connection_reaper():
     """
@@ -501,7 +519,7 @@ async def run_connection_reaper():
             
             # 1. Critical Reap (OOM Prevention)
             if mem.percent > 90 and (now - last_reap) > 120:
-                logger.warning(f"🚨 Memory Critical ({mem.percent}%). Reaping all DB pools and triggering GC...")
+                logger.warning(f"Memory Critical ({mem.percent}%). Reaping all DB pools and triggering GC...")
                 await _dispose_all_pools()
                 
                 # Subtask 2.2: Aggressive GC
@@ -514,24 +532,12 @@ async def run_connection_reaper():
             
             # 2. Periodic Maintenance (Hygiene)
             elif (now - last_periodic_clear) > 600:
-                logger.info("🧹 Periodic Pool Maintenance: Disposing idle connections.")
+                logger.info("Periodic Pool Maintenance: Disposing idle connections.")
                 await _dispose_all_pools()
                 last_periodic_clear = now
                 
         except Exception as e:
             logger.error(f"Reaper Error: {e}")
-
-async def _dispose_all_pools():
-    """Helper to dispose all active database engines."""
-    try:
-        if async_engine_user: await async_engine_user.dispose()
-        if async_engine_transit: await async_engine_transit.dispose()
-        if async_engine_auth: await async_engine_auth.dispose()
-        if engine_user: engine_user.dispose()
-        if engine_transit: engine_transit.dispose()
-        if engine_auth: engine_auth.dispose()
-    except Exception as e:
-        logger.error(f"Error during pool disposal: {e}")
 
 # --- Dependency Injectors ---
 
@@ -638,7 +644,7 @@ async def init_db(target_tables: Optional[List[str]] = None):
         async with engine.begin() as conn:
             if targets:
                 # Filter metadata to only include requested tables
-                logger.info(f"🗄️ JIT: Reflecting specific tables: {targets}")
+                logger.info(f"JIT: Reflecting specific tables: {targets}")
                 # SQLAlchemy metadata.create_all(tables=[...])
                 target_tables = [metadata.tables[t] for t in targets if t in metadata.tables]
                 await conn.run_sync(metadata.create_all, tables=target_tables)

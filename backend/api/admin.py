@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from backend.database.session import AsyncSessionUser
-from backend.database.models import APIBudget
-from backend.core.metrics import jit_metrics
+from database.session import AsyncSessionUser
+from database.models import APIBudget
+from core.metrics import jit_metrics
 from typing import List, Dict, Any
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -37,5 +37,5 @@ async def get_system_metrics():
 @router.get("/debug/providers")
 async def get_provider_status():
     """[Task 25] Fetch circuit breaker states."""
-    from backend.providers.gateway import provider_gateway
+    from providers.gateway import provider_gateway
     return await provider_gateway.get_health()

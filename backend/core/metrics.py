@@ -44,11 +44,14 @@ class TelemetryMetrics:
 
     @property
     def cpu_usage_percent(self) -> float:
-        return system_monitor.stats["cpu"]
+        """[Task 29] Get CPU from central monitor."""
+        # Fix: Access the nested dictionary correctly
+        return system_monitor.stats.get("resource", {}).get("cpu_current", 0.0)
 
     @property
     def ram_usage_percent(self) -> float:
-        return system_monitor.stats["ram"]
+        """[Task 29] Get RAM from central monitor."""
+        return system_monitor.stats.get("resource", {}).get("ram_percent", 0.0)
 
     @property
     def surge_level(self):
@@ -67,8 +70,8 @@ class TelemetryMetrics:
             "performance": {
                 "surge_level": self.surge_level.name,
                 "event_loop_latency_ms": round(self.event_loop_latency_ms, 4),
-                "cpu_usage_percent": round(stats["cpu_percent"], 2),
-                "ram_usage_percent": round(stats["ram_percent"], 2),
+                "cpu_usage_percent": round(self.cpu_usage_percent, 2), # Use property
+                "ram_usage_percent": round(self.ram_usage_percent, 2), # Use property
                 "reaper_events": self.reaper_events
             },
             "predictions": {
@@ -128,11 +131,10 @@ class TelemetryMetrics:
 
     @property
     def is_overloaded(self) -> bool:
-        stats = resource_monitor.get_stats()
         return (
             self.event_loop_latency_ms > 100 or 
-            stats["cpu_percent"] > 95 or 
-            stats["ram_percent"] > 95
+            self.cpu_usage_percent > 95 or 
+            self.ram_usage_percent > 95
         )
 
     # [Task 13.8] Performance Heatmaps

@@ -1,8 +1,9 @@
-import React, { useState } from "react";
-import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck } from "lucide-react"; // Added ShieldCheck, ShieldAlert, BadgeCheck
+import React, { useState, useEffect } from "react";
+import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck, ExternalLink, Save, Check } from "lucide-react"; // Added ExternalLink, Save, Check
 import { Route, RouteSegment, formatDuration, formatCost, formatLiveFare, getAvailabilityBadgeClasses, getSeatAvailabilityState, formatAvailabilityForDisplay } from "@/data/routes";
 import { getStationByCode } from "@/data/stations";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 export interface RouteCardBadges {
   fastest?: boolean;
@@ -21,11 +22,103 @@ interface RouteCardProps {
   isUnlocked: boolean;
   /** Called when user clicks Unlock Details. */
   onUnlock: (route: Route) => void;
+  /** The travel date for this route. */
+  travelDate?: string;
 }
 
-function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnlocked, onUnlock }: RouteCardProps) {
+function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnlocked, onUnlock, travelDate }: RouteCardProps) {
 
   const [isExpanded, setIsExpanded] = useState(false);
+  const [segmentPnrs, setSegmentPnrs] = useState<Record<number, string>>({});
+  const [savingPnrs, setSavingPnrs] = useState<Record<number, boolean>>({});
+  const [savedPnrs, setSavedPnrs] = useState<Record<number, boolean>>({});
+
+  useEffect(() => {
+    if (isExpanded && isUnlocked) {
+      fetchPnrs();
+    }
+  }, [isExpanded, isUnlocked]);
+
+  const fetchPnrs = async () => {
+    try {
+      const token = localStorage.getItem("supabase.auth.token") || localStorage.getItem("sb-vclitvpgmqzntscvshje-auth-token");
+      const accessToken = token ? JSON.parse(token)?.access_token : null;
+      
+      const response = await fetch(`/api/v1/booking/segment-pnrs/${route.id}`, {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const pnrMap: Record<number, string> = {};
+        const savedMap: Record<number, boolean> = {};
+        data.forEach((p: any) => {
+          pnrMap[p.segment_index] = p.pnr;
+          savedMap[p.segment_index] = true;
+        });
+        setSegmentPnrs(prev => ({ ...prev, ...pnrMap }));
+        setSavedPnrs(prev => ({ ...prev, ...savedMap }));
+      }
+    } catch (error) {
+      console.error("Error fetching PNRs:", error);
+    }
+  };
+
+  const handleIrctcRedirect = async (segment: RouteSegment, segIdx: number) => {
+    // Use travelDate from props, fallback to current date if missing
+    const dateToUse = travelDate || new Date().toISOString().split('T')[0];
+    
+    // Redirect to our internal redirection page which then goes to IRCTC
+    const params = new URLSearchParams({
+      train: segment.trainNumber,
+      from: segment.from,
+      to: segment.to,
+      date: dateToUse
+    });
+    
+    window.open(`/redirect/irctc?${params.toString()}`, "_blank");
+    toast.info(`Preparing redirection for Train ${segment.trainNumber}`);
+  };
+
+  const savePnr = async (segIdx: number, trainNumber: string) => {
+    const pnr = segmentPnrs[segIdx];
+    if (!pnr || pnr.length < 10) {
+      toast.error("Please enter a valid 10-digit PNR");
+      return;
+    }
+
+    setSavingPnrs(prev => ({ ...prev, [segIdx]: true }));
+    try {
+      const token = localStorage.getItem("supabase.auth.token") || localStorage.getItem("sb-vclitvpgmqzntscvshje-auth-token");
+      const accessToken = token ? JSON.parse(token)?.access_token : null;
+
+      const response = await fetch("/api/v1/booking/save-segment-pnr", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({
+          journey_id: route.id,
+          segment_index: segIdx,
+          train_number: trainNumber,
+          pnr: pnr
+        })
+      });
+
+      if (response.ok) {
+        toast.success(`PNR saved for segment ${segIdx + 1}`);
+        setSavedPnrs(prev => ({ ...prev, [segIdx]: true }));
+      } else {
+        toast.error("Failed to save PNR");
+      }
+    } catch (error) {
+      toast.error("Error saving PNR");
+    } finally {
+      setSavingPnrs(prev => ({ ...prev, [segIdx]: false }));
+    }
+  };
 
   // Defensive rendering: avoid crashes when route data is malformed.
   if (!route?.segments || route.segments.length === 0) {
@@ -248,6 +341,59 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                   {(segment.liveFare != null && segment.liveFare > 0) && (
                     <div className="text-xs text-primary font-semibold">
                       {formatLiveFare(segment.liveFare)}
+                    </div>
+                  )}
+
+                  {isUnlocked && (
+                    <div className="mt-4 pt-4 border-t border-border flex flex-col gap-3">
+                      <button
+                        onClick={() => handleIrctcRedirect(segment, idx)}
+                        className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-md transition-colors shadow-sm"
+                      >
+                        <ExternalLink size={14} />
+                        Check Seats on IRCTC
+                      </button>
+                      
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            placeholder="Enter 10-digit PNR"
+                            maxLength={10}
+                            value={segmentPnrs[idx] || ""}
+                            onChange={(e) => {
+                              const val = e.target.value.replace(/\D/g, "");
+                              setSegmentPnrs(prev => ({ ...prev, [idx]: val }));
+                              if (savedPnrs[idx]) setSavedPnrs(prev => ({ ...prev, [idx]: false }));
+                            }}
+                            className="w-full bg-background border border-border rounded-md py-2 px-3 text-xs focus:ring-1 focus:ring-primary outline-none transition-all"
+                          />
+                          {savedPnrs[idx] && (
+                            <div className="absolute right-2 top-1/2 -translate-y-1/2 text-emerald-500">
+                              <Check size={14} />
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => savePnr(idx, segment.trainNumber)}
+                          disabled={savingPnrs[idx]}
+                          className={cn(
+                            "p-2 rounded-md transition-all flex items-center justify-center",
+                            savedPnrs[idx] 
+                              ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" 
+                              : "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+                            savingPnrs[idx] && "opacity-50 cursor-not-allowed animate-pulse"
+                          )}
+                          title="Save PNR for tracking"
+                        >
+                          {savingPnrs[idx] ? <Clock size={16} className="animate-spin" /> : <Save size={16} />}
+                        </button>
+                      </div>
+                      {savedPnrs[idx] && (
+                        <p className="text-[10px] text-emerald-600 font-medium flex items-center gap-1">
+                          <BadgeCheck size={10} /> PNR tracked for alerts & SOS
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

@@ -1,93 +1,153 @@
 import asyncio
 import logging
-from typing import Dict, List, Set, Optional
-from core.nexus.node import NexusNode
-from core.nexus.state import nexus_state_manager, NexusState
+import time
+from typing import List, Dict, Optional, Set
+from .state import SystemState
+from .node import NexusNode, NodeStatus
+from .recovery import AutoRecoverySentinel
 
-logger = logging.getLogger("nexus.boot")
+logger = logging.getLogger("nexus.bootstrapper")
 
 class NexusBootstrapper:
-    """[Task 1.3] Orchestrates the parallel, dependency-resolved startup of RouteMaster nodes."""
+    """[Task 1.3 & 1.4] High-Integrity Deterministic Bootstrapper for V3 Fiber."""
     
     def __init__(self):
-        self._nodes: Dict[str, NexusNode] = {}
-        self._boot_order: List[List[str]] = [] # Layers of nodes to boot in parallel
-        self._halted = False
-        self._boot_completed = False
-        self._start_time = None
+        self.nodes: Dict[str, NexusNode] = {}
+        self.state = SystemState.OFFLINE
+        self.boot_order: List[str] = []
+        self._lock = asyncio.Lock()
+        
+        # [Task 21] Resilience Sentinel
+        self.recovery = AutoRecoverySentinel(self)
+        
+        # [Task 24] Memory Hygiene
+        from .audit.mem_profiler import mem_profiler
+        self.profiler = mem_profiler
         
     def register(self, node: NexusNode):
-        """Adds a service node to the bootstrapper."""
-        self._nodes[node.name] = node
-        logger.debug(f"ℹ️ Registered Nexus Node: {node.name}")
-        
-    def resolve_dependencies(self):
-        """[Task 1.3] Sorts nodes into parallelizable layers based on their dependency graph (DAG)."""
-        resolved: Set[str] = set()
-        layers: List[List[str]] = []
-        pending = set(self._nodes.keys())
-        
-        while pending:
-            current_layer = []
-            for node_name in list(pending):
-                deps = set(self._nodes[node_name].dependencies)
-                # If all dependencies are already resolved, add this node to the current layer
-                if deps.issubset(resolved):
-                    current_layer.append(node_name)
+        """Register a node in the dependency graph."""
+        self.nodes[node.name] = node
+        logger.info(f"[NEXUS] Registered: {node.name} (Deps: {node.dependencies})")
+
+    async def bootstrap(self) -> bool:
+        """[Task 1.4] Parallel-Aware Layered Boot using asyncio.TaskGroup."""
+        async with self._lock:
+            self.state = SystemState.BOOTING
+            logger.info("[NEXUS] Initiating State-Graph Resolution (Task 1.4)...")
+            
+            # Topological Sort for Dependency Mapping [Task 1.3]
+            try:
+                layers = self._resolve_dependency_layers()
+            except Exception as e:
+                logger.critical(f"[NEXUS] Dependency Resolution Error: {e}")
+                self.state = SystemState.SAFE_MODE
+                return False
+
+            # [Task 1.7] Pre-Boot Resource Snapshot
+            from core.resource_monitor import resource_monitor
+            stats = resource_monitor.get_stats()
+            logger.info(f"[NEXUS:RESOURCES] Pre-Boot RAM: {stats['process_rss_mb']:.1f}MB | CPU: {stats['cpu_percent']}%")
+            
+            # 2. Sequential Layer-by-Layer Parallel Boot
+            try:
+                from utils.integrity import integrity_engine
+                for idx, layer in enumerate(layers):
+                    # Parallel init of nodes in the same layer
+                    # [Gap 1] Boot Timeout Guard: 30s per layer
+                    async with asyncio.timeout(30.0):
+                         async with asyncio.TaskGroup() as tg:
+                             for node_name in layer:
+                                 node = self.nodes[node_name]
+                                 tg.create_task(node.start())
                     
+                    # [Task 1.7] Post-Layer Telemetry
+                    st = resource_monitor.get_stats()
+                    logger.info(f"[NEXUS:LAYER_{idx}] Boot-up Peak RAM: {st['process_rss_mb']:.1f}MB")
+                    
+                    # Verify Layer Health [Task 1.5]
+                    for node_name in layer:
+                        node = self.nodes.get(node_name)
+                        if not node:
+                             logger.error(f"[NEXUS] Critical Error: Node '{node_name}' evaporated during boot.")
+                             continue
+                             
+                        if node.status == NodeStatus.FAILED:
+                            if node.critical:
+                                raise RuntimeError(f"Critical Node {node_name} failed boot.")
+                            else:
+                                self.state = SystemState.DEGRADED
+                    
+                    self.boot_order.extend(layer)
+                
+                if self.state != SystemState.DEGRADED:
+                    self.state = SystemState.READY
+                
+                # [Task 21] Start Auto-Recovery Watchdog
+                self.recovery.start()
+                
+                # [Task 24] Start Memory Profiler
+                self.profiler.start()
+                    
+                logger.info(f"[NEXUS] Master Boot Sequence Complete. Ready State: {self.state}")
+                return True
+
+            except Exception as e:
+                logger.critical(f"[NEXUS] Master Boot Failure: {e}")
+                self.state = SystemState.SAFE_MODE
+                return False
+
+    def _resolve_dependency_layers(self) -> List[List[str]]:
+        """[Task 1.3] Group nodes into parallel-ready layers."""
+        visited: Set[str] = set()
+        layers: List[List[str]] = []
+        
+        nodes_to_process = set(self.nodes.keys())
+        
+        while nodes_to_process:
+            current_layer = []
+            for name in list(nodes_to_process):
+                node = self.nodes[name]
+                # Filter dependencies that are NOT in the graph AT ALL
+                # (Treating them as externally satisfied or disabled)
+                active_deps = {d for d in node.dependencies if d in self.nodes}
+                
+                if active_deps.issubset(visited):
+                    current_layer.append(name)
+            
             if not current_layer:
-                cycle_nodes = ", ".join(pending)
-                logger.error(f"🛑 [BOOT ERROR] Circular Dependency detected in Nexus Spine: {cycle_nodes}")
-                raise RuntimeError(f"Circular Dependency detected: {cycle_nodes}")
+                logger.error(f"[NEXUS] Remaining Nodes: {nodes_to_process} | Visited: {visited}")
+                # Log why it's stuck:
+                for n in nodes_to_process:
+                     unvisited = [d for d in self.nodes[n].dependencies if d not in visited]
+                     logger.error(f"  - Node '{n}' waiting for unvisited: {unvisited}")
+                raise RuntimeError("Circular Dependency or Missing Node detected in Nexus Graph!")
                 
             layers.append(current_layer)
-            resolved.update(current_layer)
-            pending.difference_update(current_layer)
+            visited.update(current_layer)
+            nodes_to_process.difference_update(current_layer)
             
-        self._boot_order = layers
-        logger.info(f"📊 [BOOT GRAPH] Resolved into {len(layers)} execution levels.")
+        return layers
 
-    async def bootstrap(self, gate_halt: bool = True):
-        """Main entry point to boot the entire system safely."""
-        nexus_state_manager.set_state(NexusState.BOOTING)
-        self.resolve_dependencies()
-        
-        try:
-            for i, layer in enumerate(self._boot_order):
-                logger.debug(f"🚀 Initializing Layer {i+1}/{len(self._boot_order)}: {', '.join(layer)}")
-                # Start all nodes in the current layer in parallel
-                tasks = [self._nodes[node_name].start() for node_name in layer]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Verify layer success
-                for node_name, result in zip(layer, results):
-                    if isinstance(result, Exception):
-                        logger.error(f"🚨 [CRITICAL] Node {node_name} failed: {result}")
-                        if gate_halt:
-                            nexus_state_manager.set_state(NexusState.HALTED, reason=f"Critical Node Failure: {node_name}")
-                            self._halted = True
-                            return False
-                            
-            nexus_state_manager.set_state(NexusState.READY)
-            self._boot_completed = True
-            return True
+    async def halt(self) -> bool:
+        """[Task 1.6] Graceful Stop Protocol (Reverse Order)."""
+        async with self._lock:
+            # [Task 21] Disable Sentinel first
+            self.recovery.stop()
             
-        except Exception as e:
-            nexus_state_manager.set_state(NexusState.HALTED, reason=str(e))
-            logger.critical(f"🛑 [BOOT ABORTED] System failed to reach READY state: {e}")
-            return False
-
-    async def halt(self):
-        """Safe shutdown protocol for all nodes in reverse order."""
-        logger.warning("🔌 [HALT] Initiating System-Wide Graceful Shutdown...")
-        
-        # Stop everything in reverse of the dependency order
-        for layer in reversed(self._boot_order):
-            tasks = [self._nodes[node_name].stop() for node_name in layer]
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # [Task 24] Disable Profiler
+            self.profiler.stop()
             
-        nexus_state_manager.set_state(NexusState.OFFLINE)
-        logger.info("🛑 [OFFLINE] System shutdown complete. Registry data flushed.")
+            self.state = SystemState.HALTED
+            logger.warning("[NEXUS] Initiating Reverse-Order Halt Sequence (Task 1.6)...")
+            
+            all_successful = True
+            for node_name in reversed(self.boot_order):
+                node = self.nodes[node_name]
+                if not await node.stop():
+                    all_successful = False
+            
+            self.boot_order = []
+            return all_successful
 
-# Global Access via Singleton
+# Global Singleton
 nexus_boot = NexusBootstrapper()

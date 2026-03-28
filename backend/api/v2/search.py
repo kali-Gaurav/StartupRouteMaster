@@ -11,6 +11,9 @@ import json
 import asyncio
 import logging
 
+from core.nexus.search.interceptor import nexus_interceptor
+from core.nexus.search.gate import nexus_latency_gate
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["Routing & Discovery"])
 
@@ -68,10 +71,30 @@ async def unified_search(
     source = sanitize_string(source, length_limit=10)
     destination = sanitize_string(destination, length_limit=10)
 
+    # [Nexus Intersection] Layer 2.5 Security Interceptor (Task 18)
+    decision = await nexus_interceptor.intercept(request, source, destination)
+    if not decision.allowed:
+        logger.warning(f"🚫 [NEXUS:INTERCEPT] Rejected {source}->{destination} (Code: {decision.code})")
+        return SafeJSONResponse(
+            status_code=403,
+            content={"status": "HALT", "code": decision.code, "message": decision.message}
+        )
+
+    # [Nexus Fiber] Layer 1/2 Latency Gate (Task 11)
+    if not request.query_params.get("bypass_cache"):
+        cached = await nexus_latency_gate.get_cached_search(source, destination, date)
+        if cached:
+            return {
+                "status": "SUCCESS",
+                "engine": "nexus_latency_gate",
+                "data": {"journeys": cached},
+                "metadata": {"cache": "L1/L2_HIT"}
+            }
+
     search_svc = SearchService(db)
     try:
         from core.metrics import jit_metrics
-        adaptive_timeout = jit_metrics.get_adaptive_timeout(base_timeout=30.0)
+        adaptive_timeout = jit_metrics.get_adaptive_timeout(base_timeout=60.0)
         
         result = await asyncio.wait_for(
             search_svc.search_routes(

@@ -15,7 +15,7 @@ def parse_passengers(text: str) -> List[Dict[str, Any]]:
     passengers = []
     
     # Example: "Gaurav (30), Anjali (28)"
-    matches = re.findall(r"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*\((\d{1,2})\)", text)
+    matches = re.findall(r"([a-z]+(?:\s[a-z]+)*)\s*\((\d{1,2})\)", text, re.IGNORECASE)
     for name, age in matches:
         passengers.append({
             "fullName": name.strip(),

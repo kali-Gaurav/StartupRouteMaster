@@ -4,6 +4,7 @@ Upgraded with Pub/Sub Invalidation (TODO #25) and Memory Policies (TODO #26).
 """
 
 import asyncio
+from core.nexus.audit.chaos import chaos_trap
 import json
 import logging
 import uuid
@@ -134,27 +135,73 @@ class MultiLayerCache(ServiceProvider):
         self.l1_ttl = 300 
         self._initialized = False
         self._pubsub_task = None
-        self._l2_latency_ms = 0.0
-        self._l2_disabled_until = 0.0
         self._xfetch_beta = 1.0 
         self._warmup_orchestrator = None
+        self._init_lock = asyncio.Lock()
+        self.health_latch = True # [Task 5.3] Zero-latency Latch
+        self._heartbeat_task = None
+        # [Task 22] Unified Resilience
+        from core.resilience import CircuitBreaker
+        self.redis_circuit = CircuitBreaker("redis_l2", failure_threshold=3, recovery_timeout=60)
 
     async def init(self):
         """IoC Lifecycle: Connect to Redis (Idempotent)."""
-        if self._initialized and self.redis:
-            return
-        from redis.asyncio import from_url
-        try:
-            self.redis = await from_url(Config.REDIS_URL, decode_responses=False)
-            await self.redis.ping()
-            self._initialized = True
-            logger.info(" IoC: MultiLayerCache (Redis L2) Initialized.")
-            if not self._pubsub_task or self._pubsub_task.done():
-                self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
-        except Exception as e:
-            logger.warning(f" IoC: MultiLayerCache (Redis L2) init failed: {e}. Falling back to L1 (Memory) only.")
-            self.redis = None
-            self._initialized = True
+        async with self._init_lock:
+            if self._initialized and self.redis:
+                return
+            
+            from core.redis import URL, OPTS
+            from redis.asyncio import from_url
+            try:
+                # [Task 127] Using Centralized Sanitized Config for Upstash/SSL
+                self.redis = await from_url(URL, **OPTS)
+                await self.redis.ping()
+                self._initialized = True
+                self.health_latch = True
+                logger.info(f"[NEXUS:CACHE] MultiLayerCache (Redis L2) Initialized via {URL[:15]}...")
+                
+                if not self._pubsub_task or self._pubsub_task.done():
+                    self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+                    
+                if not self._heartbeat_task or self._heartbeat_task.done():
+                    self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+                    
+                self._eviction_task = asyncio.create_task(self._run_eviction_sentinel())
+                    
+            except Exception as e:
+                logger.warning(f"[NEXUS:CACHE] Redis L2 init failed: {e}. Falling back to L1 (Memory).")
+                self.redis = None
+                self._initialized = True
+                self.health_latch = False
+
+    async def _run_heartbeat(self):
+        """[Task 5.3] Periodic Redis Health Check to update the Latch."""
+        while True:
+            # [Task 21] Heartbeat
+            from core.nexus.bootstrapper import nexus_boot
+            nexus_boot.recovery.record_heartbeat("cache")
+            
+            await asyncio.sleep(15)
+            if self.redis:
+                try:
+                    await self.redis.ping()
+                    if not self.health_latch:
+                         # [Task 26.4] L2 Recovery Pulse: Re-Sync Regional L1s
+                         logger.info("📡 [NEXUS:CACHE] L2 RECOVERY PULSE. Flushing regional L1 for fresh sync.")
+                         await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": "ALL_CLEAR"}))
+                    self.health_latch = True
+                except:
+                    self.health_latch = False
+                    logger.error("[NEXUS:CACHE] Redis Heartbeat Lost.")
+
+    async def _run_eviction_sentinel(self):
+        """[Task 5.5] Periodically clear stale search results (> 1 hour)."""
+        while True:
+            await asyncio.sleep(600) # Every 10 mins
+            logger.info("[NEXUS:CACHE] Eviction Sentinel: Scanning for stale L1 fragments...")
+            # L1 (LRU) manages itself by capacity, but we can clear specific old domains
+            # This is a placeholder for deep eviction logic
+            pass
 
     async def initialize(self):
         """[Task 27.11] Backward compatibility alias for init."""
@@ -189,8 +236,15 @@ class MultiLayerCache(ServiceProvider):
         return self._warmup_orchestrator
 
     def _is_l2_available(self) -> bool:
+        from core.resilience import CircuitState
         if not self.redis: return False
-        if time.time() < self._l2_disabled_until: return False
+        
+        # [Task 26.1] Chaos Severance Check
+        from core.nexus.audit.chaos import nexus_chaos
+        if nexus_chaos.is_severed("cache_l2"):
+             return False
+
+        if self.redis_circuit.state == CircuitState.OPEN: return False
         return True
 
     def _get_l1_capacity(self) -> int:
@@ -202,6 +256,7 @@ class MultiLayerCache(ServiceProvider):
             return 5000
         except: return 1000
 
+    @chaos_trap("cache_l2")
     async def get(self, key: str, serializer: Optional[Callable] = None, refresh_callback: Optional[Callable] = None, allow_stale: bool = True) -> Optional[Any]:
         """
         [Task 47.1 & 47.6] Advanced Multi-Layer Fetch with SWR.
@@ -218,15 +273,15 @@ class MultiLayerCache(ServiceProvider):
             return None
 
         try:
-            start_time = time.time()
-            data = await self.redis.get(key)
-            latency = (time.time() - start_time) * 1000
-            self._l2_latency_ms = (0.7 * self._l2_latency_ms) + (0.3 * latency) # Moving average
+            async def _fetch():
+                start_time = time.time()
+                data = await self.redis.get(key)
+                latency = (time.time() - start_time) * 1000
+                if latency > 200:
+                     raise TimeoutError(f"Redis high latency: {latency:.1f}ms")
+                return data
 
-            # Circuit Breaker: If average latency > 200ms, trip it for 60s
-            if self._l2_latency_ms > 200:
-                logger.warning(f"🚨 Redis Latency Spike ({self._l2_latency_ms:.2f}ms). Tripping Circuit Breaker.")
-                self._l2_disabled_until = time.time() + 60
+            data = await self.redis_circuit.call(_fetch)
 
             if data:
                 # [Task 47.8] MsgPack Binary Deserialization (if configured)
@@ -242,8 +297,7 @@ class MultiLayerCache(ServiceProvider):
                 CACHE_OPERATIONS_TOTAL.labels(layer='L2_REDIS', operation='get', result='miss').inc()
                 
         except Exception as e:
-            logger.error(f"L2 Cache Get Failure: {e}")
-            self._l2_disabled_until = time.time() + 10 # 10s cooldown
+            logger.error(f"L2 Cache Get Failure/Circuit Trip: {e}")
 
         return None
 
@@ -263,25 +317,34 @@ class MultiLayerCache(ServiceProvider):
         # For simplicity, 90% threshold for now
         time_left = expiry - now
         if time_left < 60 and refresh_callback:
-            logger.info("⏱️ Cache near expiry. Triggering Background Refresh.")
+            logger.info("Cache near expiry. Triggering Background Refresh.")
             asyncio.create_task(refresh_callback())
 
         if now > expiry:
             if refresh_callback: asyncio.create_task(refresh_callback())
-            # Serve Stale if allowed [47.8]
-            if allow_stale and now < (expiry + 300):
-                logger.debug("🍞 Serving Stale Data (Grace Period)")
+            
+            # [Task 26.3] Ghost Shadowing Mode
+            # If Redis is DOWN, we extend the grace period to 1 HOUR (Planet-Scale survivability)
+            # Google/Netflix style: Serve anything you have if the backbone is severed.
+            grace_period = 3600 if not self._is_l2_available() else 300
+            
+            if allow_stale and now < (expiry + grace_period):
+                logger.debug(f"👻 [NEXUS:GHOST] Serving Ghost Data (Outage Grace: {grace_period}s)")
                 return val
             return None
         
         return val
 
+    @chaos_trap("cache_l2")
     async def put(self, key: str, value: Any, ttl: int = 300, negative_cache: bool = False):
         """
         [Task 47.7 & 47.8] Compressed Put with Mutation Tracking.
         """
-        # Negative Cache: 5 mins if no results found
-        actual_ttl = 300 if negative_cache else ttl
+        # [Task 26.2] Anti-Stampede TTL Staggering (Jittered Expiry)
+        # Google SRE Pattern: Prevent thundering crowds at expiry
+        from random import uniform
+        jitter_factor = uniform(0.85, 1.0)
+        actual_ttl = int((300 if negative_cache else ttl) * jitter_factor)
         
         xf_item = {"value": value, "xf_expiry": time.time() + actual_ttl}
         
@@ -299,6 +362,12 @@ class MultiLayerCache(ServiceProvider):
                 await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": key}))
             except Exception as e:
                 logger.error(f"L2 Cache Put Error: {e}")
+
+        # [Task 27.6] Register Distributed Compensation if inside an Atomic Saga
+        try:
+             from core.nexus.financial.rollback import register_undo_step
+             await register_undo_step("CACHE_WRITE", {"key": key})
+        except: pass
 
     async def get_or_set(self, key: str, fetch_callback: Callable, ttl: int = 300) -> Any:
         """
@@ -323,11 +392,11 @@ class MultiLayerCache(ServiceProvider):
                 # 3. Double-Checked Locking: Did another task fill it while we waited?
                 result = await self.get(key)
                 if result:
-                    logger.debug(f"🏇 Double-Hit Saved: {key}")
+                    logger.debug(f"Double-Hit Saved: {key}")
                     return result
                 
                 # 4. Critical Section: Hit the Source
-                logger.info(f"🔄 Cache Miss. Fetching Source: {key}")
+                logger.info(f"Cache Miss. Fetching Source: {key}")
                 result = await fetch_callback()
                 
                 if result:
@@ -339,8 +408,10 @@ class MultiLayerCache(ServiceProvider):
                 return result
                 
         except Exception as e:
-            logger.error(f"❌ Shield Failure for {key}: {e}")
+            logger.error(f"Shield Failure for {key}: {e}")
             return await fetch_callback() # Emergency Bypass
+
+    async def _listen_for_invalidations(self):
         """[Task 27.18] Robust invalidation listener with proper cleanup."""
         if not self.redis: return
         pubsub = self.redis.pubsub()
@@ -363,9 +434,9 @@ class MultiLayerCache(ServiceProvider):
                     pass
                 await asyncio.sleep(0.01) # Small yielding sleep
         except asyncio.CancelledError:
-            logger.info("📡 MultiLayerCache: Invalidation listener cancelled.")
+            logger.info("MultiLayerCache: Invalidation listener cancelled.")
         except Exception as e:
-            logger.error(f"📡 MultiLayerCache: Invalidation listener error: {e}")
+            logger.error(f"MultiLayerCache: Invalidation listener error: {e}")
         finally:
             try:
                 await pubsub.unsubscribe("cache:invalidation")
@@ -424,7 +495,7 @@ class MultiLayerCache(ServiceProvider):
             try:
                 await self.redis.flushdb()
                 await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": "ALL_CLEAR"}))
-                logger.info("🗑️ MultiLayerCache: All caches cleared.")
+                logger.info("MultiLayerCache: All caches cleared.")
             except Exception as e:
                 logger.error(f"L2 Cache Clear Error: {e}")
 

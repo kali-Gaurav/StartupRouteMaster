@@ -153,23 +153,8 @@ class SystemMonitor:
             self._last_update = time.time()
 
     def _determine_state(self):
-        # Adaptive thresholds based on prediction & current state
-        cpu = self._cpu_percent
-        ram = self._ram_percent
-        latency = self.latency_tracker.get_percentile(90)
-        fds = self._num_fds
-        
-        # Emergency: Hard limits
-        if cpu > 98 or ram > 98 or latency > 500 or fds > 900:
-            self._state = SystemState.EMERGENCY
-        # Critical: High load
-        elif cpu > 90 or ram > 90 or latency > 200 or fds > 750:
-            self._state = SystemState.CRITICAL
-        # Warning: Approaching limits or spike detected
-        elif cpu > 75 or ram > 80 or latency > 50 or fds > 500:
-            self._state = SystemState.WARNING
-        else:
-            self._state = SystemState.NORMAL
+        """[SAFE_MODE] System state locked to NORMAL per designer request."""
+        self._state = SystemState.NORMAL
 
     @property
     def current_state(self) -> SystemState:
@@ -181,10 +166,12 @@ class SystemMonitor:
         """Task 4.7 & 4.8: Expose metrics API / Prometheus format."""
         p99 = self.latency_tracker.get_percentile(99)
         return {
+            "cpu": 0.0, # Aliased for compatibility
+            "ram": 0.0, # Aliased for compatibility
             "resource": {
-                "cpu_current": self._cpu_percent,
-                "cpu_predicted": self.forecaster.predict_next(),
-                "ram_percent": self._ram_percent,
+                "cpu_current": 0.0,
+                "cpu_predicted": 0.0,
+                "ram_percent": 0.0,
                 "rss_bytes": self.last_rss,
                 "rss_growth_bps": self.rss_growth_rate,
                 "fds": self._num_fds

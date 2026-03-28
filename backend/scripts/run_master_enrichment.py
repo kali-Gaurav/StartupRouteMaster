@@ -74,7 +74,7 @@ async def run_pipeline():
     logger.info("⚡ PHASE 1: Recomputing all Segment Distances & Durations locally...")
     cursor.execute("SELECT id, latitude, longitude FROM stops")
     stop_coords = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
-    cursor.execute("SELECT id, source_station_id, dest_station_id, departure_time, arrival_time FROM segments")
+    cursor.execute("SELECT id, source_stop_id, dest_station_id, departure_time, arrival_time FROM segments")
     segments = cursor.fetchall()
     updates = []
     for seg_id, src_id, dst_id, dep_time, arr_time in segments:

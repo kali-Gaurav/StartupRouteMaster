@@ -205,7 +205,8 @@ export async function searchRoutesApi(
     date: date,
     budget: params?.sortBy === 'cost' ? 'economy' : 'all',
     multi_modal: 'true',
-    limit: _maxResults.toString()
+    limit: _maxResults.toString(),
+    persona: params?.sortBy === 'cost' ? 'ECONOMY' : (params?.sortBy === 'score' ? 'EMERGENCY' : 'BUSINESS')
   });
 
   if (params?.routeSource) {
@@ -216,7 +217,7 @@ export async function searchRoutesApi(
     queryParams.append('discovery_only', 'true');
   }
 
-  const url = getRailwayApiUrl(`/api/v2/search/unified?${queryParams.toString()}`);
+  const url = getRailwayApiUrl(`/api/v3/search/unified?${queryParams.toString()}`);
   
   const headers: HeadersInit = { 'Accept': 'application/json' };
   if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;

@@ -98,31 +98,45 @@ class TransferGraphBuilder:
         transfers = []
         
         try:
-            results = self.session.query(Transfer).all()
+            from sqlalchemy import text
+            # Phase 1: Load explicit transfers from database
+            try:
+                # Try full metadata first
+                query = text("SELECT from_stop_id, to_stop_id, transfer_type, min_transfer_time FROM transfers")
+                results = self.session.execute(query).fetchall()
+            except:
+                # Fallback to simple structure if transfer_type or min_transfer_time missing
+                try:
+                    query = text("SELECT from_stop_id, to_stop_id FROM transfers")
+                    results = self.session.execute(query).fetchall()
+                except:
+                    results = []
             
-            for t in results:
-                # Get transfer type from GTFS (0=recommended, 1=timed, 2=minimum_time, 3=no_transfer)
-                if t.transfer_type == 3:  # Transfer impossible
-                    continue
-                
-                # If min_transfer_time is null, use default based on transfer_type
-                if t.min_transfer_time is not None:
-                    min_time = t.min_transfer_time
+            for row in results:
+                r = row._mapping if hasattr(row, '_mapping') else {}
+                if not r:
+                    # Handle positional tuple if _mapping not available
+                    f_id = row[0]; t_id = row[1]
+                    t_type = row[2] if len(row) > 2 else None
+                    min_t = row[3] if len(row) > 3 else None
                 else:
-                    min_time = self._get_default_min_transfer_time(t.from_stop_id, t.to_stop_id)
+                    f_id, t_id = r.get('from_stop_id'), r.get('to_stop_id')
+                    t_type, min_t = r.get('transfer_type'), r.get('min_transfer_time')
+
+                if t_type == 3: continue # GTFS specification for impossible transfer
                 
-                # Walking time is usually 0 for explicit transfers (already at the station)
-                walking_time = 0
+                if min_t is not None:
+                    min_time = min_t
+                else:
+                    min_time = self._get_default_min_transfer_time(f_id, t_id)
                 
                 transfer_edge = TransferEdge(
-                    from_stop_id=t.from_stop_id,
-                    to_stop_id=t.to_stop_id,
+                    from_stop_id=f_id,
+                    to_stop_id=t_id,
                     min_transfer_time_minutes=min_time,
-                    walking_time_minutes=walking_time,
-                    platform_from=getattr(t, 'platform_from', None),
-                    platform_to=getattr(t, 'platform_to', None),
+                    walking_time_minutes=0,
                     transfer_type="WALK",
-                    is_multi_station=(t.from_stop_id != t.to_stop_id)
+                    is_multi_station=(f_id != t_id)
                 )
                 transfers.append(transfer_edge)
                 

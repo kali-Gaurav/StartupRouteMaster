@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
 
 # Import common models that providers will return or transform into
-from backend.providers.models import (
+from providers.models import (
     UnifiedLiveStatus, UnifiedAvailability, UnifiedSchedule, 
     UnifiedFare, UnifiedPNRStatus
 )
@@ -95,4 +95,4 @@ class BaseProviderClient(ABC):
 
 # Note: These imports would typically be handled by the framework, but for clarity:
 import logging
-from backend.providers.models import UnifiedLiveStatus, UnifiedAvailability, UnifiedSchedule # Assuming these exist
+from providers.models import UnifiedLiveStatus, UnifiedAvailability, UnifiedSchedule # Assuming these exist

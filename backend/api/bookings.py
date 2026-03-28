@@ -23,6 +23,7 @@ from schemas import (
     RefundRequestSchema,
     RefundResponseSchema,
 )
+from schemas.booking import IRCTCLinkRequest, IRCTCLinkResponse, SavePNRRequest, SegmentPNRResponse
 
 # Import UNLOCK_PRICE constant
 UNLOCK_PRICE = 39.0  # ₹39 unlock fee
@@ -39,6 +40,105 @@ from pydantic import BaseModel
 
 class ParsePassengerRequest(BaseModel):
     raw_text: str
+
+@router.post("/generate-irctc-link", response_model=IRCTCLinkResponse)
+async def generate_irctc_link(payload: IRCTCLinkRequest):
+    """
+    Generates a redirection link to IRCTC with pre-filled search details.
+    """
+    # IRCTC search URL format (simplified)
+    # Note: IRCTC uses a complex frontend, so deep linking is limited.
+    # We use a helper URL that we can improve later.
+    date_formatted = payload.date.replace("-", "") # YYYYMMDD
+    url = f"https://www.irctc.co.in/nget/train-search?fromStation={payload.from_code}&toStation={payload.to_code}&journeyDate={date_formatted}"
+    return {"url": url}
+
+@router.post("/save-segment-pnr", response_model=SegmentPNRResponse)
+async def save_segment_pnr(
+    payload: SavePNRRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Saves a PNR for a specific segment of a journey.
+    Security: Verifies user has unlocked this route.
+    Validation: Ensures PNR is exactly 10 digits.
+    """
+    from database.models import SegmentPNR, UnlockedRoute
+    import re
+    
+    # 1. PNR Format Validation
+    if not re.match(r"^\d{10}$", payload.pnr):
+        raise HTTPException(status_code=400, detail="Invalid PNR format. Must be exactly 10 digits.")
+        
+    # 2. Security Check: Verify route is unlocked for this user
+    # Note: journey_id in frontend corresponds to route_id in backend
+    is_unlocked = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.route_id == payload.journey_id
+    ).first()
+    
+    if not is_unlocked and current_user.role != "admin":
+        # Check total active unlocks for this user to debug
+        total_active = db.query(UnlockedRoute).filter(
+            UnlockedRoute.user_id == str(current_user.id)
+        ).count()
+        logger.warning(f"Security violation: User {current_user.id} tried to save PNR for locked route {payload.journey_id}. Active unlocks: {total_active}")
+        raise HTTPException(status_code=403, detail="You must unlock this route before saving a PNR.")
+    
+    # 3. Save or Update
+    # Check if already exists for this user/journey/segment
+    existing = db.query(SegmentPNR).filter(
+        SegmentPNR.user_id == str(current_user.id),
+        SegmentPNR.journey_id == payload.journey_id,
+        SegmentPNR.segment_index == payload.segment_index
+    ).first()
+    
+    if existing:
+        existing.pnr = payload.pnr
+        existing.train_number = payload.train_number
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    new_pnr = SegmentPNR(
+        user_id=str(current_user.id),
+        journey_id=payload.journey_id,
+        segment_index=payload.segment_index,
+        train_number=payload.train_number,
+        pnr=payload.pnr
+    )
+    db.add(new_pnr)
+    db.commit()
+    db.refresh(new_pnr)
+    return new_pnr
+
+@router.get("/segment-pnrs/{journey_id}", response_model=List[SegmentPNRResponse])
+async def get_segment_pnrs(
+    journey_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves all saved PNRs for a specific journey.
+    Security: Only returns PNRs if user has unlocked the route.
+    """
+    from database.models import SegmentPNR, UnlockedRoute
+    
+    # Security Check: Verify route is unlocked for this user
+    is_unlocked = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.route_id == journey_id
+    ).first()
+    
+    if not is_unlocked and current_user.role != "admin":
+        return [] # Return empty list if not unlocked instead of 403 to avoid UI noise
+        
+    pnrs = db.query(SegmentPNR).filter(
+        SegmentPNR.user_id == str(current_user.id),
+        SegmentPNR.journey_id == journey_id
+    ).all()
+    return pnrs
 
 @router.post("/parse_passengers")
 async def parse_passengers_nlp(
@@ -176,7 +276,7 @@ async def check_availability(
         numeric_trip_id = payload.trip_id
 
     # delegate to the availability service
-    from availability_service import availability_service, AvailabilityRequest
+    from services.inventory.availability_service import availability_service, AvailabilityRequest
     from database.models import QuotaType
 
     # Convert quota_type string to QuotaType enum

@@ -111,7 +111,7 @@ class GraphBuilder:
         ).all()
         if not regular_services:
             regular_services = session.query(Calendar.service_id).filter(
-                getattr(Calendar, weekday) == True
+                getattr(Calendar, weekday).in_([1, True])
             ).limit(2000).all()
         active_set = {s[0] for s in regular_services}
         exceptions = session.query(CalendarDate.service_id, CalendarDate.exception_type).filter(
@@ -129,7 +129,11 @@ class GraphBuilder:
         in_clause = ", ".join([f":sid_{i}" for i in range(len(service_ids))])
         query = f"SELECT service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday FROM calendar WHERE service_id IN ({in_clause})"
         rows = session.execute(text(query), placeholders).fetchall()
-        for row in rows:
+        for i, row in enumerate(rows):
+            if i < 2: logger.info(f"DEBUG: Bitmask Row: {row} | Size: {len(row)}")
+            if len(row) < 8:
+                logger.warning(f"Unexpected row size in bitmasks: {len(row)} at index {i}. Row: {row}")
+                continue
             mask = 0
             if row[1]: mask |= 1
             if row[2]: mask |= 2
@@ -144,9 +148,14 @@ class GraphBuilder:
     def _build_graph_sync(self, date: datetime) -> Dict:
         session = SessionTransit()
         try:
+            # [Task 130 Diagnostic]
+            bind_url = str(session.get_bind().url)
+            logger.info(f"🚄 Building Graph for {date.date()} | DB: {bind_url}")
+            self.is_postgresql = "postgresql" in bind_url
+            
             service_ids = self._get_active_service_ids(session, date)
             service_bitmasks = self._get_service_bitmasks(session, service_ids)
-            logger.info(f"Building graph for {date.date()} with {len(service_ids)} active services")
+            logger.info(f"Found {len(service_ids)} active services.")
             
             departures = defaultdict(list)
             arrivals = defaultdict(list)
@@ -164,11 +173,14 @@ class GraphBuilder:
             stop_to_city = {}
             hub_direct_adj = defaultdict(set)
             
-            logger.info("Processing stops and city clusters (Task 14)...")
             stops_raw = session.execute(
                 text("SELECT id, stop_id, code, name, city, state, latitude, longitude, is_major_junction FROM stops")
             )
-            for row in stops_raw:
+            # Fetch all to avoid cursor issues with logging len
+            stops_list = list(stops_raw)
+            logger.info(f"Processing stops and city clusters (Task 14)... Found {len(stops_list)} rows.")
+            
+            for row in stops_list:
                 s = MockStop()
                 s.id, s.stop_id, s.code, s.name, s.city, s.state = row[0], row[1], row[2], row[3], row[4], row[5]
                 s.latitude, s.longitude = float(row[6] or 0.0), float(row[7] or 0.0)
@@ -186,12 +198,17 @@ class GraphBuilder:
                 placeholders = {f"sid_{i}": sid for i, sid in enumerate(service_ids)}
                 in_clause = ", ".join([f":sid_{i}" for i in range(len(service_ids))])
                 
-                # 1. Fetch Segments for metadata (Task 27.18)
+                # [Task 130] Dynamic Dialect Selection (SQLite vs Postgres)
+                self.is_postgresql = "postgresql" in str(session.get_bind().url)
+                src_col = "source_stop_id"
+                dst_col = "dest_station_id"
+                
+                # 1. Fetch Segments for metadata
                 query_segs = f"""
                     SELECT 
                         s.trip_id, s.{src_col}, s.{dst_col}, 
                         s.departure_time, s.arrival_time, s.duration_minutes, s.distance_km, 
-                        {('s.train_number' if not self.is_postgresql else 's.vehicle_id')} as train_number, 
+                        s.train_number, 
                         r.long_name as train_name, t.service_id 
                     FROM segments s 
                     JOIN trips t ON s.trip_id = t.id 
@@ -199,43 +216,121 @@ class GraphBuilder:
                     WHERE t.service_id IN ({in_clause}) 
                     ORDER BY s.trip_id, s.departure_time
                 """
-                segments_raw = session.execute(text(query_segs).execution_options(yield_per=500), placeholders)
+                segments_raw = session.execute(text(query_segs).execution_options(yield_per=1000), placeholders)
                 
-                # 2. Fetch Stop Times for full sequences (Task 1 / TBR Fix)
+                # 2. [OPTIMIZED] Fetch Stop Times using Integer Timestamps
                 query_stops = f"""
-                    SELECT st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence, t.service_id
+                    SELECT st.trip_id, st.stop_id, st.arrival_timestamp, st.departure_timestamp, st.stop_sequence, t.service_id
                     FROM stop_times st
                     JOIN trips t ON st.trip_id = t.id
                     WHERE t.service_id IN ({in_clause})
                     ORDER BY st.trip_id, st.stop_sequence
                 """
-                stop_times_raw = session.execute(text(query_stops).execution_options(yield_per=1000), placeholders)
+                stop_times_raw = session.execute(text(query_stops).execution_options(yield_per=2000), placeholders)
             
-            logger.info("Processing segments metadata...")
+            logger.info(f"Processing segments metadata (Raw Count target: {len(service_ids)} services)...")
+            try:
+                logger.info(f"Segment columns: {segments_raw.keys()}")
+            except:
+                logger.info("Segment columns: UNKNOWN (not a Result object)")
+            
+            count = 0
             for row in segments_raw:
-                tid = int(row[0])
-                try: sid_src, sid_dst = int(row[1]), int(row[2])
-                except: continue
-                mask = service_bitmasks.get(row[9], 127)
-                seg = RouteSegment(
-                    trip_id=tid, departure_stop_id=sid_src, arrival_stop_id=sid_dst,
-                    departure_time=datetime.min, arrival_time=datetime.min, # Placeholder
-                    duration_minutes=int(row[5] or 0), distance_km=float(row[6] or 0),
-                    departure_code=stop_cache[sid_src].code if sid_src in stop_cache else str(sid_src),
-                    arrival_code=stop_cache[sid_dst].code if sid_dst in stop_cache else str(sid_dst),
-                    fare=0.0, train_number=str(row[7] or ""), train_name=str(row[8] or ""),
-                    service_mask=mask, stop_sequence=0 # Placeholder
-                )
-                trip_segments[tid].append(seg)
+                try:
+                    count += 1
+                    # [Task 130] Handle Row objects (SQLAlchemy 2.0) or tuples robustly
+                    if hasattr(row, '_mapping'):
+                        r = row._mapping
+                        tid = r['trip_id']
+                        sid_src = r[src_col]
+                        sid_dst = r[dst_col] 
+                        svc_id = r['service_id']
+                        train_num = r['train_number']
+                        train_name = r.get('train_name', '')
+                        dep_raw = r['departure_time']
+                        arr_raw = r['arrival_time']
+                        dist_km = r['distance_km']
+                        dur_min = r['duration_minutes']
+                    else:
+                        tid = int(row[0])
+                        sid_src, sid_dst = int(row[1]), int(row[2])
+                        dep_raw = row[3]
+                        arr_raw = row[4]
+                        dur_min = int(row[5] or 0)
+                        dist_km = float(row[6] or 0)
+                        train_num = str(row[7] or "")
+                        train_name = str(row[8] or "")
+                        svc_id = row[9] if len(row) > 9 else None
+
+                    # Parse times properly
+                    dep_time = _to_time(dep_raw)
+                    arr_time = _to_time(arr_raw)
+                    
+                    dep_dt = datetime.combine(date.date(), dep_time)
+                    arr_dt = datetime.combine(date.date(), arr_time)
+                    if arr_time < dep_time:
+                        arr_dt += timedelta(days=1)
+
+                    mask = service_bitmasks.get(svc_id, 127)
+                    
+                    # Ensure stop exists in cache
+                    if sid_src not in stop_cache or sid_dst not in stop_cache:
+                        if count < 5: logger.warning(f"Stop missing for segment: {sid_src} -> {sid_dst}")
+                        continue
+
+                    seg = RouteSegment(
+                        trip_id=tid, 
+                        departure_stop_id=sid_src, 
+                        arrival_stop_id=sid_dst,
+                        departure_time=dep_dt, 
+                        arrival_time=arr_dt,
+                        duration_minutes=dur_min, 
+                        distance_km=dist_km,
+                        departure_code=stop_cache[sid_src].code,
+                        arrival_code=stop_cache[sid_dst].code,
+                        fare=0.0, 
+                        train_number=train_num, 
+                        train_name=train_name,
+                        service_mask=mask, 
+                        stop_sequence=0
+                    )
+                    trip_segments[tid].append(seg)
+                except Exception as e:
+                    if count < 20: logger.error(f"Row {count} failed: {e} | Row: {row}")
+                    continue
+            
+            logger.info(f"✅ Processed {count} segment rows. Populated {len(trip_segments)} trips.")
+            if len(trip_segments) == 0:
+                logger.error("❌ CRITICAL: No trip segments were populated! Search will fail.")
 
             logger.info("Building full trip sequences from stop_times...")
             trip_nodes_temp = defaultdict(list)
+            
+            # Optimization: Pre-define time conversion
+            def sec_to_time(s):
+                if s is None: return time(0,0)
+                return time((int(s) // 3600) % 24, (int(s) // 60) % 60, int(s) % 60)
+
             for row in stop_times_raw:
-                tid, sid, arr_t, dep_t, seq, svc_id = row
-                arr_dt, dep_dt = _to_time(arr_t), _to_time(dep_t)
-                trip_nodes_temp[tid].append({
-                    'sid': int(sid), 'arr': arr_dt, 'dep': dep_dt, 'seq': seq
-                })
+                try:
+                    if hasattr(row, '_mapping'):
+                        r = row._mapping
+                        tid = r['trip_id']
+                        sid = r['stop_id']
+                        arr_sec = r['arrival_timestamp']
+                        dep_sec = r['departure_timestamp']
+                        seq = r['stop_sequence']
+                    else:
+                        tid, sid, arr_sec, dep_sec, seq = row[:5]
+                    
+                    arr_t = sec_to_time(arr_sec)
+                    dep_t = sec_to_time(dep_sec)
+                    
+                    trip_nodes_temp[tid].append({
+                        'sid': int(sid), 'arr': arr_t, 'dep': dep_t, 'seq': seq
+                    })
+                except Exception as e:
+                    continue
 
             for tid, nodes in trip_nodes_temp.items():
                 nodes.sort(key=lambda x: x['seq'])
@@ -268,8 +363,15 @@ class GraphBuilder:
                     
                     station_ids_by_trip[tid].add(sid)
 
+            # Sort departures and arrivals for bisect_left optimization
+            for sid in departures:
+                departures[sid].sort(key=lambda x: x[0])
+            for sid in arrivals:
+                arrivals[sid].sort(key=lambda x: x[0])
+
             # 3. Transfer Graph Generation (Audit: Integrated Step)
             logger.info("Building full transfer graph (Audit Step)...")
+
             # We wrap the async call in a sync bridge since we are in an executor
             import asyncio
             transfer_builder = TransferGraphBuilder(session)
@@ -280,6 +382,9 @@ class GraphBuilder:
             transfer_graph = loop.run_until_complete(transfer_builder.build_transfer_graph())
             loop.close()
 
+            # [Task 121: Elite Connectivity] Pre-compute TBR Edges (Nexus)
+            from .tbr_edge_builder import TBREdgeBuilder
+            
             # Route Patterns
             for tid, nodes in trip_nodes_temp.items():
                 if len(nodes) > 1:
@@ -327,6 +432,15 @@ class GraphBuilder:
                     tbr_stop_index[node['sid']].append((tid, i))
                 current_node_offset += t_count
 
+            # Create a temporary snapshot for the builder to use
+            temp_snapshot = StaticGraphSnapshot(
+                date=date,
+                tbr_trip_nodes=tbr_trip_nodes,
+                tbr_trip_index=tbr_trip_index
+            )
+            tbr_edge_builder = TBREdgeBuilder()
+            tbr_edge_builder.build_tbr_edges(temp_snapshot)
+
             return {
                 'departures_by_stop': departures, 'arrivals_by_stop': arrivals, 'trip_segments': trip_segments,
                 'transfer_graph': transfer_graph, 'stop_cache': stop_cache, 'station_schedule': station_schedule,
@@ -339,4 +453,29 @@ class GraphBuilder:
             }
         finally: session.close()
 
-    def _get_reliability_scores(self, session) -> Dict[Tuple[int, int], float]: return {}
+    def _get_reliability_scores(self, session) -> Dict[Tuple[int, int], float]:
+        """
+        [Task 173] Fetch pre-calculated reliability scores from the database.
+        Scores are per (from_stop_id, to_stop_id) pair.
+        """
+        scores = {}
+        try:
+            # [Nexus Fix] Ensure table exists before querying
+            session.execute(text("""
+                CREATE TABLE IF NOT EXISTS reliability_scores (
+                    from_stop_id INTEGER,
+                    to_stop_id INTEGER,
+                    score REAL,
+                    PRIMARY KEY (from_stop_id, to_stop_id)
+                )
+            """))
+            session.commit()
+            
+            reliability_raw = session.execute(text("SELECT from_stop_id, to_stop_id, score FROM reliability_scores")).fetchall()
+            for row in reliability_raw:
+                from_id, to_id, score = int(row[0]), int(row[1]), float(row[2])
+                scores[(from_id, to_id)] = score
+            logger.info(f"Loaded {len(scores)} reliability scores.")
+        except Exception as e:
+            logger.warning(f"Failed to load reliability scores: {e}. Falling back to default (1.0).")
+        return scores

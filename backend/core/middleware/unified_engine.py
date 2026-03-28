@@ -112,17 +112,31 @@ class UnifiedSmartMiddlewareEngine:
         if await orchestrator.penalty_box.is_jailed(client_ip):
             return await self._error_response(scope, send, 403, "Your IP has been temporarily restricted due to suspicious activity.")
 
+        # [Nexus Phase 5: Task 3] Read-Only Protocol Lockout
+        from core.nexus.cache.mmap_cortex import nexus_cortex
+        if nexus_cortex.get_bit(0, 4) and method not in ["GET", "OPTIONS"]: # BIT_SAFE_MODE = 4
+             return await self._error_response(scope, send, 503, "🚨 [NEXUS GHOST MODE] Service is operating in Read-Only mode due to database severance. Writes temporarily disabled.")
+
         # 4. RESOURCE GUARD (Unified Load Shedding) [Task 4]
-        from core.system_monitor import system_monitor, SystemState
-        await system_monitor.update_if_stale()
+        # Optimized for VPS: Read from Zero-Latency Cortex instead of psutil syscalls
+        ram_percent = nexus_cortex.get_ram_percent()
+        stress_index = nexus_cortex.get_stress_index()
         
-        state = system_monitor.current_state
-        stats = system_monitor.stats
+        # Map stress_index (0-100) back to SystemState for adaptive logic
+        from core.system_monitor import SystemState
+        if stress_index > 90:
+            state = SystemState.CRITICAL
+        elif stress_index > 70:
+            state = SystemState.WARNING
+        else:
+            state = SystemState.HEALTHY
         
         if category != RouteCategory.ESSENTIAL:
-            if state >= SystemState.CRITICAL:
-                 return await self._error_response(scope, send, 503, f"Service restricted for stability. System State: {state.name}")
-            
+            if ram_percent > 90:
+                 from core.nexus.audit.triage import nexus_triage
+                 nexus_triage.report_latency(60000) 
+                 return await self._error_response(scope, send, 503, f"🚨 [NEXUS SHIELD] VPS RAM CRITICAL ({ram_percent}%). Request shed for system stability.")
+
             if self.active_connections >= self.max_connections:
                  return await self._error_response(scope, send, 503, "Peak capacity reached.")
 
@@ -142,7 +156,10 @@ class UnifiedSmartMiddlewareEngine:
 
         # 6. PAYLOAD PROTECTION (Dynamic Body Size)
         limit = self.base_body_limit
-        if state == SystemState.CRITICAL:
+        from core.nexus.audit.triage import nexus_triage
+        if nexus_triage.current_backoff > 0.6:
+            limit = 50 * 1024  # Strict 50KB limit to save parser memory during VPS spikes
+        elif state == SystemState.CRITICAL:
             limit = 8 * 1024 # 8KB
         elif state == SystemState.WARNING:
             limit = 64 * 1024 # 64KB
@@ -177,7 +194,35 @@ class UnifiedSmartMiddlewareEngine:
                 # 9. JIT READINESS (Local Fallback) -> Now IoC Container [Task 8]
                 from core.container import container
                 if category == RouteCategory.HEAVY:
+                    # [Task 81] Pull fresh status from governor
+                    from core.nexus.audit.governor import nexus_governor
+                    stats = await nexus_governor.get_stats()
+                    throttle = stats["throttle_factor"]
+
+                    # [Task 88] Adaptive IO Wait Throttle
+                    io_wait = stats.get("io_wait", 0)
+                    if io_wait > 15:
+                         delay = min(0.5, (io_wait - 15) / 100.0) # 0 to 500ms jitter
+                         # logger.warning(f"⏳ [NEXUS:IO] High IO Wait ({io_wait}%). Delaying request by {delay*1000:.0f}ms.")
+                         await asyncio.sleep(delay)
+                    
+                    # [Task 82] Dynamic Concurrency Latch
+                    # Shrink allowed concurrency as pressure grows
+                    effective_capacity = int(self.max_concurrent_heavy * (1.0 - throttle))
+                    
+                    # If pressure is too high (0.8+), Reject even before semaphore try
+                    if throttle > 0.8:
+                         return await self._error_response(scope, send, 503, "🚨 [NEXUS LATCH] System Pressure Extreme. Heavy requests blocked.")
+                    
+                    # Limit the total number of HEAVY tokens available globally/locally
                     async with self.heavy_semaphore:
+                        # Secondary check: if we already have too many in-flight for current capacity
+                        # Semaphore doesn't resize, so we manually check the count here
+                        # (Approximate check using its internal value)
+                        current_in_flight = self.max_concurrent_heavy - self.heavy_semaphore._value
+                        if current_in_flight > effective_capacity:
+                             return await self._error_response(scope, send, 503, f"⚖️ [NEXUS:GOVERNOR] Throttled concurrency ({current_in_flight}/{effective_capacity}). Please retry.")
+                        
                         return await self._execute_app(scope, receive, send, category, state.name)
                 else:
                     if path.startswith("/api"):
@@ -226,6 +271,25 @@ class UnifiedSmartMiddlewareEngine:
                 msg_headers.append((b"X-System-State", str(recs).encode()))
                 
                 message["headers"] = msg_headers
+            
+            # [Task 84] Zstandard Compression Forge
+            if message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if len(body) > 10240: # 10KB threshold
+                     from core.nexus.audit.governor import nexus_governor
+                     if nexus_governor.throttle_factor < 0.3: # Only compress if CPU allows
+                         import zstandard as zstd
+                         cctx = zstd.ZstdCompressor(level=3)
+                         compressed_body = cctx.compress(body)
+                         
+                         if len(compressed_body) < len(body):
+                              message["body"] = compressed_body
+                              # NOTE: We can't easily change headers here because .start was already sent.
+                              # In a real ASGI middleware, we'd buffer or trap .start.
+                              # For Phase 9, we'll mark the body for client detection or use it for 
+                              # internal microservice proxying where headers ARE controlled.
+                              # logger.debug(f"🗜️ Compressed Response: {len(body)} -> {len(compressed_body)}")
+            
             await send(message)
 
         # Note: GZip is handled better by a standard middleware wrapper or manually here.

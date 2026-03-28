@@ -768,7 +768,14 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       
       <AnimatePresence mode="wait">
         {isOpen && (
-          <div ref={containerRef} className="contents pointer-events-auto">
+          <motion.div 
+            key="chatbot-presence-wrapper"
+            ref={containerRef} 
+            className="contents pointer-events-auto"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
             <motion.div 
               key="chatbot-main-panel"
               initial={{ scale: 0.8, opacity: 0, originX: 1, originY: 1 }}
@@ -1050,7 +1057,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
             </div>
           </div>
         </motion.div>
-          </div>
+      </motion.div>
         )}
       </AnimatePresence>
 

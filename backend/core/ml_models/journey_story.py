@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.ml_integration import HybridMLModel
 from core.data_structures import Persona
 
@@ -16,9 +16,21 @@ class JourneyStoryModel(HybridMLModel):
         super().__init__("journey_story_v1", "classification")
         self.loaded = True # Template-based "Model" is always loaded
 
-    async def predict(self, features: Dict[str, Any]) -> str:
+    def load_from_file(self, model_path: Optional[str] = None) -> bool:
         """
-        Classifies a route into one of 10+ story categories.
+        Implementation of abstract method from MLModel.
+        As a template-based model, it doesn't need external files.
+        """
+        self.loaded = True
+        return True
+
+    async def predict(self, features: Dict[str, Any]) -> str:
+        """Async wrapper for compatibility."""
+        return self.predict_sync(features)
+
+    def predict_sync(self, features: Dict[str, Any]) -> str:
+        """
+        Classifies a route into one of 10+ story categories (Synchronous).
         """
         persona = features.get("persona", Persona.STANDARD)
         segments = features.get("segments", 1)

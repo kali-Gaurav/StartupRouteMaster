@@ -13,13 +13,13 @@ from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 
 from ...database import SessionLocal
-from ..etl_mapping_validator import (
+from .etl_mapping_validator import (
     ETLValidator, ETLLineageTracker, ETLExecutionLog, 
     ETLStatus, ETLMappingRegistry
 )
-from ..distance_time_validator import DistanceTimeConsistencyValidator, DistanceTimeValidationReport
-from .transfer_graph_builder import TransferGraphBuilder, TransferEdge
-from .graph import TimeDependentGraph, StaticGraphSnapshot
+from .distance_time_validator import DistanceTimeConsistencyValidator, DistanceTimeValidationReport
+from ..route_engine.transfer_graph_builder import TransferGraphBuilder, TransferEdge
+from ..route_engine.graph import TimeDependentGraph, StaticGraphSnapshot
 
 logger = logging.getLogger(__name__)
 

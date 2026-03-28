@@ -5,9 +5,8 @@ from datetime import date
 import asyncio
 
 # --- Import Models ---
-from backend.providers.models import BookingVerificationRequest, BookingVerificationResponse
-# Import the service that needs to be exposed
-from backend.services.booking_verification_service import BookingVerificationService
+from providers.models import BookingVerificationRequest, BookingVerificationResponse
+from services.booking_verification_service import BookingVerificationService
 
 logger = logging.getLogger(__name__)
 

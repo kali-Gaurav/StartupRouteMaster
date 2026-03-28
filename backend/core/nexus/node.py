@@ -1,74 +1,77 @@
-import abc
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from typing import List, Optional
-from datetime import datetime
+from enum import Enum
 
 logger = logging.getLogger("nexus.node")
 
-class NexusNode(abc.ABC):
-    """
-    [Task 1.2/1.3] A service module that can be managed by the Nexus State-Graph.
-    Every core tool (Scrapers, DB, Ledger) inherits from this.
-    """
-    
-    def __init__(self, name: str, dependencies: List[str] = None):
-        self._name = name
-        self._dependencies = dependencies or []
-        self._start_time = None
-        self._healthy = False
-        self._last_error = None
-        self._status = "IDLE" # IDLE, READY, FAILED, STOPPING
-        
-    @property
-    def name(self) -> str:
-        return self._name
-        
-    @property
-    def dependencies(self) -> List[str]:
-        return self._dependencies
-        
-    @property
-    def is_healthy(self) -> bool:
-        return self._healthy
-        
-    @property
-    def last_error(self) -> Optional[str]:
-        return self._last_error
+class NodeStatus(Enum):
+    """Internal Node Status."""
+    PENDING = "PENDING"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    FAILED = "FAILED"
+    STOPPING = "STOPPING"
+    HALTED = "HALTED"
 
-    @abc.abstractmethod
+class NexusNode(ABC):
+    """
+    [Task 1.2] Base Lifecycle Protocol.
+    All services seeking integration with the Nexus Fiber must implement this.
+    """
+    def __init__(self, name: str, critical: bool = True, dependencies: List[str] = None):
+        self.name = name
+        self.critical = critical  # If True, failure triggers SAFE_MODE [Task 1.5]
+        self.dependencies = dependencies if dependencies else []
+        self.status = NodeStatus.PENDING
+        self._retry_count = 0
+        self._max_retries = 3     # [Task 1.5] Health Gate threshold
+
+    @abstractmethod
     async def on_start(self):
-        """Initialisation logic of the service."""
+        """Logic to initialize the service."""
         pass
-        
-    @abc.abstractmethod
+
+    @abstractmethod
     async def on_stop(self):
-        """Teardown logic of the service."""
+        """Logic to shut down the service gracefully."""
         pass
+
+    async def start(self) -> bool:
+        """Internal wrapper with retry logic [Task 1.5]"""
+        self.status = NodeStatus.STARTING
         
-    async def start(self):
-        """Main starting entry point with instrumentation."""
-        logger.info(f"🆕 [BOOT] Starting Node: {self._name}...")
-        try:
-            self._start_time = datetime.utcnow()
-            await self.on_start()
-            self._healthy = True
-            self._status = "READY"
-            logger.info(f"✅ [READY] Node: {self._name} initialized successfully.")
-        except Exception as e:
-            self._healthy = False
-            self._status = "FAILED"
-            self._last_error = str(e)
-            logger.error(f"🛑 [BOOT FAILED] Node: {self._name} | Error: {e}")
-            raise
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                logger.info(f"[NEXUS:{self.name}] Initialization (Attempt {attempt})...")
+                # Every service must implement on_start as idempotent if possible
+                await self.on_start()
+                self.status = NodeStatus.RUNNING
+                logger.info(f"[NEXUS:{self.name}] State: RUNNING.")
+                return True
+                
+            except Exception as e:
+                self._retry_count = attempt
+                logger.warning(f"[NEXUS:{self.name}] Boot Error: {e}")
+                if attempt < self._max_retries:
+                    await asyncio.sleep(0.5 * attempt) # Incremental Backoff
+        
+        self.status = NodeStatus.FAILED
+        logger.critical(f"[NEXUS:{self.name}] CRITICAL BOOT FAILURE after {self._max_retries} attempts.")
+        return False
+
+    async def stop(self) -> bool:
+        """Internal wrapper for graceful stop."""
+        if self.status in [NodeStatus.HALTED, NodeStatus.PENDING]:
+            return True
             
-    async def stop(self):
-        """Teardown logic with instrumentation."""
-        logger.info(f"🔌 [STOP] Stopping Node: {self._name}...")
+        self.status = NodeStatus.STOPPING
         try:
             await self.on_stop()
-            self._healthy = False
-            self._status = "STOPPED"
+            self.status = NodeStatus.HALTED
+            logger.info(f"[NEXUS:{self.name}] State: HALTED.")
+            return True
         except Exception as e:
-            logger.error(f"⚠️ [STOP ERROR] Node: {self._name} | Error: {e}")
-            raise
+            logger.error(f"[NEXUS:{self.name}] Shutdown Error: {e}")
+            return False

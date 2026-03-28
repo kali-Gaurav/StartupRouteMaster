@@ -59,3 +59,11 @@ trip_edge_dtype = np.dtype([
     ('station_id', np.uint16),
     ('wait_time_mins', np.uint16)
 ])
+
+# For the new memmap-backed edge index
+tbr_edge_index_dtype = np.dtype([
+    ('trip_id', np.uint32),
+    ('stop_id', np.uint16),
+    ('offset', np.uint32), # Offset into the tbr_edges array
+    ('count', np.uint16)  # Number of edges from this (trip, stop) pair
+])

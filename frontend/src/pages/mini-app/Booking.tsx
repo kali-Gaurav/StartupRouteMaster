@@ -10,7 +10,8 @@ import {
   CreditCard,
   Train,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,48 +19,78 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useTelegramWebApp } from "@/hooks/useTelegramWebApp";
+import { createBookingRequest, type BookingRequestPassenger } from "@/api/booking";
+import { cn } from "@/lib/utils";
 
 const MiniAppBooking = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { webApp } = useTelegramWebApp();
-  const [passengers, setPassengers] = useState([{ id: 1, name: "", age: "", gender: "M" }]);
-  const [isEnteringDetails, setIsEnteringDetails] = useState(true);
+  const [passengers, setPassengers] = useState<BookingRequestPassenger[]>([{ name: "", age: 25, gender: "M" }]);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [referenceId, setReferenceId] = useState("");
+
+  // Extract route details from search params
+  const trainNumber = searchParams.get("train") || "";
+  const trainName = searchParams.get("name") || "";
+  const fromCode = searchParams.get("from") || "";
+  const toCode = searchParams.get("to") || "";
+  const date = searchParams.get("date") || "";
+  const classType = searchParams.get("class") || "SL";
+  const quota = searchParams.get("quota") || "GN";
 
   useEffect(() => {
     if (webApp) {
       webApp.BackButton.show();
       webApp.BackButton.onClick(() => {
         if (success) navigate("/mini-app");
-        else if (!isEnteringDetails) setIsEnteringDetails(true);
         else navigate("/mini-app/search");
       });
     }
     return () => webApp?.BackButton.hide();
-  }, [webApp, isEnteringDetails, success, navigate]);
+  }, [webApp, success, navigate]);
 
   const addPassenger = () => {
     if (passengers.length >= 6) {
       toast.error("Maximum 6 passengers allowed");
       return;
     }
-    setPassengers([...passengers, { id: Date.now(), name: "", age: "", gender: "M" }]);
+    setPassengers([...passengers, { name: "", age: 25, gender: "M" }]);
   };
 
-  const removePassenger = (id: number) => {
+  const removePassenger = (index: number) => {
     if (passengers.length === 1) return;
-    setPassengers(passengers.filter(p => p.id !== id));
+    setPassengers(passengers.filter((_, i) => i !== index));
   };
 
-  const handleBooking = () => {
+  const handleBooking = async () => {
+    if (!trainNumber || !fromCode || !toCode || !date) {
+      toast.error("Missing route information. Please search again.");
+      return;
+    }
+
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+    try {
+      const response = await createBookingRequest({
+        source_station: fromCode,
+        destination_station: toCode,
+        journey_date: date,
+        train_number: trainNumber,
+        train_name: trainName,
+        class_type: classType,
+        quota: quota,
+        passengers: passengers
+      });
+      
+      setReferenceId(response.id);
       setSuccess(true);
       toast.success("Booking Request Synthesized");
-    }, 2000);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to create booking request");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (success) {
@@ -76,10 +107,10 @@ const MiniAppBooking = () => {
           <CardContent className="p-6 space-y-4">
             <div className="flex justify-between text-[10px] font-black uppercase text-muted-foreground border-b border-border/50 pb-3">
               <span>REFERENCE ID</span>
-              <span className="text-foreground">RM-{Math.random().toString(36).substr(2, 9).toUpperCase()}</span>
+              <span className="text-foreground font-mono">{referenceId.slice(0, 8).toUpperCase()}</span>
             </div>
             <p className="text-[11px] font-medium text-muted-foreground leading-relaxed">
-              Your manual booking request has been queued. Our operators are synthesizing your PNR. You will receive an alert via Telegram shortly.
+              Your manual booking request has been queued. Our operators are synthesizing your PNR for {trainNumber} on {date}. You will receive an alert via Telegram shortly.
             </p>
           </CardContent>
         </Card>
@@ -106,6 +137,17 @@ const MiniAppBooking = () => {
       </div>
 
       <main className="flex-1 max-w-md mx-auto w-full p-4 space-y-6">
+        <div className="p-4 rounded-2xl bg-secondary/30 border border-border">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-sm font-black uppercase">{trainNumber} - {trainName}</h3>
+            <Badge variant="secondary" className="text-[10px]">{classType}</Badge>
+          </div>
+          <div className="flex justify-between text-xs text-muted-foreground">
+            <span>{fromCode} → {toCode}</span>
+            <span>{date}</span>
+          </div>
+        </div>
+
         <div className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <h2 className="text-xs font-black uppercase tracking-widest text-muted-foreground">Passenger Log</h2>
@@ -116,12 +158,12 @@ const MiniAppBooking = () => {
 
           <div className="space-y-3">
             {passengers.map((p, index) => (
-              <Card key={p.id} className="border-none glass overflow-hidden animate-in slide-in-from-right-4 duration-300" style={{ animationDelay: `${index * 100}ms` }}>
+              <Card key={index} className="border-none glass overflow-hidden animate-in slide-in-from-right-4 duration-300" style={{ animationDelay: `${index * 100}ms` }}>
                 <CardContent className="p-5 space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-black uppercase text-muted-foreground opacity-50">ENTITY #{index + 1}</span>
                     {passengers.length > 1 && (
-                      <Button variant="ghost" size="icon" onClick={() => removePassenger(p.id)} className="h-6 w-6 rounded-lg text-muted-foreground hover:text-red-500">
+                      <Button variant="ghost" size="icon" onClick={() => removePassenger(index)} className="h-6 w-6 rounded-lg text-muted-foreground hover:text-red-500">
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     )}
@@ -149,7 +191,7 @@ const MiniAppBooking = () => {
                         value={p.age}
                         onChange={(e) => {
                           const newP = [...passengers];
-                          newP[index].age = e.target.value;
+                          newP[index].age = parseInt(e.target.value) || 0;
                           setPassengers(newP);
                         }}
                       />
@@ -160,7 +202,7 @@ const MiniAppBooking = () => {
                           key={g}
                           onClick={() => {
                             const newP = [...passengers];
-                            newP[index].gender = g;
+                            newP[index].gender = g as "M" | "F" | "O";
                             setPassengers(newP);
                           }}
                           className={cn(
@@ -195,7 +237,7 @@ const MiniAppBooking = () => {
             onClick={handleBooking}
             className="w-full h-16 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-primary/20 active:scale-95 transition-all group"
           >
-            {loading ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+            {loading ? <Loader2 className="h-6 w-6" /> : (
               <div className="flex items-center gap-2">
                 <span>INITIALIZE BOOKING</span>
                 <Zap className="h-4 w-4 fill-current group-hover:animate-pulse" />
@@ -207,17 +249,5 @@ const MiniAppBooking = () => {
     </div>
   );
 };
-
-const Loader2 = ({ className }: { className?: string }) => (
-  <svg
-    className={cn("animate-spin", className)}
-    xmlns="http://www.w3.org/2000/svg"
-    fill="none"
-    viewBox="0 0 24 24"
-  >
-    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-  </svg>
-);
 
 export default MiniAppBooking;

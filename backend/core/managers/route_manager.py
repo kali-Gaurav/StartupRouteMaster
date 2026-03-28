@@ -28,7 +28,7 @@ class RouteManager:
 
         # ML ranking model is still owned by the route manager (exposed for backward-compat)
         try:
-            from ...ml_ranking_model import RouteRankingModel
+            from ..ml_ranking_model import RouteRankingModel
             self.route_ranking_model = RouteRankingModel()
         except Exception:
             self.route_ranking_model = None

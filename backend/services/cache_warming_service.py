@@ -29,7 +29,7 @@ from ..models import Trip, StopTime, Station
 # constraints type lives in the core module where the engine is implemented.
 from .route_engine import RouteEngine
 from ..core.route_engine import RouteConstraints
-from ..availability_service import availability_service, AvailabilityRequest
+from .inventory.availability_service import availability_service, AvailabilityRequest
 from ..services.multi_layer_cache import multi_layer_cache, RouteQuery, AvailabilityQuery
 from ..database.models import QuotaType
 from ..config import Config

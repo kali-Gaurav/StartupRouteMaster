@@ -1,62 +1,28 @@
-from fastapi import HTTPException, status, Response
-from core.nexus.state import nexus_state_manager, NexusState
+import logging
+import time
+from fastapi import Request, HTTPException
 
 logger = logging.getLogger("nexus.gatekeeper")
 
-async def nexus_gatekeeper(response: Response):
-    """
-    [Task 4 / 8] High-Integrity FastAPI Dependency.
-    1. Prevents traffic if engine isn't READY.
-    2. Injects V3 Operational Branding (X-Nexus-State) into response.
-    """
-    state = nexus_state_manager.current_state
-    
-    # Task 8: Inbound Branding for all V3 requests
-    response.headers["X-Nexus-State"] = state.value
-    response.headers["X-Nexus-Version"] = "3.1.0-Fiber"
-    
-    if state == NexusState.OFFLINE or state == NexusState.BOOTING:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "error": "Nexus Engine Is Booting",
-                "status": state.value,
-                "msg": "RouteMaster V3 is initializing core dependencies."
-            }
-        )
-        
-    if state == NexusState.HALTED:
-        logger.critical(f"🚨 [GATEKEEPER] Request rejected due to HALTED state: {nexus_state_manager._halt_reason}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "Nexus Engine Halted",
-                "status": state.value,
-                "reason": nexus_state_manager._halt_reason,
-                "msg": "Platform integrity compromised. Manual intervention required."
-            }
-        )
-        
-    # READY and DEGRADED states are operational
-    return True
+START_TIME = time.time()
 
-class NexusStatusMonitor:
-    """[Task 4.1] Continuously audits the health of all registered nodes."""
-    
-    def __init__(self, bootstrapper):
-        self._boot = bootstrapper
+async def nexus_gatekeeper(request: Request):
+    """
+    [Subtask 1.10] Master Operational Firewall for Nexus V3 Fiber.
+    This function is a global dependency that checks system state before allowing a request.
+    """
+    # 0. Zero-Latency L0 Fast-Path Check [Task 41.1]
+    from core.nexus.cache.mmap_cortex import nexus_cortex
+    if nexus_cortex.is_kill_switch_active():
+        logger.critical("[GATEKEEPER] Master Kill Switch ACTIVE. Blocking traffic.")
+        raise HTTPException(status_code=503, detail="NEXUS_SYSTEM_HALTED")
         
-    def get_full_health(self):
-        """Returns the real-time status of the 'Nexus Fiber' ecosystem."""
-        return {
-            "system_state": nexus_state_manager.current_state.value,
-            "is_operational": nexus_state_manager.is_operational(),
-            "nodes": {
-                name: {
-                    "healthy": node.is_healthy,
-                    "last_error": node.last_error,
-                    "uptime": str(datetime.utcnow() - node._start_time) if node._start_time else None
-                }
-                for name, node in self._boot._nodes.items()
-            }
-        }
+    if nexus_cortex.is_panic():
+        logger.critical("[GATEKEEPER] Global Financial Panic ACTIVE. Blocking traffic.")
+        raise HTTPException(status_code=503, detail="NEXUS_FINANCIAL_BLACKOUT")
+
+    # 1. Protocol Branding
+    request.state.nexus_version = "3.1.0"
+    request.state.nexus_uptime = round(time.time() - START_TIME, 2)
+    
+    return True

@@ -1,0 +1,138 @@
+﻿python : INFO: JIT: Initializing optimized database connection pools (Group 5)...
+At line:1 char:1
++ python engine_diagnostic.py 2>&1 | Out-File -Encoding utf8 diag_outpu ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO: JIT: Init...ls (Group 5)...:String) [], RemoteExcepti 
+   on
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+WARNING: ΓÜá∩╕Å CRITICAL PERFORMANCE WARNING: Running RouteMaster on a synced Cloud Folder 
+(OneDrive/Dropbox). SQLite I/O will be 10x slower and corruption-prone.
+INFO: [NEXUS:CACHE] DB Tuned (P5.1): mmap=512MB, sync=NORMAL, mode=WAL
+INFO: All Database pools active and instrumented with DBManager (Task 11 Group 5 complete).
+INFO: [NEXUS:CACHE] MultiLayerCache (Redis L2) Initialized via rediss://defaul...
+INFO: ≡ƒÆ╛ Loaded snapshot for 20260328 from disk (vv10.0).
+INFO: Snapshot saved to disk: snapshots\graph_snapshot_20260328.pkl
+INFO: Engine: Loaded existing snapshot for 2026-03-28
+INFO: ≡ƒÜä TBR: Loaded 2956444 transfer edges.
+INFO: ≡ƒºá Predictive JIT: Hydrating major hub segments...
+INFO: RAPTOR: Short-run detected (18.0km). Window capped to 4h.
+INFO: ≡ƒ¢í∩╕Å [CORTEX] Successfully mapped Nexus Neural Spine (L0).
+INFO: ≡ƒôè RAPTOR Surge Analysis: Level WARNING detected. Budget: 50000
+INFO: RAPTOR Yield: 0 routes, Traversal Depth: 64 nodes.
+INFO: ≡ƒöì TBR: Starting A* v4 Search (Yield Optimized) for [4455] -> [7960]
+INFO: ≡ƒôè TBR Stats: 24 goals, 50027 nodes, PRUNED(time:307, dom:39448)
+INFO: ≡ƒôè Goals by tier: {0: 3, 3: 6, 2: 10, 1: 5}
+INFO: TBR Final: 23 routes in 1358.07ms. (Load More: False)
+INFO: Γ£à Predictive JIT: Hydrated 10 hub clusters.
+INFO: ≡ƒôè RAPTOR Surge Analysis: Level WARNING detected. Budget: 50000
+INFO: RAPTOR Yield: 0 routes, Traversal Depth: 13 nodes.
+INFO: ≡ƒöì TBR: Starting A* v4 Search (Yield Optimized) for [4736] -> [6902]
+INFO: ≡ƒôè TBR Stats: 30 goals, 50005 nodes, PRUNED(time:1685, dom:41082)
+INFO: ≡ƒôè Goals by tier: {0: 2, 2: 12, 1: 5, 3: 11}
+INFO: TBR Final: 22 routes in 1093.15ms. (Load More: False)
+INFO: Loaded 250 dynamic hubs from stops table.
+INFO: TurboRouter: Entering Search Phase: SearchPhase.STRICT
+INFO: TurboRouter: Entering Search Phase: SearchPhase.MODERATE
+INFO: ≡ƒôè RAPTOR Surge Analysis: Level WARNING detected. Budget: 50000
+INFO: RAPTOR Yield: 0 routes, Traversal Depth: 15 nodes.
+INFO: ≡ƒöì TBR: Starting A* v4 Search (Yield Optimized) for [2362] -> [784]
+INFO: ≡ƒôè TBR Stats: 99 goals, 50008 nodes, PRUNED(time:20, dom:36656)
+INFO: ≡ƒôè Goals by tier: {0: 2, 1: 5, 2: 5, 3: 87}
+INFO: TBR Final: 17 routes in 1050.60ms. (Load More: False)
+INFO: Loaded 250 dynamic hubs from stops table.
+INFO: TurboRouter: Entering Search Phase: SearchPhase.STRICT
+INFO: TurboRouter: Entering Search Phase: SearchPhase.MODERATE
+INFO: MultiLayerCache: Invalidation listener cancelled.
+INFO:  MultiLayerCache: Redis connection closed.
+
+================================================================================
+  ENGINE DIAGNOSTIC v1: Data Pipeline Inspection
+================================================================================
+
+
+--- PHASE 1: Graph Snapshot Integrity ---
+  Snapshot Date  : 2026-03-28
+  Stop Cache Size: 8527
+  Trip Segments  : 0
+  Transfer Graph : 4135 stations with transfers
+  Departures Data: OK (vectorized)
+  Arrivals Data  : MISSING (vectorized)
+  Pattern Deps   : OK (vectorized)
+  Departures Array Size: 146632
+  Departures Index Size: 8486
+  Pattern Deps Array Size: 146632
+
+--- PHASE 2: Station Resolution ---
+  KYN    -> ID:   4455 | Name: KALYAN JN | City: Kalyan
+  TNA    -> ID:   7960 | Name: THANE | City: Thane
+  MAS    -> ID:   4736 | Name: PURATCHI THALAIVAR DR. MGR CTL | City: Chennai
+  SBC    -> ID:   6902 | Name: KSR BENGALURU | City: Bangalore
+  ET     -> ID:   2362 | Name: ITARSI JN | City: Itarsi
+  BINA   -> ID:    784 | Name: BINA JN | City: Etawa
+  NDLS   -> ID:   5533 | Name: NEW DELHI | City: New Delhi
+  HWH    -> ID:   3099 | Name: HOWRAH JN | City: Bara Bazar
+
+--- PHASE 3: Departure Availability ---
+  KYN (ID:4455): Raw Deps=116, Pattern Deps=116 (1 patterns)
+    -> Trip 3258 departs at 2026-03-28 19:45:00
+    -> Trip 10266 departs at 2026-03-28 19:46:00
+    -> Trip 10158 departs at 2026-03-28 19:49:00
+  MAS (ID:4736): Raw Deps=14, Pattern Deps=14 (1 patterns)
+    -> Trip 1674 departs at 2026-03-28 20:10:00
+    -> Trip 4321 departs at 2026-03-28 20:55:00
+    -> Trip 1742 departs at 2026-03-28 21:05:00
+  ET (ID:2362): Raw Deps=127, Pattern Deps=127 (1 patterns)
+    -> Trip 3503 departs at 2026-03-28 20:00:00
+    -> Trip 4529 departs at 2026-03-28 20:25:00
+    -> Trip 1063 departs at 2026-03-28 20:30:00
+
+--- PHASE 4: Individual Engine Tests ---
+
+  [Sub-Urban Short] KYN (ID:4455) -> TNA (ID:7960)
+    Direct trips in graph: 0 
+    RAPTOR     : 0 routes in 212.8ms | Nodes explored: 64
+    TBR        : 23 routes in 1358.3ms
+      -> 16min | KYN(TR-UNKNOWN)
+      -> 19min | KYN(TR-UNKNOWN)
+    TURBO      : 30 routes in 39.5ms
+      -> type=direct, train=10459
+      -> type=direct, train=3234
+    HUB TIER 0 : 0 routes in 1.5ms
+
+  [Inter-City Medium] MAS (ID:4736) -> SBC (ID:6902)
+    Direct trips in graph: 0 
+    RAPTOR     : 0 routes in 2.1ms | Nodes explored: 13
+    TBR        : 22 routes in 1093.5ms
+      -> 345min | MAS(TR-UNKNOWN)
+      -> 390min | MAS(TR-UNKNOWN)
+    TURBO      : 29 routes in 324.8ms
+      -> type=direct, train=73335904
+      -> type=direct, train=64619483
+    HUB TIER 0 : 0 routes in 1.4ms
+
+  [Main Line] ET (ID:2362) -> BINA (ID:784)
+    Direct trips in graph: 0 
+    RAPTOR     : 0 routes in 3.0ms | Nodes explored: 15
+    TBR        : 17 routes in 1051.0ms
+      -> 245min | ET(TR-UNKNOWN)
+      -> 255min | ET(TR-UNKNOWN) -> RKMP(TR-UNKNOWN)
+    TURBO      : 25 routes in 42.3ms
+      -> type=direct, train=1696
+      -> type=direct, train=2545
+    HUB TIER 0 : 0 routes in 1.2ms
+
+--- PHASE 5: RAPTOR Deep Debug (MAS->SBC) ---
+  MAS metro group: ['MAS', 'MS', 'TBM', 'PER', 'AJJ']
+  SBC metro group: ['SBC', 'YPR', 'SMVB', 'KJM']
+  Expanded MAS IDs: {4736, 7744, 6049, 5265, 120}
+  Expanded SBC IDs: {3842, 7317, 6902, 8511}
+  Transfers from MAS: 21
+
+--- PHASE 6: Turbo Empty Leg Debug (KYN->TNA) ---
+  Direct segments KYN(4455)->TNA(7960) in graph: 0
+
+================================================================================
+  DIAGNOSTIC COMPLETE
+================================================================================
+

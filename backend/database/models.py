@@ -428,8 +428,39 @@ class UnlockedRoute(UserBase):
     __tablename__ = "unlocked_routes"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"))
+    route_id = Column(String(100), index=True) # ID of the route from search results
     payment_id = Column(String(36), ForeignKey("payments.id"), nullable=True)
+    unlocked_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
     user = relationship("User", back_populates="unlocked_routes")
+
+class SegmentPNR(UserBase):
+    """
+    Tracks PNRs for individual segments of a multi-segment journey.
+    """
+    __tablename__ = "segment_pnrs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    journey_id = Column(String(100), index=True)
+    segment_index = Column(Integer)
+    train_number = Column(String(20))
+    pnr = Column(String(10), index=True)
+    status = Column(String(20), default="BOOKED") # BOOKED, CANCELLED
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", backref="segment_pnrs")
+
+class Saga(UserBase):
+    """[Task 6.2] Financial Saga for distributed transaction integrity."""
+    __tablename__ = 'sagas'
+    id = Column(String(36), primary_key=True)
+    correlation_id = Column(String(36), index=True, unique=True)
+    state = Column(String(50), default='PENDING')
+    current_step = Column(String(100))
+    payload = Column(JSON)
+    compensation_log = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Review(UserBase):
     __tablename__ = "reviews"
@@ -756,6 +787,17 @@ class RealtimeData(TransitBase):
     timestamp = Column(DateTime)
     source = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class CancelledTrain(TransitBase):
+    """
+    Manual cancellation overlay for trains (Task 126).
+    """
+    __tablename__ = "cancelled_trains"
+    id = Column(Integer, primary_key=True)
+    train_no = Column(String(50), index=True)
+    travel_date = Column(Date, index=True)
+    reason = Column(String(255), nullable=True)
+    cancelled_at = Column(DateTime, default=datetime.utcnow)
 
 class Disruption(TransitBase):
     __tablename__ = "disruptions"

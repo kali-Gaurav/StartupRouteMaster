@@ -4,7 +4,7 @@ from datetime import date
 import asyncio
 
 # Import the ProviderGateway and its models
-from backend.providers.gateway import provider_gateway
+from providers.gateway import provider_gateway
 # Assuming UnifiedAvailability model exists or gateway's availability data structure is directly usable.
 # For now, we adapt to the expected Dict structure.
 

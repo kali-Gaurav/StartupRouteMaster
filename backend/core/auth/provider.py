@@ -9,6 +9,8 @@ from fastapi import HTTPException, Request, status
 from core.providers import ServiceProvider, ServiceStatus
 from core.container import container
 from database.config import Config
+from core.auth.utils import verify_fingerprint, generate_fingerprint
+from core.auth.sybil import sybil_manager
 
 logger = logging.getLogger("routemaster.auth")
 
@@ -43,6 +45,13 @@ class AuthServiceProvider(ServiceProvider):
         if not token:
             raise HTTPException(status_code=401, detail="Missing auth token")
 
+        # 0. Sybil/Challenge Check [Task 110]
+        # Skip if already bypassed for this session
+        user_id = token.split(":")[0] # Simplified logic for quick lookup if possible
+        if await sybil_manager.check_challenge_required(user_id, request):
+            if not await sybil_manager.is_bypassed(user_id):
+                raise HTTPException(status_code=403, detail="CHALLENGE_REQUIRED")
+
         cache = await container.get("cache")
         
         # 1. Blacklist Check (Redis)
@@ -54,10 +63,23 @@ class AuthServiceProvider(ServiceProvider):
 
         # 2. Cache Lookup (Token Introspection)
         token_hash = hashlib.sha256(token.encode()).hexdigest()
+        client_id = request.headers.get("X-Client-Id")
+        fingerprint = request.headers.get("X-Fingerprint")
+
         if cache and cache.redis and not skip_cache:
             cached_data = await cache.redis.get(f"auth:session:{token_hash}")
             if cached_data:
                 session_info = json.loads(cached_data)
+                
+                # [Task 106] JWT Fingerprinting Check
+                if client_id and fingerprint:
+                    ua = request.headers.get("user-agent", "unknown")
+                    ip = self._get_client_ip(request)
+                    if not verify_fingerprint(fingerprint, client_id, ua, ip):
+                        logger.warning(f"🚨 FINGERPRINT MISMATCH: {client_id} from {ip}")
+                        # Don't throw immediately to avoid enumeration? No, throw 401.
+                        raise HTTPException(status_code=401, detail="Invalid client signature")
+
                 # [Task 10.2] IP/UA Introspection
                 await self._validate_introspection(session_info, request)
                 return session_info["user"]
@@ -124,6 +146,11 @@ class AuthServiceProvider(ServiceProvider):
                 pipe.zcard(key)
                 pipe.expire(key, window)
                 _, _, count, _ = await pipe.execute()
+                
+            # [Task 110] Check for Challenge Threshold
+            if count >= (limit * 0.8):
+                logger.warning(f"⚖️ Sybil: Triggering challenge threshold for {user_id} ({count}/{limit})")
+                await sybil_manager.issue_challenge_required(user_id)
                 
             return count <= limit
         except Exception as e:
