@@ -88,8 +88,8 @@ class OptimizedRAPTOR(BaseRoutingEngine):
         self._nodes_explored = 0
         self._global_min_arrival_mins = float('inf')
         self.frontier_manager = None
-        # [Task 51.1] Elastic Frontier Sizing
-        self.round_frontier_multipliers = {0: 1.0, 1: 3.0, 2: 6.0, 3: 9.0}
+        # [Task 51.1] Elastic Frontier Sizing (Reduced aggressiveness to avoid valid-path cuts)
+        self.round_frontier_multipliers = {0: 1.0, 1: 1.5, 2: 2.5, 3: 3.5}
 
     def _safe_fromtimestamp(self, ts: int) -> datetime:
         """[Task 27.11 Audit Fix] Safely handle timestamps for Windows compatibility."""

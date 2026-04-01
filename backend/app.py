@@ -76,10 +76,11 @@ async def root():
 async def ping():
     return {"status": "pong", "timestamp": datetime.utcnow().isoformat()}
 
-# --- FRONTEND COMPATIBILITY ROUTES ---
+# --- FRONTEND COMPATIBILITY ROUTES (Root & API Aliases) ---
+@app.get("/health", tags=["Health"])
 @app.get("/api/health", tags=["Health"])
 async def api_health():
-    """Consolidated Health for Frontend."""
+    """Consolidated Health for Frontend and Integration Tests."""
     from core.nexus.bootstrapper import nexus_boot
     from core.nexus.state import SystemState
     return {
@@ -94,20 +95,38 @@ async def api_health():
         }
     }
 
+@app.get("/health/live", tags=["Health"])
 @app.get("/api/health/live", tags=["Health"])
 async def api_health_live():
+    """Liveness probe alias."""
     return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
 
+@app.get("/health/ready", tags=["Health"])
+@app.get("/api/health/ready", tags=["Health"])
+async def api_health_ready():
+    """Readiness probe alias."""
+    from core.nexus.bootstrapper import nexus_boot
+    from core.nexus.state import SystemState
+    return {
+        "status": "ready" if nexus_boot.state == SystemState.READY else "degraded",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/stats", tags=["Health"])
 @app.get("/api/stats", tags=["Health"])
 async def api_stats():
     """Resource telemetry for the frontend dashboard."""
     from core.nexus.audit.governor import nexus_governor
-    stats = await nexus_governor.get_stats()
+    from core.nexus.telemetry import nexus_telemetry
+    
+    gov_stats = await nexus_governor.get_stats()
+    telemetry_metrics = await nexus_telemetry.get_metrics()
+
     return {
-        "cpu": stats.get("cpu_percent", 0),
-        "ram": stats.get("ram_percent", 0),
-        "latency": 42,
-        "requests_per_sec": 12 
+        "cpu": gov_stats.get("cpu_percent", 0),
+        "ram": gov_stats.get("ram_percent", 0),
+        "latency_ms": telemetry_metrics.get("avg_latency_ms", 0),
+        "requests_per_sec": telemetry_metrics.get("requests_per_sec", 0)
     }
 
 # --- PRODUCTION RUNNER ---

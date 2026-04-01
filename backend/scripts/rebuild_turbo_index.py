@@ -33,9 +33,10 @@ async def rebuild_v4_index():
             # Fetch all departures from this stop
             query = """
                 SELECT st.trip_id, st.departure_timestamp, st.arrival_timestamp, 
-                       st.service_mask, st.stop_sequence, st.dist_m,
+                       t.service_mask, st.stop_sequence, st.dist_m,
                        COALESCE(f.fare, 0.0) as estimated_price
                 FROM stop_times st
+                JOIN trips t ON st.trip_id = t.id
                 LEFT JOIN fares f ON st.trip_id = f.trip_id AND f.stop_sequence = st.stop_sequence
                 WHERE st.stop_id = :sid
             """

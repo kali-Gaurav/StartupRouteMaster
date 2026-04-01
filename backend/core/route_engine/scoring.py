@@ -182,6 +182,23 @@ class RouteScorer:
                 risk_level = "MEDIUM"; risk_penalty = 500
                 risk_warnings.append("Passing through high-congestion zones")
 
+        # [Task 139] Dynamic Fleet Congestion Penalty
+        # This penalizes popular/overcrowded trains based on real-time search volume
+        congestion_penalty = 0
+        for seg in route.segments:
+            # We fetch 'congestion_rank' from metadata (populated by search_service from Redis)
+            # 0.0=Empty, 1.0=Popular (1000 mins penalty), 2.0=Clogged (4000 mins)
+            rank = seg.metadata.get("congestion_rank", 0.0) if seg.metadata else 0.0
+            if rank > 0.4:
+                # Scaled penalty (Squared proportionality ensures we avoid extreme surges)
+                congestion_penalty += (rank ** 2) * 1000
+                
+            # Persona awareness: COMFORT avoids crowds; BUDGET is okay with them.
+            if constraints.persona == Persona.COMFORT:
+                congestion_penalty *= 1.5
+            elif constraints.persona == Persona.BUDGET:
+                congestion_penalty *= 0.5
+
         # Hydrate Metadata
         if not hasattr(route, 'metadata') or route.metadata is None:
             route.metadata = {}
@@ -195,14 +212,20 @@ class RouteScorer:
             "survival_prob": round(survival_prob, 2),
             "avail_prob": round(avail_prob, 2),
             "live_delay_penalty": live_delay_penalty,
-            "comfort_penalty": comfort_adjustments,
+            "comfort_penalty": comfort_adjustments + congestion_penalty,
             "risk_penalty": gn_penalty + avail_penalty + risk_penalty + survival_penalty,
+            "congestion_rank": max([s.metadata.get("congestion_rank", 0.0) if s.metadata else 0 for s in route.segments]),
             "risk_level": risk_level
         }
         route.metadata["persona_rank_score"] = persona_score
         
-        # Human readable summary
+        # Human readable summary updates [Task 139]
         reasons = []
+        if any((getattr(seg.metadata, 'congestion_rank', 0) if seg.metadata else 0) > 1.2 for seg in route.segments): 
+             reasons.append("Heavy Crowd Surge")
+        elif any((getattr(seg.metadata, 'congestion_rank', 0) if seg.metadata else 0) < 0.2 for seg in route.segments):
+             reasons.append("Happier (Low Crowd) Track")
+             
         if any((getattr(tr, 'duration_minutes', 0) or 0) < 30 for tr in route.transfers): reasons.append("Tight Connection")
         if any((getattr(tr, 'duration_minutes', 0) or 0) > 360 for tr in route.transfers): reasons.append("Long Wait")
         if len(route.segments) == 1: reasons.append("Direct journey")
@@ -221,7 +244,7 @@ class RouteScorer:
         features = {
             "persona": constraints.persona,
             "segments": len(route.segments),
-            "delay_penalty": live_delay_penalty,
+            "delay_penalty": live_delay_penalty + congestion_penalty,
             "cost": route.total_cost,
             "duration": route.total_duration,
             "survival": float(survival_prob)
@@ -231,8 +254,8 @@ class RouteScorer:
         story = journey_story_model.predict_sync(features)
         route.metadata["story"] = story
         
-        # [Task 22.1] The actual score returned incorporates the live reliability factors
-        return float(persona_score + live_delay_penalty + survival_penalty)
+        # [Task 22.1] Returns incorporates the live reliability and crowd factors
+        return float(persona_score + live_delay_penalty + survival_penalty + congestion_penalty)
 
     @staticmethod
     def get_persona_score(route: Route, constraints: RouteConstraints) -> float:

@@ -26,6 +26,11 @@ class TelemetryMetrics:
         self.false_positives = 0
         self.sla_violations = 0
         self.total_hydrations = 0
+        
+        # [Task 146.9] Triage Gatekeeper Metrics
+        self.triage_total = 0
+        self.triage_tripped = 0
+        
         self.prewarms_triggered = 0
         self.prewarms_skipped = 0
         self.ml_inferences_total = 0
@@ -89,7 +94,9 @@ class TelemetryMetrics:
             "flow": {
                 "hydrations": self.total_hydrations,
                 "prewarms_triggered": self.prewarms_triggered,
-                "prewarms_skipped": self.prewarms_skipped
+                "prewarms_skipped": self.prewarms_skipped,
+                "triage_total": self.triage_total,
+                "triage_tripped": self.triage_tripped
             },
             "providers": {
                 "calls": self.provider_calls,

@@ -1,7 +1,7 @@
 import logging
 from sqlalchemy import func
 from database.models import FinancialLedger
-from database.session import AsyncSessionLocal
+from database.session import AsyncSessionUser
 
 logger = logging.getLogger("nexus.financial.parity")
 
@@ -14,9 +14,13 @@ class FinancialParityChecker:
         This is a fundamental law of accounting.
         """
         try:
-            async with AsyncSessionLocal() as db:
-                debits = (await db.execute(func.sum(FinancialLedger.amount).filter(FinancialLedger.debit_account != None))).scalar() or 0.0
-                credits = (await db.execute(func.sum(FinancialLedger.amount).filter(FinancialLedger.credit_account != None))).scalar() or 0.0
+            from sqlalchemy import select
+            async with AsyncSessionUser() as db:
+                stmt_debits = select(func.sum(FinancialLedger.amount)).where(FinancialLedger.debit_account.is_not(None))
+                stmt_credits = select(func.sum(FinancialLedger.amount)).where(FinancialLedger.credit_account.is_not(None))
+                
+                debits = (await db.execute(stmt_debits)).scalar() or 0.0
+                credits = (await db.execute(stmt_credits)).scalar() or 0.0
                 
                 # Check for perfect parity
                 diff = abs(debits - credits)

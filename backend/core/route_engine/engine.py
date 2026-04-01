@@ -15,6 +15,7 @@ from .constraints import RouteConstraints
 from core.data_structures import Route, Persona
 from .orchestrator import UnifiedRoutingOrchestrator
 from services import multi_layer_cache
+from services.r2_sync_service import r2_sync
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,15 @@ class RailwayRouteEngine(ServiceProvider):
         self.orchestrator = UnifiedRoutingOrchestrator(self)
 
     async def init(self, date_override: Optional[datetime] = None, force_rebuild: bool = False):
+        """IoC Lifecycle: Ensure graph is warm."""
+        from core.providers import ServiceStatus
+        if self.status == ServiceStatus.HEALTHY and not force_rebuild:
+            return
+            
         logger.info("🚂 [NEXUS:SEARCH] Initializing RailwayRouteEngine and pre-warming graph...")
         await self._get_current_graph(date_override or datetime.now(), force_rebuild=force_rebuild)
         self.graph_initialized = True
+        self.status = ServiceStatus.HEALTHY
         logger.info("✅ [NEXUS:SEARCH] Route Engine is HOT and ready.")
 
     async def shutdown(self):
@@ -62,11 +69,23 @@ class RailwayRouteEngine(ServiceProvider):
                 return self.graph
             
             snapshot = await self.snapshot_manager.load_snapshot(date) if not force_rebuild else None
-            is_nexus_grade = snapshot and hasattr(snapshot, '_trip_reachability_bitset') and snapshot._trip_reachability_bitset is not None
+            
+            # [Task 146.8] Ensure both trip-level and cluster-level reachability are present
+            is_nexus_grade = snapshot and hasattr(snapshot, '_trip_reachability_bitset') and \
+                 getattr(snapshot, 'cluster_reachability', None) is not None
             
             if not snapshot or not is_nexus_grade:
-                logger.info(f"Engine: Building fresh Nexus-Grade graph for {date.date()}")
+                logger.info(f"Engine: Building fresh Nexus-Grade graph/reachability for {date.date()}")
                 self.graph = await self.graph_builder.build_graph(date)
+                # [Task 121: Elite Persistence] Proactively save the built graph to avoid cold-boots
+                asyncio.create_task(self.snapshot_manager.save_snapshot(self.graph.snapshot))
+                
+                # [Nexus:Cloud] Background R2 Sync
+                async def _sync_to_cloud():
+                    await asyncio.sleep(10) # Wait for file write to stabilize
+                    await r2_sync.upload_transit_db()
+                    await r2_sync.upload_latest_snapshot()
+                asyncio.create_task(_sync_to_cloud())
             else:
                 logger.info(f"Engine: Loaded existing Nexus-Grade snapshot for {date.date()}")
                 self.graph = TimeDependentGraph(snapshot, overlay=self.overlay)
@@ -110,39 +129,23 @@ class RailwayRouteEngine(ServiceProvider):
         graph = await self._get_current_graph(departure_date)
         if not graph: return []
 
-        logger.info(f"🚀 [SEARCH] Phase 1: High-Speed search for {source_code}->{destination_code}")
+        logger.info(f"🚀 [SEARCH] Orchestrating High-Speed search for {source_code}->{destination_code}")
         
-        phase1_engines = ["UltraTurbo", "TBR"]
-        fast_results = await self.orchestrator.run_search_phase(
-            phase1_engines, source_code, destination_code, departure_date, constraints, source_stop, dest_stop, graph
+        # [Nexus Fix] Use the unified orchestrator search which handles phases and parallelism internally
+        from .base import RoutingRequest
+        req = RoutingRequest(
+            source_code=source_code,
+            destination_code=destination_code,
+            departure_date=departure_date,
+            constraints=constraints,
+            limit=constraints.max_results,
+            db_session=res_db
         )
         
-        logger.info(f"📊 [SEARCH] Phase 1 yielded {len(fast_results)} unique routes.")
+        results = await self.orchestrator.search_all_tiers(req)
         
-        DEFAULT_MIN_YIELD = 15
-        if len(fast_results) < DEFAULT_MIN_YIELD:
-            logger.warning(f"📉 [SEARCH] Low yield ({len(fast_results)}), triggering Phase 2: RAPTOR Deep Search.")
-            
-            raptor_results = await self.orchestrator.run_search_phase(
-                ["RAPTOR"], source_code, destination_code, departure_date, constraints, source_stop, dest_stop, graph
-            )
-            
-            existing_jids = {r.journey_id for r in fast_results}
-            for route in raptor_results:
-                if route.journey_id not in existing_jids:
-                    fast_results.append(route)
-            logger.info(f"📊 [SEARCH] Phase 2 expanded yield to {len(fast_results)} routes.")
-
-        final_results = fast_results
-        if constraints.persona in (Persona.BUDGET, Persona.ECONOMY):
-            final_results.sort(key=lambda x: (x.total_cost or 99999, x.total_duration or 99999))
-        else:
-            final_results.sort(key=lambda x: x.score or 0, reverse=True)
-            
-        await self.orchestrator.hydration_pipeline.execute(final_results, constraints, graph, res_db)
-        
-        logger.info(f"✅ Search Complete for {source_code}->{destination_code} in {(time.time() - start_time)*1000:.2f}ms. Returning {len(final_results)} routes.")
-        return final_results[:constraints.max_results]
+        logger.info(f"✅ Search Complete for {source_code}->{destination_code} in {(time.time() - start_time)*1000:.2f}ms. Returning {len(results)} routes.")
+        return results
 
 # ... (rest of the file remains the same)
 # search_hub_routes, rebuild_snapshot, run_nightly_refresh

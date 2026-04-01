@@ -26,14 +26,18 @@ class SearchMicroservice:
     async def execute_discovery(self, source: str, destination: str, travel_date: datetime, constraints: Any, limit: int) -> List[Route]:
         """Discovery Phase: Multi-tiered route discovery."""
         start = time.perf_counter()
-        results = await self.orchestrator.search_all_tiers(
+        from core.route_engine.base import RoutingRequest
+        req = RoutingRequest(
             source_code=source,
             destination_code=destination,
+            src_cluster_ids=[],
+            dst_cluster_ids=[],
             departure_date=travel_date,
             constraints=constraints,
             limit=limit,
-            db=self.db
+            db_session=self.db
         )
+        results = await self.orchestrator.search_all_tiers(req)
         duration_ms = (time.perf_counter() - start) * 1000
         system_monitor.report_request_latency(duration_ms)
         return results

@@ -24,6 +24,7 @@ from utils import metrics
 from core.metrics import jit_metrics, SurgeLevel, DegradationManager
 from database.session import SessionTransit
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
+from core.route_engine.base import RoutingRequest
 from core.route_engine.constraints_engine import ConstraintsEngine
 from core.route_engine.categorization import CategorizationEngine
 from services.unlock_service import UnlockService
@@ -196,15 +197,17 @@ class SearchService:
             # Use a large internal limit (e.g. 200) to allow for diverse candidates
             internal_limit = max(100, limit * 3)
             
-            search_res_target = await orchestrator.search_all_tiers(
+            req_target = RoutingRequest(
                 source_code=source,
                 destination_code=destination,
+                src_cluster_ids=[],  # [Task 41.22] Unified migration
+                dst_cluster_ids=[],  # [Task 41.22] Unified migration
                 departure_date=dt,
                 constraints=c,
                 limit=internal_limit,
-                db=self.transit_db,
-                skip_heavy=skip_heavy
+                db_session=self.transit_db
             )
+            search_res_target = await orchestrator.search_all_tiers(req_target, skip_heavy=skip_heavy)
             for r in search_res_target:
                 r.metadata["day_offset"] = 0
                 all_unique_routes[r.journey_id] = r
@@ -227,7 +230,8 @@ class SearchService:
                     logger.info(f"Moderate yield ({len(all_unique_routes)}) detected for {source}->{destination}. Expanding search.")
 
                     # Day +1
-                    res_plus = await orchestrator.search_all_tiers(source, destination, dt + timedelta(days=1), c, internal_limit, self.transit_db)
+                    req_plus = RoutingRequest(source_code=source, destination_code=destination, departure_date=dt + timedelta(days=1), constraints=c, limit=internal_limit, db_session=self.transit_db, src_cluster_ids=[], dst_cluster_ids=[])
+                    res_plus = await orchestrator.search_all_tiers(req_plus)
                     for r in res_plus:
                         if r.journey_id not in all_unique_routes:
                             r.metadata["day_offset"] = 1
@@ -243,7 +247,8 @@ class SearchService:
                     if len(all_unique_routes) < 15:
                         # Don't suggest past dates if searching for today
                         if (dt - timedelta(days=1)).date() >= datetime.utcnow().date():
-                            res_minus = await orchestrator.search_all_tiers(source, destination, dt - timedelta(days=1), c, internal_limit, self.transit_db)
+                            req_minus = RoutingRequest(source_code=source, destination_code=destination, departure_date=dt - timedelta(days=1), constraints=c, limit=internal_limit, db_session=self.transit_db, src_cluster_ids=[], dst_cluster_ids=[])
+                            res_minus = await orchestrator.search_all_tiers(req_minus)
                             for r in res_minus:
                                 if r.journey_id not in all_unique_routes:
                                     r.metadata["day_offset"] = -1
@@ -274,8 +279,10 @@ class SearchService:
                 for hub_code in candidate_hubs:
                     # [6.4] Forced Join via Hub
                     # OMIT self.transit_db to let orchestrator create isolated sessions for concurrency safety
-                    hub_tasks.append(orchestrator.search_all_tiers(source, hub_code, dt, c, 50))
-                    hub_tasks.append(orchestrator.search_all_tiers(hub_code, destination, dt, c, 50))
+                    req_h1 = RoutingRequest(source_code=source, destination_code=hub_code, departure_date=dt, constraints=c, limit=50, src_cluster_ids=[], dst_cluster_ids=[])
+                    req_h2 = RoutingRequest(source_code=hub_code, destination_code=destination, departure_date=dt, constraints=c, limit=50, src_cluster_ids=[], dst_cluster_ids=[])
+                    hub_tasks.append(orchestrator.search_all_tiers(req_h1))
+                    hub_tasks.append(orchestrator.search_all_tiers(req_h2))
                 
                 hub_raw_results = await asyncio.gather(*hub_tasks)
                 
@@ -344,7 +351,8 @@ class SearchService:
             # [9.3] Auto-Trigger Tatkal Search
             if quota == "GN" and high_risk_count >= (len(verified_routes) / 2) and len(verified_routes) > 0:
                 logger.info(f"High risk GN yield detected ({high_risk_count}). Auto-triggering Tatkal search [9.3].")
-                tatkal_results = await orchestrator.search_all_tiers(source, destination, dt, c, 10, self.transit_db)
+                req_tatkal = RoutingRequest(source_code=source, destination_code=destination, departure_date=dt, constraints=c, limit=10, db_session=self.transit_db, src_cluster_ids=[], dst_cluster_ids=[])
+                tatkal_results = await orchestrator.search_all_tiers(req_tatkal)
                 logger.info(f"Tatkal Search found {len(tatkal_results)} candidates.")
                 # Re-verify with Quota="TQ"
                 verified_tq = await self._verify_routes_parallel(tatkal_results, dt, "TQ")
@@ -608,8 +616,8 @@ class SearchService:
         # 1. Prepare Deep Queries (Every segment of top 3)
         deep_tasks = []
         for r in top_fastest:
-            # Task 40: Call RapidAPI for verification
-            deep_tasks.append(self._verify_single_route_logic(r, travel_date, quota))
+            # Task 40: Call RapidAPI for verification (with timeout protection)
+            deep_tasks.append(self._verify_single_route(r, travel_date, quota))
             
         # 2. Prepare Shallow Queries (First segment of the rest for batching)
         shallow_queries = []
@@ -815,6 +823,7 @@ class SearchService:
             dt = datetime.now()
 
         from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
+        from core.route_engine.base import RoutingRequest
         from core.route_engine.constraints_engine import ConstraintsEngine
         from core.data_structures import Persona
         from services.unlock_service import UnlockService
@@ -834,24 +843,37 @@ class SearchService:
         batch_idx = 0
         
         # Consume the generator dynamically
-        async for batch in orchestrator.stream_all_tiers(source, destination, dt, c, limit=30, db=self.transit_db):
+        req = RoutingRequest(source_code=source, destination_code=destination, departure_date=dt, constraints=c, limit=30, db_session=self.transit_db)
+        async for batch in orchestrator.stream_all_tiers(request=req):
             if not batch: continue
             
             batch_idx += 1
             progress = min(90, int((batch_idx / total_batches) * 100))
             
-            # Yield unverified "speculative" results immediately for TTFR
-            yield {"status": "searching", "message": f"Found {len(batch)} candidates from tier {batch[0].metadata.get('tier', 'unknown')}..."}
+            # Yield unverified "speculative" results immediately for TTFR (Idea C)
+            speculative_masked = [UnlockService.mask_route(r.to_dict()) for r in batch]
+            for r_masked in speculative_masked: r_masked["is_verified"] = False
             
-            # [Task 30.5] Stream Verification & Hydration
+            yield {
+                "status": "partial_results", 
+                "message": f"Discovered {len(batch)} candidate routes from {batch[0].metadata.get('engine', 'unknown')}",
+                "tier": batch[0].metadata.get("tier", "unknown"), 
+                "journeys": speculative_masked, 
+                "is_speculative": True,
+                "progress": progress
+            }
+
+            # [Task 30.5] Deep Verification & Global Enrichment
             verified_chunk = await self._verify_routes_parallel(batch, dt, quota)
             masked_chunk = [UnlockService.mask_route(r.to_dict()) for r in verified_chunk if r.metadata.get("is_verified")]
             
             if masked_chunk:
+                for r_masked in masked_chunk: r_masked["is_verified"] = True
                 yield {
                     "status": "partial_results", 
                     "tier": batch[0].metadata.get("tier", "unknown"), 
                     "journeys": masked_chunk, 
+                    "is_speculative": False,
                     "progress": progress
                 }
                 

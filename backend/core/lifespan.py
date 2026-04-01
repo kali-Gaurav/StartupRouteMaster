@@ -49,9 +49,8 @@ async def lifespan(app: FastAPI):
     
     # [Task 4.2 & 6.2] Layer 3: Integrity & Discovery
     from core.nexus.financial.node import financial_node
-    from core.nexus.scraper.node import scraper_node
+    # from core.nexus.scraper.node import scraper_node
     nexus_boot.register(financial_node)
-    nexus_boot.register(scraper_node)
     
     # [Task 7.10] Layer 4: Intelligence & Optimizer
     from core.nexus.rl.node import rl_node
@@ -89,6 +88,11 @@ async def lifespan(app: FastAPI):
         # Optional: Force some standby states to keep API alive during DEGRADED mode
     else:
         logger.info(f"✅ [NEXUS] Operational Readiness: {nexus_boot.state.value} (Fiber Spine Active).")
+        
+        # [Task 151] Start Smart Search Pre-Warmer (Background)
+        from services.search_prewarmer import search_prewarmer
+        asyncio.create_task(search_prewarmer.start_background_loop())
+        logger.info("🌤️ [NEXUS:DASHBOARD] Smart Search Pre-Warmer online (Background).")
         
     yield
     

@@ -113,6 +113,18 @@ import contextlib
 @contextlib.asynccontextmanager
 async def get_raw_transit_conn():
     """Context manager for acquiring and releasing raw connections."""
+    raw_url = Config.GET_SQLALCHEMY_URL("transit", is_async=False)
+    is_postgres = "postgresql" in raw_url.lower()
+
+    if is_postgres:
+        # For Postgres, standard SQLAlchemy async session is fine
+        # We wrap it to look like a raw connection with 'execute'
+        async with AsyncSessionTransit() as session:
+            # Add a thin proxy to make it behave like a raw aiosqlite connection if needed
+            # But normally we can just use the session.
+            yield session
+            return
+
     if _raw_transit_pool.empty() and not _pools_initialized:
         # Fallback: if called before full IoC, try to init pool now
         try:
@@ -121,6 +133,12 @@ async def get_raw_transit_conn():
             logger.error(f"Failed to JIT initialize raw pool: {e}")
             raise RuntimeError("Raw pool not initialized.")
             
+    # [Nexus Fix] Avoid perpetual hang if pool failed to populate
+    if _raw_transit_pool.empty() and _pools_initialized:
+         async with AsyncSessionTransit() as session:
+            yield session
+            return
+
     conn = await _raw_transit_pool.get()
     try:
         yield conn
@@ -214,6 +232,7 @@ AsyncSessionUser = AtomicSessionFactoryProxy("_AsyncSessionUser")
 AsyncSessionTransit = AtomicSessionFactoryProxy("_AsyncSessionTransit")
 AsyncSessionAuth = AtomicSessionFactoryProxy("_AsyncSessionAuth")
 AsyncSessionRead = AtomicSessionFactoryProxy("_AsyncSessionRead")
+AsyncSessionLocal = AsyncSessionUser
 
 def get_SessionUser():
     return SessionUser()
@@ -271,6 +290,8 @@ async def run_vacuum_worker():
     """
     from core.orchestrator import orchestrator
     while not orchestrator.is_shutting_down:
+        from core.nexus.watchdog import nexus_watchdog
+        nexus_watchdog.poke("vacuum_worker")
         # Run every 12 hours
         await asyncio.sleep(12 * 3600)
         
@@ -452,6 +473,8 @@ async def run_pool_scaler():
     last_load_state = False 
     
     while True:
+        from core.nexus.watchdog import nexus_watchdog
+        nexus_watchdog.poke("db_pool_scaler")
         await asyncio.sleep(20) 
         if not _pools_initialized: continue
         

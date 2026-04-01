@@ -39,10 +39,46 @@ class NexusPolaritySorter:
         for r in results:
             score = self._calculate_polarity_score(r, current_weights)
             r["polarity_score"] = round(score, 4)
+            
+            # [Task 141: Journey Storytelling]
+            # Generate premium badges based on metadata
+            badges = []
+            rel = r.get("reliability_score") or r.get("reliability") or 1.0
+            dur = r.get("total_duration") or r.get("duration") or 9999
+            
+            if rel >= 0.92: badges.append("ELITE_RELIABILITY")
+            elif rel >= 0.85: badges.append("VERIFIED_TRACK")
+            
+            # Direct Mega Hub Check
+            is_mega = False
+            for seg in r.get("segments", []):
+                 from core.hubs import MEGA_HUBS
+                 if seg.get("from_station") in MEGA_HUBS and seg.get("to_station") in MEGA_HUBS:
+                      is_mega = True; break
+            if is_mega: badges.append("HUB_EXPRESS")
+            
+            # Delay check
+            has_delay = False
+            for seg in r.get("segments", []):
+                 if seg.get("delay_mins", 0) > 0:
+                      has_delay = True; break
+            if not has_delay: badges.append("ON_TIME_PREDICTION")
+            
+            r["badges"] = badges
+            
             scored_results.append(r)
             
         # Sort by Polarity Score ascending (Lower is better)
-        return sorted(scored_results, key=lambda x: x["polarity_score"])
+        sorted_res = sorted(scored_results, key=lambda x: x["polarity_score"])
+        
+        # Add 'FASTEST_TRACK' badge to the top 1 by duration
+        if sorted_res:
+             # Find fastest in the set
+             fastest = min(sorted_res, key=lambda x: x.get("total_duration", 9999) or x.get("duration", 9999))
+             if "FASTEST_TRACK" not in fastest.get("badges", []):
+                  fastest["badges"].append("FASTEST_TRACK")
+             
+        return sorted_res
 
     def _calculate_polarity_score(self, item: Dict[str, Any], weights: Dict[str, float]) -> float:
         """

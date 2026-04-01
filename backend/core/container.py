@@ -37,12 +37,12 @@ class ServiceContainer:
             raise ValueError(f"IoC: Service '{name}' not found in container.")
 
         service = self.services[name]
-        if service.status == ServiceStatus.HEALTHY:
+        if service.status in (ServiceStatus.HEALTHY, ServiceStatus.DEGRADED):
             return service
 
         async with service._init_lock:
             # Re-check status after lock
-            if service.status in (ServiceStatus.HEALTHY, ServiceStatus.INITIALIZING):
+            if service.status in (ServiceStatus.HEALTHY, ServiceStatus.INITIALIZING, ServiceStatus.DEGRADED):
                 return service
 
             service.status = ServiceStatus.INITIALIZING
@@ -53,7 +53,9 @@ class ServiceContainer:
                     async with asyncio.timeout(timeout):
                         logger.info(f" IoC: Initializing '{name}' (Attempt {attempt+1})...")
                         await service.init()
-                        service.status = ServiceStatus.HEALTHY
+                        # Only promote to HEALTHY if the service didn't set itself to DEGRADED
+                        if service.status == ServiceStatus.INITIALIZING:
+                            service.status = ServiceStatus.HEALTHY
                         return service
                 except Exception as e:
                     logger.warning(f" IoC: '{name}' init failed: {e}")

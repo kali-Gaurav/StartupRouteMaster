@@ -22,6 +22,13 @@ def sanitize_redis_url(url: str) -> str:
     
     # [Task 117.2] Robust Auth Parsing
     # Standard redis-py handles :password@ but we ensure it's not stripped
+    
+    # Masked log for debugging
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    masked = f"{parsed.scheme}://***:***@{parsed.hostname}:{parsed.port}{parsed.path}"
+    logger.info(f"🛡️ [REDIS:URL_VERIFY] Using masked connection: {masked}")
+    
     return url
 
 URL = sanitize_redis_url(Config.REDIS_URL)
@@ -29,7 +36,7 @@ URL = sanitize_redis_url(Config.REDIS_URL)
 # Shared Config
 OPTS = {
     "decode_responses": True,
-    "ssl_cert_reqs": None,
+    "ssl_cert_reqs": "none",
     "socket_timeout": 5.0,
     "socket_connect_timeout": 5.0,
     "retry_on_timeout": True,

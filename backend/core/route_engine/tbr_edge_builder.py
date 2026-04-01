@@ -2,6 +2,7 @@ import logging
 import os
 import pickle
 import time as _time
+import bisect
 import numpy as np
 from collections import defaultdict
 from typing import Dict, List, Tuple
@@ -28,7 +29,7 @@ class TBREdgeBuilder:
         start_t = _time.perf_counter()
         
         # 1. Group trips by stop
-        stop_to_events = defaultdict(list) # stop_id -> [(arr_ts, dep_ts, tid)]
+        stop_to_events = defaultdict(list)  # stop_id -> [(arr_ts, dep_ts, tid)]
         
         t_nodes = snapshot.tbr_trip_nodes
         t_index = snapshot.tbr_trip_index
@@ -36,49 +37,57 @@ class TBREdgeBuilder:
         for tid, (off, count) in t_index.items():
             for i in range(count):
                 node = t_nodes[off + i]
-                # node: (sid, arr_ts, dep_ts)
-                stop_to_events[int(node['stop_id'])].append((int(node['arr_ts']), int(node['dep_ts']), tid))
+                stop_to_events[int(node['stop_id'])].append(
+                    (int(node['arr_ts']), int(node['dep_ts']), tid)
+                )
         
-        # 2. For each stop, build valid connections
-        # We sort by arrival time to optimize the search
-        all_edges = []
-        # edge_index = {} # trip_id -> {stop_id: (edge_start, edge_count)}
+        # 2. For each stop, build valid connections using bisect for O(N log N)
         trip_stop_edges = defaultdict(lambda: defaultdict(list))
         
         logger.info(f"Processing connections for {len(stop_to_events)} stops...")
         
         for sid, events in stop_to_events.items():
-            # Sort events by arrival for trip_1 and departure for trip_2
-            events.sort() # Sorts by first element (arr_ts)
+            events.sort()  # Sort by arr_ts (first element)
             
-            for i, (arr_1, _, tid_1) in enumerate(events):
-                # Search for valid departures after arr_1 + buffer
+            # Build a sorted list of departure times for bisect lookup
+            dep_sorted = sorted(events, key=lambda x: x[1])
+            dep_times = [e[1] for e in dep_sorted]
+            
+            for arr_1, _, tid_1 in events:
                 target_dep = arr_1 + self.min_transfer_sec
                 max_dep = arr_1 + self.max_transfer_sec
                 
-                # Simple linear scan (we can binary search if too many events per stop)
-                # But even for busy stations (500 departures), this is fast.
-                for j in range(len(events)):
-                    dep_2, _, tid_2 = events[j][1], events[j][0], events[j][2] # Fix: dep_2 is dep_ts, events[j][0] is arr_ts
+                # O(log N) bisect to find first valid departure
+                lo = bisect.bisect_left(dep_times, target_dep)
+                
+                for j in range(lo, len(dep_sorted)):
+                    dep_2 = dep_sorted[j][1]
+                    if dep_2 > max_dep:
+                        break  # All further departures are too late
                     
-                    if tid_1 == tid_2: continue # Cannot transfer to the same trip
+                    tid_2 = dep_sorted[j][2]
+                    if tid_1 == tid_2:
+                        continue  # Cannot transfer to the same trip
                     
-                    if target_dep <= dep_2 <= max_dep:
-                        wait_m = (dep_2 - arr_1) // 60
-                        trip_stop_edges[tid_1][sid].append((tid_2, sid, wait_m))
+                    wait_m = (dep_2 - arr_1) // 60
+                    trip_stop_edges[tid_1][sid].append((tid_2, sid, wait_m))
         
-        # 3. Flaten into NumPy MemMap for edges and index
-        total_edges_count = sum(len(e_list) for s_map in trip_stop_edges.values() for e_list in s_map.values())
+        # 3. Flatten into NumPy MemMap for edges and index
+        total_edges_count = sum(
+            len(e_list)
+            for s_map in trip_stop_edges.values()
+            for e_list in s_map.values()
+        )
         logger.info(f"Generated {total_edges_count} transfer edges.")
         
         np_edges = np.zeros(total_edges_count, dtype=trip_edge_dtype)
         
-        # New structure for memmap index: (trip_id, stop_id, offset, count)
-        # We need a map from (trip_id, stop_id) to its position in this index array.
-        # So we'll first build an intermediate list, then a map, then the array.
         index_entries = []
         # Map (trip_id, stop_id) -> index in index_entries
         index_lookup_map = {}
+        # [P0 FIX] Secondary map: trip_id -> {stop_id: index_pos}
+        # Enables O(1) "which stops on this trip have outgoing transfers?" lookups
+        trip_to_stops_map = defaultdict(dict)
         
         curr_offset = 0
         current_index_pos = 0
@@ -90,9 +99,9 @@ class TBREdgeBuilder:
                 edge_list = trip_stop_edges[tid][sid]
                 count = len(edge_list)
                 
-                # Store (trip_id, stop_id, offset, count)
                 index_entries.append((tid, sid, curr_offset, count))
                 index_lookup_map[(tid, sid)] = current_index_pos
+                trip_to_stops_map[tid][sid] = current_index_pos
                 current_index_pos += 1
                 
                 for k, (to_tid, s_id, wait) in enumerate(edge_list):
@@ -103,18 +112,27 @@ class TBREdgeBuilder:
         for i, entry in enumerate(index_entries):
             np_index[i] = entry
             
-        # 4. Save to Disk (Local SSD/Project database)
+        # 4. Save to Disk
         from database.config import Config
         data_dir = Config.DATA_DIR
         
         MemMapManager.save_array("tbr_edges", np_edges)
         MemMapManager.save_array("tbr_edge_index", np_index)
         
-        # Save the lookup map as pickle temporarily (this can also be vectorized later if needed)
+        # Save tuple-keyed lookup map (for exact (trip, stop) -> index lookups)
         lookup_map_path = os.path.join(data_dir, "tbr_edge_lookup_map.pkl")
         with open(lookup_map_path, "wb") as f:
             pickle.dump(dict(index_lookup_map), f)
+        
+        # [P0 FIX] Save per-trip transfer stops map (for "which stops have transfers?" lookups)
+        trip_stops_map_path = os.path.join(data_dir, "tbr_trip_to_stops_map.pkl")
+        with open(trip_stops_map_path, "wb") as f:
+            pickle.dump(dict(trip_to_stops_map), f)
             
         latency = (_time.perf_counter() - start_t) * 1000
-        logger.info(f"✅ TBR Edge Index built in {latency:.2f}ms. Edges: {total_edges_count}, Index Entries: {len(index_entries)}. Saved to {data_dir}")
+        logger.info(
+            f"✅ TBR Edge Index built in {latency:.2f}ms. "
+            f"Edges: {total_edges_count}, Index Entries: {len(index_entries)}, "
+            f"Trips with transfers: {len(trip_to_stops_map)}. Saved to {data_dir}"
+        )
         return total_edges_count

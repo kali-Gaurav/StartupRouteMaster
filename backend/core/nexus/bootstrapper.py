@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Set
 from .state import SystemState
 from .node import NexusNode, NodeStatus
 from .recovery import AutoRecoverySentinel
+from .telemetry import nexus_telemetry # Import NexusTelemetry
 
 logger = logging.getLogger("nexus.bootstrapper")
 
@@ -23,6 +24,9 @@ class NexusBootstrapper:
         # [Task 24] Memory Hygiene
         from .audit.mem_profiler import mem_profiler
         self.profiler = mem_profiler
+        
+        # [Improved Idea] Telemetry Component
+        self.telemetry = nexus_telemetry
         
     def register(self, node: NexusNode):
         """Register a node in the dependency graph."""

@@ -34,6 +34,8 @@ class User(UserBase):
     __tablename__ = "users"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, nullable=True, index=True)
+    full_name = Column(String(255), nullable=True)
+    is_verified = Column(Boolean, default=False)
     supabase_id = Column(String(255), unique=True, nullable=True, index=True)
     phone_number = Column(String(20), nullable=True)
     role = Column(String(50), default="user")
@@ -787,6 +789,29 @@ class RealtimeData(TransitBase):
     timestamp = Column(DateTime)
     source = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class TrainRunningStatusCache(TransitBase):
+    """
+    Persistent cache for scraped NTES running status (Task 48.9).
+    Stores full metadata including station-wise arrival/departure times.
+    """
+    __tablename__ = "train_running_status_cache"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    train_number = Column(String(20), index=True)
+    journey_date = Column(Date, index=True)
+    current_station = Column(String(255))
+    delay_minutes = Column(Integer, default=0)
+    running_status_text = Column(String(255))
+    
+    # [Task 48.9] Full Parsed Table JSON
+    # Structure: [{"station": "NDLS", "sta": "20:00", "eta": "20:10", "delay": 10, ...}]
+    data_payload = Column(JSON, nullable=True)
+    
+    last_updated_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    __table_args__ = (
+        UniqueConstraint('train_number', 'journey_date', name='uix_train_date'),
+    )
 
 class CancelledTrain(TransitBase):
     """

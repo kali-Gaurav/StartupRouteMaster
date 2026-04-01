@@ -56,6 +56,13 @@ class RouteConstraints:
     
     # [Task 1] Engine Filtering
     permitted_engines: Optional[list[str]] = None
+    
+    # Task 30: Generic Metadata for Orchestration
+    metadata: dict = field(default_factory=dict)
+    
+    # Task 31: Adaptive Yield Goals
+    yield_goal: int = 35
+    search_depth: str = "SHALLOW" # SHALLOW, MEDIUM, DEEP
 
     @dataclass
     class Weights:
@@ -77,24 +84,26 @@ class RouteConstraints:
             self.weights.time = 5.0
             self.weights.cost = 0.1
             self.weights.transfer = 5.0
-            self.max_transfers = 4 
+            self.max_transfers = 3 
             
         elif self.persona == Persona.COMFORT:
             self.weights.time = 1.0
             self.weights.cost = 0.5
             self.weights.comfort = 2.0
             self.weights.transfer = 500.0
-            self.max_transfers = max(self.max_transfers, 2) 
+            self.max_transfers = min(self.max_transfers, 2) 
             
         elif self.persona == Persona.BUDGET:
             self.weights.time = 0.5
             self.weights.cost = 2.5 # Increased cost sensitivity
             self.weights.transfer = 150.0
+            self.max_transfers = min(self.max_transfers, 3)
 
         elif self.persona == Persona.FAST:
             self.weights.time = 3.0 # High weight on time
             self.weights.cost = 0.5
             self.weights.transfer = 50.0 # Faster transfers are okay
+            self.max_transfers = min(self.max_transfers, 3)
             
         elif self.persona == Persona.FAMILY:
             self.weights.time = 1.0

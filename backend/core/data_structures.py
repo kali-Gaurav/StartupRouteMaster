@@ -252,14 +252,17 @@ class RouteSegment:
         self._cached_dict = None
         
     def validate(self) -> bool:
+        print(f"DEBUG VALIDATE: {self.departure_code}->{self.arrival_code} IDs: {self.departure_stop_id} to {self.arrival_stop_id} Dur: {self.duration_minutes}")
         """
         [Task 16] Checks if the segment is an 'empty leg' or logically invalid.
         """
-        if self.departure_stop_id == self.arrival_stop_id or self.departure_code == self.arrival_code:
+        # [Fix RO-003] Only prune if both code AND ID are same (real empty leg)
+        if (self.departure_stop_id == self.arrival_stop_id and self.departure_stop_id != 0) and \
+           (self.departure_code == self.arrival_code and self.departure_code):
             return False
             
-        # [Task 9] Ensure duration is positive for travel segments
-        if self.duration_minutes <= 0 and self.departure_stop_id != 0:
+        # [Task 9] Allow 0 duration for same-minute arrival/departure 
+        if self.duration_minutes < 0 and self.departure_stop_id != 0:
             return False
             
         return True

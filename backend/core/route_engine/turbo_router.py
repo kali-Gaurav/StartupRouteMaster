@@ -7,21 +7,25 @@ import os
 import gc
 import asyncio # Added this import
 from typing import List, Dict, Any, Optional, Set, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.session import SessionTransit as SessionLocal
 
-logger = logging.getLogger(__name__)
-
 from core.dynamic_logic import is_valid_transfer
-from core.data_structures import DynamicWaitConfig, SearchPhase
+from core.data_structures import DynamicWaitConfig, SearchPhase, Route, RouteSegment
 from core.frontier import FrontierManager, FrontierRoute
 from database.config import Config
+from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
+
+logger = logging.getLogger(__name__)
 
 # Define search phases for the main loop
 SEARCH_PHASES = [SearchPhase.STRICT, SearchPhase.MODERATE, SearchPhase.RELAXED]
 
-class TurboRouter:
+class TurboRouter(BaseRoutingEngine):
+    @property
+    def engine_id(self) -> str:
+        return "turbo_direct_sql"
     # [Task 11.5] Static Cache for Hub Adjacency
     _hub_adj_cache = {}
     _last_cache_update = 0
@@ -54,14 +58,62 @@ class TurboRouter:
             res = db.execute(text(query), params).fetchall()
             
             new_cache = {}
-            for code, blob in res:
+            for row in res:
+                code, blob = row[0], row[1]
                 trains = self._unpack_trains(blob)
                 new_cache[code] = set(trains.keys())
-            
-            TurboRouter._hub_adj_cache = new_cache
-            TurboRouter._last_cache_update = now
-        
+            self._hub_adj_cache = new_cache
+            self._last_cache_update = now
         return self._hub_adj_cache
+
+    def _fallback_sql_search(self, db, src_ids: List[int], dst_ids: List[int], travel_date: datetime, limit: int) -> List[Dict[str, Any]]:
+        """RO-003: Direct SQL Fallback if Binary Index is stale/empty."""
+        day_name = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][travel_date.weekday()]
+        db_date = travel_date.strftime("%Y%m%d")
+        
+        query = f"""
+            SELECT 
+                t.trip_id as tno, t.service_id as tname, t.id as tid,
+                st1.stop_id as sid1, st2.stop_id as sid2,
+                s1.code as code1, s2.code as code2,
+                st1.departure_timestamp as ts1, st2.arrival_timestamp as ts2,
+                st1.shape_dist_traveled as d1, st2.shape_dist_traveled as d2
+            FROM trips t
+            JOIN calendar c ON t.service_id = c.service_id
+            JOIN stop_times st1 ON t.id = st1.trip_id
+            JOIN stop_times st2 ON t.id = st2.trip_id
+            JOIN stops s1 ON st1.stop_id = s1.id
+            JOIN stops s2 ON st2.stop_id = s2.id
+            WHERE st1.stop_id IN ({','.join([':s'+str(i) for i in range(len(src_ids))])})
+              AND st2.stop_id IN ({','.join([':d'+str(i) for i in range(len(dst_ids))])})
+              AND st1.stop_sequence < st2.stop_sequence
+              AND :dt BETWEEN c.start_date AND c.end_date
+              AND c.{day_name} = 1
+            LIMIT :lim
+        """
+        params = {f"s{i}": sid for i, sid in enumerate(src_ids)}
+        params.update({f"d{i}": sid for i, sid in enumerate(dst_ids)})
+        params.update({"dt": db_date, "lim": limit * 2})
+        
+        rows = db.execute(text(query), params).mappings().all()
+        results = []
+        for r in rows:
+            dep_sec = r['ts1']
+            arr_sec = r['ts2']
+            if arr_sec < dep_sec: arr_sec += 86400
+            
+            duration = (arr_sec - dep_sec) // 60
+            
+            results.append({
+                "train_no": str(r['tno']), "train_name": str(r['tname']), "trip_id": int(r['tid']),
+                "dep": self._min_to_time(dep_sec // 60), "arr": self._min_to_time(arr_sec // 60),
+                "duration": duration,
+                "distance": max(0.0, float((r['d2'] or 0.0) - (r['d1'] or 0.0)) / 1000.0),
+                "type": "direct", "phase_found": SearchPhase.STRICT,
+                "src_code": str(r['code1']), "dst_code": str(r['code2']),
+                "src_id": int(r['sid1']), "dst_id": int(r['sid2']), "score": 100
+            })
+        return results
 
     def _get_city_cluster(self, db, station_code: str) -> List[int]:
         """[4.1] Dynamic Cluster Resolution using METRO_GROUPS and City fallback."""
@@ -156,19 +208,105 @@ class TurboRouter:
         
         return 120 # Conservative default for station change
 
-    async def find_routes(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
-        # Use asyncio.to_thread to run the synchronous DB logic in a separate thread
+    async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
+        source_code = request.source_code
+        dest_code = request.destination_code
+        departure_date = request.departure_date
+        limit = request.limit
+        
+        start_time = time.perf_counter()
+        
         try:
-            return await asyncio.wait_for(
+            # Note: TurboRouter currently returns a list of Dicts. 
+            # We'll need to convert these to Route objects for the standardized response.
+            raw_results = await asyncio.wait_for(
                 asyncio.to_thread(self._find_routes_sync, source_code, dest_code, departure_date, limit),
-                timeout=5.0 # Max 5 seconds for Turbo search
+                timeout=5.0 
             )
+            
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Convert Dicts to Route objects
+            # Convert Dicts to Route objects
+            routes = []
+            for r in raw_results:
+                try:
+                    if r.get('type') == '1-transfer':
+                        legs = r.get("legs", [])
+                        s1_dep = self._parse_turbo_time(legs[0].get('dep'), departure_date)
+                        s1_arr = self._parse_turbo_time(legs[0].get('arr'), departure_date)
+                        if s1_arr < s1_dep: s1_arr += timedelta(days=1)
+                        seg1 = RouteSegment(trip_id=int(legs[0].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
+                                           departure_code=legs[0].get('from'), arrival_code=legs[0].get('to'),
+                                           departure_time=s1_dep, arrival_time=s1_arr,
+                                           duration_minutes=int((s1_arr - s1_dep).total_seconds() // 60),
+                                           distance_km=0.0, train_number=str(legs[0].get('train')))
+
+                        s2_dep = self._parse_turbo_time(legs[1].get('dep'), s1_arr)
+                        if s2_dep < s1_arr: s2_dep += timedelta(days=1)
+                        s2_arr = self._parse_turbo_time(legs[1].get('arr'), s2_dep)
+                        if s2_arr < s2_dep: s2_arr += timedelta(days=1)
+                        seg2 = RouteSegment(trip_id=int(legs[1].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
+                                           departure_code=legs[1].get('from'), arrival_code=legs[1].get('to'),
+                                           departure_time=s2_dep, arrival_time=s2_arr,
+                                           duration_minutes=int((s2_arr - s2_dep).total_seconds() // 60),
+                                           distance_km=0.0, train_number=str(legs[1].get('train')))
+
+                        route = Route(segments=[seg1, seg2])
+                        route.metadata["engine"] = self.engine_id
+                        routes.append(route)
+                    else:
+                        dep_dt = self._parse_turbo_time(r['dep'], departure_date)
+                        arr_dt = self._parse_turbo_time(r['arr'], departure_date)
+                        if arr_dt < dep_dt:
+                            arr_dt += timedelta(days=1)
+
+                        seg = RouteSegment(
+                            trip_id=int(r['train_no']),
+                            departure_stop_id=int(r.get('src_id', 0)),
+                            arrival_stop_id=int(r.get('dst_id', 0)),
+                            departure_time=dep_dt,
+                            arrival_time=arr_dt,
+                            duration_minutes=r.get('duration', int((arr_dt - dep_dt).total_seconds() // 60)),
+                            distance_km=r.get('distance', 0.0),
+                            train_number=r['train_no'],
+                            departure_code=r.get('src_code', source_code),
+                            arrival_code=r.get('dst_code', dest_code)
+                        )
+                        route = Route(segments=[seg])
+                        route.metadata["engine"] = self.engine_id
+                        routes.append(route)
+                except Exception as e:
+                    continue
+
+
+            return RoutingResponse(
+                engine_name=self.engine_id,
+                routes=routes,
+                latency_ms=latency_ms,
+                yield_count=len(routes)
+            )
+
         except asyncio.TimeoutError:
             logger.error(f"TurboRouter search for {source_code}->{dest_code} timed out.")
-            return []
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(time.perf_counter() - start_time) * 1000, 
+                yield_count=0,
+                triage_status="FAILED",
+                metadata={"error": "TIMEOUT"}
+            )
         except Exception as e:
             logger.error(f"TurboRouter Failure for {source_code}->{dest_code}: {e}", exc_info=True)
-            return []
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(time.perf_counter() - start_time) * 1000, 
+                yield_count=0,
+                triage_status="FAILED",
+                metadata={"error": str(e)}
+            )
 
     def _find_routes_sync(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
         start_ts = time.perf_counter()
@@ -212,36 +350,66 @@ class TurboRouter:
             ), direct_params).fetchall()
             blob_map = {row[0]: row[1] for row in blob_rows}
 
+            # [Nexus: Fair Cluster Yield] 
+            # We use a round-robin approach to avoid one station (e.g. NDLS) saturating the results
+            # while ignoring better options from satellite stations (e.g. ANVT).
+            all_cluster_direct = []
             for sid_idx, src in enumerate(src_codes):
                 src_id = src_ids[sid_idx]
                 for did_idx, dst in enumerate(dst_codes):
                     dst_id = dst_ids[did_idx]
-                    # Pass pre-fetched map to avoid DB hits
-                    direct = self._search_direct_binary_batched(blob_map, src, dst, day_mask, limit - len(all_routes), gtfs_adds)
+                    direct = self._search_direct_binary_batched(blob_map, src, dst, day_mask, limit, gtfs_adds)
+                    # Label with station code for sorting
                     for r in direct:
-                        # [Task 7] Check both overlay (manual) and GTFS calendar removals
-                        t_no = int(r['train_no'])
-                        if overlay.is_cancelled(t_no) or t_no in gtfs_cancelled: continue
-                        
-                        jid = f"direct_{r['train_no']}_{r['dep']}"
-                        if jid not in seen_journey_ids:
-                            r['phase_found'] = SearchPhase.STRICT
-                            all_routes.append(r)
-                            seen_journey_ids.add(jid)
-                            
-                            # Also populate frontier with direct routes to prune worse transfers
-                            arr_mins = self._time_to_min(r['arr'])
-                            self.frontier_manager.is_dominated(
-                                dst_id, 
-                                FrontierRoute(arr_mins, 0, 0, r['distance'])
-                            )
-                    if len(all_routes) >= limit: break
+                        r['src_code'] = src
+                        r['dst_code'] = dst
+                        r['src_id'] = src_id
+                        r['dst_id'] = dst_id
+                    all_cluster_direct.extend(direct)
             
-            # 2. Multi-Phase 1-Transfer Search (DEPRECATED: Use TBR for Transfers)
-            logger.info("TurboRouter: 1-Transfer search deprecated. Use TBR for transfers.")
+            # Sort by arrival time primarily, but prioritize diversity
+            all_cluster_direct.sort(key=lambda x: (x['duration'], x['src_code']))
+            
+            for r in all_cluster_direct:
+                t_no = int(r['train_no'])
+                if overlay.is_cancelled(t_no) or t_no in gtfs_cancelled: continue
+                
+                jid = f"direct_{r['train_no']}_{r['dep']}"
+                if jid not in seen_journey_ids:
+                    r['phase_found'] = SearchPhase.STRICT
+                    all_routes.append(r)
+                    seen_journey_ids.add(jid)
+                    
+                    if len(all_routes) >= limit * 10: break
+
+            
+            # [Task RO-003] Fallback to direct SQL if binary yield is zero or low
+            if not all_routes:
+                fallback_routes = self._fallback_sql_search(db, src_ids, dst_ids, departure_date, limit)
+                for r in fallback_routes:
+                    t_no = int(r['train_no'])
+                    if overlay.is_cancelled(t_no) or t_no in gtfs_cancelled: continue
+                    jid = f"direct_{r['train_no']}_{r['dep']}"
+                    if jid not in seen_journey_ids:
+                         all_routes.append(r)
+                         seen_journey_ids.add(jid)
+                         if len(all_routes) >= limit * 10: break
+            
+            # 2. Multi-Phase 1-Transfer Search (Revitalized RO-012)
+            # Fetching major hubs + top junctions for high-yield coverage
+            major_hubs = ['NDLS', 'NZM', 'CSMT', 'LTT', 'HWH', 'MAS', 'SBC', 'ADI', 'BPL', 'KYN', 'BRC', 'RTM', 'KOTA', 'BSL', 'ET', 'NGP', 'PNBE', 'LKO', 'DDU']
+            hub_results = self._search_one_transfer_binary(db, src_ids, dst_ids, src_codes, dst_codes, day_mask, limit * 5, major_hubs, gtfs_cancelled, gtfs_adds)
+            
+            for r in hub_results:
+                jid = f"1tr_{r['hub']}_{r['legs'][0]['train']}_{r['legs'][1]['train']}"
+                if jid not in seen_journey_ids:
+                    r['phase_found'] = SearchPhase.MODERATE
+                    all_routes.append(r)
+                    seen_journey_ids.add(jid)
             
             # [Task Group 1 Constraint] Show routes in order of travel time
             all_routes.sort(key=lambda x: x.get('duration', 999999))
+            print(f"🛡️ [TURBO:DEBUG] _find_routes_sync returning {len(all_routes)} routes.")
             return all_routes[:limit]
         finally:
             db.close()
@@ -262,9 +430,12 @@ class TurboRouter:
                 required_mask = (1 << ((int(query_weekday) - src_day_offset) % 7))
                 if ((s_data['mask'] & required_mask) or int(tid) in gtfs_adds) and s_data['seq'] < d_data['seq']:
                     day_offset = (d_data['arr'] // 1440) - (s_data['dep'] // 1440)
+                    duration = d_data['arr'] - s_data['dep']
+                    if duration < 0: duration += 1440 # Basic wrap
+                    
                     results.append({
                         "type": "direct", "train_no": str(tid), "dep": self._min_to_time(s_data['dep']),
-                        "arr": self._min_to_time(d_data['arr']), "duration": (d_data['arr'] - s_data['dep']),
+                        "arr": self._min_to_time(d_data['arr']), "duration": duration,
                         "day_offset": day_offset, "distance": float(d_data['dist'] - s_data['dist']), "score": 100
                     })
             return sorted(results, key=lambda x: x['duration'])[:limit]
@@ -514,6 +685,16 @@ class TurboRouter:
         except Exception as e:
             logger.error(f"Transfer Binary Error: {e}")
             return []
+
+    def _parse_turbo_time(self, time_str: str, base_date: datetime) -> datetime:
+        """[RO-003] Robust GTFS time parsing (HH:MM:SS) that handles H>=24."""
+        try:
+            parts = list(map(int, time_str.split(":")))
+            h, m = parts[0], parts[1]
+            extra_days = h // 24
+            return base_date.replace(hour=h % 24, minute=m, second=0, microsecond=0) + timedelta(days=extra_days)
+        except: 
+            return base_date
 
     def _min_to_time(self, minutes: int) -> str:
         m = minutes % 1440

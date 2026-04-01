@@ -79,9 +79,14 @@ class NexusResourceGovernor:
         nexus_cortex.set_redis_percent(redis_p)
 
         # Calculate Throttle Factor based on pressure
-        self.throttle_factor = 0.0
-        nexus_cortex.set_stress_index(0)
-        
+        cpu_factor = min(1.0, cpu_p / self.cpu_limit if self.cpu_limit > 0 else 0.0)
+        ram_factor = min(1.0, ram_p / self.ram_limit if self.ram_limit > 0 else 0.0)
+        io_factor = min(1.0, io_wait / 100.0)
+        redis_factor = min(1.0, redis_p / 100.0)
+
+        self.throttle_factor = round(max(cpu_factor, ram_factor, io_factor, redis_factor), 2)
+        nexus_cortex.set_stress_index(int(self.throttle_factor * 100))
+
         if self.throttle_factor > 0.1:
             logger.warning(f"⚖️ [NEXUS:GOVERNOR] Throttling Active: {self.throttle_factor*100:.1f}%. (CPU:{cpu_p}%, RAM:{ram_p}%, IO:{io_wait}%, REDIS:{redis_p}%)")
 

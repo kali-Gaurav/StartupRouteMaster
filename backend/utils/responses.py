@@ -27,16 +27,6 @@ class SafeJSONResponse(JSONResponse):
         if "X-Request-ID" in headers:
             headers["X-RID"] = headers.pop("X-Request-ID")
             
-        # Resilient CORS injection
-        origin = os.getenv("CORS_ALLOWED_ORIGINS", "*")
-        if origin == "*":
-            headers["Access-Control-Allow-Origin"] = "*"
-        else:
-            headers["Access-Control-Allow-Origin"] = origin.split(",")[0]
-            
-        headers["Access-Control-Allow-Methods"] = "*"
-        headers["Access-Control-Allow-Headers"] = "*"
-        headers["Access-Control-Allow-Credentials"] = "true"
         # Hide server info
         headers["Server"] = "RouteMaster-Resilient"
         

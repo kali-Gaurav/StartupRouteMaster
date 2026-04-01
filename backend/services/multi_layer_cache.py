@@ -1,6 +1,6 @@
 """
 Multi-Layer Cache System - IRCTC-Level Performance
-Upgraded with Pub/Sub Invalidation (TODO #25) and Memory Policies (TODO #26).
+Upgraded with Pub/Sub Invalidation and Memory Policies (TODO #26).
 """
 
 import asyncio
@@ -15,6 +15,7 @@ import hashlib
 import pickle
 import zlib
 import functools
+import msgpack
 from datetime import datetime, date, timedelta
 
 # [Task 47.4] TTL Staggering Config
@@ -79,7 +80,20 @@ class RouteQuery:
         
         # [Task 47.3] Thundering Herd prevention ID
         key_data = f"{from_canonical}:{to_canonical}:{date_str}:{self.class_preference}:{self.max_transfers}:{self.include_wait_time}"
-        return f"route:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
+        return f"route:p:{hashlib.sha256(key_data.encode()).hexdigest()[:16]}"
+
+@dataclass
+class DiscoveryQuery:
+    """[Echo Cache] Global Discovery Key for (Src, Dst, Date) regardless of Persona."""
+    source: str
+    destination: str
+    travel_date: date
+    
+    def cache_key(self) -> str:
+        s = self.source.strip().upper()
+        d = self.destination.strip().upper()
+        dt = self.travel_date.isoformat()
+        return f"discovery:raw:{s}:{d}:{dt}"
 
 @dataclass
 class AvailabilityQuery:
@@ -147,39 +161,60 @@ class MultiLayerCache(ServiceProvider):
     async def init(self):
         """IoC Lifecycle: Connect to Redis (Idempotent)."""
         async with self._init_lock:
-            if self._initialized and self.redis:
+            if self._initialized:
                 return
             
             from core.redis import URL, OPTS
             from redis.asyncio import from_url
+            
+            # [Phase 3] Diagnostic Instrumentation: Connect Start
+            logger.info(f"⚡ [REDIS:CONNECT] Initializing L2 link to {URL[:20]}...")
+            start_time = time.perf_counter()
+            
             try:
-                # [Task 127] Using Centralized Sanitized Config for Upstash/SSL
-                self.redis = await from_url(URL, **OPTS)
-                await self.redis.ping()
-                self._initialized = True
-                self.health_latch = True
-                logger.info(f"[NEXUS:CACHE] MultiLayerCache (Redis L2) Initialized via {URL[:15]}...")
-                
-                if not self._pubsub_task or self._pubsub_task.done():
-                    self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+                # [Phase 1/Task 127] Ensure the entire connection block has a strict timeout
+                async with asyncio.timeout(7.0):
+                    # Step 1: Handshake (Socket/TLS)
+                    self.redis = from_url(URL, **OPTS)
+                    handshake_time = (time.perf_counter() - start_time) * 1000
+                    logger.info(f"🤝 [REDIS:HANDSHAKE] TLS/TCP Handshake complete in {handshake_time:.2f}ms")
                     
-                if not self._heartbeat_task or self._heartbeat_task.done():
-                    self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+                    # Step 2: Protocol Ping
+                    ping_start = time.perf_counter()
+                    await self.redis.ping()
+                    ping_latency = (time.perf_counter() - ping_start) * 1000
+                    logger.info(f"🏓 [REDIS:PING] Protocol verify successful. Latency: {ping_latency:.2f}ms")
                     
-                self._eviction_task = asyncio.create_task(self._run_eviction_sentinel())
+                    self._initialized = True
+                    self.health_latch = True
+                    self.status = ServiceStatus.HEALTHY
                     
-            except Exception as e:
-                logger.warning(f"[NEXUS:CACHE] Redis L2 init failed: {e}. Falling back to L1 (Memory).")
+                    if not self._pubsub_task or self._pubsub_task.done():
+                        self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+                    
+                    if not self._heartbeat_task or self._heartbeat_task.done():
+                        # [Phase 4] Nexus Heartbeat Decoupling: Moved to background task
+                        self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+                    
+                    self._eviction_task = asyncio.create_task(self._run_eviction_sentinel())
+                    
+            except (asyncio.TimeoutError, Exception) as e:
+                error_type = "Timeout" if isinstance(e, asyncio.TimeoutError) else type(e).__name__
+                total_time = (time.perf_counter() - start_time) * 1000
+                logger.warning(f"❌ [REDIS:FAILED] L2 Init dropped after {total_time:.2f}ms ({error_type}): {e}. Falling back to L1 (Memory).")
                 self.redis = None
                 self._initialized = True
                 self.health_latch = False
+                self.status = ServiceStatus.DEGRADED # Signal we are in fallback mode
 
     async def _run_heartbeat(self):
         """[Task 5.3] Periodic Redis Health Check to update the Latch."""
         while True:
             # [Task 21] Heartbeat
             from core.nexus.bootstrapper import nexus_boot
+            from core.nexus.watchdog import nexus_watchdog
             nexus_boot.recovery.record_heartbeat("cache")
+            nexus_watchdog.poke("redis_heartbeat")
             
             await asyncio.sleep(15)
             if self.redis:
@@ -284,9 +319,18 @@ class MultiLayerCache(ServiceProvider):
             data = await self.redis_circuit.call(_fetch)
 
             if data:
-                # [Task 47.8] MsgPack Binary Deserialization (if configured)
-                # For now, keeping PayloadCompressor but adding MsgPack hook
-                cached_item = PayloadCompressor.decompress(data)
+                # Determine if it's pickle or JSON based on signature or domain
+                # Rule: discovery:raw:* is always pickle for Route objects
+                # [Task 145] Multi-Modal Decoding
+                if key.startswith("hot_path:"):
+                    # Fast binary path for Elite routes
+                    cached_item = msgpack.unpackb(data, raw=False)
+                elif key.startswith("discovery:raw:"):
+                    # Pickle+Zlib for deep discovery
+                    cached_item = pickle.loads(zlib.decompress(data))
+                else:
+                    cached_item = PayloadCompressor.decompress(data)
+                
                 if cached_item:
                     self.lru.put(key, cached_item, dynamic_limit=self._get_l1_capacity())
                     self.metrics['query_cache'].hits += 1
@@ -301,31 +345,41 @@ class MultiLayerCache(ServiceProvider):
 
         return None
 
+    def _get_get_l1_capacity(self) -> int:
+        return self._get_l1_capacity()
+
     def _process_xfetch(self, cached_item: Any, refresh_callback: Optional[Callable], allow_stale: bool) -> Any:
         """
-        [Task 47.6] Probabilistic Revalidation.
+        [High-End] X-Fetch Algorithm (Probabilistic Early Refresh).
+        Formula: now - (delta * beta * log(random())) > expiry
+        Prevents cache-miss spikes for high-traffic results.
         """
         if not isinstance(cached_item, dict) or "xf_expiry" not in cached_item:
             return cached_item
 
         val = cached_item["value"]
         expiry = cached_item["xf_expiry"]
+        delta = cached_item.get("xf_delta", 0.1) # Time taken to compute
         now = time.time()
 
-        # Probabilistic Early Refresh: If at 80% TTL, refresh in background
-        # Formula: rand() > (expiry - now) / total_ttl
-        # For simplicity, 90% threshold for now
-        time_left = expiry - now
-        if time_left < 60 and refresh_callback:
-            logger.info("Cache near expiry. Triggering Background Refresh.")
+        # Step 1: Probabilistic Revalidation (Vlachos et al.)
+        # If the result was expensive to compute (high delta), we refresh it earlier
+        import math, random
+        beta = self._xfetch_beta
+        # Use a safe log to avoid domain errors
+        p_val = now - (delta * beta * math.log(random.random() or 0.0001))
+        
+        if p_val > expiry and refresh_callback:
+            # We hit the probabilistic window! Refresh in background.
+            logger.info(f"🔄 [ECHO:X-FETCH] Probabilistic Refresh triggered (Delta: {delta:.2f}s, Rem: {expiry-now:.1f}s)")
             asyncio.create_task(refresh_callback())
-
+        
+        # Step 2: Absolute Expiry Check
         if now > expiry:
             if refresh_callback: asyncio.create_task(refresh_callback())
             
             # [Task 26.3] Ghost Shadowing Mode
             # If Redis is DOWN, we extend the grace period to 1 HOUR (Planet-Scale survivability)
-            # Google/Netflix style: Serve anything you have if the backbone is severed.
             grace_period = 3600 if not self._is_l2_available() else 300
             
             if allow_stale and now < (expiry + grace_period):
@@ -335,46 +389,13 @@ class MultiLayerCache(ServiceProvider):
         
         return val
 
-    @chaos_trap("cache_l2")
-    async def put(self, key: str, value: Any, ttl: int = 300, negative_cache: bool = False):
-        """
-        [Task 47.7 & 47.8] Compressed Put with Mutation Tracking.
-        """
-        # [Task 26.2] Anti-Stampede TTL Staggering (Jittered Expiry)
-        # Google SRE Pattern: Prevent thundering crowds at expiry
-        from random import uniform
-        jitter_factor = uniform(0.85, 1.0)
-        actual_ttl = int((300 if negative_cache else ttl) * jitter_factor)
-        
-        xf_item = {"value": value, "xf_expiry": time.time() + actual_ttl}
-        
-        # 1. Update L1
-        self.lru.put(key, xf_item, dynamic_limit=self._get_l1_capacity())
-        
-        # 2. Update L2 (Redis)
-        if self._is_l2_available():
-            try:
-                # [Task 47.8] MsgPack binary compression potentially here
-                payload, _ = PayloadCompressor.compress(xf_item)
-                # Keep in Redis longer than L1 expiry to support SWR
-                await self.redis.setex(key, actual_ttl + 600, payload)
-                # Notify peers
-                await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": key}))
-            except Exception as e:
-                logger.error(f"L2 Cache Put Error: {e}")
-
-        # [Task 27.6] Register Distributed Compensation if inside an Atomic Saga
-        try:
-             from core.nexus.financial.rollback import register_undo_step
-             await register_undo_step("CACHE_WRITE", {"key": key})
-        except: pass
-
-    async def get_or_set(self, key: str, fetch_callback: Callable, ttl: int = 300) -> Any:
+    async def get_or_set(self, key: str, fetch_callback: Callable, ttl: int = 300, use_pickle: bool = False) -> Any:
         """
         [Task 47.3 & 47.5] Thundering Herd Shield.
         Ensures only 1 request per key hits the source (RapidAPI) during miss.
         """
         # 1. Fast Path (Normal Get)
+        # Use simple get for standard JSON, but for Discovery we might want Pickle
         result = await self.get(key)
         if result: return result
         
@@ -397,10 +418,12 @@ class MultiLayerCache(ServiceProvider):
                 
                 # 4. Critical Section: Hit the Source
                 logger.info(f"Cache Miss. Fetching Source: {key}")
+                start_fetch = time.time()
                 result = await fetch_callback()
+                fetch_delta = time.time() - start_fetch
                 
                 if result:
-                    await self.put(key, result, ttl=ttl)
+                    await self.put(key, result, ttl=ttl, use_pickle=use_pickle, delta=fetch_delta)
                 else:
                     # [Task 47.7] Negative Cache for failures
                     await self.put(key, None, ttl=300, negative_cache=True)
@@ -410,6 +433,41 @@ class MultiLayerCache(ServiceProvider):
         except Exception as e:
             logger.error(f"Shield Failure for {key}: {e}")
             return await fetch_callback() # Emergency Bypass
+
+    async def put(self, key: str, value: Any, ttl: int = 300, negative_cache: bool = False, use_pickle: bool = False, use_msgpack: bool = False, delta: float = 0.1):
+        """
+        [Task 47.7 & 47.8] Compressed Put with Mutation Tracking.
+        """
+        # [Task 26.2] Anti-Stampede TTL Staggering (Jittered Expiry)
+        from random import uniform
+        jitter_factor = uniform(0.85, 1.0)
+        actual_ttl = int((300 if negative_cache else ttl) * jitter_factor)
+        
+        xf_item = {
+            "value": value, 
+            "xf_expiry": time.time() + actual_ttl,
+            "xf_delta": delta # Store compute cost
+        }
+        
+        # 1. Update L1
+        self.lru.put(key, xf_item, dynamic_limit=self._get_l1_capacity())
+        
+        # 2. Update L2 (Redis)
+        if self._is_l2_available():
+            try:
+                if use_msgpack:
+                    # [Task 145] Binary-First msgpack Path
+                    payload = msgpack.packb(xf_item, use_bin_type=True)
+                elif use_pickle:
+                    # Pickle for complex objects like List[Route]
+                    payload = zlib.compress(pickle.dumps(xf_item, protocol=pickle.HIGHEST_PROTOCOL))
+                else:
+                    payload, _ = PayloadCompressor.compress(xf_item)
+                    
+                await self.redis.setex(key, actual_ttl + 600, payload)
+                await self.redis.publish("cache:invalidation", json.dumps({"sender": PROCESS_ID, "key": key}))
+            except Exception as e:
+                logger.error(f"L2 Cache Put Error: {e}")
 
     async def _listen_for_invalidations(self):
         """[Task 27.18] Robust invalidation listener with proper cleanup."""
@@ -422,12 +480,19 @@ class MultiLayerCache(ServiceProvider):
                 try:
                     message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                     if message and message['type'] == 'message':
-                        data = json.loads(message['data'].decode('utf-8'))
+                        m_data = message['data']
+                        if isinstance(m_data, bytes):
+                            m_data = m_data.decode('utf-8')
+                        data = json.loads(m_data)
                         if data.get('sender') != PROCESS_ID:
-                            if data.get('key') == "ALL_CLEAR":
+                            key = data.get('key')
+                            if key == "ALL_CLEAR":
                                 self.lru.clear()
-                            else:
-                                self.lru.delete(data.get('key'))
+                            elif key:
+                                # [Nexus] Hash Invalidation Support
+                                # If the key is a hash discovery field, we ignore for now as it's incremental
+                                # But we clear L1 discovery candidates if any
+                                self.lru.delete(key)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -442,6 +507,55 @@ class MultiLayerCache(ServiceProvider):
                 await pubsub.unsubscribe("cache:invalidation")
                 await pubsub.close()
             except: pass
+
+    # --- Hash-based Discovery Methods (Streaming) ---
+
+    async def hset_routes(self, key: str, routes: List[Any], ttl: int = 3600):
+        """[Nexus Stream] Incrementally add routes to a discovery hash."""
+        if not self.redis: return
+        try:
+            mapping = {}
+            for r in routes:
+                jid = getattr(r, 'journey_id', str(uuid.uuid4())[:8])
+                # We use zlib+pickle for Route objects
+                mapping[jid] = zlib.compress(pickle.dumps(r, protocol=pickle.HIGHEST_PROTOCOL))
+            
+            if mapping:
+                await self.redis.hset(key, mapping=mapping)
+                await self.redis.expire(key, ttl)
+        except Exception as e:
+            logger.error(f"Cache hset_routes Error: {e}")
+
+    async def hget_routes(self, key: str) -> List[Any]:
+        """[Nexus Stream] Retrieve all gathered routes from a discovery hash."""
+        if not self.redis: return []
+        try:
+            all_fields = await self.redis.hgetall(key)
+            results = []
+            for jid, data in all_fields.items():
+                s_jid = jid
+                if isinstance(jid, bytes):
+                    s_jid = jid.decode('utf-8')
+                if s_jid.startswith('_'): continue
+                try:
+                    results.append(pickle.loads(zlib.decompress(data)))
+                except: pass
+            return results
+        except Exception as e:
+            logger.error(f"Cache hget_routes Error: {e}")
+            return []
+
+    async def hset_status(self, key: str, status: str):
+        """Mark discovery as 'partial' or 'complete'."""
+        if self.redis:
+             await self.redis.hset(key, "_status", status)
+
+    async def hget_status(self, key: str) -> str:
+        if not self.redis: return "miss"
+        val = await self.redis.hget(key, "_status")
+        if isinstance(val, bytes):
+            return val.decode('utf-8')
+        return val if val else "miss"
 
     # --- Domain Specific Methods ---
 

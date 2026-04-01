@@ -5,9 +5,8 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from fastapi import HTTPException, Request, Depends, status
 from sqlalchemy.orm import Session
-import redis.asyncio as redis
-
-from .config import Config
+from microservices.shared.config import Config
+from database.session import get_db, with_db_retry
 
 logger = logging.getLogger("shared-auth")
 
@@ -81,6 +80,7 @@ class SharedAuthManager:
             logger.error(f"JWT Verification failed: {e}")
             raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    @with_db_retry()
     def sync_user(self, sb_user: Any) -> Any:
         """Synchronize Supabase user to PostgreSQL."""
         from database.models import User, Profile
@@ -113,6 +113,7 @@ class SharedAuthManager:
             
         return user
 
+    @with_db_retry()
     def track_session(self, user_id: str, request: Request, refresh_token: str = None) -> str:
         """Advanced Session Tracking with Fingerprinting."""
         from database.models import UserSession

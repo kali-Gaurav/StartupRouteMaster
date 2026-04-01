@@ -72,7 +72,6 @@ class RouteSegmentSchema(BaseModel):
 
 
 class SearchRequestSchema(BaseModel):
-    # ... existing fields ...
     source: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     destination: str = Field(..., min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9\s\-\(\),]+$")
     date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}.*$")
@@ -514,13 +513,14 @@ class BookingRequestCreateSchema(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
+                "route_id": "route_123",
                 "source_station": "NDLS",
                 "destination_station": "MMCT",
                 "journey_date": "2026-03-15",
                 "train_number": "12951",
                 "train_name": "Rajdhani Express",
-                "class_type": "AC3",
-                "quota": "GENERAL",
+                "class_type": "3A",
+                "quota": "GN",
                 "passengers": [
                     {
                         "name": "John Doe",

@@ -58,3 +58,24 @@ def get_hubs_near(lat: float, lon: float, limit: int = 3) -> List[str]:
     # Sort by distance
     distances.sort(key=lambda x: x[1])
     return [d[0] for d in distances[:limit]]
+
+def get_smart_transfer_buffer(station_code: str, reliability_score: float = 0.5) -> int:
+    """[Task 143] Scaled Transfer Time based on Hub size and Arrival Punctuality."""
+    # Base transfer time by tier
+    if station_code in MEGA_HUBS:
+        base = 40  # 40 mins for mega hubs (complex platform changes)
+    elif station_code in MAJOR_HUBS:
+        base = 25  # 25 mins for major junctions
+    elif station_code in REGIONAL_HUBS:
+        base = 15
+    else:
+        base = 15
+        
+    # [Task 143.2] Reliability Buffer
+    # Score 0.5 is neutral. < 0.5 means train is often late.
+    # Buffer scales linearly: 0.0 reliability (+30m), 1.0 reliability (-5m)
+    rel_adj = (0.5 - reliability_score) * 60
+    rel_adj = max(-5, min(30, rel_adj))
+    
+    # Ensuring minimum safety threshold of 15 mins
+    return int(max(15, base + rel_adj))

@@ -17,8 +17,10 @@ class UnifiedLiveStatus(BaseModel):
     status_as_of: datetime = Field(default_factory=datetime.utcnow)
     delay_minutes: int = 0
     running_status: str = Field(..., description="e.g., 'On Time', 'Delayed', 'Cancelled'")
-    data_source: str = Field(..., description="Identifier for the origin of the data, e.g., 'rapidapi', 'ntes_scraper'")
+    data_source: str = Field(..., description="Identifier for the origin of the data, e.g., 'rapidapi', 'ntes_scraper', 'external_redirect'")
     confidence_score: float = Field(default=1.0, description="A score from 0.0 to 1.0 indicating data reliability")
+    external_url: Optional[str] = None
+    is_external: bool = False
 
 class UnifiedStation(BaseModel):
     sequence: int

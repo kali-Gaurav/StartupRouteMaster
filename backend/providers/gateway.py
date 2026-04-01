@@ -7,7 +7,7 @@ import logging
 import time
 import json
 from typing import Optional, Dict, Any, List, Callable, Coroutine
-from datetime import datetime
+from datetime import datetime, date
 
 from sqlalchemy import select, update
 from database.session import AsyncSessionUser
@@ -18,6 +18,7 @@ from .clients.rapidapi import RapidApiClient, to_unified_live_status as rapidapi
 from .clients.ntes_scraper import NtesScraperClient, to_unified_live_status as ntes_to_unified
 from .circuit_breaker import AsyncCircuitBreaker, CircuitBreakerOpenError
 from services.multi_layer_cache import multi_layer_cache as cache_system
+from services.scraper.ntes_sync_service import ntes_sync_service
 
 logger = logging.getLogger("provider.gateway")
 
@@ -139,27 +140,16 @@ class ProviderGateway:
                 jit_metrics.record_provider_call("rapidapi", False, lat)
                 logger.warning(f"RapidAPI failover trigger: {str(e)[:50]}")
 
-        # 2. Fallback: NTES
-        start = time.perf_counter()
-        try:
-            raw_data = await self._safe_fetch_ntes(self.ntes_client.get_live_status, train_number)
-            lat = (time.perf_counter() - start) * 1000
-            from core.metrics import jit_metrics
-            
-            if raw_data:
-                jit_metrics.record_provider_call("ntes_scraper", True, lat)
-                unified = ntes_to_unified(raw_data, train_number)
-                if unified:
-                    await cache_system.put(cache_key, unified.model_dump(), ttl=300)
-                    return unified
-            else:
-                jit_metrics.record_provider_call("ntes_scraper", False, lat)
-        except Exception as e:
-            lat = (time.perf_counter() - start) * 1000
-            from core.metrics import jit_metrics
-            jit_metrics.record_provider_call("ntes_scraper", False, lat)
-            logger.error(f"NTES failover trigger: {e}")
-        return None
+        # 2. Fallback: External Redirect [User Shift: Direct NTES Redirection]
+        logger.info(f"🛰️ [GATEWAY] Providing external redirect link for {train_number} (NTES).")
+        return UnifiedLiveStatus(
+            train_number=train_number,
+            running_status="External Tracking",
+            data_source="external_redirect",
+            is_external=True,
+            external_url="https://enquiry.indianrail.gov.in/mntes/",
+            confidence_score=1.0
+        )
 
     async def get_fare(self, train_number: str, travel_date: str, from_stn: str, to_stn: str, 
                        cls: str, quota: str = "GN") -> Optional[UnifiedFare]:
@@ -202,6 +192,30 @@ class ProviderGateway:
                     await cache_system.put(cache_key, schedule.model_dump(), ttl=86400)
                     return schedule
             except Exception as e: logger.warning(f"Schedule lookup failed: {e}")
+        return None
+
+    async def get_live_station(self, station_code: str, within_hours: int = 2) -> Optional[Dict[str, Any]]:
+        """
+        [Task 48.8] Fetches upcoming trains for a station.
+        """
+        cache_key = f"live_station:{station_code}:{within_hours}"
+        cached = await cache_system.get(cache_key)
+        if cached: return cached
+
+        start = time.perf_counter()
+        try:
+            raw_data = await self._safe_fetch_ntes(self.ntes_client.get_live_station, station_code, within_hours)
+            lat = (time.perf_counter() - start) * 1000
+            from core.metrics import jit_metrics
+            
+            if raw_data:
+                jit_metrics.record_provider_call("ntes_scraper_station", True, lat)
+                await cache_system.put(cache_key, raw_data, ttl=600) # Cache for 10 mins
+                return raw_data
+            else:
+                jit_metrics.record_provider_call("ntes_scraper_station", False, lat)
+        except Exception as e:
+            logger.error(f"NTES Live Station failover trigger: {e}")
         return None
 
     async def get_health(self) -> Dict[str, Any]:

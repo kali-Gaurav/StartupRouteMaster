@@ -1,0 +1,12 @@
+{
+  "name": "autodev",
+  "version": "1.0.0",
+  "description": "Autonomous development plugin implementing RALPH and GSD patterns for high-performance self-healing development.",
+  "skills": [
+    "ralph",
+    "gsd"
+  ],
+  "workflows": [
+    "autonomous_dev"
+  ]
+}

@@ -36,13 +36,35 @@ class NexusIOGate:
              await response(scope, receive, send)
              return
 
-        # Adaptive Load Shedding (Relaxed for Local Dev)
+        # [Task 121: Elite Load-Shedding] Proactive Protection for 1-2GB VPS
+        import os
+        max_ram = float(os.getenv("NEXUS_MAX_RAM", "95.0"))
+        max_cpu = float(os.getenv("NEXUS_MAX_CPU", "90.0"))
+        force_continue = os.getenv("NEXUS_FORCE_CONTINUE_ON_STRESS", "true").lower() == "true"
+        
         mem = psutil.virtual_memory()
-        if mem.percent > 99:
-             logger.critical(f"[NEXUS:GATE] CRITICAL LOAD SHEDDING (RAM: {mem.percent}%).")
-             response = Response(content="SYSTEM_OVERLOADED", status_code=503)
-             await response(scope, receive, send)
-             return
+        cpu = psutil.cpu_percent(interval=None) # Fast, non-blocking check
+        
+        # We shed load UNLESS it's a critical path (SOS/Health) or forced continue
+        path = scope['path']
+        is_critical = "sos" in path or "health" in path or "ping" in path
+        
+        if not is_critical and not force_continue:
+            if mem.percent > max_ram:
+                 logger.critical(f"[NEXUS:GATE] SHEDDING (RAM: {mem.percent}%). Path: {path}")
+                 response = Response(content="SYSTEM_OVERLOADED_RAM", status_code=503)
+                 await response(scope, receive, send)
+                 return
+
+            if cpu > max_cpu:
+                 logger.critical(f"[NEXUS:GATE] SHEDDING (CPU: {cpu}%). Path: {path}")
+                 response = Response(content="SYSTEM_OVERLOADED_CPU", status_code=503)
+                 await response(scope, receive, send)
+                 return
+        elif not is_critical and force_continue:
+            if mem.percent > max_ram or cpu > max_cpu:
+                 # ALERT ADMIN instead of denial
+                 logger.critical(f"⚠️ [NEXUS:ADMIN_ALERT] Resource Pressure High! (CPU: {cpu}%, RAM: {mem.percent}%). Path: {path}")
 
         logger.debug(f"[NEXUS:{request_id}] {scope['method']} {scope['path']} from {client_ip}")
 
@@ -71,6 +93,10 @@ class NexusIOGate:
             await response(scope, receive, send)
         finally:
             duration = round((time.perf_counter() - start_time) * 1000, 2)
+            
+            # Record telemetry
+            await nexus_boot.telemetry.record_request(duration)
+
             # Log standard completions (simplified)
             if logger.isEnabledFor(logging.DEBUG):
                  logger.debug(f"[NEXUS:{request_id}] Finished in {duration}ms")

@@ -157,21 +157,33 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
   const channelRef = useRef<BroadcastChannel | null>(null);
   const reconnectTimeoutRef = useRef<number>(1000);
 
+  const safePostMessage = useCallback((data: any) => {
+    try {
+      if (channelRef.current) {
+        channelRef.current.postMessage(data);
+      }
+    } catch (err) {
+      // Catch "Channel is closed" or other InvalidStateErrors during unmount
+      console.debug("BroadcastChannel postMessage suppressed (channel likely closed):", err);
+    }
+  }, []);
+
+  const claimLeadership = useCallback(() => {
+    setIsMaster(true);
+    safePostMessage({ type: "LEADER_ANNOUNCE", id: instanceId });
+  }, [instanceId, safePostMessage]);
+
   // Task 1.14: Leader Election & Cross-Tab Sync
   useEffect(() => {
     const channel = new BroadcastChannel("routemaster_neural_sync");
     channelRef.current = channel;
-
-    const claimLeadership = () => {
-      setIsMaster(true);
-      channel.postMessage({ type: "LEADER_ANNOUNCE", id: instanceId });
-    };
+    const currentChannel = channel;
 
     channel.onmessage = (event) => {
       const { type, id, payload } = event.data;
       
       if (type === "WHO_IS_LEADER") {
-        if (isMaster) channel.postMessage({ type: "LEADER_ANNOUNCE", id: instanceId });
+        if (isMaster) safePostMessage({ type: "LEADER_ANNOUNCE", id: instanceId });
       } else if (type === "LEADER_ANNOUNCE") {
         if (id !== instanceId) {
           setIsMaster(false);
@@ -191,22 +203,27 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       }
     };
 
-    channel.postMessage({ type: "WHO_IS_LEADER", id: instanceId });
+    safePostMessage({ type: "WHO_IS_LEADER", id: instanceId });
     const timer = setTimeout(() => {
       if (!isMaster) claimLeadership();
     }, 500);
 
     return () => {
-      if (isMaster) channel.postMessage({ type: "LEADER_RETIRE", id: instanceId });
-      channel.close();
       clearTimeout(timer);
+      if (isMaster) {
+        try {
+          currentChannel.postMessage({ type: "LEADER_RETIRE", id: instanceId });
+        } catch (e) { /* suppress close race */ }
+      }
+      currentChannel.close();
+      channelRef.current = null;
     };
-  }, [instanceId, isMaster, setStoreMessages, setStoreLastIntent]);
+  }, [instanceId, isMaster, setStoreMessages, setStoreLastIntent, claimLeadership, safePostMessage]);
 
   // Sync state to other tabs if Master
   useEffect(() => {
     if (isMaster && channelRef.current) {
-      channelRef.current.postMessage({ 
+      safePostMessage({ 
         type: "SYNC_STATE", 
         payload: { messages: storeMessages, lastIntent: storeLastIntent } 
       });

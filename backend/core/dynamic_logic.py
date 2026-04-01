@@ -122,17 +122,17 @@ def is_valid_transfer(
     # Apply station-specific minimum
     effective_min = max(min_w + transfer_penalty, station_min_buffer)
     
-    # [Yield Optimization] Increase floor for dynamic_max for short legs
-    max_w = max(max_w, 120 if phase != SearchPhase.STRICT else 60)
+    # [Massive Yield Optimization] Increase floor for dynamic_max for short legs aggressively. In India people often wait 6-10 hours.
+    max_w = max(max_w, 600 if phase != SearchPhase.STRICT else 300)
     
     if wait_mins < effective_min or wait_mins > max_w:
         # logger.debug(f"Transfer Rejected (Window): wait={wait_mins}, min={effective_min}, max={max_w}, station={station_code}")
         return False
         
     # 2. Waiting Ratio check
-    if phase == SearchPhase.RELAXED: max_ratio = 0.85
-    elif phase == SearchPhase.MODERATE: max_ratio = 0.7
-    else: max_ratio = 0.45 
+    if phase == SearchPhase.RELAXED: max_ratio = 5.0
+    elif phase == SearchPhase.MODERATE: max_ratio = 4.0
+    else: max_ratio = 2.0 
         
     if journey_so_far_mins > 0:
         ratio = wait_mins / (journey_so_far_mins + wait_mins)

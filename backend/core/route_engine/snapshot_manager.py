@@ -57,6 +57,7 @@ class SnapshotManager:
                         return pickle.load(f)
                 
                 snapshot = await asyncio.to_thread(load_from_disk)
+                if snapshot: snapshot.remap()
                 
                 # [Task 27.18] Version Validation
                 if getattr(snapshot, 'version', None) != StaticGraphSnapshot.version:
@@ -99,14 +100,21 @@ class SnapshotManager:
         return None
 
     async def save_snapshot(self, snapshot: StaticGraphSnapshot):
-        """Saves snapshot to both Disk and Redis."""
+        """Saves snapshot to both Disk and Redis (Optimized)."""
         date_str = snapshot.date.strftime("%Y%m%d")
         
-        # 1. Save to Disk (Reliability)
+        # [Task 121: Elite Persistence] Pickle once, use twice.
+        try:
+            p_data = pickle.dumps(snapshot, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as e:
+            logger.error(f"Critical: Snapshot Pickling Failed: {e}")
+            return
+
+        # 1. Save to Disk
         filename = self._get_filename(snapshot.date)
         try:
             with open(filename, 'wb') as f:
-                pickle.dump(snapshot, f)
+                f.write(p_data)
             logger.info(f"Snapshot saved to disk: {filename}")
         except Exception as e:
             logger.error(f"Failed to save snapshot to disk: {e}")
@@ -114,7 +122,13 @@ class SnapshotManager:
         # 2. Save to Redis (Performance)
         try:
             await multi_layer_cache.initialize()
-            await multi_layer_cache.set_graph_snapshot(date_str, snapshot)
+            if multi_layer_cache.redis:
+                # [Task 121: Elite Extension] Compression hook for Redis
+                import zlib
+                compressed = zlib.compress(p_data)
+                # TTL 24H for Redis snapshot
+                await multi_layer_cache.redis.setex(f"graph:snapshot:{date_str}", 86400, compressed)
+                logger.info(f"Snapshot pushed to Redis (L2) for {date_str}.")
         except Exception as e:
             logger.warning(f"Failed to save snapshot to Redis: {e}")
 

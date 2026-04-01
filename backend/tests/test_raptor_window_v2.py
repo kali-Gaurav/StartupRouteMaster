@@ -66,5 +66,12 @@ async def test_raptor_24h_window_deep():
         logger.error("❌ FAILURE: No routes found in 24h window.")
         sys.exit(1)
 
+
+def test_raptor_frontier_multiplier_tuning():
+    raptor = OptimizedRAPTOR(max_transfers=3)
+    assert raptor.round_frontier_multipliers[1] <= 2.0
+    assert raptor.round_frontier_multipliers[2] <= 3.0
+
+
 if __name__ == "__main__":
     asyncio.run(test_raptor_24h_window_deep())

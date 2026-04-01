@@ -68,8 +68,8 @@ async def unified_search(
 
     # [38.2] Payload Sanitization
     from utils.security import sanitize_string
-    source = sanitize_string(source, length_limit=10)
-    destination = sanitize_string(destination, length_limit=10)
+    source = sanitize_string(source, length_limit=50)
+    destination = sanitize_string(destination, length_limit=50)
 
     # [Nexus Intersection] Layer 2.5 Security Interceptor (Task 18)
     decision = await nexus_interceptor.intercept(request, source, destination)

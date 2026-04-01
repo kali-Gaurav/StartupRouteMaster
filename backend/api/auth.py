@@ -114,41 +114,43 @@ async def verify_otp(
 ):
     """
     Verify OTP sent to user's phone or email.
-    On successful verification, create/sync user and return Supabase token.
+    On successful verification, create/sync user and return token.
+    Includes brute-force protection (5 attempts max).
     """
     if not payload.phone and not payload.email:
-        raise HTTPException(
-            status_code=400,
-            detail="Either phone or email is required"
-        )
+        raise HTTPException(status_code=400, detail="Either phone or email is required")
     
-    if not payload.otp or len(payload.otp) != 6:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid OTP format"
-        )
+    contact = payload.phone or payload.email
+    attempts_key = f"otp:attempts:{contact}"
     
+    # 1. Brute-force check
+    attempts = await multi_layer_cache.get(attempts_key) or 0
+    if int(attempts) >= 5:
+        logger.warning(f"Brute-force protection triggered for {contact}")
+        raise HTTPException(
+            status_code=429, 
+            detail="Too many failed attempts. Please try again in 15 minutes."
+        )
+
     try:
-        contact = payload.phone or payload.email
         otp_cache_key = f"otp:code:{contact}"
-        
-        # Retrieve stored OTP
         stored_otp = await multi_layer_cache.get(otp_cache_key)
+        
         if not stored_otp:
-            raise HTTPException(
-                status_code=401,
-                detail="OTP expired or not found. Please request a new OTP."
-            )
+            raise HTTPException(status_code=401, detail="OTP expired or not found.")
         
-        # Verify OTP matches
-        if str(stored_otp) != str(payload.otp):
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid OTP"
-            )
+        # 2. Verify OTP
+        if str(stored_otp) != str(payload.otp).strip():
+            # Increment attempts on failure
+            await multi_layer_cache.redis.incr(attempts_key)
+            if int(attempts) == 0:
+                await multi_layer_cache.redis.expire(attempts_key, 900) # 15 min block
+            
+            raise HTTPException(status_code=401, detail=f"Invalid OTP. {4 - int(attempts)} attempts remaining.")
         
-        # Clear used OTP
+        # Success: Clear state
         await multi_layer_cache.delete(otp_cache_key)
+        await multi_layer_cache.delete(attempts_key)
         
         from database.models import Profile
         from datetime import timedelta, datetime as dt

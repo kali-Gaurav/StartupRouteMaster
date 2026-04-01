@@ -6,7 +6,7 @@ from utils.responses import SafeJSONResponse
 
 logger = logging.getLogger("routemaster.exceptions")
 
-async def handle_engine_crash(request: Request, exc: Exception):
+async def handle_engine_crash(exc: Exception, request: Request = None):
     """Fallback handler for ASGI middleware crash detection."""
     from starlette.responses import JSONResponse
     logger.critical(f"💥 ENGINE CRASH: {exc}", exc_info=True)
@@ -49,16 +49,3 @@ def setup_exception_handlers(app: FastAPI):
             status_code=exc.status_code,
             content={"error": True, "message": exc.detail}
         )
-
-async def handle_engine_crash(request: Request, exc: Exception):
-    """Fallback handler for ASGI middleware crash detection."""
-    from starlette.responses import JSONResponse
-    logger.critical(f"💥 ENGINE CRASH: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": True, 
-            "message": "Protocol Engine Crash: Automated Recovery Initiated.",
-            "protocol_code": "ERR_NEXUS_CRASH"
-        }
-    )

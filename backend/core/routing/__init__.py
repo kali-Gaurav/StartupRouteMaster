@@ -8,6 +8,7 @@ def register_routers(app: FastAPI):
     Task 2: Modularized Router Registry. 
     Registers all V1 and V2 API routes safely and instruments with Prometheus.
     """
+
     # Task 40: Selective Prometheus Instrumentation
     from prometheus_fastapi_instrumentator import Instrumentator
     from database.config import Config
@@ -55,7 +56,10 @@ def register_routers(app: FastAPI):
     app.include_router(admin_fraud.router, prefix=V2_PREFIX)
 
     # --- V3 ELITE API ROUTES ---
-    from api.v3 import search as search_v3, transit as transit_v3, governor as governor_v3, system as system_v3
+    from api.v3 import (
+        search as search_v3, transit as transit_v3, governor as governor_v3, 
+        system as system_v3
+    )
     V3_PREFIX = "/api/v3"
     app.include_router(search_v3.router, prefix=V3_PREFIX)
     app.include_router(transit_v3.router, prefix=V3_PREFIX)
