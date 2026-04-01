@@ -132,7 +132,7 @@ async def get_segment_pnrs(
     ).first()
     
     if not is_unlocked and current_user.role != "admin":
-        return [] # Return empty list if not unlocked instead of 403 to avoid UI noise
+        raise HTTPException(status_code=403, detail="Route not unlocked for this user.")
         
     pnrs = db.query(SegmentPNR).filter(
         SegmentPNR.user_id == str(current_user.id),
@@ -208,14 +208,14 @@ async def create_booking(
         ] if getattr(booking, "passenger_details", None) else None,
         "created_at": booking.created_at,
         # legacy passenger fields - populate from first passenger if present
-        "gender": booking.passenger_details[0].gender if booking.passenger_details else "M",
-        "phone_number": booking.passenger_details[0].phone_number if booking.passenger_details else None,
-        "email": booking.passenger_details[0].email if booking.passenger_details else None,
-        "document_type": booking.passenger_details[0].document_type if booking.passenger_details else None,
-        "document_number": booking.passenger_details[0].document_number if booking.passenger_details else None,
-        "concession_type": booking.passenger_details[0].concession_type if booking.passenger_details else None,
-        "concession_discount": booking.passenger_details[0].concession_discount if booking.passenger_details else 0.0,
-        "meal_preference": booking.passenger_details[0].meal_preference if booking.passenger_details else None,
+        "gender": booking.passenger_details[0].gender if len(booking.passenger_details) > 0 else "M",
+        "phone_number": booking.passenger_details[0].phone_number if len(booking.passenger_details) > 0 else None,
+        "email": booking.passenger_details[0].email if len(booking.passenger_details) > 0 else None,
+        "document_type": booking.passenger_details[0].document_type if len(booking.passenger_details) > 0 else None,
+        "document_number": booking.passenger_details[0].document_number if len(booking.passenger_details) > 0 else None,
+        "concession_type": booking.passenger_details[0].concession_type if len(booking.passenger_details) > 0 else None,
+        "concession_discount": booking.passenger_details[0].concession_discount if len(booking.passenger_details) > 0 else 0.0,
+        "meal_preference": booking.passenger_details[0].meal_preference if len(booking.passenger_details) > 0 else None,
         "payment_status": booking.payment_status or "",
     }
     return resp

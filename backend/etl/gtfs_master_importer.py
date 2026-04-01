@@ -29,7 +29,7 @@ def norm_id(val):
         if s.isdigit():
             return str(int(s))
         return s
-    except: return str(val).strip()
+    except (ValueError, TypeError): return str(val).strip()
 
 def run_importer():
     logger.info(f"🚀 Starting GTFS Master Import into {DB_PATH}...")
@@ -172,7 +172,7 @@ def run_importer():
             
             dist = getattr(row, 'shape_dist_traveled', '0')
             try: dist = float(dist)
-            except: dist = 0.0
+            except (ValueError, TypeError): dist = 0.0
             
             st_batch.append((tid_pk, sid_pk, row.arrival_time, row.departure_time, int(row.stop_sequence), dist))
             
@@ -185,7 +185,7 @@ def run_importer():
                     
                     prev_dist = getattr(prev_row, 'shape_dist_traveled', '0')
                     try: prev_dist = float(prev_dist)
-                    except: prev_dist = 0.0
+                    except (ValueError, TypeError): prev_dist = 0.0
                     
                     seg_dist = dist - prev_dist
                     
@@ -195,7 +195,7 @@ def run_importer():
                         prev_row.departure_time, row.arrival_time,
                         dur, round(max(0, seg_dist), 3), row.trip_id_norm, 100
                     ))
-                except: pass
+                except (ValueError, TypeError, AttributeError): pass
             
             last_trip_id = row.trip_id_norm
             prev_row = row

@@ -158,8 +158,9 @@ async def create_payment_order(
             # Create payment order
             # Route model (gtfs_routes) doesn't have source/destination fields directly
             # Use verification result or route long_name
-            route_source = verification_result.get("route_info", {}).get("from_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[0] if hasattr(route, 'long_name') else "Unknown"
-            route_dest = verification_result.get("route_info", {}).get("to_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[-1] if hasattr(route, 'long_name') else "Unknown"
+            long_name_parts = getattr(route, 'long_name', '').split(' to ') if hasattr(route, 'long_name') else []
+            route_source = verification_result.get("route_info", {}).get("from_station_name") or (long_name_parts[0] if len(long_name_parts) >= 2 else getattr(route, 'long_name', 'Unknown') or 'Unknown')
+            route_dest = verification_result.get("route_info", {}).get("to_station_name") or (long_name_parts[-1] if len(long_name_parts) >= 2 else getattr(route, 'long_name', 'Unknown') or 'Unknown')
             
             order_response = await payment_service.create_order(
                 amount_rupees=UNLOCK_PRICE,

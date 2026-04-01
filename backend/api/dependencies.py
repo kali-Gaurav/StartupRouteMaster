@@ -112,7 +112,7 @@ async def get_optional_user(request: Request, token: str = Depends(oauth2_scheme
 async def verify_webhook_signature(request: Request):
     webhook_body = await request.body()
     signature = request.headers.get("X-Razorpay-Signature")
-    if not signature: raise HTTPException(status_code=400, detail="X-Razorpay-Signature header not found.")
+    if not signature: raise HTTPException(status_code=401, detail="X-Razorpay-Signature header not found.")
     payment_service = PaymentService()
     if not payment_service.verify_webhook_signature(webhook_body, signature):
         raise HTTPException(status_code=400, detail="Invalid webhook signature.")

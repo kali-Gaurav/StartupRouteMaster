@@ -56,8 +56,8 @@ class FastPathRouter(BaseRoutingEngine):
              from core.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_COORDINATES
              
              # Resolve local hubs
-             src_hubs = [h for h in source_ids if self.graph.stop_cache.get(h).code in MEGA_HUBS or self.graph.stop_cache.get(h).code in MAJOR_HUBS]
-             dst_hubs = [h for h in dest_ids if self.graph.stop_cache.get(h).code in MEGA_HUBS or self.graph.stop_cache.get(h).code in MAJOR_HUBS]
+             src_hubs = [h for h in source_ids if self.graph.stop_cache.get(h) is not None and (self.graph.stop_cache.get(h).code in MEGA_HUBS or self.graph.stop_cache.get(h).code in MAJOR_HUBS)]
+             dst_hubs = [h for h in dest_ids if self.graph.stop_cache.get(h) is not None and (self.graph.stop_cache.get(h).code in MEGA_HUBS or self.graph.stop_cache.get(h).code in MAJOR_HUBS)]
              
              if src_hubs and dst_hubs:
                   for s_hub in src_hubs:

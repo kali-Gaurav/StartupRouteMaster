@@ -159,7 +159,7 @@ async def verify_otp(
         if payload.email:
             user = db.query(User).filter(User.email == payload.email).first()
         else:
-            user = db.query(User).filter(User.phone == payload.phone).first()
+            user = db.query(User).filter(User.phone_number == payload.phone).first()
         
         is_new_user = False
         
@@ -167,15 +167,19 @@ async def verify_otp(
             is_new_user = True
             user = User(
                 email=payload.email or f"{payload.phone}@sms.safesafar.app",
-                phone=payload.phone,
+                phone_number=payload.phone,
                 role="user"
             )
             db.add(user)
             db.flush()
             
-            profile = Profile(id=user.id, user_id=user.id)
-            db.add(profile)
-            db.commit()
+            try:
+                profile = Profile(id=user.id, user_id=user.id)
+                db.add(profile)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             logger.info(f"New user created via OTP: {contact}")
         else:
             db.commit()
@@ -198,7 +202,7 @@ async def verify_otp(
         await multi_layer_cache.put(cache_key, {
             "id": user.id,
             "email": user.email,
-            "phone": user.phone,
+            "phone": user.phone_number,
             "role": user.role
         }, ttl=86400)
         

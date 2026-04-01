@@ -53,11 +53,18 @@ def upgrade() -> None:
 
     all_tables = user_owned_tables + list(linked_user_tables.keys()) + public_read_tables + system_tables
 
+    import re
+    _safe_name = re.compile(r'^[a-z][a-z0-9_]*$')
+
     for table in all_tables:
+        if not _safe_name.match(table):
+            raise ValueError(f"Unsafe table name rejected: {table!r}")
         op.execute(f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY;")
 
     # --- 4. POLICIES: PUBLIC READ TABLES ---
     for table in public_read_tables:
+        if not _safe_name.match(table):
+            raise ValueError(f"Unsafe table name rejected: {table!r}")
         op.execute(f"CREATE POLICY {table}_public_select ON public.{table} FOR SELECT USING (true);")
 
     # --- 5. POLICIES: USER OWNED TABLES ---
