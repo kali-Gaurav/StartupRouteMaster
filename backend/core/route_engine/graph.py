@@ -154,6 +154,9 @@ class StaticGraphSnapshot:
     hub_direct_adj: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     station_time_index: Dict[int, List[List[Tuple[datetime, int]]]] = field(default_factory=lambda: defaultdict(lambda: [[] for _ in range(24)]))
     
+    # [Task 146] Cluster Reachability Matrix
+    cluster_reachability: Any = None
+    
     # [Task 1] Mapping for Real-time Propagation
     trip_to_train: Dict[int, str] = field(default_factory=dict)
     train_to_trips: Dict[str, List[int]] = field(default_factory=lambda: defaultdict(list))
@@ -175,6 +178,62 @@ class StaticGraphSnapshot:
     stop_id_to_idx: Dict[int, int] = field(default_factory=dict)
     idx_to_stop_id: List[int] = field(default_factory=list)
 
+    def __getstate__(self):
+        """[Task 121: Elite] Exclude large memmapped arrays from pickling to avoid RAM spikes."""
+        state = self.__dict__.copy()
+        # Null out all memmapped arrays; they will be recovered via remap()
+        for attr in list(state.keys()):
+            if isinstance(state[attr], np.ndarray):
+                state[attr] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # Arrays remain None until remap() is called by the Manager
+
+    def remap(self):
+        """[Task 121: Elite] Recover memmapped arrays from disk based on snapshot date."""
+        ts = int(self.date.timestamp())
+        logger.info(f"⚡ [NEXUS:REMAP] Re-linking MemMaps for {self.date.date()} (ts={ts})...")
+        
+        self._departures_data = MemMapManager.load_array(f"deps_{ts}")
+        self._departures_index = MemMapManager.load_array(f"deps_idx_{ts}")
+        self._arrivals_data = MemMapManager.load_array(f"arrs_{ts}")
+        self._arrivals_index = MemMapManager.load_array(f"arrs_idx_{ts}")
+        
+        self._pattern_deps_data = MemMapManager.load_array(f"p_deps_{ts}")
+        self._pattern_deps_index = MemMapManager.load_array(f"p_deps_idx_{ts}")
+        
+        self._pattern_segments_data = MemMapManager.load_array(f"p_segs_{ts}")
+        self._pattern_segments_index = MemMapManager.load_array(f"p_segs_idx_{ts}")
+        
+        self._trip_reachability_bitset = MemMapManager.load_array(f"reach_{ts}")
+        
+        self._transfers_data = MemMapManager.load_array(f"transfers_{ts}")
+        self._transfers_index = MemMapManager.load_array(f"transfers_idx_{ts}")
+        
+        # [Task 146.5] Load Cluster Matrix
+        from .reachability import ClusterReachabilityMatrix
+        from database.config import Config
+        self.cluster_reachability = ClusterReachabilityMatrix.load(self.date, Config.MEMMAP_DIR)
+        
+        # [Task 121: Elite Persistence] Restore TBR structures
+        self.tbr_trip_nodes = MemMapManager.load_array(f"tbr_nodes_{ts}")
+        
+        # Restore indices (if they were saved/pickled - or reload from separate meta)
+        # For simplicity, we assume they were pickled or we reload them.
+        # Let's ensure they are also saved as memmaps if they were excluded.
+        
+        self.coordinate_matrix = MemMapManager.load_array("coordinate_matrix")
+        
+        logger.info("✅ [NEXUS:REMAP] Arrays re-linked successfully.")
+
+    def is_cluster_reachable(self, src_cluster: str, dst_cluster: str) -> bool:
+        """Convenience wrapper for gatekeeper checks."""
+        if not self.cluster_reachability: return True # Fail-safe
+        return self.cluster_reachability.is_reachable(src_cluster, dst_cluster)
+
+
     def pattern_for_trip(self, trip_id: int) -> Tuple[int, ...]:
         segs = self.trip_segments.get(trip_id, [])
         return tuple(seg.departure_stop_id for seg in segs) + ((segs[-1].arrival_stop_id,) if segs else ())
@@ -194,10 +253,23 @@ class StaticGraphSnapshot:
                 is_dict = "map" in attr or "pid" in attr
                 setattr(self, attr, {} if is_dict else None)
 
-        # 1. Global Stop Mapping (Ensures consistency across departures and arrivals)
-        all_sids = sorted(list(set(self.departures_by_stop.keys()) | set(self.arrivals_by_stop.keys())))
-        self._stop_id_map = {sid: i for i, sid in enumerate(all_sids)}
+        # [Nexus Fix] Use stable mapping from builder if available; otherwise create it once.
+        if not self.stop_id_to_idx:
+             all_sids = sorted(list(set(self.departures_by_stop.keys()) | set(self.arrivals_by_stop.keys())))
+             self.stop_id_to_idx = {sid: i for i, sid in enumerate(all_sids)}
+        
+        self._stop_id_map = self.stop_id_to_idx
+        all_sids = sorted(self._stop_id_map.keys())
         NUM_STOPS = len(all_sids)
+
+        # [Task 146] Hub Intel Pre-calculation
+        # Pre-resolve indices for major hubs to enable zero-latency reachability pruning
+        from core.hubs import MEGA_HUBS, MAJOR_HUBS
+        all_hub_codes = MEGA_HUBS | MAJOR_HUBS
+        rev_stop_cache = {s.code: s.id for s in self.stop_cache.values()}
+        hub_ids = [rev_stop_cache.get(code) for code in all_hub_codes if code in rev_stop_cache]
+        self._hub_indices = [self._stop_id_map.get(hid) for hid in hub_ids]
+        self._hub_indices = [i for i in self._hub_indices if i is not None]
 
         if self.departures_by_stop:
             all_deps = []; all_p_deps = []
@@ -311,6 +383,29 @@ class StaticGraphSnapshot:
             BITSET_WORDS = (NUM_STOPS // 64) + 1
             reach_bits = np.zeros((len(tids), BITSET_WORDS), dtype=np.uint64)
 
+            # [Task RO-012] Build stop-to-stop spatial reachability via DFS for 100% coverage
+            stop_adj = defaultdict(set)
+            for tid, segs in self.trip_segments.items():
+                for s in segs:
+                    stop_adj[s.departure_stop_id].add(s.arrival_stop_id)
+            if hasattr(self, 'transfer_graph') and self.transfer_graph:
+                for sid, xfers in self.transfer_graph.items():
+                    for x in xfers:
+                        stop_adj[sid].add(x.to_stop_id)
+            
+            stop_reach = {}
+            for sid in self._stop_id_map.keys():
+                visited = set()
+                queue = [sid]
+                while queue:
+                    curr = queue.pop()
+                    if curr not in visited:
+                        visited.add(curr)
+                        for neighbor in stop_adj[curr]:
+                            if neighbor not in visited:
+                                queue.append(neighbor)
+                stop_reach[sid] = visited
+
             for i, tid in enumerate(tids):
                 # [Nexus: Elite Reach Fix] include ALL stops in bitset for perfect discovery
                 pos_map = self._trip_stop_pos_map.get(tid, {})
@@ -321,10 +416,16 @@ class StaticGraphSnapshot:
                     off, count = self.tbr_trip_index[tid]
                     sids = [int(self.tbr_trip_nodes[off + j]['stop_id']) for j in range(count)]
                 
+                # Expand using DFS transitive closure
+                full_sids = set()
                 for sid in sids:
+                    full_sids.update(stop_reach.get(sid, {sid}))
+                
+                for sid in full_sids:
                     s_idx = self._stop_id_map.get(sid)
                     if s_idx is not None and s_idx < NUM_STOPS:
                         reach_bits[i, s_idx // 64] |= np.uint64(1) << np.uint64(s_idx % 64)
+
             
             MemMapManager.save_array(f"reach_{ts}", reach_bits)
             self._trip_reachability_bitset = MemMapManager.load_array(f"reach_{ts}")
@@ -380,11 +481,16 @@ class StaticGraphSnapshot:
         else:
              logger.debug("⚠️ [NEXUS] Vectorize called on already-vectorized or empty snapshot. Skipping clear.")
 
-        # 4. TBR Data
+        # 4. TBR Data [Task 121: Persistence Alignment]
         if tbr_data:
             self.tbr_trip_nodes = tbr_data.get('tbr_trip_nodes')
             self.tbr_trip_index = tbr_data.get('tbr_trip_index', {})
             self.tbr_stop_index = tbr_data.get('tbr_stop_index', {})
+            
+            # Save to MemMap for disk recovery
+            if isinstance(self.tbr_trip_nodes, np.ndarray):
+                ts = int(self.date.timestamp())
+                MemMapManager.save_array(f"tbr_nodes_{ts}", self.tbr_trip_nodes)
 
         logger.info(f"🚀 Vectorization Complete for {self.date.date()}.")
 
@@ -468,12 +574,11 @@ class TimeDependentGraph:
         self.snapshot = snapshot
         self.overlay = overlay or RealtimeOverlay()
         self.stop_cache = snapshot.stop_cache if snapshot else {}
+        # [Task 121: Elite O(1) Code Map]
+        self._stop_code_map = {s.code.upper(): s for s in self.stop_cache.values()}
 
     def get_stop_by_code(self, code: str) -> Optional[Stop]:
-        c = code.upper().strip()
-        for s in self.stop_cache.values():
-            if s.code == c: return s
-        return None
+        return self._stop_code_map.get(code.upper().strip())
 
     def can_reach_destination(self, tid: int, dst_id: int) -> bool:
         if not self.snapshot or self.snapshot._trip_reachability_bitset is None: return True
@@ -565,12 +670,105 @@ class TimeDependentGraph:
                     res.append((self.safe_fromtimestamp(eff_ts), int(tid)))
         return res
 
-    def get_transfers_from_stop(self, sid: int, arr: datetime, min_transfer_time: int = 15, incoming_trip_id: int = None) -> List[TransferConnection]:
+    def can_reach_destination(self, tid: int, dest_sid: int) -> bool:
+        """[Task 146] O(1) Trip-Stop Reachability Check using Bitsets."""
+        if not self.snapshot or self.snapshot._trip_reachability_bitset is None:
+            return True
+        
+        t_idx = self.snapshot._trip_id_map.get(tid)
+        if t_idx is None: return True
+        
+        s_idx = self.snapshot._stop_id_map.get(dest_sid)
+        if s_idx is None: return True # Could be a new station or out of index
+        
+        # Check the bit in the bitset (packed uint64 words)
+        try:
+             word_idx = s_idx // 64
+             bit_idx = s_idx % 64
+             return bool(self.snapshot._trip_reachability_bitset[t_idx, word_idx] & (np.uint64(1) << np.uint64(bit_idx)))
+        except IndexError:
+             return True # Safety fallback
+
+    def can_reach_any_hub(self, tid: int) -> bool:
+        """[Task 146] Check if trip hits any major Hub for multi-hop expansion."""
+        if not self.snapshot or self.snapshot._trip_reachability_bitset is None:
+            return True
+        t_idx = self.snapshot._trip_id_map.get(tid)
+        if t_idx is None: return True
+        
+        hub_indices = getattr(self.snapshot, '_hub_indices', [])
+        if not hub_indices: return True
+        
+        bitset_row = self.snapshot._trip_reachability_bitset[t_idx]
+        for h_idx in hub_indices:
+            try:
+                if bitset_row[h_idx // 64] & (np.uint64(1) << np.uint64(h_idx % 64)):
+                    return True
+            except: continue
+        return False
+
+    def _get_strategic_road_bridges(self, sid: int, depth: str = "SHALLOW") -> List[TransferConnection]:
+        """[Task 138] Inject strategic Geo-Bridges (40-50km) for Deep Discovery."""
+        if depth == "SHALLOW": return []
+        
+        # In a real system, this is populated from self.snapshot.road_bridges
+        # For now, we use a curated strategic list or distance-based heuristic
+        bridges = []
+        
+        # [Task 138.3] Heuristic: Any station in the same city cluster but > 2km away
+        center_stop = self.stop_cache.get(sid)
+        if not center_stop or not center_stop.city: return []
+        
+        cluster_sids = self.snapshot.city_clusters.get(center_stop.city, []) if self.snapshot else []
+        for target_sid in cluster_sids:
+            if target_sid == sid: continue
+            
+            target = self.stop_cache.get(target_sid)
+            if not target: continue
+            
+            # Simple Euclidean Distance (40-50km max)
+            dist_km = ((center_stop.latitude - target.latitude)**2 + (center_stop.longitude - target.longitude)**2)**0.5 * 111.0
+            
+            # [Task 138.5] Thresholds
+            # Depth MEDIUM: up to 30km
+            # Depth DEEP: up to 50km
+            limit = 60.0 if depth == "DEEP" else 30.0
+            
+            if 2.0 < dist_km <= limit:
+                # Estimate duration: 25 mins + (1.5 mins per km)
+                duration = int(25 + (dist_km * 1.5))
+                bridges.append(TransferConnection(
+                    target_id=target_sid,
+                    target_code=target.code,
+                    valid_from=datetime.min, 
+                    valid_to=datetime.max,
+                    duration_minutes=duration,
+                    target_name=target.name,
+                    is_multi_station=True,
+                    transfer_type="TAXI"
+                ))
+        return bridges
+
+    def get_transfers_from_stop(self, sid: int, arr: datetime, min_transfer_time: int = 15, 
+                                incoming_trip_id: int = None, search_depth: str = "SHALLOW") -> List[TransferConnection]:
         feasible = []
+        
+        # [Task 143] Dynamic Scaling Intelligence
+        eff_min_tr = min_transfer_time
+        if sid in self.stop_cache:
+            stop = self.stop_cache[sid]
+            # Use reliability intelligence if available for incoming trip
+            rel_score = self.snapshot.reliability_scores.get(incoming_trip_id, 0.5) if (self.snapshot and incoming_trip_id) else 0.5
+            from core.hubs import get_smart_transfer_buffer
+            eff_min_tr = get_smart_transfer_buffer(stop.code, rel_score)
+            
+            # If user explicitly requested a MINIMUM time, respect it if it's higher
+            eff_min_tr = max(eff_min_tr, min_transfer_time)
+
         # 1. In-station transfer (buffer time)
         if sid in self.stop_cache:
             s = self.stop_cache[sid]
-            feasible.append(TransferConnection(sid, s.code, datetime.min, datetime.max, max(min_transfer_time, 15), s.name, is_multi_station=False))
+            feasible.append(TransferConnection(sid, s.code, datetime.min, datetime.max, max(eff_min_tr, 15), s.name, is_multi_station=False))
             
         # 2. Vectorized inter-station/complex transfers
         if self.snapshot and self.snapshot._transfers_data is not None:
@@ -585,7 +783,8 @@ class TimeDependentGraph:
                     is_multi = bool(row[2])
                     t_type = t_type_rev.get(int(row[3]), "WALK")
                     
-                    if min_transfer_time <= dur <= 1440:
+                    # Allow any positive transfer duration up to 24h (avoid filtering valid boundaries)
+                    if dur > 0 and dur <= 1440:
                         target = self.stop_cache.get(target_sid)
                         feasible.append(TransferConnection(
                             target_sid, 
@@ -596,6 +795,16 @@ class TimeDependentGraph:
                             is_multi_station=is_multi,
                             transfer_type=t_type
                         ))
+        
+        # 3. [Task 138] Multi-Modal Intelligent Bridges (Dynamic)
+        if search_depth in ("MEDIUM", "DEEP"):
+            bridges = self._get_strategic_road_bridges(sid, search_depth)
+            # Deduplicate (If transfer already exists in graph, don't add bridge)
+            existing_targets = {f.target_id for f in feasible}
+            for b in bridges:
+                if b.target_id not in existing_targets:
+                    feasible.append(b)
+
         return feasible
 
     def get_pattern_segments(self, pid: int) -> Optional[np.ndarray]:
@@ -607,9 +816,19 @@ class TimeDependentGraph:
         return None
 
     def get_stop_sequence_in_trip(self, tid: int, sid: int) -> int:
-        if not self.snapshot or not self.snapshot._trip_stop_pos_map: return -1
+        if not self.snapshot: return -1
         # [Task 121: Elite O(1) Lookup]
-        return self.snapshot._trip_stop_pos_map.get(tid, {}).get(sid, -1)
+        if self.snapshot._trip_stop_pos_map:
+            return self.snapshot._trip_stop_pos_map.get(tid, {}).get(sid, -1)
+            
+        # [Task 121: Elite Fallback] Scan TBR nodes if map missing
+        if self.snapshot.tbr_trip_index and tid in self.snapshot.tbr_trip_index:
+            off, count = self.snapshot.tbr_trip_index[tid]
+            if self.snapshot.tbr_trip_nodes is not None:
+                for i in range(count):
+                    if self.snapshot.tbr_trip_nodes[off + i]['stop_id'] == sid:
+                        return i
+        return -1
 
     def get_trip_segments_raw(self, tid: int) -> Optional[np.ndarray]:
         if not self.snapshot or not self.snapshot._trip_to_pid: return None
