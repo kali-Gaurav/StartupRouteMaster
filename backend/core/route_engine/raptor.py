@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any, Tuple, Union
 from sqlalchemy.orm import Session
+import numpy as np
 
 # Absolute imports for consistency
 import sys
@@ -18,11 +19,13 @@ if backend_path not in sys.path:
 from core.data_structures import Route, RouteSegment, TransferConnection, Persona
 from core.frontier import FrontierManager, FrontierRoute
 from .constraints import RouteConstraints
+from core.hubs import MEGA_HUBS, MAJOR_HUBS
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from core.routing.frequency_aware_range import get_frequency_aware_sizer
 from core.nexus.audit.chaos import chaos_trap
 from core.nexus.audit.governor import nexus_governor
 from .neural_pruner import get_raptor_pruner
+from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 
 logger = logging.getLogger("raptor")
 
@@ -39,16 +42,30 @@ class SearchRoute:
     transfer: Optional[TransferConnection] = None
     total_dist: float = 0.0
     total_wait: int = 0
-    # [Task 4] Bloom-filter based cycle detection (bitmask)
-    visited_bloom: int = 0
+    # [Task 4] Bloom-filter based cycle detection (128-bit split bitmask)
+    v_bloom_low: int = 0
+    v_bloom_high: int = 0
     reliability: float = 1.0 # [Task 173]
 
     def add_to_bloom(self, station_id: int):
-        self.visited_bloom |= (1 << (station_id % 64))
+        idx = station_id % 128
+        if idx < 64:
+            self.v_bloom_low |= (1 << idx)
+        else:
+            self.v_bloom_high |= (1 << (idx - 64))
 
     def has_cycle(self, station_id: int) -> bool:
-        if not (self.visited_bloom & (1 << (station_id % 64))):
+        idx = station_id % 128
+        is_set = False
+        if idx < 64:
+            is_set = bool(self.v_bloom_low & (1 << idx))
+        else:
+            is_set = bool(self.v_bloom_high & (1 << (idx - 64)))
+            
+        if not is_set:
             return False
+            
+        # Bloom hit: Check linked list to confirm (avoids collision pruning)
         curr = self
         while curr:
             if curr.to_stop_id == station_id or curr.from_stop_id == station_id:
@@ -56,16 +73,23 @@ class SearchRoute:
             curr = curr.parent
         return False
 
-class OptimizedRAPTOR:
+class OptimizedRAPTOR(BaseRoutingEngine):
+    @property
+    def engine_id(self) -> str:
+        return "raptor_v2_window"
+
     def __init__(self, max_transfers: int = 3):
         self.max_transfers = max_transfers
-        self.frontier_manager = FrontierManager(max_routes_per_station=10) # Increased
-        self.max_initial_departures = 500 # Increased
-        self.max_onward_departures = 200 # Increased
-        # [Task 27.12] Massive budget for full searching
-        self.traversal_budget = 50000 
+        self.cost_fn = self.calculate_generalized_cost
+        self.constraints = None
+        self.graph = None # Orchestrator dependency
+        self.max_initial_departures = 800 # Increased for better yield
+        self.max_onward_departures = 400
         self._nodes_explored = 0
         self._global_min_arrival_mins = float('inf')
+        self.frontier_manager = None
+        # [Task 51.1] Elastic Frontier Sizing
+        self.round_frontier_multipliers = {0: 1.0, 1: 3.0, 2: 6.0, 3: 9.0}
 
     def _safe_fromtimestamp(self, ts: int) -> datetime:
         """[Task 27.11 Audit Fix] Safely handle timestamps for Windows compatibility."""
@@ -78,23 +102,33 @@ class OptimizedRAPTOR:
             return datetime(1980, 1, 1)
 
     @chaos_trap("search_engine")
-    async def find_routes(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
-                         departure_date: datetime, constraints: RouteConstraints,
-                         graph: Optional[TimeDependentGraph] = None) -> List[Route]:
-        
+    async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
+        source_stop_id = request.src_cluster_ids
+        dest_stop_id = request.dst_cluster_ids
+        departure_date = request.departure_date
+        constraints = request.constraints
+        graph = request.graph or self.graph
+        limit = request.limit
+
+        if not graph:
+             from .engine import route_engine
+             graph = await route_engine._get_current_graph(departure_date)
+
         # [Task 111] Nexus Governor Budget Allocation
         stats = await nexus_governor.get_stats()
         throttle = stats.get("throttle_factor", 0.0)
         
         # Dynamic Budget scaling: Base 50k, Up to 120k for Idle, Down to 5k for High Stress
+        depth_multiplier = {"SHALLOW": 1.0, "MEDIUM": 2.5, "DEEP": 5.0}.get(getattr(constraints, 'search_depth', 'SHALLOW'), 1.0)
+        
         if throttle < 0.1:
-            self.traversal_budget = 120000
+            self.traversal_budget = int(120000 * depth_multiplier)
         elif throttle < 0.5:
-            self.traversal_budget = 50000
+            self.traversal_budget = int(50000 * depth_multiplier)
         else:
-            self.traversal_budget = 10000 # Aggressive pruning under pressure
+            self.traversal_budget = int(10000 * depth_multiplier) # Aggressive pruning under pressure
             
-        logger.info(f"📊 [RAPTOR] Budget set to {self.traversal_budget} (System Throttle: {throttle*100:.1f}%)")
+        logger.info(f"📊 [RAPTOR] Budget set to {self.traversal_budget} (Depth: {getattr(constraints, 'search_depth', 'SHALLOW')}, System Throttle: {throttle*100:.1f}%)")
         
         self._nodes_explored = 0 
         self._global_min_arrival_mins = float('inf')
@@ -117,7 +151,14 @@ class OptimizedRAPTOR:
         from services.multi_layer_cache import multi_layer_cache
         if not multi_layer_cache.health_latch:
              logger.critical("🛑 [NEXUS:SEARCH] L2 CACHE FABRIC DOWN. Blocking search to protect DB.")
-             return []
+             return RoutingResponse(
+                 engine_name=self.engine_id, 
+                 routes=[], 
+                 latency_ms=0, 
+                 yield_count=0, 
+                 triage_status="FAILED",
+                 metadata={"error": "CACHE_FABRIC_DOWN"}
+             )
 
         # [Task 9] Budget Watchdog
         start_time = _time.perf_counter()
@@ -133,8 +174,9 @@ class OptimizedRAPTOR:
             combined_pressure = max(governor_stats["throttle_factor"], nexus_triage.current_backoff)
             
             base_budget = 50000
-            # If system pressure is 0.8 (80%), budget is cut down to 10000
-            self.traversal_budget = max(2000, int(base_budget * (1.0 - combined_pressure)))
+            # Tier-aware budget allocation: don't collapse budget too aggressively
+            # Also ensure minimum 15k budget even at 70% pressure
+            self.traversal_budget = max(15000, int(base_budget * (1.0 - combined_pressure * 0.5)))
             
             if self.traversal_budget < base_budget:
                 logger.warning(f"📉 [RAPTOR LATCH] Pruned Graph Depth to {self.traversal_budget} nodes (Pressure: {combined_pressure*100:.1f}%)")
@@ -148,51 +190,57 @@ class OptimizedRAPTOR:
         try:
             results = await asyncio.to_thread(self._find_routes_sync, source_stop_id, dest_stop_id, 
                                              departure_date, constraints, graph, check_timeout)
-            # [Task 10 & 8.9] Sync intent to Financial Ledger
-            # We record SEARCH intent (audit only)
-            try:
-                 from services.ledger_service import ledger_service
-                 from database.session import SessionUser
-                 # ledger_service.record_transaction() # Zero amount search-audit
-            except: pass
             
-            logger.info(f"RAPTOR Yield: {len(results)} routes, Traversal Depth: {self._nodes_explored} nodes.")
-            return results
-        except (TimeoutError, asyncio.TimeoutError):
-            logger.warning(f"RAPTOR search timed out. Returning partial results if available. Traversal Depth: {self._nodes_explored}")
-            return []
-        except Exception as e:
-            logger.error(f"RAPTOR Search Error: {str(e)}")
-            return []
+            latency_ms = (_time.perf_counter() - start_time) * 1000
             
-        # 2. Hydrate & Rank [Task 7]
-        routes = [self._hydrate_route(sr, graph) for sr in results]
-        routes = [r for r in routes if r and len(r.segments) > 0]
-        
-        if not routes: return []
-        
-        try:
-            from services.ml.engine import MLMicroservice
-            from database.session import SessionTransit
-            ml_svc = MLMicroservice(SessionTransit)
+            # 2. Hydrate & Rank [Task 7]
+            routes = [self._hydrate_route(sr, graph) for sr in results]
+            routes = [r for r in routes if r and len(r.segments) > 0]
             
-            async def score_routes_local():
-                check_timeout()
-                tasks = [ml_svc.get_route_reliability(r) for r in routes]
-                return await asyncio.gather(*tasks)
+            if not routes:
+                return RoutingResponse(
+                    engine_name=self.engine_id, 
+                    routes=[], 
+                    latency_ms=latency_ms, 
+                    yield_count=0
+                )
             
-            reliability_scores = await score_routes_local()
-            for i, r in enumerate(routes):
-                rel = reliability_scores[i]
-                r.metadata["reliability_score"] = rel
-                # [Task 7] Virtual Duration Scaling
-                r.score = r.total_duration / max(0.1, rel)
-        except Exception as e:
-            logger.warning(f"ML Scoring failed: {e}. Using fallback scoring.")
+            # [Task 7] ML Scoring fallback
             for r in routes: r.score = r.total_duration + (len(r.transfers) * 120)
 
-        routes.sort(key=lambda x: x.total_duration) # Requirement: Sort by travel time
-        return routes[:constraints.max_results]
+            routes.sort(key=lambda x: x.total_duration)
+            final_routes = routes[:limit]
+            
+            logger.info(f"RAPTOR Yield: {len(final_routes)} routes, Traversal Depth: {self._nodes_explored} nodes.")
+            
+            return RoutingResponse(
+                engine_name=self.engine_id,
+                routes=final_routes,
+                latency_ms=latency_ms,
+                yield_count=len(final_routes),
+                metadata={"nodes_explored": self._nodes_explored}
+            )
+            
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(f"RAPTOR search timed out. Returning empty results. Traversal Depth: {self._nodes_explored}")
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(_time.perf_counter() - start_time) * 1000, 
+                yield_count=0, 
+                triage_status="FAILED",
+                metadata={"error": "TIMEOUT"}
+            )
+        except Exception as e:
+            logger.error(f"RAPTOR Search Error: {str(e)}")
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(_time.perf_counter() - start_time) * 1000, 
+                yield_count=0, 
+                triage_status="FAILED",
+                metadata={"error": str(e)}
+            )
 
     def _find_routes_sync(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
@@ -246,14 +294,7 @@ class OptimizedRAPTOR:
         except TimeoutError:
             logger.warning("RAPTOR search loop timed out. Proceeding to hydrate available routes.")
 
-        # 2. Hydrate & Rank [Task 7]
-        routes = [self._hydrate_route(sr, graph) for sr in search_results]
-        routes = [r for r in routes if r and len(r.segments) > 0]
-        
-        if not routes: return []
-        
-        routes.sort(key=lambda x: x.total_duration) # Requirement: Sort by travel time
-        return routes[:constraints.max_results]
+        return search_results
 
     def _search_multi_departure_sync(self, graph: TimeDependentGraph, source_stop_ids: List[int], dest_stop_ids: Set[int],
                                       departure_dt: datetime, constraints: RouteConstraints, check_timeout: Any) -> List[SearchRoute]:
@@ -270,7 +311,30 @@ class OptimizedRAPTOR:
 
         routes_by_round = defaultdict(list)
         departure_ts = int(departure_dt.timestamp())
-        self.frontier_manager.reset()
+        
+        # 2. Setup Persona-Aware Frontier [Task 42.6]
+        self.constraints = constraints
+        self.frontier_manager = FrontierManager(
+            max_routes_per_station=30, # Increased per-station diversity
+            cost_fn=self.cost_fn,
+            constraints=constraints
+        )
+        self._nodes_explored = 0
+        self._global_min_arrival_mins = float('inf')
+        
+        # [Subtask 146.4] Resolve Bridge Stop IDs for reachability overrides
+        bridge_indices = []
+        if constraints and getattr(constraints, 'metadata', None):
+             bridges = constraints.metadata.get("cross_cluster_bridges", {})
+             for hc in bridges.get("src_hubs", []) + bridges.get("dst_hubs", []):
+                  h_stop = graph.get_stop_by_code(hc)
+                  if h_stop:
+                       h_idx = graph.snapshot._stop_id_map.get(h_stop.id)
+                       if h_idx is not None: bridge_indices.append(h_idx)
+                       
+        # Pre-calculated Hub Indices from graph
+        hub_indices = getattr(graph.snapshot, '_hub_indices', [])
+        effective_bridges = list(set(bridge_indices) | set(hub_indices))
         
         # [Task 171] Initialize Neural Pruner for the current graph
         pruner = get_raptor_pruner(graph)
@@ -295,9 +359,27 @@ class OptimizedRAPTOR:
                 if pattern_raw is None: continue
 
                 for dep_time, trip_id in deps:
-                    # [Task 8/Nexus Evolution] Bitset Pruning 
-                    if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): 
-                        continue
+                    # [Task 146] Zero-Latency Reachability Pruning [Elite]
+                    # Pruning Rule: Keep trip if it hits a Goal OR a Major Hub.
+                    # This ensures we don't explore tiny branch lines that never connect back.
+                    can_reach_goal = any(graph.can_reach_destination(trip_id, d_id) for d_id in dest_stop_ids)
+                    if not can_reach_goal:
+                        # [Elite Yield] Check if trip hits ANY bridge hub or major hub
+                        t_idx = graph.snapshot._trip_id_map.get(trip_id)
+                        if t_idx is not None and effective_bridges:
+                             bitset_row = graph.snapshot._trip_reachability_bitset[t_idx]
+                             h_found = False
+                             for h_idx in effective_bridges:
+                                  if bitset_row[h_idx // 64] & (np.uint64(1) << np.uint64(h_idx % 64)):
+                                       h_found = True; break
+                             if not h_found: continue
+                        else:
+                             # Legacy fallback if no bitsets
+                             if not graph.can_reach_any_hub(trip_id):
+                                  continue 
+                    
+                    # Proceed with expansion...
+                    wait_mins = 0 # [Task 121: Correctness] Root-leg wait is always zero relative to departure_dt
                     
                     if graph.overlay.is_cancelled(trip_id): continue
 
@@ -332,28 +414,25 @@ class OptimizedRAPTOR:
 
                         total_dist_m += int(row[5])
                         arr_mins = (s_arr_ts_abs - departure_ts) // 60
-                        wait_mins = (dep_ts_int - departure_ts) // 60
-                        
                         # [Task 173] Reliability Fetching
                         rel = getattr(graph, 'reliability_scores', {}).get((src_id, s_arr_sid), 1.0)
                         f_size = get_frequency_aware_sizer(s_arr_sid, graph)
                         
                         if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                            arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0,
-                            reliability=rel
-                        ), max_size=f_size):
-                            sr = SearchRoute(trip_id=trip_id, from_stop_id=src_id, to_stop_id=s_arr_sid,
-                                             departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts_abs),
-                                             round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins,
-                                             reliability=rel)
-                            sr.add_to_bloom(src_id); sr.add_to_bloom(s_arr_sid)
-                            routes_by_round[0].append(sr)
-                            if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+                                arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist_m / 1000.0,
+                                reliability=rel), max_size=f_size):
+                             sr = SearchRoute(trip_id=trip_id, from_stop_id=src_id, to_stop_id=s_arr_sid,
+                                              departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts_abs),
+                                              round_num=0, total_dist=total_dist_m / 1000.0, total_wait=wait_mins,
+                                              reliability=rel)
+                             sr.v_bloom_low = 0; sr.v_bloom_high = 0
+                             sr.add_to_bloom(src_id); sr.add_to_bloom(s_arr_sid)
+                             routes_by_round[0].append(sr)
+                             if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
 
         # Onward Rounds [Task 86] Elastic Graph Depth
-            # Global nexus_governor
         effective_max = self.max_transfers
-        if nexus_governor.throttle_factor > 0.6:
+        if nexus_governor.throttle_factor > 0.75:
              effective_max = min(1, self.max_transfers)
              logger.warning(f"⚠️ [RAPTOR:GOVERNOR] Congestion detected ({nexus_governor.throttle_factor:.2f}). Capping to {effective_max} transfers.")
 
@@ -364,12 +443,17 @@ class OptimizedRAPTOR:
                 check_timeout()
                 if psr.to_stop_id in dest_stop_ids: continue
                 # [Task 171] Branch Pruning at the Transfer Level
+                # [Task 51.2] Apply Elastic Multiplier for onward transfers
+                multiplier = self.round_frontier_multipliers.get(r, 1.0)
+                effective_f_size = int(f_size * multiplier)
+                
+                # Check if branch should be pruned
                 if pruner.should_prune(psr.to_stop_id, dest_stop_ids, 
                                       (int(psr.arrival_time.timestamp()) - departure_ts) // 60,
                                       self._global_min_arrival_mins, r, pressure):
                      continue
                      
-                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout, pruner, pressure)
+                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout, pruner, pressure, effective_bridges)
                 routes_by_round[r].extend(new_found)
 
         all_results = []
@@ -380,11 +464,18 @@ class OptimizedRAPTOR:
 
     def _process_transfers_sync(self, psr: SearchRoute, graph: TimeDependentGraph, dest_stop_ids: Set[int], 
                                  constraints: RouteConstraints, base_departure_dt: datetime, 
-                                 round_num: int, check_timeout: Any, pruner: Any, pressure: float) -> List[SearchRoute]:
+                                 round_num: int, check_timeout: Any, pruner: Any, pressure: float,
+                                 effective_bridges: List[int]) -> List[SearchRoute]:
         new_routes = []
         base_departure_ts = int(base_departure_dt.timestamp())
         min_tr = constraints.min_transfer_time or 15
-        transfers = graph.get_transfers_from_stop(psr.to_stop_id, psr.arrival_time, min_transfer_time=min_tr, incoming_trip_id=psr.trip_id)
+        transfers = graph.get_transfers_from_stop(
+            psr.to_stop_id, 
+            psr.arrival_time, 
+            min_transfer_time=min_tr, 
+            incoming_trip_id=psr.trip_id,
+            search_depth=constraints.search_depth
+        )
 
         for tr in transfers:
             # [Task 27.11 Audit Fix] Calculate actual earliest departure time 
@@ -397,7 +488,19 @@ class OptimizedRAPTOR:
                 check_timeout()
                 if self._nodes_explored > self.traversal_budget: break
                 for dep_t, trip_id in deps[:self.max_onward_departures]:
-                    if not any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids): continue
+                    # [Yield Fix] In onward rounds, don't prune if it hits a goal OR a bridge hub
+                    can_reach_goal = any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids)
+                    if not can_reach_goal:
+                         t_idx = graph.snapshot._trip_id_map.get(trip_id)
+                         if t_idx is not None and effective_bridges:
+                              bitset_row = graph.snapshot._trip_reachability_bitset[t_idx]
+                              h_found = False
+                              for h_idx in effective_bridges:
+                                   if bitset_row[h_idx // 64] & (np.uint64(1) << np.uint64(h_idx % 64)):
+                                        h_found = True; break
+                              if not h_found: continue
+                         elif not graph.can_reach_any_hub(trip_id):
+                              continue 
                     if graph.overlay.is_cancelled(trip_id): continue
 
                     self._nodes_explored += 1
@@ -405,46 +508,68 @@ class OptimizedRAPTOR:
                     if raw is None: continue
                     weekday_bit = 1 << dep_t.weekday(); delay_secs = graph.overlay.get_trip_delay(trip_id) * 60
                     dep_ts_int = int(dep_t.timestamp()); start_found = False; dist_m = 0
-                    for row in raw:
+                    
+                    # [Nexus Elite: Targeted Expansion]
+                    # Only expand to stations that are:
+                    # 1. A Goal station
+                    # 2. A BridgeHub (from constraints)
+                    # 3. A Major/Mega Hub (from graph snapshot)
+                    slack_sec = 1440
+                    for i, row in enumerate(raw):
                         s_dep_sid, s_arr_sid = int(row[1]), int(row[2])
                         s_dep_ts, s_arr_ts = int(row[3]) + delay_secs, int(row[4]) + delay_secs
+                        
                         if not start_found:
-                            if s_dep_sid == tr.station_id and abs(s_dep_ts - dep_ts_int) < 2:
-                                if not (int(row[6]) & weekday_bit): break
+                            if s_dep_sid == tr.station_id: # Precise dep time match not needed for Raw segments
                                 start_found = True
                             else: continue
+                        
+                        # Pruning: Only expand 'Interesting' stations
+                        is_goal = s_arr_sid in dest_stop_ids
+                        is_hub = s_arr_sid in effective_bridges
+                        
+                        if not (is_goal or is_hub):
+                             # [Task 43.3] Sparse Sampling for non-hubs to ensure discovery
+                             # only 1 in 10 stations unless it's a hub
+                             if i % 8 != 0: continue 
+
                         if psr.has_cycle(s_arr_sid): continue
+                        
                         dist_m += int(row[5])
                         total_dist = psr.total_dist + (dist_m / 1000.0)
                         total_wait = psr.total_wait + (dep_ts_int - int(psr.arrival_time.timestamp())) // 60
-                        arr_mins = (s_arr_ts - base_departure_ts) // 60
-                        if arr_mins > self._global_min_arrival_mins + 1440: continue
                         
-                        # [Task 173] Multiplicative Reliability
-                        leg_rel = getattr(graph, 'reliability_scores', {}).get((tr.station_id, s_arr_sid), 1.0)
-                        total_rel = psr.reliability * leg_rel
+                        # Relative arrival minutes for pruning
+                        trip_start_of_day_ts = dep_ts_int - (dep_ts_int % 86400)
+                        s_arr_ts_abs = trip_start_of_day_ts + int(row[4]) + delay_secs
+                        arr_mins = (s_arr_ts_abs - base_departure_ts) // 60
+                        
+                        if arr_mins > self._global_min_arrival_mins + slack_sec:
+                            continue
                         
                         f_size = get_frequency_aware_sizer(s_arr_sid, graph)
+                        rel = psr.reliability * getattr(graph, 'reliability_scores', {}).get((tr.station_id, s_arr_sid), 1.0)
+                        
                         if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                            arrival_time=arr_mins, transfers=round_num, total_wait=total_wait, total_distance=total_dist,
-                            reliability=total_rel
-                        ), max_size=f_size):
-                            sr = SearchRoute(trip_id=trip_id, from_stop_id=tr.station_id, to_stop_id=s_arr_sid,
-                                             departure_time=dep_t, arrival_time=self._safe_fromtimestamp(s_arr_ts),
-                                             round_num=round_num, parent=psr, transfer=tr,
-                                             total_dist=total_dist, total_wait=total_wait, visited_bloom=psr.visited_bloom,
-                                             reliability=total_rel)
-                            sr.add_to_bloom(s_arr_sid); new_routes.append(sr)
-                            if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+                                arrival_time=arr_mins, transfers=round_num, total_wait=total_wait, 
+                                total_distance=total_dist, reliability=rel), max_size=f_size):
+                             sr = SearchRoute(trip_id=trip_id, from_stop_id=tr.station_id, to_stop_id=s_arr_sid,
+                                              departure_time=dep_t, arrival_time=self._safe_fromtimestamp(s_arr_ts),
+                                              round_num=round_num, parent=psr, total_dist=total_dist, 
+                                              total_wait=total_wait, reliability=rel)
+                             sr.v_bloom_low = psr.v_bloom_low
+                             sr.v_bloom_high = psr.v_bloom_high
+                             sr.add_to_bloom(tr.station_id); sr.add_to_bloom(s_arr_sid)
+                             new_routes.append(sr)
+                             
         return new_routes
 
     def _hydrate_route(self, sr: SearchRoute, graph: TimeDependentGraph) -> Route:
         path = []; curr = sr
         while curr: path.append(curr); curr = curr.parent
-        path.reverse(); 
+        path.reverse()
         
         full_segments = []; transfers = []
-        
         for node in path:
             if node.transfer: transfers.append(node.transfer)
             

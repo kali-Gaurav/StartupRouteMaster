@@ -76,7 +76,8 @@ class NeuralRAPTORPruner:
         
         # Buffer grows with pressure to allow more exploration when system is idle
         # and more aggressive pruning when system is stressed.
-        buffer_mins = max(30, 240 * (1.0 - pressure)) 
+        # Minimum 120m (2 hours) to prevent pruning of valid transfer routes even under load
+        buffer_mins = max(120, 240 * (1.0 - pressure)) 
         
         if expected_arrival > global_min_arrival_mins + buffer_mins:
             # We only prune after round 1 to allow discovery in early rounds

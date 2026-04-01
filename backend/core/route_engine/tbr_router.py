@@ -15,6 +15,7 @@ from core.route_engine.constraints import RouteConstraints
 from core.route_engine.graph import TimeDependentGraph, MemMapManager
 from core.frontier import FrontierManager, FrontierRoute
 from utils.station_utils import get_metro_group_codes
+from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 
 logger = logging.getLogger("tbr_router")
 
@@ -48,14 +49,17 @@ def haversine(lat1, lon1, lat2, lon2):
     return R * c
 
 
-class TripBasedRouter:
+class TripBasedRouter(BaseRoutingEngine):
+    @property
+    def engine_id(self) -> str:
+        return "tbr_v4_a_star"
     """
     Subtask 1.7: Trip-Based Routing (TBR) Engine Core (V4 A* Optimized).
     """
     def __init__(self, max_transfers: int = 3):
         self.max_transfers = max_transfers
-        self.frontier_manager = FrontierManager(max_routes_per_station=10)
-        self.traversal_budget = 50000 
+        self.frontier_manager = FrontierManager(max_routes_per_station=60)
+        self.traversal_budget = 800000 
         self._nodes_explored = 0
         
         from database.config import Config
@@ -65,11 +69,18 @@ class TripBasedRouter:
             self._edge_index_mmap = MemMapManager.load_array("tbr_edge_index")
             
             lookup_map_path = os.path.join(data_dir, "tbr_edge_lookup_map.pkl")
+            trip_stops_map_path = os.path.join(data_dir, "tbr_trip_to_stops_map.pkl")
             if os.path.exists(lookup_map_path):
                 with open(lookup_map_path, "rb") as f:
                     self._edge_lookup_map = pickle.load(f)
             else:
                 self._edge_lookup_map = {}
+                
+            if os.path.exists(trip_stops_map_path):
+                with open(trip_stops_map_path, "rb") as f:
+                    self._trip_to_stops_map = pickle.load(f)
+            else:
+                self._trip_to_stops_map = {}
                 
             if self._edges is not None and self._edge_index_mmap is not None:
                 logger.info(f"🚄 TBR: Loaded {len(self._edges)} transfer edges and {len(self._edge_index_mmap)} index entries from {data_dir}")
@@ -78,15 +89,21 @@ class TripBasedRouter:
             self._edges = None
             self._edge_index_mmap = None
             self._edge_lookup_map = {}
+            self._trip_to_stops_map = {}
 
     def get_graph(self, date: datetime):
         from .engine import route_engine
         return route_engine._get_current_graph(date)
 
-    async def find_routes(self, source_stop_id: Union[int, List[int]], dest_stop_id: Union[int, List[int]],
-                         departure_date: datetime, constraints: RouteConstraints,
-                         graph: Optional[TimeDependentGraph] = None,
-                         load_more: bool = False) -> List[Route]:
+    async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
+        source_stop_id = request.src_cluster_ids
+        dest_stop_id = request.dst_cluster_ids
+        departure_date = request.departure_date
+        constraints = request.constraints
+        graph = request.graph
+        limit = request.limit
+        load_more = request.metadata.get("load_more", False)
+
         if not graph: 
             graph = await self.get_graph(departure_date)
             
@@ -98,14 +115,19 @@ class TripBasedRouter:
         
         # [Nexus Upgrade] Expanded Base Budget for High-Performance Local SSD
         # Since we migrated to C-Drive/LocalSSD, we can afford 4x more node explorations
-        base_budget = 100000 if not load_more else 400000 
+        depth_map = {"SHALLOW": 100000, "MEDIUM": 250000, "DEEP": 600000}
+        requested_depth = getattr(constraints, 'search_depth', 'SHALLOW')
+        base_budget = depth_map.get(requested_depth, 100000)
+        
+        if load_more:
+             base_budget *= 2 # Extra boost for load more requests
         
         if src_stop and dst_stop:
             dist = haversine(src_stop.latitude, src_stop.longitude, dst_stop.latitude, dst_stop.longitude)
             # Scale budget: Long journeys need MUCH deeper searches (up to 2,000,000 nodes for Cross-Country)
             distance_multiplier = min(5.0, max(1.0, dist / 400.0)) 
             self.traversal_budget = int(base_budget * distance_multiplier)
-            logger.info(f"🚀 [TBR:NEXUS] Adaptive Budget scaled to {self.traversal_budget} (Mode: {'Deep' if load_more else 'Fast'})")
+            logger.info(f"🚀 [TBR:NEXUS] Adaptive Budget scaled to {self.traversal_budget} (Depth: {requested_depth}, Mode: {'Deep' if load_more else 'Fast'})")
         else:
             self.traversal_budget = base_budget
 
@@ -122,15 +144,40 @@ class TripBasedRouter:
                 self._find_routes_sync, source_stop_id, dest_stop_id, 
                 departure_date, constraints, graph, check_timeout, load_more
             )
-            latency = (_time.perf_counter() - start_time) * 1000
-            logger.info(f"TBR Final: {len(results)} routes in {latency:.2f}ms. (Load More: {load_more})")
-            return results
+            latency_ms = (_time.perf_counter() - start_time) * 1000
+            
+            final_routes = results[:limit]
+            
+            logger.info(f"TBR Final: {len(final_routes)} routes in {latency_ms:.2f}ms. (Load More: {load_more})")
+            
+            return RoutingResponse(
+                engine_name=self.engine_id,
+                routes=final_routes,
+                latency_ms=latency_ms,
+                yield_count=len(final_routes),
+                metadata={"nodes_explored": self._nodes_explored}
+            )
+            
         except (TimeoutError, asyncio.TimeoutError):
             logger.warning(f"TBR search timed out after {timeout_sec}s.")
-            return []
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(_time.perf_counter() - start_time) * 1000, 
+                yield_count=0, 
+                triage_status="FAILED",
+                metadata={"error": "TIMEOUT"}
+            )
         except Exception as e:
             logger.error(f"TBR Search Error: {str(e)}", exc_info=True)
-            return []
+            return RoutingResponse(
+                engine_name=self.engine_id, 
+                routes=[], 
+                latency_ms=(_time.perf_counter() - start_time) * 1000, 
+                yield_count=0, 
+                triage_status="FAILED",
+                metadata={"error": str(e)}
+            )
 
     def _find_routes_sync(self, source_id: Union[int, List[int]], dest_id: Union[int, List[int]],
                          departure_date: datetime, constraints: RouteConstraints,
@@ -139,14 +186,13 @@ class TripBasedRouter:
         if not graph.snapshot: return []
         trip_nodes = getattr(graph.snapshot, 'tbr_trip_nodes', None)
         t_index = getattr(graph.snapshot, 'tbr_trip_index', {})
-        s_index = getattr(graph.snapshot, 'tbr_stop_index', {}) 
         if trip_nodes is None or not t_index: return []
 
         if isinstance(source_id, list):
             src_ids = set(source_id)
         else:
-            src_stop = graph.stop_cache.get(source_id)
             src_ids = {source_id}
+            src_stop = graph.stop_cache.get(source_id)
             if src_stop:
                 for code in get_metro_group_codes(src_stop.code):
                     s = graph.get_stop_by_code(code)
@@ -155,24 +201,74 @@ class TripBasedRouter:
         if isinstance(dest_id, list):
             dst_ids = set(dest_id)
         else:
-            dst_stop = graph.stop_cache.get(dest_id)
             dst_ids = {dest_id}
+            dst_stop = graph.stop_cache.get(dest_id)
             if dst_stop:
                 for code in get_metro_group_codes(dst_stop.code):
                     d = graph.get_stop_by_code(code)
                     if d: dst_ids.add(d.id)
 
         # 1. Local Caches and Variables
-        local_stop_cache = {sid: graph.stop_cache.get(sid) for sid in dst_ids}
         _reach_cache = {}
-        delay_lookup = {}
-        # [Yield Fix] Store multiple labels per stop/round
-        # best_labels[stop_id][round_num] = list of arrival_times
-        best_labels = defaultdict(lambda: defaultdict(list))
-        pq = []
+        bridge_sids = set()
+        if constraints and getattr(constraints, 'metadata', None):
+             bridges = constraints.metadata.get("cross_cluster_bridges", {})
+             for hc in bridges.get("src_hubs", []) + bridges.get("dst_hubs", []):
+                  h_stop = graph.get_stop_by_code(hc)
+                  if h_stop: bridge_sids.add(h_stop.id)
         
-        slack_sec = 28800 if load_more else 14400 # 8h or 4h slack
-        max_labels_per_bin = 10 if load_more else 5
+        delay_lookup = {}
+        # [Yield Fix] Store multiple labels per stop/round with Diversity tracking
+        # [Yield Fix] Variety tracking per (stop, round)
+        variety_labels = defaultdict(lambda: defaultdict(list))
+        # best_arrival[stop_id][round_num] = absolute best time found so far
+        best_arrival = defaultdict(lambda: defaultdict(lambda: float('inf')))
+        # [Task 42.6] best_cost[stop_id][round_num]
+        best_cost = defaultdict(lambda: defaultdict(lambda: float('inf')))
+        
+        self.cost_fn = self.calculate_generalized_cost
+        self.constraints = constraints
+        
+        # [Task 42.1] Define Quotas for diverse transfer-counts
+        quotas = {0: 15, 1: 10, 2: 5, 3: 3}
+        
+        # [Task 22.1] Helper for station-to-cluster heuristic
+        from core.hubs import MEGA_HUBS, MAJOR_HUBS
+        
+        # Resolve hub IDs once per search
+        hub_ids = set()
+        for code in (MEGA_HUBS | MAJOR_HUBS):
+            stop = graph.get_stop_by_code(code)
+            if stop: hub_ids.add(stop.id)
+            
+        interesting_stations = hub_ids | set(dst_ids)
+        
+        def can_reach_goal_or_hub(trip_id: int) -> bool:
+            """O(1) check if a trip hits any hub or goal."""
+            t_stops = graph.get_trip_stop_ids(trip_id)
+            if not t_stops: return False
+            for sid in t_stops:
+                if sid in interesting_stations: return True
+            return False
+            
+        def get_heuristic(sid: int, destinations: List[int]) -> int:
+            """Simple haversine-based time heuristic in minutes."""
+            s_node = graph.stop_cache.get(sid)
+            if not s_node or not s_node.lat: return 0
+            
+            min_h = float('inf')
+            for did in destinations:
+                d_node = graph.stop_cache.get(did)
+                if not d_node or not d_node.lat: continue
+                dist = haversine(s_node.lat, s_node.lon, d_node.lat, d_node.lon)
+                # Assume 80 km/h average for heuristic (750m per sec)
+                h_sec = (dist / 80.0) * 3600
+                min_h = min(min_h, h_sec)
+            return int(min_h) if min_h != float('inf') else 0
+        
+        # [Yield Modification] Massive slack and pareto limits for maximum 2, 3 transfer yields
+        slack_sec = 86400 if load_more else 43200 # 24h or 12h slack
+        max_labels_per_stop = 25 if load_more else 15 # Optimal Pareto yield limit
         
         # 2. Closure Functions
         def get_delay(tid):
@@ -180,10 +276,19 @@ class TripBasedRouter:
                 delay_lookup[tid] = graph.overlay.get_trip_delay(tid) * 60
             return delay_lookup[tid]
 
-        def can_reach(tid):
+        def can_reach_goal_or_hub(tid):
             if tid not in _reach_cache:
-                _reach_cache[tid] = any(graph.can_reach_destination(tid, d_id) for d_id in dst_ids)
-            return _reach_cache[tid]
+                # [Task 146] Dual-Bitset Pruning (Intelligence)
+                # 1. Can we reach any of the destination stops?
+                at_goal = any(graph.can_reach_destination(tid, d_id) for d_id in dst_ids)
+                if at_goal:
+                     _reach_cache[tid] = True
+                else:
+                     # 2. Relaxed constraint: if it has ANY precomputed outgoing transfers, it's valid
+                     has_tbr_transfers = (tid in _trip_to_stops_map)
+                     _reach_cache[tid] = has_tbr_transfers or graph.can_reach_any_hub(tid)
+            
+            return _reach_cache.get(tid, False)
 
         # [Nexus Elite: Fast Heuristic] Manhattan-Euclidean Approximation (Task 121)
         # Using fixed degree-to-meter constants for India (Lat ~20N)
@@ -223,6 +328,7 @@ class TripBasedRouter:
         # 3. Hot Loop Local References
         _edge_index_mmap = self._edge_index_mmap
         _edge_lookup_map = self._edge_lookup_map
+        _trip_to_stops_map = self._trip_to_stops_map
         _edges_arr = self._edges
         _tbr_nodes = trip_nodes
         _tbr_idx = t_index
@@ -235,11 +341,13 @@ class TripBasedRouter:
         s_lookup = getattr(graph.snapshot, '_trip_to_pid', {})
 
         # Seed Queue
+        pq = []
         range_min = (constraints.range_minutes or 1440) * (2 if load_more else 1)
         logger.info(f"🔍 TBR: Starting A* v4 Search (Yield Optimized) for {source_id} -> {dest_id}")
         seen_initial_trips = set()
         filtered_by_reach = 0
         total_deps = 0
+        skipped_idx = 0; skipped_seq = 0; pq_pushed = 0
         for sid in src_ids:
             deps = graph.get_departures_from_stop(sid, departure_date, range_min)
             for dep_dt, tid in deps:
@@ -248,10 +356,14 @@ class TripBasedRouter:
                 seen_initial_trips.add(tid)
                 
                 t_info = _tbr_idx.get(tid)
-                if not t_info: continue
+                if not t_info: 
+                    skipped_idx += 1
+                    continue
                 # [Task 121: Sequence Resolution Fix]
                 seq_idx = graph.get_stop_sequence_in_trip(tid, sid)
-                if seq_idx == -1: continue
+                if seq_idx == -1: 
+                    skipped_seq += 1
+                    continue
                 
                 t_start, _ = t_info
                 node = _tbr_nodes[t_start + seq_idx]
@@ -259,7 +371,7 @@ class TripBasedRouter:
                 adj_arr = int(node['arr_ts']) + delay_secs
                 adj_dep = int(node['dep_ts']) + delay_secs
 
-                if not can_reach(tid): 
+                if not can_reach_goal_or_hub(tid): 
                     filtered_by_reach += 1
                     continue
                 
@@ -270,23 +382,35 @@ class TripBasedRouter:
                 )
                 h = get_heuristic(sid, dst_ids)
                 heapq.heappush(pq, (adj_arr + h, id(state), state))
+                pq_pushed += 1
 
-        logger.info(f"🚀 [TBR:NEXUS] Seeded {len(pq)} initial states into PFQ. (Total deps: {total_deps}, Filtered by reach: {filtered_by_reach})")
+        logger.info(f"🚀 [TBR:NEXUS] Seeded {len(pq)} initial states. (Total: {total_deps}, Pushed: {pq_pushed}, SkipIdx: {skipped_idx}, SkipSeq: {skipped_seq}, ReachFilter: {filtered_by_reach})")
 
+        # [Quota Upgrade for User Massive Yield Requirement]
+        # Increased quotas to allow fuller exploration of multi-transfer routes
+        quotas = {0: 200, 1: 100, 2: 50, 3: 30}
+        if load_more:
+            quotas = {0: 400, 1: 200, 2: 100, 3: 60}
+            
         found_search_routes = []
         # [Nexus: Goal-Based Discovery] (Task 121)
-        # Fast Initial Search = 50 routes, Deep discovery = 500 routes
-        target_yield = 50 if not load_more else 500
+        # Fast Initial Search = 200 routes, Deep discovery = 1000 routes
+        target_yield = 250 if not load_more else 1000
         best_time_final = float('inf')
         pruned_time = 0; pruned_dominance = 0; found_goals = 0
         goals_by_tier = defaultdict(int)
 
         while pq:
             if self._nodes_explored > self.traversal_budget: break
-            # Goal Stop Condition (Only for Fast search)
-            if not load_more and found_goals >= target_yield: break
+            # Goal Stop Condition (Relaxed for Yield Diversity)
+            if not load_more and found_goals >= target_yield:
+                # Don't break if we lack diversity in transfer tiers
+                if goals_by_tier[1] >= quotas.get(1, 10) // 2 and goals_by_tier[2] >= quotas.get(2, 5) // 2:
+                     break
+                if found_goals >= target_yield * 4: # Hard safety net if it finds hundreds of 0-T routes
+                     break
             # Hard limit for security against infinite loops in complex hubs
-            if found_goals >= 2000: break 
+            if found_goals >= 3000: break 
             
             check_timeout()
             _, _, curr = heapq.heappop(pq)
@@ -301,14 +425,7 @@ class TripBasedRouter:
             delay_secs = get_delay(curr.trip_id)
 
             # [Nexus Technique: Goal-Directed Alighting Scan] (Task 121)
-            # 1. Immediate Goal Check: If this trip passes through a destination, check it first.
-            for d_id in dst_ids:
-                d_idx = graph.get_stop_sequence_in_trip(curr.trip_id, d_id)
-                if d_idx > curr.boarded_idx:
-                    # Check this specific alighting point
-                    stop_node = _tbr_nodes[t_start + d_idx]
-                    current_arr_ts = int(stop_node['arr_ts']) + delay_secs
-                    # Handled in unified loop below for simplicity, but optimized set used.
+            # Handled in optimized unified loop below for simplicity and speed.
 
             # 2. Optimized Loop: Only check destinations and high-impact hubs
             # Retrieve hub stops on this trip using pattern segments
@@ -323,10 +440,15 @@ class TripBasedRouter:
             for d_id in dst_ids:
                 idx = graph.get_stop_sequence_in_trip(curr.trip_id, d_id)
                 if idx > curr.boarded_idx: interesting_indices.add(idx)
+                
+            # [Subtask 146.4] Force explicitly scanning cross-cluster bridge hubs to guide search
+            for b_id in bridge_sids:
+                idx = graph.get_stop_sequence_in_trip(curr.trip_id, b_id)
+                if idx > curr.boarded_idx: interesting_indices.add(idx)
             
             # Efficiently find all stops on this trip that have outbound transfers
-            trip_transfer_stops = _edge_lookup_map.get(curr.trip_id, {})
-            for sid, _ in trip_transfer_stops.items():
+            trip_transfer_stops = _trip_to_stops_map.get(curr.trip_id, {})
+            for sid in trip_transfer_stops.keys():
                 idx = graph.get_stop_sequence_in_trip(curr.trip_id, sid)
                 if idx > curr.boarded_idx:
                     interesting_indices.add(idx)
@@ -341,29 +463,40 @@ class TripBasedRouter:
                 curr_sid = int(stop_node['stop_id'])
                 current_arr_ts = int(stop_node['arr_ts']) + delay_secs
                 self._nodes_explored += 1
-                
-                # [Yield Fix] Relaxed Dominance: 
-                # Prune ONLY if we are much slower than a route with FEWER or EQUAL transfers.
+                 # --- [Nexus: Cost-Aware Pareto Pruning] ---
                 is_dom = False
-                for r_num in range(curr.round_num + 1):
-                    bin_labels = best_labels[curr_sid][r_num]
-                    if bin_labels:
-                        min_arr = min(bin_labels)
-                        # More slack for cross-tier dominance
-                        eff_slack = slack_sec if r_num == curr.round_num else (slack_sec * 2)
-                        if current_arr_ts > min_arr + eff_slack:
-                            is_dom = True; break
-                        # If same tier, allow multiple but cap density
-                        if r_num == curr.round_num and len(bin_labels) >= max_labels_per_bin:
-                            if current_arr_ts >= max(bin_labels):
-                                is_dom = True; break
+                prev_rid = curr.round_num
+                
+                # Estimate distance so far (heuristic-based or from parent)
+                dist_km = (curr.wait_mins * 0.5) + (curr.round_num * 100) # Dummy for cost calculation
+                current_cost = self.cost_fn(current_arr_ts, curr.round_num, curr.wait_mins, dist_km, constraints)
+
+                # 1. Global Dominance (Is there a much CHEAPER/FASTER route?)
+                for r in range(prev_rid + 1):
+                    # [Yield Fix] Increase dominance multiplier to 5.0x for multi-transfers (from 3.0x)
+                    # Higher multiplier allows more path diversity while still pruning extreme outliers
+                    dominance_factor = 5.0 if curr.round_num >= 2 else 3.0  # More lenient on multi-transfers
+                    if current_cost > best_cost[curr_sid][r] * dominance_factor: 
+                        is_dom = True; break
+                
+                if not is_dom:
+                    # 2. Local Variety
+                    round_vars = variety_labels[curr_sid][curr.round_num]
+                    # Prune only if cost is significantly higher than existing labels in SAME round
+                    if any(current_cost >= ex * 1.05 for ex in round_vars):
+                        is_dom = True
                 
                 if is_dom:
                     pruned_dominance += 1; continue
                 
-                best_labels[curr_sid][curr.round_num].append(current_arr_ts)
-                
-                # [Yield Fix] Correctly link alighting state in the chain
+                # 3. Update Pareto Frontier
+                best_cost[curr_sid][curr.round_num] = min(best_cost[curr_sid][curr.round_num], current_cost)
+                best_arrival[curr_sid][curr.round_num] = min(best_arrival[curr_sid][curr.round_num], current_arr_ts)
+                round_vars.append(current_cost)
+                round_vars.sort()
+                variety_labels[curr_sid][curr.round_num] = round_vars[:max_labels_per_stop]
+
+                # --- Create state and check goal ---
                 alight_state = SearchState(
                     tid=curr.trip_id, sid=curr_sid, 
                     arr=current_arr_ts, dep=int(stop_node['dep_ts']) + delay_secs,
@@ -388,7 +521,7 @@ class TripBasedRouter:
                         
                         for edge in _edges_arr[e_start : e_start + e_count]:
                             next_tid = int(edge['to_trip_id'])
-                            if not can_reach(next_tid): continue
+                            if not can_reach_goal_or_hub(next_tid): continue
 
                             nt_info = _tbr_idx.get(next_tid)
                             if not nt_info: continue
@@ -424,10 +557,7 @@ class TripBasedRouter:
             rt = self._hydrate_tbr_route(sr, graph, source_id, dest_id)
             if rt: hydrated.append(rt)
             
-        # [Quota Fix] Specific targets: 0-T (All), 1-T (15), 2-T (10), 3-T (5)
-        quotas = {0: 999, 1: 15, 2: 10, 3: 5}
-        if load_more:
-            quotas = {0: 999, 1: 30, 2: 20, 3: 10}
+        # Moved quotas definition to start, before loop
 
         if not hydrated:
             return []
@@ -519,12 +649,16 @@ class TripBasedRouter:
         for i in range(len(compressed_segs) - 1):
             s1, s2 = compressed_segs[i], compressed_segs[i+1]
             hub_stop = graph.stop_cache.get(s1.arrival_stop_id)
+            duration_minutes = int((s2.departure_time - s1.arrival_time).total_seconds() // 60)
+            if duration_minutes < 0:
+                duration_minutes += 1440
+                
             tc = TransferConnection(
                 station_id=s1.arrival_stop_id,
                 station_code=hub_stop.code if hub_stop else str(s1.arrival_stop_id),
                 arrival_time=s1.arrival_time,
                 departure_time=s2.departure_time,
-                duration_minutes=int((s2.departure_time - s1.arrival_time).total_seconds() // 60),
+                duration_minutes=duration_minutes,
                 station_name=hub_stop.name if hub_stop else f"Stop {s1.arrival_stop_id}"
             )
             transfers.append(tc)
