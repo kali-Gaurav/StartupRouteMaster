@@ -14,11 +14,6 @@ import os
 
 from database.session import SessionTransit
 
-from database.models import (
-    Stop, Trip, StopTime, Calendar, CalendarDate, Route as RouteModel,
-    Segment as SegmentModel, Transfer as TransferModel,
-    StationHealthIndex
-)
 from core.data_structures import RouteSegment, TransferConnection
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .transfer_graph_builder import TransferGraphBuilder
@@ -65,34 +60,32 @@ class GraphBuilder:
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(self.executor, self._build_graph_sync, date)
         
-        snapshot = StaticGraphSnapshot(
-            date=date,
-            _departures_data=data.get('_departures_data'),
-            _departures_index=data.get('_departures_index'),
-            _arrivals_data=data.get('_arrivals_data'),
-            _arrivals_index=data.get('_arrivals_index'),
-            _stop_id_map=data.get('_stop_id_map', {}),
-            departures_by_stop=data.get('departures_by_stop', {}),
-            arrivals_by_stop=data.get('arrivals_by_stop', {}),
-            trip_segments=data['trip_segments'],
-            transfer_graph=data['transfer_graph'],
-            stop_cache=data['stop_cache'],
-            station_schedule=data['station_schedule'],
-            train_path=data['train_path'],
-            route_patterns=data['route_patterns'],
-            stop_index=data.get('stop_index', {}),
-            station_time_index=data.get('station_time_index', {}),
-            reliability_scores=data.get('reliability_scores', {}),
-            station_ids_by_trip=data.get('station_ids_by_trip', {}),
-            coordinate_matrix=data.get('coordinate_matrix'),
-            stop_id_to_idx=data.get('stop_id_to_idx', {}),
-            idx_to_stop_id=data.get('idx_to_stop_id', []),
-            tbr_trip_nodes=data.get('tbr_trip_nodes'),
-            tbr_trip_index=data.get('tbr_trip_index', {}),
-            tbr_stop_index=data.get('tbr_stop_index', {}),
-            _trip_id_map=data.get('_trip_id_map', {}),
-            city_clusters=data.get('city_clusters', {})
-        )
+        snapshot = StaticGraphSnapshot(date)
+        snapshot._departures_data = data.get('_departures_data')
+        snapshot._departures_index = data.get('_departures_index')
+        snapshot._arrivals_data = data.get('_arrivals_data')
+        snapshot._arrivals_index = data.get('_arrivals_index')
+        snapshot._stop_id_map = data.get('_stop_id_map', {})
+        snapshot.departures_by_stop = data.get('departures_by_stop', {})
+        snapshot.arrivals_by_stop = data.get('arrivals_by_stop', {})
+        snapshot.trip_segments = data['trip_segments']
+        snapshot.transfer_graph = data['transfer_graph']
+        snapshot.stop_cache = data['stop_cache']
+        snapshot.station_schedule = data['station_schedule']
+        snapshot.train_path = data['train_path']
+        snapshot.route_patterns = data['route_patterns']
+        snapshot.stop_index = data.get('stop_index', {})
+        snapshot.station_time_index = data.get('station_time_index', {})
+        snapshot.reliability_scores = data.get('reliability_scores', {})
+        snapshot.station_ids_by_trip = data.get('station_ids_by_trip', {})
+        snapshot.coordinate_matrix = data.get('coordinate_matrix')
+        snapshot.stop_id_to_idx = data.get('stop_id_to_idx', {})
+        snapshot.idx_to_stop_id = data.get('idx_to_stop_id', [])
+        snapshot.tbr_trip_nodes = data.get('tbr_trip_nodes')
+        snapshot.tbr_trip_index = data.get('tbr_trip_index', {})
+        snapshot.tbr_stop_index = data.get('tbr_stop_index', {})
+        snapshot._trip_id_map = data.get('_trip_id_map', {})
+        snapshot.city_clusters = data.get('city_clusters', {})
         tbr_bundle = {
             'tbr_trip_nodes': data.get('tbr_trip_nodes'),
             'tbr_trip_index': data.get('tbr_trip_index'),
@@ -102,16 +95,19 @@ class GraphBuilder:
         return TimeDependentGraph(snapshot)
 
     def _get_active_service_ids(self, session, date: datetime) -> List[str]:
+        from database.models import Calendar, CalendarDate
         target_date = date.date()
-        target_date_str = date.strftime('%Y%m%d') 
+        target_date_str = date.strftime('%Y%m%d') # Standard format (No hyphens)
         weekday = date.strftime('%A').lower()
-        regular_services = session.query(Calendar.service_id).filter(
-            and_(
-                getattr(Calendar, weekday) == True, 
-                Calendar.start_date <= target_date_str,
-                Calendar.end_date >= target_date_str
-            )
-        ).all()
+        
+        # [Task 130 Resiliency] Use REPLACE to handle both 2024-01-01 and 20240101 formats in SQLite
+        query = f"""
+            SELECT service_id FROM calendar 
+            WHERE {weekday} = 1 
+            AND REPLACE(start_date, '-', '') <= :td
+            AND REPLACE(end_date, '-', '') >= :td
+        """
+        regular_services = session.execute(text(query), {"td": target_date_str}).fetchall()
         if not regular_services:
             regular_services = session.query(Calendar.service_id).filter(
                 getattr(Calendar, weekday).in_([1, True])
@@ -152,7 +148,8 @@ class GraphBuilder:
         session = SessionTransit()
         try:
             # [Task 130 Diagnostic]
-            bind_url = str(session.get_bind().url)
+            bind = session.get_bind()
+            bind_url = str(getattr(bind, "url", "unknown"))
             logger.info(f"🚄 [ELITE:BUILDER] Building Graph for {date.date()} | DB: {bind_url}")
             
             service_ids = self._get_active_service_ids(session, date)
@@ -230,31 +227,9 @@ class GraphBuilder:
                 trip_stop_pos_map[tid][sid] = len(trip_nodes_temp[tid])
                 trip_nodes_temp[tid].append((sid, arr_sec, dep_sec, seq))
 
-            # [Task RO-012] Build Full Trip Reachability Bitset via Recursive DFS
-            logger.info("🧭 Running Recursive DFS for 100% Reachability Visibility...")
-            stop_adj = defaultdict(set)
+            # [Task RO-012] Build Trip Reachability Bitset
             for tid, nodes in trip_nodes_temp.items():
-                for i in range(len(nodes) - 1):
-                    stop_adj[nodes[i][0]].add(nodes[i+1][0])
-            
-            stop_reach = {}
-            for sid in stop_id_to_idx.keys():
-                visited = set()
-                queue = [sid]
-                while queue:
-                    curr = queue.pop()
-                    if curr not in visited:
-                        visited.add(curr)
-                        for neighbor in stop_adj[curr]:
-                            if neighbor not in visited:
-                                queue.append(neighbor)
-                stop_reach[sid] = visited
-
-            for tid, nodes in trip_nodes_temp.items():
-                full_sids = set()
                 for sid, _, _, _ in nodes:
-                    full_sids.update(stop_reach.get(sid, {sid}))
-                for sid in full_sids:
                     s_idx = stop_id_to_idx.get(sid)
                     if s_idx is not None:
                         reach_bits_map[tid][s_idx // 64] |= np.uint64(1) << np.uint64(s_idx % 64)
@@ -394,6 +369,7 @@ class GraphBuilder:
             
             MemMapManager.save_array("coordinate_matrix", coords)
             mapped_coords = MemMapManager.load_array("coordinate_matrix")
+
 
             return {
                 'stop_cache': stop_cache,

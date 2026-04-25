@@ -44,7 +44,7 @@ class APIRequest:
     parameters: Dict[str, Any]
     headers: Dict[str, str]
     body: Optional[str] = None
-    timestamp: datetime = None
+    timestamp: Optional[datetime] = None
     auth_token: Optional[str] = None
     source_ip: Optional[str] = None
     user_agent: Optional[str] = None
@@ -98,7 +98,7 @@ class APISecurityValidator:
             "multipart/form-data",
         ]
         self.api_versions = ["v1", "v2", "v3"]
-        self.request_log = []
+        self.request_log: Dict[str, List[datetime]] = {}
         self.rate_limit_store = {}
 
     def validate_invalid_parameters_rejected(self, request: APIRequest) -> bool:

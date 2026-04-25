@@ -2,17 +2,29 @@ import logging
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional
-from api.sos import _load_event
+from api.sos import _load_event_async as _load_event
+from database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 class ReportingService:
     def generate_incident_summary(self, event_id: str) -> Optional[str]:
         """
-        Task 37: Generate a structured text/markdown summary of the SOS incident.
+        Task 37: Generate a structured text/markdown summary of the SOS incident (Sync Wrapper).
         Suitable for RPF handover.
         """
-        event = _load_event(event_id)
+        import asyncio
+        event = asyncio.run(self.generate_incident_summary_async(event_id))
+        return event
+
+    async def generate_incident_summary_async(self, event_id: str) -> Optional[str]:
+        """Async implementation of Task 37."""
+        db = SessionLocal()
+        try:
+            event = await _load_event(event_id, db)
+        finally:
+            db.close()
+            
         if not event:
             return None
             

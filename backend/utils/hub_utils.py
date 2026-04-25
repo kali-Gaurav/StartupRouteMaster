@@ -18,7 +18,10 @@ def get_top_centrality_hubs(limit: int = 50, db_session: Optional[SessionTransit
         # [Task 121 Alignment] Use connectivity_score for REAL Hub Selection
         query = "SELECT id FROM stops WHERE connectivity_score > 0 ORDER BY connectivity_score DESC LIMIT :limit"
         rows = db.execute(text(query), {"limit": limit}).fetchall()
-        codes = [int(r[0]) for r in rows]
+        def _safe_int(v):
+            try: return int(v)
+            except: return 0
+        codes = [_safe_int(r[0]) for r in rows if r[0] is not None]
         if codes:
             logger.info(f"Loaded {len(codes)} elite hubs (Sorted by Connectivity Score).")
             return codes

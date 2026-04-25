@@ -98,8 +98,10 @@ def is_valid_transfer(
     """
     if isinstance(arrival_time, int) and isinstance(departure_time, int):
         wait_mins = (departure_time - arrival_time) % 1440
-    else:
+    elif isinstance(arrival_time, datetime) and isinstance(departure_time, datetime):
         wait_mins = (departure_time - arrival_time).total_seconds() / 60
+    else:
+        raise TypeError("arrival_time and departure_time must be both int or both datetime")
     
     # [Task 13] Dynamic Min Wait Budget based on Station Size
     station_min_buffer = 15 # Standard

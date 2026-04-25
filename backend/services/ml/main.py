@@ -1,4 +1,5 @@
 import uvicorn
+import asyncio
 from fastapi import FastAPI, Depends, Query
 from sqlalchemy.orm import Session
 from database.session import get_db

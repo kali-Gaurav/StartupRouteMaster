@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import partial
 from time import monotonic
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Type
 
 from database.config import Config
 from services.cache_service import cache_service
@@ -59,13 +59,13 @@ class VerificationOrchestrator:
     def __init__(
         self,
         db: Optional[Any] = None,
-        config: Config = Config,
+        config: Type[Config] = Config,
         cache: Optional[Any] = None,
     ):
         self.db = db
         self.cache = cache or cache_service
         self.config = config
-        self.live_status_service = LiveStatusService(config)
+        self.live_status_service = LiveStatusService()
         self.seat_service = SeatVerificationService()
         self.fare_service = FareService(config)
         self.cache_ttl = _clamp(getattr(config, "VERIFICATION_CACHE_TTL", 180), 120, 300)
@@ -78,9 +78,7 @@ class VerificationOrchestrator:
         self._rate_lock = asyncio.Lock()
         self._pending_tasks: set[asyncio.Task] = set()
 
-        # enforce our custom timeout values on the services
-        self.live_status_service.timeout = self.live_timeout
-        self.seat_service.timeout = self.seat_timeout
+        # enforce our custom timeout values on the services where supported
         self.fare_service.timeout = self.fare_timeout
 
     def _cache_key(self, journey_id: str, train_no: str, travel_date: datetime, class_code: str, quota: str) -> str:

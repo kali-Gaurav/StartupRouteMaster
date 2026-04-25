@@ -120,6 +120,35 @@ class TrainDelayedEvent(Event):
         })
         return data
 
+class PaymentIngestedEvent(Event):
+    """[Task 4.3] Financial ingestion event for Kafka backbone."""
+    def __init__(self,
+                 utr: str,
+                 amount: float,
+                 currency: str,
+                 sender_vpa: str,
+                 fingerprint_id: Optional[str] = None,
+                 raw_payload: Optional[Dict] = None):
+        super().__init__("PaymentIngested")
+        self.utr = utr
+        self.amount = amount
+        self.currency = currency
+        self.sender_vpa = sender_vpa
+        self.fingerprint_id = fingerprint_id
+        self.raw_payload = raw_payload or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = super().to_dict()
+        data.update({
+            "utr": self.utr,
+            "amount": self.amount,
+            "currency": self.currency,
+            "sender_vpa": self.sender_vpa,
+            "fingerprint_id": self.fingerprint_id,
+            "raw_payload": self.raw_payload
+        })
+        return data
+
 # Event Producer Interface
 class EventProducer(ABC):
     """Abstract event producer interface"""
@@ -140,7 +169,7 @@ class KafkaEventProducer(EventProducer):
     def __init__(self, bootstrap_servers: str = None, timeout_ms: int = 5000):
         self.bootstrap_servers = bootstrap_servers or Config.KAFKA_BOOTSTRAP_SERVERS or "localhost:9092"
         self.timeout_ms = timeout_ms
-        self.producer = None
+        self.producer: Optional[Any] = None
         self.circuit_breaker_failures = 0
         self.circuit_breaker_threshold = 5
         self.circuit_breaker_open = False
@@ -231,6 +260,8 @@ class KafkaEventProducer(EventProducer):
 
         try:
             await self._ensure_producer()
+            if self.producer is None:
+                raise RuntimeError("Kafka producer failed to initialize")
 
             # Measure send latency (time to queue message)
             start_time = time.time()
@@ -367,3 +398,10 @@ async def publish_train_delayed(train_id: str, delay_minutes: int, station_code:
     event = TrainDelayedEvent(train_id, delay_minutes, station_code,
                             scheduled_departure, estimated_departure, reason)
     return await get_event_producer().publish_event(event, "delay_events")
+
+async def publish_payment_ingested(utr: str, amount: float, currency: str, sender_vpa: str, 
+                                 fingerprint_id: Optional[str] = None, 
+                                 raw_payload: Optional[Dict] = None) -> bool:
+    """[Task 4.3] Publish financial ingestion event."""
+    event = PaymentIngestedEvent(utr, amount, currency, sender_vpa, fingerprint_id, raw_payload)
+    return await get_event_producer().publish_event(event, "finance_ingestion")

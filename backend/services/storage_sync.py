@@ -26,8 +26,7 @@ class R2SyncManager:
             "database/user_store.db",
             "database/transit_graph.db",
             "database/railway_data.db",
-            "snapshots/graph_snapshot_20260328.pkl",
-            "snapshots/graph_snapshot_20260330.pkl",
+            "database/snapshots", # Support directory sync
             "nexus_vitals.mmap"
         ]
         self.sync_interval = 3600 # 1 hour
@@ -134,18 +133,58 @@ class R2SyncManager:
             return False
 
     async def full_sync_down(self):
-        """Sync ALL databases from R2 to local."""
+        """Sync ALL databases/directories from R2 to local."""
         logger.info("R2 Sync: Starting full download sync...")
-        tasks = [self.sync_from_r2(path) for path in self.db_paths]
+        
+        # 1. Expand paths (Directories need to list R2 first)
+        expanded_paths = []
+        for rel_path in self.db_paths:
+            if rel_path.endswith("/") or rel_path.split("/")[-1].find(".") == -1: # Assumption: no extension = directory
+                # Prefix in R2
+                prefix = f"backups/{rel_path.replace('/', '_')}"
+                remote_objs = r2_storage.list_objects(prefix=prefix)
+                for obj in remote_objs:
+                    key = obj['Key']
+                    # Convert back to rel_path (undo backups/ and _ replace)
+                    # This is complex because of _ replacement.
+                    # Simplification: If it's a directory, we need to know what files were uploaded.
+                    pass 
+            else:
+                expanded_paths.append(rel_path)
+                
+        # Actually, let's just make sync_to_r2 and sync_from_r2 handle directories by walking them.
+        tasks = [self.sync_path(path, direction="down") for path in self.db_paths]
         await asyncio.gather(*tasks)
         logger.info("R2 Sync: Full download sync complete.")
 
     async def full_sync_up(self):
-        """Sync ALL databases from local to R2."""
+        """Sync ALL databases/directories from local to R2."""
         logger.info("R2 Sync: Starting full backup sync...")
-        tasks = [self.sync_to_r2(path) for path in self.db_paths]
+        tasks = [self.sync_path(path, direction="up") for path in self.db_paths]
         await asyncio.gather(*tasks)
         logger.info("R2 Sync: Full backup sync complete.")
+
+    async def sync_path(self, rel_path: str, direction: str = "up"):
+        """Sync a single file or a directory."""
+        abs_path = self._get_abs_path(rel_path)
+        
+        if abs_path.is_dir():
+            # Walk directory
+            tasks = []
+            for item in abs_path.iterdir():
+                if item.is_file():
+                    item_rel = f"{rel_path}/{item.name}"
+                    if direction == "up":
+                        tasks.append(self.sync_to_r2(item_rel))
+                    else:
+                        tasks.append(self.sync_from_r2(item_rel))
+            if tasks:
+                await asyncio.gather(*tasks)
+        else:
+            if direction == "up":
+                await self.sync_to_r2(rel_path)
+            else:
+                await self.sync_from_r2(rel_path)
 
     async def run_periodic_sync(self):
         """Background task for periodic backups with orchestrator feedback."""

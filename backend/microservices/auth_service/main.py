@@ -11,6 +11,7 @@ from shared.auth import SharedAuthManager
 from database.session import get_db
 from sqlalchemy.orm import Session
 import redis.asyncio as redis
+from typing import Optional as OptionalType
 
 # Shared imports setup
 import sys
@@ -25,7 +26,7 @@ logger = logging.getLogger("auth-service")
 app = FastAPI(title="RouteMaster Auth Service")
 
 # Redis for Rate Limiting
-redis_client = None
+redis_client: OptionalType[redis.Redis] = None
 
 @app.on_event("startup")
 async def startup():
@@ -33,7 +34,8 @@ async def startup():
     logger.info("🔐 Auth Service: Initializing Redis connection...")
     try:
         redis_client = redis.from_url(Config.REDIS_URL, decode_responses=True)
-        await redis_client.ping()
+        if redis_client:
+            redis_client.ping()
         logger.info("✅ Auth Service: Redis connected.")
     except Exception as e:
         logger.error(f"❌ Auth Service: Redis connection failed: {e}")
@@ -59,10 +61,14 @@ async def refresh_token(
 
     try:
         # Use consolidated SharedAuthManager for refresh
+        if not auth_manager.supabase or not hasattr(auth_manager.supabase, 'auth'):
+            raise HTTPException(status_code=500, detail="Auth service misconfigured")
         resp = auth_manager.supabase.auth.refresh_session(refresh_token)
         if not resp or not hasattr(resp, 'session') or not resp.session:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
-            
+        
+        # Type narrow the session
+        assert resp.session is not None, "Session must not be None"
         sb_session = resp.session
         sb_user = sb_session.user
         
@@ -120,7 +126,8 @@ async def global_logout(
     user = auth_manager.sync_user(sb_user)
     
     revoked_count = auth_manager.revoke_all_sessions(user.id)
-    auth_manager.log_audit(user.id, "GLOBAL_LOGOUT", reason=f"IP: {request.client.host}")
+    client_host = request.client.host if request.client else "unknown"
+    auth_manager.log_audit(user.id, "GLOBAL_LOGOUT", reason=f"IP: {client_host}")
     
     return {"status": "success", "revoked_count": revoked_count}
 

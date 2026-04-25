@@ -2,7 +2,7 @@ import logging
 import math
 from sqlalchemy import text, func
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, cast
 
 from database.session import SessionTransit
 from database.models import Stop, StationRank, StopTime, Trip
@@ -15,7 +15,8 @@ class StationScoringEngine:
 
     def calculate_all_ranks(self, force: bool = False):
         if not force:
-            count = self.db.query(Stop).filter(Stop.connectivity_score > 0).count()
+            stop_model = cast(Any, Stop)
+            count = self.db.query(Stop).filter(stop_model.connectivity_score > 0).count()
             if count > 100:
                 logger.info(f"⏩ skipping scoring: {count} stations already have scores.")
                 return
@@ -56,8 +57,8 @@ class StationScoringEngine:
                 elif score > 75: hub_type = "major_hub"
                 elif score > 55: hub_type = "regional_hub"
                 
-                stop.connectivity_score = score
-                stop.hub_type = hub_type
+                setattr(stop, "connectivity_score", score)
+                setattr(stop, "hub_type", hub_type)
                 
                 # Check for existing rank record or create new
                 # (Still synchronous but loop is lean)

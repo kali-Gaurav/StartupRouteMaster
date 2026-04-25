@@ -75,8 +75,8 @@ def get_frequency_aware_sizer(stop_id: int, graph: Any) -> int:
         # Assuming roughly 24-hour schedule window in snapshot
         frequency_density = count / 24.0
         
-        logger.info(f"[Task 3] Stop {stop_id}: {count} deps ({frequency_density:.1f}/hour), "
-                   f"category={category}, frontier_size={size}")
+        logger.debug(f"[Task 3] Stop {stop_id}: {count} deps ({frequency_density:.1f}/hour), "
+                    f"category={category}, frontier_size={size}")
         
         # [Task 3] Cache result
         _frequency_cache[stop_id] = (size, frequency_density)

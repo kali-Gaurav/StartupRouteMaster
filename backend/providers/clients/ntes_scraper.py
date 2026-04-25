@@ -16,7 +16,7 @@ from playwright.async_api import Page
 from ..config import config
 from ..models import UnifiedLiveStatus
 from utils.rate_limiter import RedisTokenBucket
-from core.redis import async_redis_client
+from core.redis_client import async_redis_client
 from services.scraper_sentinel import scraper_sentinel
 
 logger = logging.getLogger("provider.ntes_scraper")
@@ -66,117 +66,107 @@ class NtesScraperClient:
 
         await self._check_rate_limit()
         
-        # 1. Acquire Context from Sentinel [48.1]
-        try:
-            entry = await scraper_sentinel.acquire_context()
-        except Exception as e:
-            logger.error(f"Scraper Sentinel Capacity Reached: {e}")
-            return None
-
-        context = entry["context"]
-        page = None
-        attempt = 0
-        start_time = time.time()
-        
-        try:
-            page = await context.new_page()
-            await self._optimize_bandwidth(page)
-            
-            # Stealth: defined in scraper_sentinel but reinforced here
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            # 2. Navigate to NTES
-            await page.goto(self.base_url, timeout=30000, wait_until="domcontentloaded")
-            
-            # 3. Enter Train No
-            input_selector = "input#trainNo, input[name='trainNo'], input#txtTrainNo"
-            await page.wait_for_selector(input_selector, timeout=10000)
-            
-            # Human-like typing
-            for char in train_number:
-                await page.type(input_selector, char, delay=random.randint(50, 150))
-            
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-            await page.keyboard.press("Enter")
-            
-            # 4. Handle Date Selection (NTES often shows a list of dates if multiple instances exist)
-            # Or it might go directly to the status page for 'Today'.
-            
-            date_selector = f"text='{self._format_date(journey_date)}'"
+        for attempt in range(self._max_retries + 1):
             try:
-                # Wait for date selection if it appears
-                await page.wait_for_selector(".date-list, .instance-list", timeout=3000)
-                await page.click(f"div:has-text('{self._format_date(journey_date)}')", timeout=2000)
-            except:
-                # If not found, it might have auto-selected or we are on the wrong page
-                pass
-
-            # 5. Wait for results
-            # NTES results are usually in a div with id 'divRes' or class 'trainStatusBlock'
-            result_selectors = [".trainStatusBlock", ".running-status-table", "#divRes", ".live-status"]
-            found = False
-            for selector in result_selectors:
+                # 1. Acquire Context from Sentinel [48.1]
                 try:
-                    await page.wait_for_selector(selector, timeout=10000)
-                    found = True
-                    break
-                except:
-                    continue
-            
-            if not found:
-                logger.warning(f"NTES Scraper could not find results for {train_number} on {journey_date}")
-                return None
+                    entry = await scraper_sentinel.acquire_context()
+                except Exception as e:
+                    logger.error(f"Scraper Sentinel Capacity Reached: {e}")
+                    return None
 
-            # 6. Wait for Results (Dynamic Container found in exploration)
-            await page.wait_for_selector("#runningStatusContent, #divRes", timeout=20000)
-            
-            # 7. Refined Extraction [Task 48.12: Subagent Refined Selectors]
-            # Based on 3-column w3-row layout: [Arr | Stn/PF | Dep]
-            extracted_table = await page.evaluate('''() => {
-                const results = [];
-                const rows = Array.from(document.querySelectorAll("#runningStatusContent .w3-row, .station-row, .stn-row"));
+                context = entry["context"]
+                page = await context.new_page()
+                await self._optimize_bandwidth(page)
                 
-                rows.forEach(row => {
-                    const cols = Array.from(row.querySelectorAll(".w3-col, div[class*='col']"));
-                    if (cols.length < 3) return;
-                    
-                    const stationCell = cols[1]; // Middle Column
-                    const stationText = stationCell?.innerText.trim() || "";
-                    // ID platform by orange label background or w3-tag
-                    const pfLabel = stationCell?.querySelector(".w3-tag, span[style*='background-color: orange']")?.innerText.trim() || "N/A";
-                    
-                    results.push({
-                        "arrival": cols[0]?.innerText.trim().replace(/\n/g, " "),
-                        "station": stationText.replace(pfLabel, "").trim(),
-                        "platform": pfLabel,
-                        "departure": cols[2]?.innerText.trim().replace(/\n/g, " "),
+                # Stealth: defined in scraper_sentinel but reinforced here
+                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+                # 2. Navigate to NTES
+                await page.goto(self.base_url, timeout=30000, wait_until="domcontentloaded")
+                
+                # 3. Enter Train No
+                input_selector = "input#trainNo, input[name='trainNo'], input#txtTrainNo"
+                await page.wait_for_selector(input_selector, timeout=10000)
+                
+                # Human-like typing
+                for char in train_number:
+                    await page.type(input_selector, char, delay=random.randint(50, 150))
+                
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+                await page.keyboard.press("Enter")
+                
+                # 4. Handle Date Selection
+                date_selector = f"text='{self._format_date(journey_date)}'"
+                try:
+                    await page.wait_for_selector(".date-list, .instance-list", timeout=3000)
+                    await page.click(f"div:has-text('{self._format_date(journey_date)}')", timeout=2000)
+                except:
+                    pass
+
+                # 5. Wait for results
+                result_selectors = [".trainStatusBlock", ".running-status-table", "#divRes", ".live-status"]
+                found = False
+                for selector in result_selectors:
+                    try:
+                        await page.wait_for_selector(selector, timeout=10000)
+                        found = True
+                        break
+                    except:
+                        continue
+                
+                if not found:
+                    raise Exception(f"No results found for {train_number}")
+
+                # 6. Extraction
+                extracted_table = await page.evaluate('''() => {
+                    const results = [];
+                    const rows = Array.from(document.querySelectorAll("#runningStatusContent .w3-row, .station-row, .stn-row"));
+                    rows.forEach(row => {
+                        const cols = Array.from(row.querySelectorAll(".w3-col, div[class*='col']"));
+                        if (cols.length < 3) return;
+                        const stationCell = cols[1];
+                        const pfLabel = stationCell?.querySelector(".w3-tag, span[style*='background-color: orange']")?.innerText.trim() || "N/A";
+                        results.push({
+                            "arrival": cols[0]?.innerText.trim().replace(/\n/g, " "),
+                            "station": stationCell?.innerText.replace(pfLabel, "").trim(),
+                            "platform": pfLabel,
+                            "departure": cols[2]?.innerText.trim().replace(/\n/g, " "),
+                        });
                     });
-                });
-                return results;
-            }''')
+                    return results;
+                }''')
 
-            # Determine "Current Station" from the summary bar (Elite identified)
-            summary_bar = await page.get_attribute("div#runningStatusContent div.w3-indigo", "innerText") or ""
-            current_pos = summary_bar.strip()
-            
-            latency = time.perf_counter() - start_time
-            logger.info(f"NTES Scraper Success: {train_number} | {latency:.2f}s | {len(extracted_table)} stops")
-            
-            return {
-                "train_no": train_number,
-                "journey_date": journey_date.isoformat(),
-                "current_station": current_pos,
-                "delay_info": current_pos.split("at")[-1].strip() if "at" in current_pos else "N/A",
-                "full_table": extracted_table,
-                "scraped_at": datetime.utcnow().isoformat(),
-                "latency": latency,
-                "source": "ntes_scraper_distributed"
-            }
+                summary_bar = await page.get_attribute("div#runningStatusContent div.w3-indigo", "innerText") or ""
+                current_pos = summary_bar.strip()
+                
+                latency = time.perf_counter() - start_time
+                logger.info(f"✅ NTES Scraper Success: {train_number} | {latency:.2f}s | Attempt: {attempt+1}")
+                
+                return {
+                    "train_no": train_number,
+                    "journey_date": journey_date.isoformat(),
+                    "current_station": current_pos,
+                    "delay_info": current_pos.split("at")[-1].strip() if "at" in current_pos else "N/A",
+                    "full_table": extracted_table,
+                    "scraped_at": datetime.utcnow().isoformat(),
+                    "latency": latency,
+                    "source": "ntes_scraper_distributed"
+                }
 
-        except Exception as e:
-            logger.error(f"NTES Scraper Failure for {train_number}: {e}")
-            return None
-        finally:
+            except Exception as e:
+                logger.warning(f"⚠️ NTES Scraper Attempt {attempt+1} failed for {train_number}: {e}")
+                if attempt == self._max_retries:
+                    logger.error(f"❌ NTES Scraper Exhausted all retries for {train_number}")
+                    return None
+                await asyncio.sleep(random.uniform(1, 3))
+            finally:
+                if 'page' in locals() and page:
+                    try: await page.close()
+                    except: pass
+                if 'entry' in locals() and entry:
+                    await scraper_sentinel.release_context(entry)
+       
             if page:
                 try: await page.close()
                 except: pass

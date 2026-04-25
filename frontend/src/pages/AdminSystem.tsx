@@ -122,20 +122,20 @@ export default function AdminSystem() {
   const refreshSystem = async () => {
     try {
       const [h, hi, s, f, b, g, c, sn, et, fp, im, di, cl, ap] = await Promise.all([
-        fetchWithAuth("/admin/system/health"),
-        fetchWithAuth("/admin/system/resource-history"),
-        fetchWithAuth("/admin/performance/slow-endpoints"),
-        fetchWithAuth("/admin/performance/friction-leaderboard"),
-        fetchWithAuth("/admin/performance/circuit-breakers"),
-        fetchWithAuth("/admin/system/graph-health"),
-        fetchWithAuth("/admin/system/cache-intelligence"),
-        fetchWithAuth("/admin/system/snapshots"),
-        fetchWithAuth("/admin/system/error-triage"),
-        fetchWithAuth("/admin/system/failure-patterns"),
-        fetchWithAuth("/admin/system/impact-score"),
-        fetchWithAuth("/admin/system/diagnostics"),
-        fetchWithAuth("/admin/system/cluster-map"),
-        fetchWithAuth("/admin/performance/admin-profiling")
+        fetchWithAuth("/v2/admin/system/health"),
+        fetchWithAuth("/v2/admin/system/resource-history"),
+        fetchWithAuth("/v2/admin/performance/slow-endpoints"),
+        fetchWithAuth("/v2/admin/performance/friction-leaderboard"),
+        fetchWithAuth("/v2/admin/performance/circuit-breakers"),
+        fetchWithAuth("/v2/admin/system/graph-health"),
+        fetchWithAuth("/v2/admin/system/cache-intelligence"),
+        fetchWithAuth("/v2/admin/system/snapshots"),
+        fetchWithAuth("/v2/admin/system/error-triage"),
+        fetchWithAuth("/v2/admin/system/failure-patterns"),
+        fetchWithAuth("/v2/admin/system/impact-score"),
+        fetchWithAuth("/v2/admin/system/diagnostics"),
+        fetchWithAuth("/v2/admin/system/cluster-map"),
+        fetchWithAuth("/v2/admin/performance/admin-profiling")
       ]);
       setSystemHealth(await h.json());
       setResourceHistory((await hi.json()).reverse());
@@ -157,7 +157,7 @@ export default function AdminSystem() {
   const resetBreaker = async (name: string) => {
     toast.info(`Force closing circuit: ${name}...`);
     try {
-      await fetchWithAuth(`/admin/performance/circuit-breakers/${name}/reset`, { method: "POST" });
+      await fetchWithAuth(`/v2/admin/performance/circuit-breakers/${name}/reset`, { method: "POST" });
       toast.success(`${name} re-engaged.`);
       refreshSystem();
     } catch (e) { toast.error("Reset failed"); }
@@ -166,7 +166,7 @@ export default function AdminSystem() {
   const restartWorker = async (pid: number) => {
     if (!confirm(`CRITICAL: Kill worker process ${pid}? Supervisor will auto-restart.`)) return;
     try {
-      await fetchWithAuth(`/admin/system/cluster-map/${pid}/restart`, { method: "POST" });
+      await fetchWithAuth(`/v2/admin/system/cluster-map/${pid}/restart`, { method: "POST" });
       toast.success(`SIGTERM dispatched to PID ${pid}`);
       refreshSystem();
     } catch (e) { toast.error("Restart command failed"); }
@@ -175,7 +175,7 @@ export default function AdminSystem() {
   const triggerSnapshot = async () => {
     toast.info("Initializing system snapshot...");
     try {
-      const res = await fetchWithAuth("/admin/system/snapshot", { method: "POST" });
+      const res = await fetchWithAuth("/v2/admin/system/snapshot", { method: "POST" });
       const data = await res.json();
       if (data.success) {
         toast.success(`Encrypted snapshot created: ${data.size_mb.toFixed(2)}MB`);

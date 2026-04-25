@@ -23,7 +23,8 @@ class ConstraintsEngine:
         cost_priority: float = 0.5,
         quota: str = "GN",
         permitted_engines: Optional[List[str]] = None,
-        discovery_only: bool = False
+        discovery_only: bool = False,
+        discovery_model: Optional[Any] = None
     ) -> RouteConstraints:
         """
         Creates a high-performance RouteConstraints object with persona-specific weights.
@@ -51,14 +52,28 @@ class ConstraintsEngine:
             if travel_date < date.today():
                 travel_date = date.today()
 
-        # 3. Create Base Constraints
+        # 3. Create Base Constraints (Tier Aware)
+        from .constraints import DiscoveryModel
+        
+        # Normalize discovery model string to Enum
+        d_model = DiscoveryModel.BACKBONE
+        if discovery_model:
+            if isinstance(discovery_model, DiscoveryModel):
+                d_model = discovery_model
+            elif isinstance(discovery_model, str):
+                try:
+                    d_model = DiscoveryModel[discovery_model.upper().strip()]
+                except (KeyError, AttributeError):
+                    pass
+
         constraints = RouteConstraints(
             persona=persona,
             time_priority=time_priority,
             cost_priority=cost_priority,
             quota=quota.upper().strip(),
             permitted_engines=permitted_engines,
-            discovery_only=discovery_only
+            discovery_only=discovery_only,
+            discovery_model=d_model
         )
 
         # 4. Apply Overrides (Task 4.6, 4.7)

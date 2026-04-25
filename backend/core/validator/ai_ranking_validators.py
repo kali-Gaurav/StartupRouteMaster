@@ -42,7 +42,7 @@ class RankingResult:
     explanation: Optional[str] = None
     feature_importance: Dict[str, float] = field(default_factory=dict)
     model_version: str = "1.0"
-    predicted_at: datetime = None
+    predicted_at: Optional[datetime] = None
 
 
 @dataclass
@@ -52,7 +52,7 @@ class UserProfile:
     preference_weights: Dict[str, float] = field(default_factory=dict)
     history_routes: List[str] = field(default_factory=list)
     is_new_user: bool = False
-    last_updated: datetime = None
+    last_updated: Optional[datetime] = None
 
 
 @dataclass

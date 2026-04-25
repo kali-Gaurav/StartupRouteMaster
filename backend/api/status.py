@@ -31,7 +31,11 @@ async def health_ready():
     """
     from core.nexus.bootstrapper import nexus_boot
     from core.nexus.state import SystemState
+    from core.route_engine import route_engine
+    
     return {
         "status": "ready" if nexus_boot.state == SystemState.READY else "degraded",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
+        "engine_state": getattr(route_engine, 'last_rebuild_status', 'UNKNOWN'),
+        "is_building": getattr(route_engine, '_is_building', False)
     }

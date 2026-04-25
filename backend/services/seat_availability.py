@@ -1,13 +1,13 @@
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import date
+from datetime import date, datetime
+from collections import deque
 import asyncio
 
 # Import the ProviderGateway and its models
 from providers.gateway import provider_gateway
-# We will use UnifiedAvailability if it's defined, otherwise adapt from gateway's availability data structure.
-# For now, let's assume gateway's unlock_route_details provides availability data in a usable list of dicts.
-# from backend.providers.models import UnifiedAvailability 
+from core.resilience import circuit_breaker_manager, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +15,40 @@ class SeatAvailabilityService:
     """
     Service responsible for checking seat availability.
     Now delegates all fetching to the ProviderGateway.
+    
+    With resilience patterns: circuit breaker, retry, metrics tracking, and health checks.
     """
 
     def __init__(self):
-        # The service now relies on the ProviderGateway for fetching.
-        # Configuration like API keys and enablement status are managed within the gateway.
-        logger.info("SeatAvailabilityService initialized. Fetching will be delegated to ProviderGateway.")
+        # Circuit breaker for gateway operations
+        self._gateway_breaker = circuit_breaker_manager.get_or_create(
+            "seat_availability_gateway",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=30.0,
+                success_threshold=3
+            )
+        )
+        
+        # Retry policy for gateway calls
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=1.0,
+            max_delay=10.0,
+            exponential_base=2.0,
+            jitter=True,
+            conditions=[
+                lambda e: isinstance(e, (ConnectionError, TimeoutError)),
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "gateway" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("SeatAvailabilityService initialized with resilience patterns")
 
     async def get_seat_availability(
         self,
@@ -49,16 +77,24 @@ class SeatAvailabilityService:
         logger.debug(f"Delegating seat availability check for train {train_number} on {travel_date} from {from_station_code} to {to_station_code}...")
         
         try:
-            # Delegate to the gateway's unlock_route_details, which fetches availability among other things.
-            route_details = await provider_gateway.unlock_route_details(
-                train_number=train_number,
-                source=from_station_code,
-                dest=to_station_code,
-                date=travel_date
+            # Delegate to the gateway's get_seat_availability, which is the correct method for fetching seat data.
+            availability_list_from_gateway = await provider_gateway.get_seat_availability(
+                train_number,
+                travel_date,
+                from_station_code,
+                to_station_code,
+                class_code,
+                quota
             )
-            
-            if route_details and route_details.get("success"):
-                availability_list_from_gateway = route_details.get("data", {}).get("availability", [])
+
+            if availability_list_from_gateway:
+                return {
+                    "source": "ProviderGateway",
+                    "success": True,
+                    "quota": quota,
+                    "class": class_code,
+                    "data": availability_list_from_gateway
+                }
                 
                 # The original service returned a specific dictionary structure for availability.
                 # We need to adapt the data from the gateway's availability list to match that structure.
@@ -99,7 +135,7 @@ class SeatAvailabilityService:
                     return {"source": "ProviderGateway", "success": True, "quota": quota, "class": class_code, "data": []}
 
             else:
-                error_msg = route_details.get("error", "Unknown error") if route_details else "No route details retrieved"
+                error_msg = "No availability data retrieved"
                 logger.warning(f"Seat availability check failed for {train_number} {from_station_code}->{to_station_code} on {travel_date}: {error_msg}")
                 return {"source": "ProviderGateway", "success": False, "error": error_msg}
                 
@@ -122,3 +158,58 @@ class SeatAvailabilityService:
 
 # if __name__ == "__main__":
 #     asyncio.run(main())
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
+        """Record operation metrics."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type,
+            "circuit_breaker_state": self._gateway_breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breaker": {
+                "state": self._gateway_breaker.get_state().value,
+                "failure_count": self._gateway_breaker.failure_count,
+                "success_count": self._gateway_breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker."""
+        self._gateway_breaker.reset()
+        logger.info("Circuit breaker reset for seat availability service")

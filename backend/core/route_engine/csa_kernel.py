@@ -10,14 +10,14 @@ class CSARoutingKernel:
     UPGRADED Subtask 3.6: High-performance CSA kernel.
     Supports dynamic injection of stitched multi-zonal connection data.
     """
-    def __init__(self, timetable_path: str = None):
+    def __init__(self, timetable_path: Optional[str] = None):
         self.global_connections = np.array([])
         self.connections = np.array([])
         self.stop_ids = np.array([])
         self.id_to_idx = {}
         self.stop_count = 0
         
-        if timetable_path is None:
+        if not timetable_path:
             base_dir = os.path.dirname(os.path.abspath(__file__))
             timetable_path = os.path.normpath(os.path.join(base_dir, "..", "..", "data", "timetable.npz"))
             

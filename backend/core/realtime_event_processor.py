@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import Any, List, Dict, Optional, TYPE_CHECKING, cast
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
@@ -84,23 +84,24 @@ class RealtimeEventProcessor:
             updates = []
             for d in active_disruptions:
                 # Handle trip-level disruption
-                if d.trip_id:
+                disruption_trip_id = cast(Optional[int], d.trip_id)
+                if disruption_trip_id is not None:
                     updates.append({
                         'type': d.disruption_type,
-                        'trip_id': d.trip_id,
+                        'trip_id': int(disruption_trip_id),
                         'delay_minutes': 60 if d.disruption_type == 'delay' else 0, # Default if not specified
                         'status': d.disruption_type,
                         'source': 'disruption_table'
                     })
                 # Handle stop-level disruption (Propagate to all trips at this stop)
-                elif d.stop_id:
+                elif d.stop_id is not None:
                     trips_at_stop = session.query(StopTime.trip_id).filter(
                         StopTime.stop_id == d.stop_id
                     ).distinct().all()
                     for t in trips_at_stop:
                         updates.append({
                             'type': d.disruption_type,
-                            'trip_id': t.trip_id,
+                            'trip_id': cast(int, t.trip_id),
                             'delay_minutes': 30, # Default station delay
                             'status': d.disruption_type,
                             'source': f'disruption_stop_{d.stop_id}'
@@ -136,9 +137,9 @@ class RealtimeEventProcessor:
                 try:
                     update = {
                         'type': event.event_type,  # 'delay', 'cancellation', 'platform_change'
-                        'trip_id': int(event.entity_id),
+                        'trip_id': int(str(event.entity_id)),
                         'train_number': str(event.entity_id),
-                        'delay_minutes': event.data.get('delay_minutes', 0),
+                        'delay_minutes': int(event.data.get('delay_minutes', 0) or 0),
                         'status': event.data.get('status'),
                         'platform': event.data.get('platform_number'),
                         'timestamp': event.timestamp,
@@ -197,8 +198,8 @@ class RealtimeEventProcessor:
                         continue
                     
                     # Find current station and delay
-                    current_station_idx = latest_update.sequence
-                    current_delay = latest_update.delay_minutes
+                    current_station_idx = cast(int, latest_update.sequence)
+                    current_delay = cast(int, latest_update.delay_minutes or 0)
                     
                     # Propagate delay through route
                     propagated = propagation_manager.get_propagated_delays(
@@ -251,16 +252,28 @@ class RealtimeEventProcessor:
                     max_delay[trip_id] = max(max_delay.get(trip_id, 0), delay)
             
             # Apply to local engine overlay
-            overlay = self.engine.current_overlay
-            for trip_id, delay_minutes in max_delay.items():
-                overlay.apply_delay(trip_id, delay_minutes)
-                logger.debug(f"Applied delay: trip {trip_id} -> +{delay_minutes}min")
+            overlay = getattr(self.engine, "current_overlay", None)
+            if overlay is None:
+                logger.warning("RealtimeEventProcessor: engine has no current_overlay, skipping overlay update")
+            else:
+                for trip_id, delay_minutes in max_delay.items():
+                    overlay.apply_delay(trip_id, delay_minutes)
+                    logger.debug(f"Applied delay: trip {trip_id} -> +{delay_minutes}min")
             
             # Phase 10: Push the entire updated overlay state to Redis
             try:
-                await multi_layer_cache.initialize()
-                await multi_layer_cache.set_overlay_state("global_v2", overlay.to_dict())
-                logger.debug("Phase 10: Pushed updated RealtimeOverlay to Redis.")
+                init_result = multi_layer_cache.initialize()
+                if asyncio.iscoroutine(init_result):
+                    await init_result
+
+                set_fn = getattr(multi_layer_cache, "set_overlay_state", None)
+                if callable(set_fn) and overlay is not None:
+                    set_result = set_fn("global_v2", overlay.to_dict())
+                    if asyncio.iscoroutine(set_result):
+                        await set_result
+                    logger.debug("Phase 10: Pushed updated RealtimeOverlay to Redis.")
+                else:
+                    logger.warning("RealtimeEventProcessor: multi_layer_cache.set_overlay_state unavailable or overlay missing")
             except Exception as e:
                 logger.warning(f"Could not push overlay to Redis: {e}")
 
@@ -297,11 +310,11 @@ class RealtimeEventProcessor:
                     session.add(train_state)
                 
                 # Update state
-                train_state.current_delay_minutes = update.get('delay_minutes', 0)
+                train_state.current_delay_minutes = int(update.get('delay_minutes', 0) or 0)
                 train_state.status = update.get('status', 'on_time')
                 train_state.platform_number = update.get('platform')
                 train_state.current_station_code = update.get('station_code')
-                train_state.last_updated = datetime.utcnow()
+                cast(Any, train_state).last_updated = datetime.utcnow()
                 train_state.last_update_source = update.get('source', 'system')
                 
                 logger.debug(

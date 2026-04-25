@@ -34,10 +34,11 @@ def audit_commission_health():
             # SUGGESTION: Auto-Patching
             for bid in leaked_bookings:
                 booking = db.query(Booking).filter(Booking.id == bid).first()
-                if booking.agent_id:
+                if booking and booking.agent_id:
                    from services.commission_service import commission_service
+                   agent_id = str(booking.agent_id)  # type: ignore
                    logger.warning(f"🛠 Auto-Patching commission for booking {bid}")
-                   commission_service.record_commission(db, bid, booking.agent_id)
+                   commission_service.record_commission(db, bid, agent_id)
         else:
             logger.info("✅ Commission Integrity Audit: Healthy (Zero Leakage).")
             

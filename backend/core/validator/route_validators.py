@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
+from typing import List, TYPE_CHECKING, Union
 from datetime import datetime, timedelta
 
 from database.models import Segment
@@ -23,8 +23,10 @@ class RouteValidator:
             if not self.validate_transfer_time(transfer, constraints):
                 return False
         if constraints.women_safety_priority:
-            for station_id in route.get_all_stations():
-                if not self._is_safe_station(station_id):
+            for segment in route.segments:
+                if not self._is_safe_station(segment.departure_stop_id):
+                    return False
+                if not self._is_safe_station(segment.arrival_stop_id):
                     return False
         return True
 
@@ -49,7 +51,7 @@ class RouteValidator:
             if prev.arrival_stop_id != nxt.departure_stop_id:
                 if not self.check_missing_stop_link(prev.arrival_stop_id, nxt.departure_stop_id):
                     return False
-            if prev.arrival_time > nxt.departure_time:
+            if self._normalize_datetime(prev.arrival_time) > self._normalize_datetime(nxt.departure_time):
                 return False
         return True
 
@@ -76,9 +78,27 @@ class RouteValidator:
         finally:
             session.close()
 
-    def _is_night_layover(self, arrival_time: datetime, departure_time: datetime) -> bool:
+    def _normalize_datetime(self, value: Union[datetime, str]) -> datetime:
+        """Normalize a datetime or ISO/time string to a datetime object."""
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                if ":" in value and "-" not in value:
+                    return datetime.fromisoformat(value)
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    return datetime.fromisoformat(value[:19])
+                except Exception:
+                    return datetime.utcnow()
+        return datetime.utcnow()
+
+    def _is_night_layover(self, arrival_time: Union[datetime, str], departure_time: Union[datetime, str]) -> bool:
         """Check if the layover occurs at night."""
-        return arrival_time.hour < 6 or departure_time.hour < 6
+        arrival_dt = self._normalize_datetime(arrival_time)
+        departure_dt = self._normalize_datetime(departure_time)
+        return arrival_dt.hour < 6 or departure_dt.hour < 6
 
     def _is_safe_station(self, station_id: int) -> bool:
         """Check if the station is safe."""
@@ -102,8 +122,8 @@ class RouteValidator:
                 transfer = route.transfers[i]
                 nxt_segment = route.segments[i+1]
                 
-                actual_arrival = segment.arrival_time + current_delay
-                if actual_arrival + timedelta(minutes=transfer.duration_minutes) > nxt_segment.departure_time:
+                actual_arrival = self._normalize_datetime(segment.arrival_time) + current_delay
+                if actual_arrival + timedelta(minutes=transfer.duration_minutes) > self._normalize_datetime(nxt_segment.departure_time):
                     # Delay exceeded transfer window
                     return False
         return True

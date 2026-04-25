@@ -110,9 +110,12 @@ def _load_session(session_id: str, user_id: Optional[str] = None) -> Dict[str, A
     if redis_client:
         try:
             raw = redis_client.get(_session_key(session_id))
-            if raw: 
-                session_data = json.loads(raw)
-                return session_data
+            if raw:
+                raw_payload = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                # Only pass to json.loads if it's a str, bytes, or bytearray
+                if isinstance(raw_payload, (str, bytes, bytearray)):
+                    session_data = json.loads(raw_payload)
+                    return session_data
         except Exception as e:
             logger.warning(f"Redis session load failed: {e}")
     
@@ -153,7 +156,7 @@ async def call_openrouter_api(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         )
         return response.json()
 
-def generate_response(intent: str, message: str, session_data: Dict[str, Any], entities: Dict[str, Any] = None) -> ChatResponse:
+def generate_response(intent: str, message: str, session_data: Dict[str, Any], entities: Optional[Dict[str, Any]] = None) -> ChatResponse:
     reply = f"Detected intent: {intent}. How can I help?"
     actions = []
     entities = entities or {}
@@ -165,20 +168,22 @@ def generate_response(intent: str, message: str, session_data: Dict[str, Any], e
     if intent == 'search': 
         source = merged_entities.get("source")
         dest = merged_entities.get("destination")
+        source_text = source if isinstance(source, str) else None
+        dest_text = dest if isinstance(dest, str) else None
         
         # Task 2.5: Resolve stations to confirm corrections
         from services.station_search_service import station_search_engine
         
-        src_resolved = station_search_engine.resolve(source) if source else None
-        dst_resolved = station_search_engine.resolve(dest) if dest else None
+        src_resolved = station_search_engine.resolve(source_text) if source_text else None
+        dst_resolved = station_search_engine.resolve(dest_text) if dest_text else None
         
         if src_resolved and dst_resolved:
             # Task 2.5: Build confirmation message
             confirmations = []
-            if source.upper() != src_resolved.code and source.upper() != src_resolved.name.upper():
-                confirmations.append(f"'{source}' to {src_resolved.name} ({src_resolved.code})")
-            if dest.upper() != dst_resolved.code and dest.upper() != dst_resolved.name.upper():
-                confirmations.append(f"'{dest}' to {dst_resolved.name} ({dst_resolved.code})")
+            if source_text and source_text.upper() != src_resolved.code and source_text.upper() != src_resolved.name.upper():
+                confirmations.append(f"'{source_text}' to {src_resolved.name} ({src_resolved.code})")
+            if dest_text and dest_text.upper() != dst_resolved.code and dest_text.upper() != dst_resolved.name.upper():
+                confirmations.append(f"'{dest_text}' to {dst_resolved.name} ({dst_resolved.code})")
             
             correction_text = f" (Correcting {' & '.join(confirmations)})" if confirmations else ""
             
@@ -291,8 +296,9 @@ async def chat_message(
     else:
         # Task 2.7: Intent-to-Action Mapping
         from services.chat_action_dispatcher import chat_dispatcher
-        action_entities = local_intent.get("entities") if local_intent else extracted
-        action_result = await chat_dispatcher.dispatch(intent, action_entities or {}, db, user)
+        action_entities_raw = local_intent.get("entities") if local_intent else extracted
+        action_entities = action_entities_raw if isinstance(action_entities_raw, dict) else {}
+        action_result = await chat_dispatcher.dispatch(intent, action_entities, db, user)
         
         response_obj = generate_response(intent, chat_req.message, session, entities=action_entities)
         
@@ -300,17 +306,21 @@ async def chat_message(
         if action_result:
             response_obj.reply = f"{action_result}\n\n{response_obj.reply}"
 
-    # Subtask 8.4 & 8.7: Record Intent & Latency
-    intent_log = AIIntentLog(
-        query=chat_req.message,
-        matched_intent=response_obj.intent,
-        confidence=response_obj.confidence or 0.0,
-        intent_latency_ms=int(intent_latency),
-        llm_latency_ms=int(llm_latency),
-        timestamp=datetime.utcnow()
-    )
-    db.add(intent_log)
-    db.commit()
+    # [Task 4.8] Self-Healing: Shed non-critical intent logs during DB stress
+    db_mode = cache_service.get("DB:OPERATION_MODE")
+    if db_mode != "READ_ONLY":
+        intent_log = AIIntentLog(
+            query=chat_req.message,
+            matched_intent=response_obj.intent,
+            confidence=response_obj.confidence or 0.0,
+            intent_latency_ms=int(intent_latency),
+            llm_latency_ms=int(llm_latency),
+            timestamp=datetime.utcnow()
+        )
+        db.add(intent_log)
+        db.commit()
+    else:
+        logger.warning("🛡️ [DB_SENTINEL] Load Shedding: Skipping AIIntentLog during DB Saturation.")
 
     session["messages"].append({"role": "user", "content": chat_req.message})
     session["messages"].append({"role": "assistant", "content": response_obj.reply})
@@ -321,6 +331,21 @@ async def chat_message(
 @router.get("/history")
 async def get_history(session_id: str, db: Session = Depends(get_db)):
     return {"messages": _load_session(session_id)["messages"]}
+
+@router.delete("/history")
+async def delete_history(session_id: str, db: Session = Depends(get_db)):
+    """Clear chat history for a session."""
+    redis_client = _get_redis()
+    if redis_client:
+        try:
+            redis_client.delete(_session_key(session_id))
+        except Exception as e:
+            logger.warning(f"Failed to delete session from Redis: {e}")
+            
+    if session_id in _local_sessions:
+        del _local_sessions[session_id]
+        
+    return {"status": "success", "message": "History cleared"}
 
 
 def count_tokens(text: str) -> int:

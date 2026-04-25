@@ -5,6 +5,7 @@ Handles load balancing between multiple UPI handles and daily volume resets.
 
 import logging
 from datetime import datetime
+from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database.models import MerchantVPA, AuditLog
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class PaymentVPAService:
     @staticmethod
-    def get_next_vpa(db: Session) -> str:
+    def get_next_vpa(db: Session) -> Optional[str]:
         """
         [1.2] Weighted Selection: Pick the active VPA with the lowest current volume.
         [1.4] Health-Aware: Only picks is_active=True.
@@ -37,12 +38,12 @@ class PaymentVPAService:
         """[1.5] Persists usage volume to the merchant."""
         merchant = db.query(MerchantVPA).filter(MerchantVPA.vpa == vpa).first()
         if merchant:
-            merchant.current_daily_volume += amount
-            merchant.last_volume_update = datetime.utcnow()
+            merchant.current_daily_volume += amount  # type: ignore
+            merchant.last_volume_update = datetime.utcnow()  # type: ignore
             db.commit()
 
     @staticmethod
-    def add_transaction(db: Session, booking_id: str, utr: str, amount: float, source_vpa: str = None):
+    def add_transaction(db: Session, booking_id: str, utr: str, amount: float, source_vpa: Optional[str] = None):
         """
         [24.2] Appends a transaction to history.
         [24.6] Checks if total amount met for VERIFIED state.
@@ -56,10 +57,10 @@ class PaymentVPAService:
         history.append({
             "utr": utr,
             "amount": amount,
-            "source_vpa": source_vpa,
+            "source_vpa": source_vpa or "",
             "timestamp": datetime.utcnow().isoformat()
         })
-        booking.transaction_history = history
+        booking.transaction_history = history  # type: ignore
         
         # 2. Sum up total received
         total_received = sum(t["amount"] for t in history)

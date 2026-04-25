@@ -86,7 +86,7 @@ class NexusIOGate:
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception as e:
-            logger.error(f"[NEXUS:{request_id}] Unhandled Engine Error: {e}")
+            logger.error(f"[NEXUS:{request_id}] Unhandled Engine Error: {e}", exc_info=True)
             from core.exceptions import handle_engine_crash
             # Note: handle_engine_crash must return a starlette Response
             response = await handle_engine_crash(e)

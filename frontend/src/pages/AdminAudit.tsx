@@ -83,28 +83,28 @@ export default function AdminAudit() {
 
   const loadSOS = async () => {
     try {
-      const res = await fetchWithAuth("/admin/security/sos-incidents");
+      const res = await fetchWithAuth("/v2/admin/security/sos-incidents");
       setSosIncidents(await res.json());
     } catch (e) { console.error("SOS error"); }
   };
 
   const loadHighRisk = async () => {
     try {
-      const res = await fetchWithAuth("/admin/security/high-risk-users");
+      const res = await fetchWithAuth("/v2/admin/security/high-risk-users");
       setHighRiskUsers(await res.json());
     } catch (e) { console.error("Risk error"); }
   };
 
   const refreshLogs = async () => {
     try {
-      const res = await fetchWithAuth("/admin/audit/logs");
+      const res = await fetchWithAuth("/v2/admin/audit/logs");
       setLogs(await res.json());
     } catch (e) { console.error("Audit refresh error"); }
   };
 
   const refreshSessions = async () => {
     try {
-      const res = await fetchWithAuth("/admin/sessions");
+      const res = await fetchWithAuth("/v2/admin/sessions");
       setSessions(await res.json());
     } catch (e) { console.error("Session refresh error"); }
   };
@@ -112,7 +112,7 @@ export default function AdminAudit() {
   const revokeSession = async (id: string) => {
     if (!confirm("Terminate this administrative session immediately?")) return;
     try {
-      await fetchWithAuth(`/admin/sessions/${id}/revoke`, { method: "POST" });
+      await fetchWithAuth(`/v2/admin/sessions/${id}/revoke`, { method: "POST" });
       toast.success("Session terminated.");
       refreshSessions();
     } catch (e) { toast.error("Termination failed"); }

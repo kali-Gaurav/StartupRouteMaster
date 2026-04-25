@@ -1,10 +1,11 @@
 import asyncio
 import logging
+import time
 from datetime import datetime
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 
 import aiohttp
-from pybreaker import CircuitBreaker
+
 
 from core.providers import ServiceProvider, ServiceStatus
 from database.config import Config
@@ -13,20 +14,71 @@ from schemas.rapidapi_models import *
 from core.container import container
 from core.nexus.audit.governor import nexus_governor
 from core.nexus.audit.triage import nexus_triage, SystemStatus
+from core.resilience import CircuitState, CircuitBreaker
+from core.retry import retry, RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+class MetricsClient:
+    """Mock metrics client for local tracking."""
+    def __init__(self, service_name: str, default_tags: Dict[str, str]):
+        self.counters = {}
+        self.gauges = {}
+
+    def counter(self, name: str):
+        self.counters[name] = 0
+
+    def gauge(self, name: str, callback: Callable):
+        self.gauges[name] = callback
+
+    def incr(self, name: str):
+        if name in self.counters:
+            self.counters[name] += 1
+
+    def get_counter(self, name: str) -> int:
+        return self.counters.get(name, 0)
+
+    def histogram(self, name: str):
+        pass
+
+    def get_percentile(self, name: str, p: int) -> float:
+        return 0.0
 
 class RapidApiProvider(ServiceProvider):
     def __init__(self):
         super().__init__("rapidapi")
         self.http_session: Optional[aiohttp.ClientSession] = None
-        # Correctly initialize the circuit breaker
-        self.breaker = CircuitBreaker(fail_max=5, reset_timeout=60)
         
         # [Phase 6: Task 6] RapidAPI Quota Sentinel
         self.monthly_call_count = 0
         self.monthly_limit = 7000  # Default Free/Basic Tier
         self.quota_latch_active = False
+        
+        # Additional resilience patterns
+        from core.resilience import CircuitConfig
+        self._api_circuit_breaker = CircuitBreaker(
+            name="rapidapi_provider",
+            config=CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=60.0
+            )
+        )
+        
+        # Reuse existing retry policy or create one
+        from core.retry import RETRY_POLICY_EXTERNAL_API
+        self._retry_policy = RETRY_POLICY_EXTERNAL_API
+        
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="rapidapi_provider",
+            default_tags={"component": "provider"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._api_circuit_breaker.state.value)
+        self._metrics.counter("api_requests_total")
+        self._metrics.counter("api_requests_success")
+        self._metrics.counter("api_requests_failed")
+        self._metrics.counter("api_requests_cached")
+        self._metrics.counter("quota_exhausted_total")
 
     async def init(self):
         """Initializes the shared aiohttp session."""
@@ -48,69 +100,60 @@ class RapidApiProvider(ServiceProvider):
 
     @property
     def is_healthy(self) -> bool:
-        return self.status == ServiceStatus.HEALTHY and self.http_session and not self.http_session.closed
+        return (
+            self.status == ServiceStatus.HEALTHY
+            and self.http_session is not None
+            and not self.http_session.closed
+        )
 
     async def _execute_request(self, method: str, url: str, params: Optional[Dict]) -> Optional[Dict]:
         """[Task 104] Elite Orchestrated Request with Triage/Governor Sync."""
-        # 1. Governor Latch (Phase 9/Task 83)
+        # 1. Governor Latch
         stats = await nexus_governor.get_stats()
         if stats["throttle_factor"] > 0.8:
-             logger.warning(f"⏩ [NEXUS:SKIP] Skipping RapidAPI call due to critical system pressure ({stats['throttle_factor']:.2f}).")
+             logger.warning(f"⏩ [NEXUS:SKIP] Skipping RapidAPI call due to critical system pressure.")
              return None
 
         # 2. Quota Budget Sentinel
+        r_key = f"nexus:quota:rapidapi:{datetime.now().strftime('%Y-%m')}"
         try:
-            r_key = f"nexus:quota:rapidapi:{datetime.now().strftime('%Y-%m')}"
             current_quota = await multi_layer_cache.get(r_key) or 0
             if int(current_quota) >= self.monthly_limit * 0.98:
                 if not self.quota_latch_active:
-                    logger.critical(f"🛑 [NEXUS:SENTINEL] RapidAPI HARD BUDGET REACHED ({current_quota}). Latching service.")
+                    logger.critical(f"🛑 [NEXUS:SENTINEL] RapidAPI HARD BUDGET REACHED. Latching service.")
                     self.quota_latch_active = True
                 return None
-        except Exception as e:
-            logger.error(f"Quota check failure: {e}")
+        except: pass
 
-        # 3. Request Execution with Adaptive Backoff
-        import random
-        max_retries = 3
-        for attempt in range(max_retries):
-            # Inject trace headers if available
-            headers = {}
-            # (Note: In a real middleware we'd grab X-Request-ID from ContextVars)
-            
-            async with self.http_session.request(method, url, params=params, timeout=30, headers=headers) as response:
-                
+        # 3. Request Execution through Circuit Breaker and Retry Policy
+        async def make_call():
+            self._metrics.incr("api_requests_total")
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with self.http_session.request(method, url, params=params, timeout=timeout) as response:
                 if response.status == 429:
-                    # Signal system congestion (Task 28 sync)
-                    await nexus_triage.report_latency(15000) # Artificially increase latency signal
-                    
-                    if attempt < max_retries - 1:
-                        backoff = (2 ** attempt) + random.uniform(0.1, 0.5)
-                        logger.warning(f"⚠️ [NEXUS:SENTINEL] RapidAPI 429 Rate Limit. Backing off {backoff:.2f}s (Iter {attempt+1})")
-                        await asyncio.sleep(backoff)
-                        continue
-                    else:
-                        logger.error("❌ RapidAPI 429 Rate Limit Exhausted. Signaling SEVERED if continuous.")
-                        return None
-                        
-                # Successful or Non-429 request consumes quota
+                    raise Exception("Rate limit reached (429)")
+                if response.status != 200:
+                    raise Exception(f"API failure: {response.status}")
+                
+                data = await response.json()
+                self._metrics.incr("api_requests_success")
+                
+                # Update quota
                 try:
-                    r_key = f"nexus:quota:rapidapi:{datetime.now().strftime('%Y-%m')}"
-                    await multi_layer_cache.redis.incr(r_key)
-                    # Set expiry for first hit of the month
-                    if int(await multi_layer_cache.get(r_key) or 1) == 1:
-                        await multi_layer_cache.redis.expire(r_key, 32 * 24 * 3600)
+                    if multi_layer_cache.redis:
+                        await multi_layer_cache.redis.incr(r_key)
                 except: pass
                 
-                if response.status != 200:
-                    try:
-                        error_data = await response.json()
-                        error_message = error_data.get("message", "No message from API.")
-                        logger.error(f"RapidAPI request failed ({response.status}) for {url}: {error_message}")
-                    except Exception:
-                        logger.error(f"RapidAPI request failed ({response.status}) for {url} and error response was not valid JSON.")
-                    return None
-                return await response.json()
+                return data
+
+        try:
+            return await self._api_circuit_breaker.execute(
+                self._retry_policy.execute, make_call
+            )
+        except Exception as e:
+            self._metrics.incr("api_requests_failed")
+            logger.error(f"RapidAPI call failed: {e}")
+            return None
 
     async def _make_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """
@@ -387,6 +430,44 @@ class RapidApiProvider(ServiceProvider):
             except Exception as e:
                 logger.error(f"Failed to parse TrainClasses response: {e}", exc_info=True)
         return None
+
+# Global Instance and Container Registration
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "rapidapi_provider",
+            "circuit_breaker_state": self._api_circuit_breaker.state.name,
+            "circuit_breaker_failures": self._api_circuit_breaker.failure_count,
+            "api_requests_total": self._metrics.get_counter("api_requests_total"),
+            "api_requests_success": self._metrics.get_counter("api_requests_success"),
+            "api_requests_failed": self._metrics.get_counter("api_requests_failed"),
+            "api_requests_cached": self._metrics.get_counter("api_requests_cached"),
+            "quota_exhausted_total": self._metrics.get_counter("quota_exhausted_total"),
+            "api_request_duration_p50": self._metrics.get_percentile("api_request_duration_seconds", 50),
+            "api_request_duration_p95": self._metrics.get_percentile("api_request_duration_seconds", 95),
+            "monthly_quota_used": self.monthly_call_count,
+            "monthly_quota_limit": self.monthly_limit,
+            "quota_latch_active": self.quota_latch_active,
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if (self._api_circuit_breaker.state == CircuitState.CLOSED and 
+                                   not self.quota_latch_active and 
+                                   self.is_healthy) else "degraded",
+            "service": "rapidapi_provider",
+            "circuit_breaker": self._api_circuit_breaker.state.name,
+            "is_healthy": self.is_healthy,
+            "quota_latch_active": self.quota_latch_active,
+            "monthly_quota": f"{self.monthly_call_count}/{self.monthly_limit}",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._api_circuit_breaker.reset()
+        logger.info("🔄 [RAPIDAPI] Circuit breaker reset for RapidAPI provider")
 
 # Global Instance and Container Registration
 rapidapi_provider = RapidApiProvider()

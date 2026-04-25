@@ -23,7 +23,7 @@ from schemas.rapidapi_models import (
     TrainsByStation, LiveStatus, LiveStation
 )
 from utils.rate_limiter import RedisTokenBucket
-from core.redis import async_redis_client
+from core.redis_client import async_redis_client
 
 logger = logging.getLogger("provider.rapidapi")
 
@@ -131,14 +131,15 @@ class RapidApiClient(BaseProviderClient):
             return to_unified_availability_list(data, train_number, travel_date, from_station_code, to_station_code)
         return None
 
-    async def get_schedule(self, train_number: str, **kwargs) -> Optional[UnifiedSchedule]:
+    async def get_schedule(self, train_number: str, **kwargs) -> Optional[Dict[str, Any]]:
         """Fetches train schedule and transforms it."""
         endpoint = "/api/v1/getTrainSchedule"
         params = {"trainNo": train_number}
         
         data = await self._make_request("GET", endpoint, params)
         if data and data.get("status"):
-            return to_unified_schedule(data)
+            unified = to_unified_schedule(data)
+            return unified.model_dump() if unified else None
         return None
 
     # --- Additional Standard Provider Methods ---

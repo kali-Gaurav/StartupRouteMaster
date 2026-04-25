@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 from app import app
 from database import get_db
-from models import StationMaster
+from database.models import StationMaster
 from services.cache_service import CacheService
 
 client = TestClient(app)

@@ -144,6 +144,22 @@ class SnapshotManager:
         if multi_layer_cache.redis:
             await multi_layer_cache.redis.delete(f"graph:snapshot:{date_str}")
 
+    async def get_latest_snapshot_fallback(self) -> Optional[StaticGraphSnapshot]:
+        """[SWR Core] Fetches the most recent snapshot from disk to enable Stale-While-Revalidate."""
+        files = await self.list_snapshots()
+        if not files:
+            return None
+            
+        # Sort descending by date (graph_snapshot_YYYYMMDD.pkl)
+        files.sort(reverse=True)
+        try:
+            date_str = files[0].split("_")[-1].split(".")[0]
+            date_obj = datetime.strptime(date_str, "%Y%m%d")
+            return await self.load_snapshot(date_obj)
+        except Exception as e:
+            logger.error(f"Failed to load latest fallback snapshot: {e}")
+            return None
+
     async def purge_old_snapshots(self, keep_days: int = 2):
         """
         Subtask 5.6: Automated Snapshot Eviction.

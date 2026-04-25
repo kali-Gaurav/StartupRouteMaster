@@ -20,8 +20,8 @@ async def load_route_engine():
     """JIT Loader for Route Engine."""
     from core.route_engine import route_engine
     logger.info("🧠 JIT: Initializing Railway Route Engine...")
-    if hasattr(route_engine, '_ensure'):
-        route_engine._ensure()
+    if hasattr(route_engine, 'init'):
+        await route_engine.init()
 
 async def load_ml_models():
     """JIT Loader for ML Models."""

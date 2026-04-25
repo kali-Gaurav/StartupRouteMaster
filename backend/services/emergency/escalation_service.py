@@ -3,10 +3,11 @@ import logging
 import os
 import shutil
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
-from api.sos import get_all_sos, _save_event, _load_event
+from typing import Dict, Any, List, Optional
+import api.sos as sos_api
 from services.emergency.dispatch_service import dispatch_service
 from api.websockets import manager
+from database.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,23 @@ class EscalationService:
         - 24 hours: 'Soft-Scrub' (Clear PII, keep metadata).
         - 30 days: 'Hard-Delete' (Complete removal).
         """
-        from api.sos import get_all_sos, _redis, SOS_KEY_PREFIX, SOS_INDEX_KEY, _save_event
-        all_events = await get_all_sos()
+        from api.sos import SOS_KEY_PREFIX, SOS_INDEX_KEY, PNR_REGISTRY_KEY, MEDIA_DIR
+        from database.session import SessionLocal
+        from database.models import SOSEvent
+        import redis
+        
+        db = SessionLocal()
+        all_events = await sos_api.get_all_sos(db)
         now = datetime.utcnow()
         hard_delete_threshold = now - timedelta(days=days)
         soft_scrub_threshold = now - timedelta(hours=24)
+        
+        # Get Redis connection for cleanup
+        try:
+            from database.config import Config
+            sync_redis = redis.from_url(Config.REDIS_URL)
+        except:
+            sync_redis = None
         
         purged_count = 0
         scrubbed_count = 0
@@ -74,20 +87,18 @@ class EscalationService:
                 logger.info(f"♻️ [HARD DELETE] Decisively wiping all data for incident {eid}")
                 
                 # A. Redis Cleanup
-                if _redis:
+                if sync_redis:
                     try:
-                        await _redis.delete(f"{SOS_KEY_PREFIX}{eid}")
-                        await _redis.srem(SOS_INDEX_KEY, eid)
+                        sync_redis.delete(f"{SOS_KEY_PREFIX}{eid}")
+                        sync_redis.srem(SOS_INDEX_KEY, eid)
                         # Clear PNR registry
                         trip = event.get("trip")
                         if trip and isinstance(trip, dict) and trip.get("pnr_number"):
-                            from api.sos import PNR_REGISTRY_KEY
-                            await _redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
+                            sync_redis.hdel(PNR_REGISTRY_KEY, str(trip.get("pnr_number")))
                     except Exception as e:
                         logger.error(f"Redis cleanup failed for {eid}: {e}")
                 
                 # B. Media Cleanup (Task 35)
-                from api.sos import MEDIA_DIR
                 media_path = os.path.join(MEDIA_DIR, str(eid))
                 if os.path.exists(media_path):
                     try:
@@ -96,10 +107,14 @@ class EscalationService:
                     except Exception as e:
                         logger.error(f"Media deletion failed for {eid}: {e}")
                 
-                # C. Local Memory cleanup (Safe filter instead of pop)
-                from api.sos import _local_events
-                # We update the list by filtering out the ID
-                _local_events[:] = [e for e in _local_events if e.get('id') != eid]
+                # C. Database cleanup (delete SOSEvent record)
+                try:
+                    sos_record = db.query(SOSEvent).filter(SOSEvent.id == eid).first()
+                    if sos_record:
+                        db.delete(sos_record)
+                except Exception as e:
+                    logger.error(f"Database cleanup failed for {eid}: {e}")
+                
                 purged_count += 1
                 
             # 2. Soft Scrub (> 24 hours) - Task 41
@@ -121,8 +136,15 @@ class EscalationService:
                 event["extra"] = "[DATA_REDACTED_FOR_PRIVACY]"
                 event["privacy_status"] = "scrubbed"
                 
-                _save_event(event)
+                await sos_api._save_event_async(event, db)
                 scrubbed_count += 1
+        
+        try:
+            db.commit()
+        except:
+            db.rollback()
+        finally:
+            db.close()
         
         if purged_count > 0 or scrubbed_count > 0:
             logger.info(f"✅ [PRIVACY] Scoped operations: Hard-deleted {purged_count}, Soft-scrubbed {scrubbed_count}.")
@@ -132,8 +154,7 @@ class EscalationService:
         Task 38: Dynamic Escalation Profiler.
         Calculates timeout based on Time, Priority, and Category.
         """
-        from api.sos import get_all_sos
-        all_events = await get_all_sos()
+        all_events = await sos_api.get_all_sos()
         now = datetime.utcnow()
         
         for event in all_events:
@@ -196,8 +217,10 @@ class EscalationService:
         
         # 3. Persist & Broadcast
         try:
-            from api.sos import _save_event
-            _save_event(event)
+            db = SessionLocal()
+            await sos_api._save_event_async(event, db)
+            db.commit()
+            db.close()
             await manager.broadcast_sos(event)
             logger.info(f"✅ [ESCALATION] Incident {event_id} escalated to Level 3.")
         except Exception as e:

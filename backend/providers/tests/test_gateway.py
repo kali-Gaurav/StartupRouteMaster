@@ -9,12 +9,12 @@ import pickle
 import httpx # To mock specific exceptions like HTTPStatusError
 
 # --- Import necessary modules ---
-from backend.providers.gateway import ProviderGateway, CircuitBreakerOpenError
-from backend.providers.models import UnifiedLiveStatus
-from backend.providers.clients.rapidapi import RapidApiClient, to_unified_live_status as rapidapi_to_unified
-from backend.providers.clients.ntes_scraper import NtesScraperClient, to_unified_live_status as ntes_to_unified
-from backend.providers.config import DEFAULT_TIMEOUT
-from backend.providers.circuit_breaker import AsyncCircuitBreaker, CircuitBreakerOpenError
+from providers.gateway import ProviderGateway, CircuitBreakerOpenError
+from providers.models import UnifiedLiveStatus
+from providers.clients.rapidapi import RapidApiClient, to_unified_live_status as rapidapi_to_unified
+from providers.clients.ntes_scraper import NtesScraperClient, to_unified_live_status as ntes_to_unified
+from providers.config import DEFAULT_TIMEOUT
+from providers.circuit_breaker import AsyncCircuitBreaker, CircuitBreakerOpenError
 from services.multi_layer_cache import MultiLayerCache # Import for patching
 
 # --- Constants for testing ---
@@ -26,10 +26,12 @@ TEST_CACHE_KEY = f"live_status:{TEST_TRAIN_NUMBER}"
 @pytest.fixture
 def gateway():
     """Provides a fresh ProviderGateway instance for each test, with mocked dependencies."""
-    with patch('backend.providers.gateway.RapidApiClient') as MockRapidApiClient, 
-         patch('backend.providers.gateway.NtesScraperClient') as MockNtesScraperClient, 
-         patch('backend.providers.gateway.multi_layer_cache') as MockCacheSystem, 
-         patch('backend.providers.gateway.AsyncCircuitBreaker') as MockAsyncCircuitBreaker: # Mock breakers to control state
+    with (
+        patch('backend.providers.gateway.RapidApiClient') as MockRapidApiClient,
+        patch('backend.providers.gateway.NtesScraperClient') as MockNtesScraperClient,
+        patch('backend.providers.gateway.multi_layer_cache') as MockCacheSystem,
+        patch('backend.providers.gateway.AsyncCircuitBreaker') as MockAsyncCircuitBreaker,
+    ):  # Mock breakers to control state
         
         mock_rapid_api_client_instance = MockRapidApiClient.return_value
         mock_ntes_client_instance = MockNtesScraperClient.return_value
@@ -68,9 +70,9 @@ async def test_gateway_initialization():
     assert gateway.rapidapi_breaker is not None
     assert gateway.ntes_breaker is not None
     
-    from backend.providers.clients.rapidapi import RapidApiClient
-    from backend.providers.clients.ntes_scraper import NtesScraperClient
-    from backend.providers.circuit_breaker import AsyncCircuitBreaker
+    from providers.clients.rapidapi import RapidApiClient
+    from providers.clients.ntes_scraper import NtesScraperClient
+    from providers.circuit_breaker import AsyncCircuitBreaker
     
     assert isinstance(gateway.rapidapi_client, RapidApiClient)
     assert isinstance(gateway.ntes_client, NtesScraperClient)
@@ -186,9 +188,10 @@ async def test_get_live_status_failover_to_ntes(gateway, mock_cache_instance, mo
 
         mock_fetch_with_retries.side_effect = fetch_side_effect
 
-        with patch('backend.providers.gateway.rapidapi_to_unified', mock_rapidapi_transformer), 
-             patch('backend.providers.gateway.ntes_to_unified', mock_ntes_transformer):
-            
+        with (
+            patch('backend.providers.gateway.rapidapi_to_unified', mock_rapidapi_transformer),
+            patch('backend.providers.gateway.ntes_to_unified', mock_ntes_transformer),
+        ):
             result = await gateway.get_live_status(TEST_TRAIN_NUMBER, TEST_TRAIN_DATE)
 
             # Verify result
@@ -232,9 +235,10 @@ async def test_get_live_status_both_providers_fail(gateway, mock_cache_instance,
 
     # Patch _fetch_with_retries to always return None for both calls
     with patch.object(gateway, '_fetch_with_retries', return_value=None) as mock_fetch_with_retries:
-        with patch('backend.providers.gateway.rapidapi_to_unified', mock_rapidapi_transformer), 
-             patch('backend.providers.gateway.ntes_to_unified', mock_ntes_transformer):
-            
+        with (
+            patch('backend.providers.gateway.rapidapi_to_unified', mock_rapidapi_transformer),
+            patch('backend.providers.gateway.ntes_to_unified', mock_ntes_transformer),
+        ):
             result = await gateway.get_live_status(TEST_TRAIN_NUMBER, TEST_TRAIN_DATE)
 
             # Verify result is None

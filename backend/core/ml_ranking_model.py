@@ -82,7 +82,10 @@ class RouteRankingModel:
             scored.append(await _score(r))
 
         # sort by ml_score descending (fallback to existing `reliability`)
-        scored.sort(key=lambda x: getattr(x, "ml_score", x.get("ml_score", 0.0)) if isinstance(x, (dict, object)) else 0.0, reverse=True)
+        scored.sort(
+            key=lambda x: x["ml_score"] if isinstance(x, dict) else getattr(x, "ml_score", 0.0),
+            reverse=True
+        )
         return scored
 
 

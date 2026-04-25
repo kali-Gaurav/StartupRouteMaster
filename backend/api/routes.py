@@ -13,7 +13,8 @@ from schemas import RouteDetailSchema, UserRead
 from database.models import Route as RouteModel, User, Stop, PrecalculatedRoute
 from services.unlock_service import UnlockService
 from services.search_service import SearchService
-from core.redis import async_redis_client # Added for async cache access
+from services.multi_layer_cache import multi_layer_cache
+from utils.responses import v3_response, success_response
 
 router = APIRouter(prefix="/routes", tags=["routes"])
 logger = logging.getLogger(__name__)
@@ -72,16 +73,14 @@ async def get_route_details(
     Upgraded to handle modern journey format (rt_) and legacy PrecalculatedRoute database entries.
     """
     try:
-        unlock_service = UnlockService(db)
-        is_unlocked = await unlock_service.is_route_unlocked(user_id=str(current_user.id), route_id=route_id)
+        is_unlocked = UnlockService.is_route_unlocked(db, str(current_user.id), route_id)
 
         # 1. Modern journey_id (cache-based) lookup
         if route_id.startswith("rt_"):
             # Attempt to pull from Redis cache if it's a recent search
             try:
-                cached_data = await async_redis_client.get(f"journey:{route_id}")
-                if cached_data:
-                    journey = json.loads(cached_data)
+                journey = await multi_layer_cache.get(f"journey:{route_id}")
+                if journey:
                     return RouteDetailSchema(
                         id=route_id,
                         source=journey.get("source", "Unknown"),
@@ -113,15 +112,15 @@ async def get_route_details(
         # Convert PrecalculatedRoute to RouteDetailSchema and add is_unlocked status
         # Since PrecalculatedRoute lacks budget_category and num_transfers, supply defaults
         route_details = RouteDetailSchema(
-            id=route_model.id,
-            source=route_model.source,
-            destination=route_model.destination,
-            segments=route_model.segments or [],
-            total_duration=route_model.total_duration or "0",
-            total_cost=route_model.total_cost or 0.0,
+            id=route_model.id,  # type: ignore
+            source=route_model.source,  # type: ignore
+            destination=route_model.destination,  # type: ignore
+            segments=route_model.segments or [],  # type: ignore
+            total_duration=route_model.total_duration or "0",  # type: ignore
+            total_cost=route_model.total_cost or 0.0,  # type: ignore
             budget_category="standard",
-            num_transfers=len(route_model.segments or []) - 1 if route_model.segments else 0,
-            created_at=route_model.created_at or datetime.utcnow(),
+            num_transfers=len(route_model.segments or []) - 1 if route_model.segments else 0,  # type: ignore
+            created_at=route_model.created_at or datetime.utcnow(),  # type: ignore
             is_unlocked=is_unlocked
         )
 
@@ -155,18 +154,16 @@ async def verify_journey_seats(
     
     try:
         # Get journey from cache
-        cached_data = await async_redis_client.get(f"journey:{route_id}")
-        if not cached_data:
+        journey = await multi_layer_cache.get(f"journey:{route_id}")
+        if not journey:
             raise HTTPException(status_code=404, detail="Journey not found. Please search again.")
-        
-        journey = json.loads(cached_data)
         
         # Verify seats and get live fares
         seat_svc = SeatVerificationService()
         is_available = await seat_svc.verify_journey(journey)
         
         # Update cache with verification results
-        await async_redis_client.set(f"journey:{route_id}", json.dumps(journey), ex=3600)
+        await multi_layer_cache.put(f"journey:{route_id}", journey, ttl=3600)
         
         return {
             "journey_id": route_id,

@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, cast
 from sqlalchemy.orm import Session
 from database.models import Stop
 from utils.geo_utils import haversine_distance
@@ -25,7 +25,8 @@ class StationClusterManager:
     def get_nearby_stations(self, stop_id: int) -> List[Tuple[int, float]]:
         """Finds all stations within the cluster radius."""
         target = self.db.query(Stop).filter(Stop.id == stop_id).first()
-        if not target or not target.latitude: return []
+        if target is None or target.latitude is None or target.longitude is None:
+            return []
         
         # In production, use spatial index (PostGIS/R-Tree). 
         # For now, we do a bounded search or simple scan for demo.
@@ -34,10 +35,16 @@ class StationClusterManager:
         nearby = []
         
         for s in all_stops:
-            if s.id == stop_id: continue
-            if not s.latitude: continue
+            if int(cast(int, s.id)) == stop_id: continue
+            if s.latitude is None or s.longitude is None:
+                continue
             
-            dist = haversine_distance(target.latitude, target.longitude, s.latitude, s.longitude)
+            dist = haversine_distance(
+                float(cast(float, target.latitude)),
+                float(cast(float, target.longitude)),
+                float(cast(float, s.latitude)),
+                float(cast(float, s.longitude)),
+            )
             if dist <= self.CLUSTER_RADIUS_KM:
                 nearby.append((s.id, dist))
                 
@@ -57,12 +64,17 @@ class StationClusterManager:
             
             tr = TransferConnection(
                 station_id=near_id,
+                station_code=str(near_id),
                 arrival_time=arrival_time,
                 departure_time=earliest_dep,
                 duration_minutes=walking_min,
                 station_name=f"Walk to {near_id}", # Real name in prod
                 facilities_score=0.0,
-                safety_score=50.0
+                safety_score=50.0,
+                platform_from=None,
+                platform_to=None,
+                is_multi_station=False,
+                transfer_type="WALK"
             )
             walking_transfers.append(tr)
             

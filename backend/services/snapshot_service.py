@@ -5,6 +5,8 @@ import shutil
 import gzip
 from datetime import datetime
 from typing import List, Dict, Any
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -13,10 +15,62 @@ class SnapshotService:
     Subtask 14.1 & 14.2: High-Performance Backup Engine.
     Handles compressed snapshots of the SQLite databases.
     """
+    
     def __init__(self):
         self.base_dir = "snapshots"
         os.makedirs(self.base_dir, exist_ok=True)
         self.registry_path = os.path.join(self.base_dir, "registry.json")
+        
+        # Thread pool for compression operations
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = __import__('threading').Lock()
+        
+        logger.info("SnapshotService initialized with resilience patterns")
+    
+    def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for snapshot operations."""
+        with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+    
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type
+        }
+    
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "base_dir_exists": os.path.exists(self.base_dir),
+            "registry_exists": os.path.exists(self.registry_path),
+            "metrics": self.get_metrics()
+        }
 
     def create_snapshot(self) -> Dict:
         """

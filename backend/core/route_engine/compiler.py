@@ -21,7 +21,7 @@ class ScheduleCompiler:
         db = SessionLocal()
         try:
             # 1. Fetch all stops (Still needed in RAM for mapping, but we use scalars for speed)
-            stop_ids = [s for s in db.query(Stop.id).order_by(Stop.id).scalars().all()]
+            stop_ids = [s[0] for s in db.query(Stop.id).order_by(Stop.id).all()]
             stop_map = {stop_id: i for i, stop_id in enumerate(stop_ids)}
             id_to_stop = {i: stop_id for i, stop_id in enumerate(stop_ids)}
             

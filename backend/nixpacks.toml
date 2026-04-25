@@ -5,4 +5,4 @@ nixPkgs = ["python311", "gcc"]
 cmds = ["python -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt"]
 
 [start]
-cmd = "./start.sh"
+cmd = ". /opt/venv/bin/activate && chmod +x ./start.sh && ./start.sh"

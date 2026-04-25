@@ -1,13 +1,18 @@
+import asyncio
 import redis
 from redis.lock import Lock
 import json
 import logging
+import fnmatch
 from typing import Optional, Any, Dict
 import time # New: Import time for duration calculation
-from collections import OrderedDict
+from collections import OrderedDict, deque
+from datetime import datetime
 
 from config import Config
 from utils.metrics import LOCK_ACQUISITION_ATTEMPTS_TOTAL, LOCK_HOLD_DURATION_SECONDS # New: Import custom metrics
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +95,48 @@ class InstrumentedLock:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.release()
 
+class CacheServiceMetrics:
+    """Metrics tracking for cache service."""
+
+    def __init__(self):
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+
+    async def record_cache_operation(self, operation: str, success: bool, duration_ms: float):
+        """Record cache operation metrics."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation": operation,
+                "success": success,
+                "duration_ms": duration_ms
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_operation = {}
+        for m in self._metrics:
+            op = m["operation"]
+            if op not in by_operation:
+                by_operation[op] = {"total": 0, "success": 0}
+            by_operation[op]["total"] += 1
+            if m["success"]:
+                by_operation[op]["success"] += 1
+
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "failed_operations": total - successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "by_operation": by_operation
+        }
+
+
 class CacheService:
     """A Redis-based caching service with an in-process fallback for tests/dev when Redis is not available."""
 
@@ -97,6 +144,28 @@ class CacheService:
         self._in_memory: Dict[str, Any] = {}
         self._lru = LocalLRU(capacity=500) # L0 Local Cache
         self.version_prefix = Config.REDIS_VERSION_PREFIX
+        self.redis: Optional[redis.Redis] = None
+
+        # Circuit breaker for Redis operations
+        self._redis_breaker = circuit_breaker_manager.get_or_create(
+            "cache_redis",
+            CircuitConfig(failure_threshold=5, timeout_seconds=30.0, success_threshold=2)
+        )
+
+        # Retry policy for Redis operations
+        self._redis_retry = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.1,
+            max_delay=2.0,
+            conditions=[
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "connection" in str(e).lower()
+            ]
+        )
+
+        # Metrics tracking
+        self._metrics = CacheServiceMetrics()
+
         try:
             if not redis_url:
                 raise ValueError("REDIS_URL is not set")
@@ -107,6 +176,8 @@ class CacheService:
         except Exception as e:
             logger.warning(f"Could not connect to Redis (falling back to in-memory cache): {e}")
             self.redis = None
+
+        logger.info("CacheService initialized with resilience patterns")
 
     def _get_versioned_key(self, key: str) -> str:
         """Prepends the version prefix to the key."""
@@ -205,6 +276,58 @@ class CacheService:
         self._in_memory.pop(versioned_key, None)
         logger.debug(f"IN-MEM CACHE DELETE for key: {versioned_key}")
 
+    def get_pattern(self, pattern: str) -> Dict[str, Any]:
+        """Return all cache entries whose versioned key matches the provided pattern."""
+        versioned_pattern = self._get_versioned_key(pattern)
+        results: Dict[str, Any] = {}
+
+        if self.is_available():
+            try:
+                keys = self.redis.keys(versioned_pattern)
+                for key in keys or []:
+                    value = self.redis.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        results[key[len(self.version_prefix) + 1:]] = json.loads(value)
+                    except json.JSONDecodeError:
+                        results[key[len(self.version_prefix) + 1:]] = value
+                return results
+            except redis.exceptions.RedisError as e:
+                logger.error(f"Failed to fetch pattern {versioned_pattern} from cache: {e}")
+                return {}
+
+        for key, value in self._in_memory.items():
+            if fnmatch.fnmatch(key, versioned_pattern):
+                results[key[len(self.version_prefix) + 1:]] = value
+        return results
+
+    async def incr(self, key: str, amount: int = 1) -> int:
+        """Increment a cache counter in Redis or fallback store."""
+        versioned_key = self._get_versioned_key(key)
+        if self.is_available():
+            try:
+                return int(self.redis.incr(versioned_key, amount))
+            except redis.exceptions.RedisError as e:
+                logger.error(f"Failed to increment cache key {versioned_key}: {e}")
+                return 0
+
+        current = int(self._in_memory.get(versioned_key, 0))
+        current += amount
+        self._in_memory[versioned_key] = current
+        return current
+
+    async def expire(self, key: str, ttl_seconds: int) -> bool:
+        """Set TTL for a cache key when Redis is available."""
+        versioned_key = self._get_versioned_key(key)
+        if self.is_available():
+            try:
+                return bool(self.redis.expire(versioned_key, ttl_seconds))
+            except redis.exceptions.RedisError as e:
+                logger.error(f"Failed to set expiry for cache key {versioned_key}: {e}")
+                return False
+        return False
+
     # [32.1] Brute-Force Rate Limiting
     def record_failed_login(self, ip: str):
         """Increments failure count for an IP. Sets 5-min TTL."""
@@ -228,3 +351,30 @@ class CacheService:
 
 # Global instance to be used across the application
 cache_service = CacheService()
+
+# =========================================================================
+# RESILIENCE PATTERNS
+# =========================================================================
+
+def get_metrics(self) -> dict:
+    """Get service metrics."""
+    return self._metrics.get_metrics()
+
+def health_check(self) -> dict:
+    """Check service health."""
+    return {
+        "status": "healthy" if self.is_available() else "degraded",
+        "redis_available": self.is_available(),
+        "circuit_breaker": self._redis_breaker.get_metrics().to_dict(),
+        "metrics": self._metrics.get_metrics()
+    }
+
+def reset_circuit_breakers(self):
+    """Reset all circuit breakers."""
+    self._redis_breaker.reset()
+    logger.info("All circuit breakers reset for cache_service")
+
+# Bind methods to class
+CacheService.get_metrics = get_metrics
+CacheService.health_check = health_check
+CacheService.reset_circuit_breakers = reset_circuit_breakers

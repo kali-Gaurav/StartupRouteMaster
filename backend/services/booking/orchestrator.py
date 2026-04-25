@@ -37,15 +37,19 @@ class BookingOrchestrator:
         is_tatkal = journey_data.get("quota") == "TQ"
         is_emergency = (preferences or {}).get("persona") == "emergency"
         
+        user_id = str(user.id)
+        user_phone = str(user.phone_number or "9999999999")
+        user_email = str(user.email or "guest@routemaster.ai")
+
         # AGENTIC DECISION: Route to Agent Queue for high-complexity/high-risk tasks
         if is_tatkal or is_emergency:
-            logger.info(f"Routing to MANUAL AGENT for {user.id} (Tatkal/Emergency)")
+            logger.info(f"Routing to MANUAL AGENT for {user_id} (Tatkal/Emergency)")
             request = await self.queue_service.create_request(
-                user_id=user.id,
+                user_id=user_id,
                 journey_data=journey_data,
                 passengers=passengers,
-                phone=user.phone_number or "9999999999",
-                email=user.email or "guest@routemaster.ai"
+                phone=user_phone,
+                email=user_email
             )
             return {
                 "booking_id": str(request.id),
@@ -60,7 +64,7 @@ class BookingOrchestrator:
         
         # Create the local DB record first (Pending)
         booking = self.auto_service.create_booking(
-            user_id=user.id,
+            user_id=user_id,
             route_id=journey_data.get("route_id", "generated"),
             travel_date=journey_data.get("date", str(date.today())),
             booking_details=journey_data,

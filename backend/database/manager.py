@@ -74,11 +74,15 @@ class DBConnectionManager:
     def get_pool_stats(self, engine: Engine) -> Dict[str, Any]:
         """Returns connection pool metrics."""
         pool = engine.pool
+        checked_in = getattr(pool, "checkedin", None)
+        checked_out = getattr(pool, "checkedout", None)
+        overflow = getattr(pool, "overflow", None)
+
         return {
-            "size": pool.size(),
-            "checked_in": pool.checkedin(),
-            "checked_out": pool.checkedout(),
-            "overflow": pool.overflow() if hasattr(pool, "overflow") else 0,
+            "size": getattr(pool, "size", lambda: 0)(),
+            "checked_in": checked_in() if callable(checked_in) else 0,
+            "checked_out": checked_out() if callable(checked_out) else 0,
+            "overflow": overflow() if callable(overflow) else 0,
             "total_queries": self._queries_executed,
             "slow_queries": self._slow_queries_count,
             "avg_latency": self._total_query_time / max(self._queries_executed, 1)

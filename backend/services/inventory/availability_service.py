@@ -29,7 +29,10 @@ from database.models import (
     QuotaType, BookingStatus, CoachClass, StopTime
 )
 from database.config import Config
-from services.multi_layer_cache import multi_layer_cache, AvailabilityQuery, cache_availability_check
+from services.multi_layer_cache import multi_layer_cache, AvailabilityQuery
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,47 @@ class AvailabilityService:
     def __init__(self):
         self.redis: Optional[redis.Redis] = None
         self.cache_ttl = 300  # 5 minutes
+        # Circuit breaker for availability checks
+        self._availability_circuit_breaker = circuit_breaker(
+            name="availability_check",
+            failure_threshold=10,
+            recovery_timeout=60.0
+        )
+        # Circuit breaker for seat allocation
+        self._allocation_circuit_breaker = circuit_breaker(
+            name="seat_allocation",
+            failure_threshold=5,
+            recovery_timeout=120.0
+        )
+        # Retry policies
+        self._db_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        self._redis_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.LINEAR_BACKOFF,
+            base_delay=0.1,
+            max_delay=2.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="availability_service",
+            default_tags={"component": "inventory"}
+        )
+        self._metrics.gauge("availability_circuit_breaker_state", lambda: self._availability_circuit_breaker.state.value)
+        self._metrics.gauge("allocation_circuit_breaker_state", lambda: self._allocation_circuit_breaker.state.value)
+        self._metrics.counter("availability_checks_total")
+        self._metrics.counter("availability_checks_hit")
+        self._metrics.counter("availability_checks_miss")
+        self._metrics.counter("allocations_total")
+        self._metrics.counter("allocations_success")
+        self._metrics.counter("allocations_failed")
+        self._metrics.counter("waitlist_additions_total")
+        self._metrics.histogram("availability_check_duration_seconds")
+        self._metrics.histogram("allocation_duration_seconds")
 
     async def initialize(self):
         """Initialize Redis connection"""
@@ -99,13 +143,20 @@ class AvailabilityService:
 
         cached_result = await multi_layer_cache.get_availability(cache_query)
         if cached_result:
+            self._metrics.counter("availability_checks_hit", tags={"quota_type": request.quota_type.value})
             return AvailabilityResponse(**cached_result)
 
         # Compute and cache
+        self._metrics.counter("availability_checks_miss", tags={"quota_type": request.quota_type.value})
         response = await self._check_availability_db(request)
         await multi_layer_cache.set_availability(cache_query, response.__dict__)
 
         return response
+
+    @track_metrics(service="availability_service", operation="check_availability_db")
+    @_availability_circuit_breaker
+    @_db_retry_policy
+    async def _check_availability_db(self, request: AvailabilityRequest) -> AvailabilityResponse:
 
     async def _check_availability_db(self, request: AvailabilityRequest) -> AvailabilityResponse:
         """Check availability in database"""
@@ -226,6 +277,9 @@ class AvailabilityService:
         finally:
             session.close()
 
+    @track_metrics(service="availability_service", operation="allocate_from_segment")
+    @_allocation_circuit_breaker
+    @_db_retry_policy
     async def _allocate_from_segment(self, session: Session, segment: SeatInventory,
                                    quota_type: QuotaType, passengers: int,
                                    user_id: str, session_id: str) -> Optional[Dict]:

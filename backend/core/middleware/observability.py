@@ -47,9 +47,10 @@ class ObservabilityMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 status_code[0] = message.get("status", 0)
-                # 3. Inject Request ID into response headers
+                # 3. Inject Tracing IDs into response headers
                 headers = list(message.get("headers", []))
                 headers.append((b"X-Request-ID", request_id.encode()))
+                headers.append((b"X-Correlation-ID", correlation_id.encode()))
                 message["headers"] = headers
             
             await send(message)

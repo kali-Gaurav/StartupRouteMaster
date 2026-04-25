@@ -18,6 +18,7 @@ async def benchmark_route(source, destination, label, f):
     
     from core.route_engine.engine import RailwayRouteEngine
     from core.route_engine.constraints import RouteConstraints
+    from core.route_engine.base import RoutingRequest
     from database.session import SessionTransit
     
     from database.session import initialize_database_pools
@@ -43,12 +44,19 @@ async def benchmark_route(source, destination, label, f):
         # FIXED: Remove travel_date from constructor
         c = RouteConstraints()
         c.permitted_engines = [engine_name]
+
+        req = RoutingRequest(
+            source_code=source,
+            destination_code=destination,
+            departure_date=travel_dt,
+            constraints=c,
+            limit=10,
+            db_session=db
+        )
         
         start = time.perf_counter()
         try:
-            routes = await engine.orchestrator.search_all_tiers(
-                source, destination, travel_dt, c, limit=10, db=db
-            )
+            routes = await engine.orchestrator.stream_all_tiers(req)
             lat = (time.perf_counter() - start) * 1000
             count = len(routes)
             min_duration = min([r.total_duration for r in routes]) if routes else 0

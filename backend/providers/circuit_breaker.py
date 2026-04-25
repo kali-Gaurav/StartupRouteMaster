@@ -16,7 +16,7 @@ class AsyncCircuitBreaker:
     def __init__(self,
                  failure_threshold: int = 5,
                  reset_timeout: float = 60.0,
-                 expected_exception: type = Exception,
+                 expected_exception: type[Exception] = Exception,
                  name: str = "circuit_breaker"):
         self.failure_threshold = failure_threshold
         self.reset_timeout = reset_timeout

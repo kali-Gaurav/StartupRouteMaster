@@ -34,7 +34,7 @@ class ModelMetadata:
     input_features: List[str]
     output_type: str
     accuracy: Optional[float] = None
-    performance_metrics: Dict[str, float] = None
+    performance_metrics: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""

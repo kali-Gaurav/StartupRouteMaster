@@ -166,6 +166,25 @@ class TelemetryMetrics:
                 await multi_layer_cache.redis.incr(f"metrics:sla_violations:{endpoint}")
         except Exception: pass
 
+    # --- MISSING METHODS FOR BASE_ENGINE COMPATIBILITY ---
+    def record_operation_duration(self, operation: str, duration_ms: float):
+        """Record the duration of an operation (placeholder, extend as needed)."""
+        # You can extend this to store per-operation durations if needed
+        logger.debug(f"Operation '{operation}' took {duration_ms:.2f} ms")
+
+    def record_operation_error(self, operation: str):
+        """Record an operation error (placeholder, extend as needed)."""
+        logger.warning(f"Operation '{operation}' encountered an error.")
+
+    def get_summary(self) -> dict:
+        """Return a summary of metrics (alias for get_report)."""
+        return self.get_report()
+
+    def log_summary(self):
+        """Log the current metrics summary."""
+        summary = self.get_summary()
+        logger.info(f"Metrics Summary: {summary}")
+
 class DegradationManager:
     @staticmethod
     def should_skip_heavy_expansion() -> bool:

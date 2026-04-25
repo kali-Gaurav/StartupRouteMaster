@@ -15,7 +15,8 @@ import {
   Search,
   Database,
   Settings,
-  Zap
+  Zap,
+  GitBranch
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,9 @@ export default function AdminLayout() {
     { name: "Financial Suite", path: "/ops/admin/finance", icon: CreditCard },
     { name: "User & Growth", path: "/ops/admin/growth", icon: TrendingUp },
     { name: "AI Intelligence", path: "/ops/admin/ai", icon: BrainCircuit },
+    { name: "Nexus Intelligence", path: "/ops/admin/intelligence", icon: GitBranch, badge: "LIVE" },
+    { name: "Agent Swarm", path: "/ops/admin/agents", icon: Zap },
+    { name: "The Hive (Kimi)", path: "/ops/admin/swarm", icon: BrainCircuit, badge: "SWARM" },
     { name: "Inventory Sentinel", path: "/ops/admin/inventory", icon: Database },
     { name: "System Sentinel", path: "/ops/admin/system", icon: Server },
     { name: "Platform Settings", path: "/ops/admin/settings", icon: Settings },
@@ -99,6 +103,11 @@ export default function AdminLayout() {
                 <Icon className={`w-5 h-5 ${isActive ? 'scale-110' : 'group-hover:scale-110'} transition-transform`} />
                 {!isSidebarCollapsed && (
                   <span className="text-sm font-bold flex-1">{item.name}</span>
+                )}
+                {!isSidebarCollapsed && (item as any).badge && !isActive && (
+                  <Badge variant="outline" className="text-[8px] h-4 px-1.5 border-primary/30 text-primary font-black animate-pulse">
+                    {(item as any).badge}
+                  </Badge>
                 )}
                 {!isSidebarCollapsed && isActive && <ChevronRight className="w-4 h-4 opacity-50" />}
               </Link>

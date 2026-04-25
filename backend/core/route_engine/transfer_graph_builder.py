@@ -3,16 +3,17 @@ Transfer Graph Generation Pipeline
 Phase 0: Build complete transfer graph from database with walking times, platform connectivity, and transfer feasibility validation
 """
 
+from database.models import Stop
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any, cast
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from database.models import Stop, Transfer, StopTime, Trip
+
 from core.data_structures import TransferConnection, RouteSegment
 from core.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
 
@@ -123,10 +124,16 @@ class TransferGraphBuilder:
                     f_id, t_id = r.get('from_stop_id'), r.get('to_stop_id')
                     t_type, min_t = r.get('transfer_type'), r.get('min_transfer_time')
 
+                if f_id is None or t_id is None:
+                    continue
+
+                f_id = int(cast(Any, f_id))
+                t_id = int(cast(Any, t_id))
+
                 if t_type == 3: continue # GTFS specification for impossible transfer
                 
                 if min_t is not None:
-                    min_time = min_t
+                    min_time = int(cast(Any, min_t))
                 else:
                     min_time = self._get_default_min_transfer_time(f_id, t_id)
                 
@@ -166,7 +173,7 @@ class TransferGraphBuilder:
             
             # 1. Build BallTree with Haversine metric (requires radians)
             # Lat/Lng format: [lat, lng]
-            coords = np.deg2rad([[s.latitude, s.longitude] for s in stops])
+            coords = np.deg2rad([[float(cast(Any, s.latitude)), float(cast(Any, s.longitude))] for s in stops])
             # Earth radius in meters
             EARTH_RADIUS = 6371000 
             
@@ -181,19 +188,21 @@ class TransferGraphBuilder:
             logger.info("Spatial clusters identified. Applying hierarchy-aware transfer logic...")
             
             for i, neighbors in enumerate(indices):
-                from_s = stops[i]
+                from_s = cast(Stop, stops[i])
                 for j in neighbors:
                     if i == j: continue # Skip self
-                    to_s = stops[j]
+                    to_s = cast(Stop, stops[j])
                     
                     # Calculate true distance in meters
                     distance = self._haversine_distance(
-                        from_s.latitude, from_s.longitude,
-                        to_s.latitude, to_s.longitude
+                        float(cast(Any, from_s.latitude)), float(cast(Any, from_s.longitude)),
+                        float(cast(Any, to_s.latitude)), float(cast(Any, to_s.longitude))
                     )
                     
                     # 3. Apply Multi-Station & Hierarchy Logic [Task 7 Audit]
-                    is_multi = (from_s.id != to_s.id)
+                    from_stop_id = int(cast(Any, from_s.id))
+                    to_stop_id = int(cast(Any, to_s.id))
+                    is_multi = from_stop_id != to_stop_id
                     t_type = "WALK"
                     
                     def get_tier(code):
@@ -223,8 +232,8 @@ class TransferGraphBuilder:
                     total_min_time = exit_penalty + effective_travel_time + entry_penalty
                     
                     transfer_edge = TransferEdge(
-                        from_stop_id=from_s.id,
-                        to_stop_id=to_s.id,
+                        from_stop_id=from_stop_id,
+                        to_stop_id=to_stop_id,
                         min_transfer_time_minutes=int(total_min_time),
                         walking_time_minutes=int((distance / 1000) / self.WALKING_SPEED_KMPH * 60),
                         is_same_platform=False,
@@ -240,6 +249,7 @@ class TransferGraphBuilder:
 
     async def _validate_transfers(self, transfers: List[TransferEdge]) -> List[TransferEdge]:
         """Validate all transfers for feasibility"""
+        from database.models import Stop
         validated = []
         
         for transfer in transfers:
@@ -279,14 +289,16 @@ class TransferGraphBuilder:
 
     def _get_default_min_transfer_time(self, from_stop_id: int, to_stop_id: int) -> int:
         """Get default minimum transfer time based on stop type"""
+        from database.models import Stop
         from_stop = self.session.query(Stop).filter(Stop.id == from_stop_id).first()
         to_stop = self.session.query(Stop).filter(Stop.id == to_stop_id).first()
         
         def get_station_type(stop: Stop) -> str:
             if not stop: return 'SMALL'
-            if stop.code in MEGA_HUBS: return 'MEGA'
-            if stop.code in MAJOR_HUBS: return 'MAJOR'
-            if stop.code in REGIONAL_HUBS: return 'REGIONAL'
+            stop_code = str(cast(Any, stop.code))
+            if stop_code in MEGA_HUBS: return 'MEGA'
+            if stop_code in MAJOR_HUBS: return 'MAJOR'
+            if stop_code in REGIONAL_HUBS: return 'REGIONAL'
             return 'SMALL'
         
         from_type = get_station_type(from_stop)

@@ -5,8 +5,6 @@ import logging
 
 from sqlalchemy import or_
 
-from database.models import Stop
-
 from utils.graph_utils import haversine_distance
 from .graph import TimeDependentGraph
 
@@ -49,6 +47,7 @@ class HubManager:
 
     def initialize_hubs(self):
         """Load hub information from DB using the provided session factory."""
+        from database.models import Stop
         session = self.session_factory()
         try:
             hubs = session.query(Stop).filter(
@@ -104,9 +103,10 @@ class HubManager:
         """
         # Lazy import to avoid circular dependency
         from .raptor import OptimizedRAPTOR
+        from .raptor import OptimizedRAPTOR as RAPTOR_CLS
         from .constraints import RouteConstraints
         
-        raptor = OptimizedRAPTOR(max_initial_departures=50)
+        raptor = OptimizedRAPTOR()
         # Topic 2: Performance optimization - use a single departure time for hubs
         constraints = RouteConstraints(
             max_transfers=1,
@@ -125,8 +125,13 @@ class HubManager:
                 if i == j: continue
                 
                 await asyncio.sleep(0) # Yield event loop
-                # Run a limited RAPTOR between hubs
-                routes = await raptor._compute_routes(src_hub, dst_hub, date, constraints, graph=graph)
+                # Run a direct RAPTOR search between hubs
+                src_stop = graph.stop_cache.get(src_hub)
+                dst_stop = graph.stop_cache.get(dst_hub)
+                if not src_stop or not dst_stop:
+                    continue
+
+                routes = await raptor.find_routes(src_hub, dst_hub, date, constraints, graph=graph)
                 if routes:
                     best_route = routes[0]
                     conn = HubToHubConnection(

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, Any, Optional, Type, TypeVar
-from core.providers import ServiceProvider, ServiceStatus
+from .providers import ServiceProvider, ServiceStatus
 
 logger = logging.getLogger("routemaster.container")
 
@@ -16,11 +16,12 @@ class ServiceContainer:
     """
     _instance = None
     _lock = asyncio.Lock()
+    services: Dict[str, ServiceProvider]
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ServiceContainer, cls).__new__(cls)
-            cls._instance.services: Dict[str, ServiceProvider] = {}
+            cls._instance.services = {}
         return cls._instance
 
     def register(self, service: ServiceProvider):
@@ -68,17 +69,34 @@ class ServiceContainer:
                         await service.fallback()
                         return service
 
+    async def burst_control(self, level: str):
+        """
+        [Task 122] Rapid Load-Shedding.
+        Levels: NORMAL, WARM, HOT (Shed background), MELTDOWN (Shed non-core).
+        """
+        severity = {"NORMAL": 0, "WARM": 1, "HOT": 2, "MELTDOWN": 3}.get(level, 0)
+        logger.warning(f"🚨 [NEXUS:SURGE] Scaling IoC Container to level: {level}")
+        
+        for name, svc in self.services.items():
+            if severity >= 2 and svc.priority > 5: # Hot: Pause non-critical (priority 6+)
+                await svc.pause()
+            elif severity >= 3 and svc.priority > 2: # Meltdown: Pause everything except Core
+                await svc.pause()
+            elif severity == 0:
+                await svc.resume()
+
     def get_all_status(self) -> Dict[str, Any]:
-        """Returns the status and version of all services in the container."""
-        statuses = {
-            name: {
+        """Returns the status, version, and metrics of all services."""
+        statuses = {}
+        for name, service in self.services.items():
+            statuses[name] = {
                 "status": service.status.value,
                 "version": service.version,
-                "error": service.error
+                "priority": getattr(service, 'priority', 10),
+                "error": service.error,
+                "uptime": time.time() - getattr(service, '_init_time', time.time())
             }
-            for name, service in self.services.items()
-        }
-        # Aggregate status: online if all healthy/degraded, otherwise failed
+        
         system_status = "online"
         if any(s.status == ServiceStatus.FAILED for s in self.services.values()):
             system_status = "degraded"
@@ -86,6 +104,7 @@ class ServiceContainer:
         return {
             "status": system_status,
             "services": statuses,
+            "global_governance": "READY",
             "timestamp": time.time()
         }
 

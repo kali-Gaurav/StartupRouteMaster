@@ -1,7 +1,7 @@
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from services.route_engine import route_engine
+from core.route_engine import get_route_engine
 from database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/health':
-            if route_engine.is_loaded():
+            if get_route_engine().is_loaded():
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
@@ -27,7 +27,7 @@ def load_graph_background():
     logger.info("Starting background graph loading...")
     db = SessionLocal()
     try:
-        route_engine.load_graph_from_db(db)
+        get_route_engine().load_graph_from_db(db)
         logger.info("Background graph loading complete.")
     finally:
         db.close()

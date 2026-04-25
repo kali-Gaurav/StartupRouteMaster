@@ -30,7 +30,7 @@ export default function AdminSettings() {
 
   const loadConfigs = async () => {
     try {
-      const res = await fetchWithAuth("/admin/config");
+      const res = await fetchWithAuth("/v2/admin/config");
       setConfigs(await res.json());
     } catch (e) { console.error("Config error"); }
   };
@@ -38,7 +38,7 @@ export default function AdminSettings() {
   const updateConfig = async (key: string, value: string) => {
     setLoading(true);
     try {
-      await fetchWithAuth("/admin/config/update", {
+      await fetchWithAuth("/v2/admin/config/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value })

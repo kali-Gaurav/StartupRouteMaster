@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
-from backend.providers.gateway import ProviderGateway
+from providers.gateway import ProviderGateway
 
 MOCK_NTES_DATA = {
     "train_no": "12345",

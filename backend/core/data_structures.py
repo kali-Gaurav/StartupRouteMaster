@@ -6,6 +6,7 @@ By centralizing these structures, we ensure 100% architectural consistency and 1
 through efficient serialization and type-safety.
 """
 
+from datetime import timedelta
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date, time
 from typing import Dict, List, Optional, Set, Any, Tuple, Union
@@ -100,34 +101,6 @@ class SearchPhase(str, Enum):
     RELAXED = "relaxed"
 
 
-# ==============================================================================
-# CORE ROUTING STRUCTURES
-# ==============================================================================
-
-@dataclass
-class SpaceTimeNode:
-    """Space-time node for time-dependent graph traversal."""
-    stop_id: int
-    timestamp: datetime
-    event_type: str  # 'arrival' or 'departure'
-
-    def __hash__(self):
-        return hash((self.stop_id, self.timestamp.isoformat(), self.event_type))
-
-    def __eq__(self, other):
-        if not isinstance(other, SpaceTimeNode): return False
-        return (self.stop_id == other.stop_id and
-                self.timestamp == other.timestamp and
-                self.event_type == other.event_type)
-
-
-class SearchPhase(str, Enum):
-    """Phases for progressive search expansion."""
-    STRICT = "strict"      # Phase 1: High quality, fast
-    MODERATE = "moderate"  # Phase 2: Standard
-    RELAXED = "relaxed"    # Phase 3: Exhaustive/Fallback
-
-
 @dataclass
 class DynamicWaitConfig:
     """Configuration for dynamic waiting time calculations."""
@@ -169,30 +142,26 @@ class PaginationMetadata:
 def ensure_datetime(val: Any, reference: Optional[datetime] = None) -> datetime:
     """
     [Task 29] Optimized datetime converter with Midnight Crossover awareness.
-    If reference is provided and val is a time-only string that is 'earlier' 
-    than reference time, it assumes next-day arrival.
     """
     if isinstance(val, datetime):
         return val
     
+    if isinstance(val, (date,)):
+        return datetime.combine(val, time.min)
+
     if isinstance(val, str):
         try:
             if ":" in val and "-" not in val:
-                # Time only format (HH:MM or HH:MM:SS)
-                t = time.fromisoformat(val)
+                # Time only format (HH:MM)
+                t = time.fromisoformat(val[:5]) # Take only HH:MM
                 base_date = reference.date() if reference else date.today()
                 dt = datetime.combine(base_date, t)
-                
-                # Crossover Check: If arrival time is earlier than departure time on same day,
-                # it must be the following day.
-                if reference and dt < reference:
+                if reference and dt < (reference - timedelta(hours=6)): # Allow some buffer, but handle next-day
                     dt += timedelta(days=1)
                 return dt
-                
-            return datetime.fromisoformat(val)
-        except (ValueError, TypeError):
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except:
             return reference or datetime.now()
-            
     return reference or datetime.now()
 
 
@@ -204,7 +173,7 @@ class RouteSegment:
         'arrival_time', 'duration_minutes', 'distance_km', 'departure_code',
         'arrival_code', 'fare', 'train_name', 'train_number', 'service_mask',
         'is_unconfirmed_allowed', 'has_pantry', 'departure_platform',
-        'arrival_platform', 'metadata', 'stop_sequence', '_cached_dict'
+        'arrival_platform', 'metadata', 'stop_sequence', '_cached_dict', 'reliability'
     )
     
     trip_id: Any
@@ -226,6 +195,7 @@ class RouteSegment:
     arrival_platform: Optional[str] 
     metadata: Dict[str, Any] 
     stop_sequence: int
+    reliability: float
     
     def __init__(self, **kwargs):
         # Define defaults for critical fields to avoid NoneType errors during calculations
@@ -240,7 +210,8 @@ class RouteSegment:
             'train_number': "",
             'departure_code': "",
             'arrival_code': "",
-            'metadata': {}
+            'metadata': {},
+            'reliability': 1.0
         }
         for slot in self.__slots__:
             if slot == '_cached_dict':
@@ -252,7 +223,6 @@ class RouteSegment:
         self._cached_dict = None
         
     def validate(self) -> bool:
-        print(f"DEBUG VALIDATE: {self.departure_code}->{self.arrival_code} IDs: {self.departure_stop_id} to {self.arrival_stop_id} Dur: {self.duration_minutes}")
         """
         [Task 16] Checks if the segment is an 'empty leg' or logically invalid.
         """
@@ -289,6 +259,7 @@ class RouteSegment:
             "arrival_platform": self.arrival_platform,
             "departure_stop_id": self.departure_stop_id,
             "arrival_stop_id": self.arrival_stop_id,
+            "reliability": self.reliability,
             "metadata": self.metadata
         }
         return self._cached_dict
@@ -312,27 +283,57 @@ class RouteSegment:
             has_pantry=data.get("has_pantry", False),
             departure_stop_id=data.get("departure_stop_id", 0),
             arrival_stop_id=data.get("arrival_stop_id", 0),
+            reliability=data.get("reliability", 1.0),
             metadata=data.get("metadata", {}),
             service_mask=data.get("service_mask", 127),
             is_unconfirmed_allowed=data.get("is_unconfirmed_allowed", False)
         )
 
+    @staticmethod
+    def _seconds_from_value(value: Union[datetime, str, time, None]) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, datetime):
+            return value.hour * 3600 + value.minute * 60 + value.second
+        if isinstance(value, time):
+            return value.hour * 3600 + value.minute * 60 + value.second
+        if isinstance(value, str):
+            try:
+                parsed = ensure_datetime(value)
+                return parsed.hour * 3600 + parsed.minute * 60 + parsed.second
+            except Exception:
+                return 0
+        return 0
+
+    @property
+    def departure_time_seconds(self) -> int:
+        return self._seconds_from_value(self.departure_time)
+
+    @property
+    def arrival_time_seconds(self) -> int:
+        return self._seconds_from_value(self.arrival_time)
+
 @dataclass
 class TransferConnection:
     """[Task 18/Audit] Station code included for size-aware scoring."""
+    __slots__ = (
+        'station_id', 'station_code', 'arrival_time', 'departure_time',
+        'duration_minutes', 'station_name', 'facilities_score', 'safety_score',
+        'platform_from', 'platform_to', 'is_multi_station', 'transfer_type'
+    )
+    
     station_id: int
     station_code: str
     arrival_time: datetime
     departure_time: datetime
     duration_minutes: int
     station_name: str
-    facilities_score: float = 0.0
-    safety_score: float = 50.0
-    platform_from: Optional[str] = None
-    platform_to: Optional[str] = None
-    # [Audit Added] Multi-station awareness
-    is_multi_station: bool = False
-    transfer_type: str = "WALK" # WALK, SHUTTLE, METRO, TAXI
+    facilities_score: float
+    safety_score: float
+    platform_from: Optional[str]
+    platform_to: Optional[str]
+    is_multi_station: bool
+    transfer_type: str
 
     def to_dict(self) -> Dict[Any, Any]:
         return {
@@ -351,10 +352,14 @@ class TransferConnection:
         return cls(
             station_id=data.get("station_id", 0),
             station_code=data.get("station_code", ""),
-            station_name=data.get("station_name", ""),
             arrival_time=datetime.fromisoformat(data["arrival_time"]) if data.get("arrival_time") else datetime.min,
             departure_time=datetime.fromisoformat(data["departure_time"]) if data.get("departure_time") else datetime.max,
             duration_minutes=data.get("wait_minutes", 0),
+            station_name=data.get("station_name", ""),
+            facilities_score=data.get("facilities_score", 0.0),
+            safety_score=data.get("safety_score", 0.0),
+            platform_from=data.get("platform_from"),
+            platform_to=data.get("platform_to"),
             is_multi_station=data.get("is_multi_station", False),
             transfer_type=data.get("transfer_type", "WALK")
         )
@@ -367,7 +372,8 @@ class Route:
         'segments', 'transfers', 'total_duration', 'total_cost', 
         'total_distance', 'score', 'reliability', 'availability_probability',
         'is_locked', 'is_featured', 'highlight_label', 'metadata', 
-        'visited_stations', '_journey_id_cache', '_cached_dict'
+        'visited_stations', '_journey_id_cache', '_cached_dict',
+        'id', 'safety_score'
     )
     
     segments: List[RouteSegment]
@@ -403,6 +409,8 @@ class Route:
         
         self._journey_id_cache = None
         self._cached_dict = None
+        self.id = kwargs.get('id', "")
+        self.safety_score = kwargs.get('safety_score', 1.0)
         
         # Manually call post_init logic for derived fields
         if self.segments:
@@ -576,3 +584,5 @@ class Coach:
             'total_seats': self.total_seats,
             'available_seats': self.available_count()
         }
+
+Segment = RouteSegment

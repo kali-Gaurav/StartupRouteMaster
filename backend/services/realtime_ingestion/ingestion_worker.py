@@ -22,17 +22,21 @@ Architecture:
 import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 import schedule
 
 from database.models import TrainLiveUpdate
-from database.session import SessionLocal
+from database.session import SessionTransit
 
 
 from .api_client import RappidAPIClient, AsyncRappidAPIClient, get_active_trains
 from .parser import extract_train_update
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,7 @@ class LiveIngestionWorker:
     
     def __init__(
         self,
-        db_session_factory=SessionLocal,
+        db_session_factory=SessionTransit,
         interval_minutes: int = 5,
         use_async: bool = False,
         batch_size: int = 50,
@@ -79,6 +83,47 @@ class LiveIngestionWorker:
             "last_run": None,
             "last_error": None,
         }
+        
+        # Circuit breaker for API operations
+        self._api_circuit_breaker = circuit_breaker(
+            name="ingestion_worker_api",
+            failure_threshold=5,
+            recovery_timeout=300.0  # 5 minutes
+        )
+        # Circuit breaker for DB operations
+        self._db_circuit_breaker = circuit_breaker(
+            name="ingestion_worker_db",
+            failure_threshold=5,
+            recovery_timeout=60.0
+        )
+        # Retry policies
+        self._api_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=1.0,
+            max_delay=30.0
+        )
+        self._db_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="live_ingestion_worker",
+            default_tags={"component": "realtime_ingestion"}
+        )
+        self._metrics.gauge("api_circuit_breaker_state", lambda: self._api_circuit_breaker.state.value)
+        self._metrics.gauge("db_circuit_breaker_state", lambda: self._db_circuit_breaker.state.value)
+        self._metrics.counter("ingestion_cycles_total")
+        self._metrics.counter("ingestion_cycles_success")
+        self._metrics.counter("ingestion_cycles_failed")
+        self._metrics.counter("trains_processed_total")
+        self._metrics.counter("updates_stored_total")
+        self._metrics.counter("updates_failed_total")
+        self._metrics.histogram("ingestion_cycle_duration_seconds")
+        self._metrics.histogram("train_processing_duration_seconds")
     
     def start(self):
         """Start the background ingestion worker."""
@@ -114,6 +159,7 @@ class LiveIngestionWorker:
     
     def _ingest_cycle(self):
         """Single ingestion cycle: fetch all trains and store updates."""
+        start_time = time.perf_counter()
         try:
             session = self.db_session_factory()
             
@@ -139,10 +185,18 @@ class LiveIngestionWorker:
             self.stats["updates_stored"] += updates_count
             self.stats["last_run"] = datetime.now()
             
-            logger.info(f"✓ Ingestion cycle complete: {updates_count} updates stored")
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("ingestion_cycle_duration_seconds", duration)
+            self._metrics.counter("ingestion_cycles_success", tags={"train_count": str(len(train_numbers))})
+            self._metrics.counter("trains_processed_total", tags={"train_count": str(len(train_numbers))})
+            
+            logger.info(f"✓ Ingestion cycle complete: {updates_count} updates stored in {duration:.3f}s")
             logger.info("=" * 60)
         
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("ingestion_cycle_duration_seconds", duration)
+            self._metrics.counter("ingestion_cycles_failed", tags={"error_type": type(e).__name__})
             logger.error(f"❌ Ingestion cycle failed: {e}", exc_info=True)
             self.stats["errors"] += 1
             self.stats["last_error"] = str(e)
@@ -256,6 +310,47 @@ class LiveIngestionWorker:
     def get_stats(self) -> dict:
         """Get worker statistics."""
         return self.stats.copy()
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "live_ingestion_worker",
+            "api_circuit_breaker_state": self._api_circuit_breaker.state.name,
+            "api_circuit_breaker_failures": self._api_circuit_breaker.failure_count,
+            "db_circuit_breaker_state": self._db_circuit_breaker.state.name,
+            "db_circuit_breaker_failures": self._db_circuit_breaker.failure_count,
+            "ingestion_cycles_total": self._metrics.get_counter("ingestion_cycles_total"),
+            "ingestion_cycles_success": self._metrics.get_counter("ingestion_cycles_success"),
+            "ingestion_cycles_failed": self._metrics.get_counter("ingestion_cycles_failed"),
+            "trains_processed_total": self._metrics.get_counter("trains_processed_total"),
+            "updates_stored_total": self._metrics.get_counter("updates_stored_total"),
+            "updates_failed_total": self._metrics.get_counter("updates_failed_total"),
+            "ingestion_cycle_duration_p50": self._metrics.get_percentile("ingestion_cycle_duration_seconds", 50),
+            "ingestion_cycle_duration_p95": self._metrics.get_percentile("ingestion_cycle_duration_seconds", 95),
+            "train_processing_duration_p50": self._metrics.get_percentile("train_processing_duration_seconds", 50),
+            "train_processing_duration_p95": self._metrics.get_percentile("train_processing_duration_seconds", 95),
+            "worker_stats": self.get_stats(),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if (self._api_circuit_breaker.state == CircuitState.CLOSED and 
+                                   self._db_circuit_breaker.state == CircuitState.CLOSED) else "degraded",
+            "service": "live_ingestion_worker",
+            "api_circuit_breaker": self._api_circuit_breaker.state.name,
+            "db_circuit_breaker": self._db_circuit_breaker.state.name,
+            "is_running": self.running,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self, breaker_name: str = "all"):
+        """Reset circuit breaker(s) to closed state."""
+        if breaker_name == "all" or breaker_name == "api":
+            self._api_circuit_breaker.reset()
+        if breaker_name == "all" or breaker_name == "db":
+            self._db_circuit_breaker.reset()
+        logger.info(f"🔄 [INGESTION] Circuit breaker '{breaker_name}' reset")
 
 
 # Global worker instance

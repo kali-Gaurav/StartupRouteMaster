@@ -1,5 +1,5 @@
 from core.celery_app import celery
-from core.redis import redis_client
+from core.redis_client import redis_client
 from services.enhanced_pricing_service import enhanced_pricing_service
 import json
 import logging

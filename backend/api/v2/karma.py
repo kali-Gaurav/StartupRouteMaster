@@ -8,6 +8,18 @@ from api.dependencies import get_current_user
 logger = logging.getLogger("karma-api")
 router = APIRouter(prefix="/karma", tags=["karma"])
 
+def _serialize_leaderboard_user(u: User):
+    user_id = str(getattr(u, "id", ""))[:8] + "..."
+    email = getattr(u, "email", None)
+    score = int(getattr(u, "karma_score", 0) or 0)
+
+    return {
+        "user_id": user_id,
+        "email_obs": f"{email[:3]}***" if email else "Anonymous",
+        "score": score,
+        "tier": "ELITE" if score > 5000 else "PRO" if score > 1000 else "FREE"
+    }
+
 @router.get("/leaderboard")
 async def get_leaderboard(db: Session = Depends(get_db)):
     """
@@ -16,12 +28,7 @@ async def get_leaderboard(db: Session = Depends(get_db)):
     top_users = db.query(User).filter(User.karma_score > 0).order_by(User.karma_score.desc()).limit(20).all()
     
     return [
-        {
-            "user_id": u.id[:8] + "...",
-            "email_obs": u.email[:3] + "***" if u.email else "Anonymous",
-            "score": u.karma_score,
-            "tier": "ELITE" if u.karma_score > 5000 else "PRO" if u.karma_score > 1000 else "FREE"
-        }
+        _serialize_leaderboard_user(u)
         for u in top_users
     ]
 

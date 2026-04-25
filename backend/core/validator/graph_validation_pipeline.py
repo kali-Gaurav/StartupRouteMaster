@@ -8,7 +8,7 @@ import logging
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Any, cast, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -275,7 +275,7 @@ class GraphBuildingValidationPipeline:
         try:
             # Inject transfer graph into snapshot if available
             if self.transfer_graph_builder:
-                snapshot.transfer_graph = self.transfer_graph_builder._transfer_graph
+                cast(Any, snapshot).transfer_graph = self.transfer_graph_builder._transfer_graph
                 logger.info("Applied transfer graph to snapshot")
             
             # Could add more snapshot enrichments here
@@ -296,4 +296,4 @@ async def validate_graph_before_build(date: datetime) -> Dict[str, Any]:
 def get_validation_report() -> Dict[str, Any]:
     """Get the validation report from the last run"""
     # This would need to be persisted somewhere in a production system
-    pass
+    return {}

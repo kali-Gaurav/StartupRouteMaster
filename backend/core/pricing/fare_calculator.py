@@ -1,7 +1,7 @@
 import math
 import logging
 import numpy as np
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -56,12 +56,12 @@ def get_slab_fare(db, coach_code: str, distance: float) -> float:
         return distance * 1.5 
 
 def calculate_fare(
-    distance_km: float, 
-    coach: str, 
+    distance_km: float,
+    coach: str,
     is_tatkal: bool = False,
-    passengers: List[Dict] = None,
+    passengers: Optional[List[Dict[str, Any]]] = None,
     db = None
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """
     [7.1-7.10] Production-Grade IRCTC Telescopic Pricing Engine.
     """

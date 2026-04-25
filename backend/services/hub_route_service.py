@@ -67,6 +67,7 @@ class HubRouteService:
                 total_fare = sum(s.fare or 0.0 for s in rt.segments)
                 price_info = self.calculate_price_difference(total_fare, 0, 1200.0) # Assume direct is 1200 for now
                 
+                metadata = getattr(rt, "metadata", None) or {}
                 hub_alternatives.append({
                     "type": "HUB_TRANSFER",
                     "hub_station": hub_code,
@@ -74,7 +75,7 @@ class HubRouteService:
                     "price_info": price_info,
                     "buffer_minutes": tr.duration_minutes,
                     "warnings": [f"Self-transfer required at {hub_code}.", "Baggage must be moved manually."],
-                    "platform_info": getattr(rt, "metadata", {}).get("platforms", {})
+                    "platform_info": metadata.get("platforms", {})
                 })
         finally:
             transit_db.close()
@@ -135,6 +136,7 @@ class HubRouteService:
         from config import Config
         import google.generativeai as genai
         from sqlalchemy import cast, String
+        from typing import Any, cast as type_cast
         
         # 1. Fetch the hub journey legs
         bookings = self.db.query(Booking).filter(
@@ -148,8 +150,9 @@ class HubRouteService:
         leg2 = bookings[1]
         
         # 2. Check current delay of Leg 1 (Simulated lookup)
-        leg1_train = leg1.booking_details.get("train_no")
-        hub_stn = leg1.booking_details.get("to")
+        leg1_details = leg1.booking_details or {}
+        leg1_train = leg1_details.get("train_no")
+        hub_stn = leg1_details.get("to")
         
         # In real system, query TrainLiveUpdate table
         # For demo, simulate a 90-minute delay on Leg 1
@@ -170,13 +173,18 @@ class HubRouteService:
 
         # 4. If at risk, use AI to suggest a pivot
         if hasattr(Config, 'GEMINI_API_KEY'):
-            genai.configure(api_key=Config.GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            genai_any = type_cast(Any, genai)
+            if hasattr(genai_any, 'configure') and hasattr(genai_any, 'GenerativeModel'):
+                genai_any.configure(api_key=Config.GEMINI_API_KEY)
+                model = genai_any.GenerativeModel('gemini-2.5-flash')
+            else:
+                model = None
             
+            leg2_details = leg2.booking_details or {}
             prompt = f"""
             AI Destination Guarantee System.
             User is on Train {leg1_train} arriving at {hub_stn}.
-            Connection Train {leg2.booking_details.get('train_no')} departs in {remaining_buffer} minutes.
+            Connection Train {leg2_details.get('train_no')} departs in {remaining_buffer} minutes.
             The connection is HIGH RISK.
             
             Suggest 2 emergency pivot plans:
@@ -186,17 +194,18 @@ class HubRouteService:
             Return JSON only: {{"risk_level": "CRITICAL", "alternatives": []}}
             """
             
-            try:
-                response = model.generate_content(prompt)
-                pivot_plans = response.text
-                return {
-                    "status": "AT_RISK",
-                    "remaining_buffer": remaining_buffer,
-                    "ai_suggestions": pivot_plans,
-                    "message": "AI monitoring has detected a high-risk connection. See pivot plans."
-                }
-            except:
-                pass
+            if model is not None:
+                try:
+                    response = model.generate_content(prompt)
+                    pivot_plans = response.text
+                    return {
+                        "status": "AT_RISK",
+                        "remaining_buffer": remaining_buffer,
+                        "ai_suggestions": pivot_plans,
+                        "message": "AI monitoring has detected a high-risk connection. See pivot plans."
+                    }
+                except:
+                    pass
                 
         return {
             "status": "AT_RISK",

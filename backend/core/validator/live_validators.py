@@ -14,6 +14,8 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from enum import Enum
 
+from pyrsistent import optional
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +29,7 @@ class ValidationStatus(str, Enum):
 class LiveValidationResult:
     """Result of a live validation check."""
 
-    def __init__(self, status: ValidationStatus, message: str = "", details: Dict = None):
+    def __init__(self, status: ValidationStatus, message: str = "", details: Optional[Dict] = None):
         self.status = status
         self.message = message
         self.details = details or {}

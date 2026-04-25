@@ -108,16 +108,16 @@ export default function AdminGrowth() {
   const refreshGrowth = async () => {
     try {
       const [s, c, f, r, g, rt, v, p, arc, kl] = await Promise.all([
-        fetchWithAuth("/admin/user/stats"),
-        fetchWithAuth("/admin/user/charts"),
-        fetchWithAuth("/admin/user/funnel"),
-        fetchWithAuth("/admin/user/top-routes"),
-        fetchWithAuth("/admin/user/geo-load"),
-        fetchWithAuth("/admin/user/retention"),
-        fetchWithAuth("/admin/user/interaction-velocity"),
-        fetchWithAuth("/admin/user/platform-distribution"),
-        fetchWithAuth("/admin/user/archetypes"),
-        fetchWithAuth("/admin/user/karma-leaderboard")
+        fetchWithAuth("/v2/admin/user/stats"),
+        fetchWithAuth("/v2/admin/user/charts"),
+        fetchWithAuth("/v2/admin/user/funnel"),
+        fetchWithAuth("/v2/admin/user/top-routes"),
+        fetchWithAuth("/v2/admin/user/geo-load"),
+        fetchWithAuth("/v2/admin/user/retention"),
+        fetchWithAuth("/v2/admin/user/interaction-velocity"),
+        fetchWithAuth("/v2/admin/user/platform-distribution"),
+        fetchWithAuth("/v2/admin/user/archetypes"),
+        fetchWithAuth("/v2/admin/user/karma-leaderboard")
       ]);
       setUserStats(await s.json());
       setUserCharts(await c.json());
@@ -138,7 +138,7 @@ export default function AdminGrowth() {
       return;
     }
     try {
-      await fetchWithAuth("/admin/user/support/message", {
+      await fetchWithAuth("/v2/admin/user/support/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: supportUserId, message: supportMsg })

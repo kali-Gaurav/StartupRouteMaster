@@ -4,6 +4,11 @@ import time
 import os
 from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from datetime import datetime
+
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger("nexus.ml.delay")
 
@@ -11,13 +16,42 @@ class DelayPredictor:
     """
     [Task 103] Elite ML Predictor with Disk Swap (Task 87) and Async Inference.
     Optimized for 500MB VPS: Zero-impact boot and lazy resource allocation.
+    
+    With resilience patterns: circuit breaker, retry, and metrics tracking.
     """
     def __init__(self):
-        self.model = None
+        self.model: Optional[Any] = None
         self.is_trained = False
         self._overflow_key = "nexus_ml_delay_predictor"
         self._executor = ThreadPoolExecutor(max_workers=1)
         self.MODEL_PATH = "models/delay_model.pkl"
+        
+        # Circuit breaker for model operations
+        self._model_breaker = circuit_breaker_manager.get_or_create(
+            "delay_predictor",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=60.0,
+                success_threshold=3
+            )
+        )
+        
+        # Retry policy for model operations
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            conditions=[
+                lambda e: isinstance(e, (OSError, IOError)),
+                lambda e: "memory" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("DelayPredictor initialized with resilience patterns")
 
     def _lazy_imports(self):
         """Internal helper to load heavy ML libs ONLY when needed."""
@@ -98,6 +132,59 @@ class DelayPredictor:
         ]], dtype=np.float32)
         
         return self.model.predict(features)[0]
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, train_id: int, prediction: float, success: bool):
+        """Record prediction metrics for monitoring."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "train_id": train_id,
+                "prediction": prediction,
+                "success": success,
+                "model_loaded": self.is_trained
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_predictions": 0, "avg_prediction": 0.0}
+        
+        total = len(self._metrics)
+        predictions = [m["prediction"] for m in self._metrics]
+        successful = sum(1 for m in self._metrics if m["success"])
+        model_loaded = sum(1 for m in self._metrics if m.get("model_loaded", False))
+        
+        return {
+            "total_predictions": total,
+            "successful_predictions": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "avg_prediction": sum(predictions) / len(predictions) if predictions else 0,
+            "model_load_rate": model_loaded / total if total > 0 else 0.0,
+            "circuit_breaker_state": self._model_breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "model_trained": self.is_trained,
+            "circuit_breaker": {
+                "state": self._model_breaker.get_state().value,
+                "failure_count": self._model_breaker.failure_count,
+                "success_count": self._model_breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker."""
+        self._model_breaker.reset()
+        logger.info("Circuit breaker reset for delay predictor")
+
 
 # Global instance
 delay_predictor = DelayPredictor()

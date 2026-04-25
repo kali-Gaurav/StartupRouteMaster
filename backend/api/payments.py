@@ -119,7 +119,7 @@ async def create_payment_order(
     else:
         # Handle Unlock Payment
         try:
-            if await unlock_service.is_route_unlocked(current_user.id, payload.route_id):
+            if UnlockService.is_route_unlocked(db, current_user.id, payload.route_id):
                  return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
             # NEW: Verify route before creating payment order
@@ -278,7 +278,7 @@ async def create_payment_order_v2(
     # In Phase 2, we perform live verification via RapidAPI before charging
     if request.is_unlock_payment:
         # Check if already unlocked
-        if await unlock_service.is_route_unlocked(current_user.id, request.route_id):
+        if UnlockService.is_route_unlocked(db, current_user.id, request.route_id):
              return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
         # 2. UPI Redirection Hack (Topic 4)

@@ -15,20 +15,22 @@ Notes:
 from __future__ import annotations
 
 import pickle
-from typing import Dict, Optional, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
+BitMap: Any
 try:
-    from pyroaring import BitMap
+    from pyroaring import BitMap as _PyroaringBitMap
+    BitMap = _PyroaringBitMap
 except Exception:
     # Local shim when pyroaring is not installed (tests / lightweight use)
     import pickle
-    class BitMap:
-        def __init__(self, iterable=None):
+    class _FallbackBitMap: # type: ignore
+        def __init__(self, iterable: Optional[Iterable[int]] = None):
             self._s = set(iterable or [])
         def __ior__(self, other):
-            self._s |= (other._s if isinstance(other, BitMap) else set(other))
+            self._s |= (other._s if isinstance(other, _FallbackBitMap) else set(other))
             return self
         def __or__(self, other):
-            return BitMap(self._s | (other._s if isinstance(other, BitMap) else set(other)))
+            return _FallbackBitMap(self._s | (other._s if isinstance(other, _FallbackBitMap) else set(other)))
         def __iter__(self):
             return iter(self._s)
         def serialize(self):
@@ -39,7 +41,8 @@ except Exception:
                 data = pickle.loads(blob)
             except Exception:
                 data = []
-            return BitMap(data)
+            return _FallbackBitMap(data)
+    BitMap = _FallbackBitMap
 from datetime import time
 
 from sqlalchemy.orm import Session
@@ -51,9 +54,9 @@ class StationTimeIndex:
     def __init__(self, db: Session, bucket_minutes: int = 15, cache_path: Optional[str] = None):
         self.db = db
         self.bucket_minutes = bucket_minutes
-        # station_id -> {bucket_start_minute: BitMap}
-        self.index: Dict[str, Dict[int, BitMap]] = {}
-        # key_id -> (entity_type, entity_id)
+        # station_id -> {bucket_start_minute: BitMap instance}
+        self.index: Dict[Any, Dict[int, Any]] = {}
+        # key_id -> (entity_type, entity_id) 
         self.key_map: Dict[int, Tuple[str, str]] = {}
 
         if cache_path:
@@ -68,12 +71,16 @@ class StationTimeIndex:
     def _load_from_db(self):
         # load keys
         for k in self.db.query(TimeIndexKey).all():
-            self.key_map[k.id] = (k.entity_type, k.entity_id)
+            key_id = cast(int, k.id)
+            self.key_map[key_id] = (
+                cast(str, k.entity_type),
+                cast(str, k.entity_id),
+            )
 
         # load station buckets (railway_manager stations)
         for row in self.db.query(StationDepartureBucket).all():
-            station = row.station_id
-            bucket = row.bucket_start_minute
+            station = cast(str, row.station_id)
+            bucket = cast(int, row.bucket_start_minute)
             try:
                 bm = BitMap.deserialize(row.bitmap)
             except Exception:
@@ -82,8 +89,8 @@ class StationTimeIndex:
 
         # load stop buckets (GTFS stops) — keys are integers
         for row in self.db.query(StopDepartureBucket).all():
-            stop = row.stop_id
-            bucket = row.bucket_start_minute
+            stop = cast(int, row.stop_id)
+            bucket = cast(int, row.bucket_start_minute)
             try:
                 bm = BitMap.deserialize(row.bitmap)
             except Exception:

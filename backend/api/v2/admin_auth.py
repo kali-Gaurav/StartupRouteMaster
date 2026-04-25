@@ -6,6 +6,7 @@ from database.config import Config
 from pydantic import BaseModel
 from passlib.hash import pbkdf2_sha256
 from datetime import datetime, timedelta
+from utils.responses import v3_response, success_response
 import jwt
 import uuid
 import logging
@@ -23,7 +24,7 @@ class AdminTokenResponse(BaseModel):
     expires_at: str
 
 def create_admin_token(username: str):
-    expire = datetime.utcnow() + timedelta(hours=8) # Admin sessions last 8h
+    expire = datetime.utcnow() + timedelta(hours=8)
     payload = {
         "sub": username,
         "admin": True,
@@ -36,17 +37,15 @@ def create_admin_token(username: str):
 @router.post("/login", response_model=AdminTokenResponse)
 async def admin_login(payload: AdminLoginRequest, request: Request):
     """
-    Secure Admin Login with [32.2] Brute-Force Protection.
+    Secure Admin Login with Brute-Force Protection.
     """
     from services.cache_service import cache_service
-    client_ip = request.client.host
+    client_ip = request.client.host if request.client else "unknown"
     
-    # 1. Check if IP is blocked
     if cache_service.is_ip_blocked(client_ip):
-        logger.error(f"BLOCKED: Brute-force attempt from {client_ip}")
-        raise HTTPException(status_code=429, detail="Too many failed attempts. Try again in 5 minutes.")
+        logger.error(f"ADMIN_AUTH_BLOCKED | Brute-force attempt from {client_ip}")
+        raise HTTPException(status_code=429, detail="Too many failed attempts. Blocked for 5m.")
 
-    # 2. Credential Check
     is_valid = True
     if payload.username != Config.ADMIN_DASHBOARD_USERNAME:
         is_valid = False
@@ -54,19 +53,18 @@ async def admin_login(payload: AdminLoginRequest, request: Request):
         is_valid = False
 
     if not is_valid:
-        # Record failure
         fails = cache_service.record_failed_login(client_ip)
-        logger.warning(f"Failed admin login ({fails}/10) from {client_ip}")
+        logger.warning(f"ADMIN_AUTH_FAIL | {fails}/10 | {client_ip}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # Success - Create session
+    # Success
     token, expire = create_admin_token(payload.username)
     
     db = SessionLocal()
     try:
         session = AdminDashboardSession(
             admin_username=payload.username,
-            ip_address=request.client.host,
+            ip_address=client_ip,
             user_agent=request.headers.get("user-agent"),
             expires_at=expire
         )
@@ -75,11 +73,15 @@ async def admin_login(payload: AdminLoginRequest, request: Request):
     finally:
         db.close()
 
-    logger.info(f"Admin logged in: {payload.username} from {request.client.host}")
-    return {
-        "access_token": token,
-        "expires_at": expire.isoformat()
-    }
+    logger.info(f"ADMIN_AUTH_SUCCESS | {payload.username} | {client_ip}")
+    return success_response(
+        message="Admin login successful",
+        data={
+            "access_token": token,
+            "token_type": "bearer",
+            "expires_at": expire.isoformat()
+        }
+    )
 
 async def get_admin_access(authorization: str = Header(...)):
     """

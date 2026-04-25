@@ -17,9 +17,9 @@ Date: 2026-02-17
 """
 
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, cast
 from datetime import datetime, date
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 import asyncio
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
@@ -101,7 +101,13 @@ class BulkInsertTripsRequest(BaseModel):
     """Request to bulk insert trips."""
     source_system: str = Field(..., description="Source (e.g., 'irctc_scraper')")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    trips: List[TripDataSchema] = Field(..., min_items=1, max_items=1000)
+    trips: List[TripDataSchema] = Field(..., description="List of trips")
+
+    @validator("trips")
+    def _validate_trips_length(cls, value: List[TripDataSchema]) -> List[TripDataSchema]:
+        if not 1 <= len(value) <= 1000:
+            raise ValueError("trips must contain between 1 and 1000 items")
+        return value
 
 
 class BulkInsertTripsResponse(BaseModel):
@@ -223,7 +229,9 @@ async def bulk_insert_trips(
         try:
             if cache_service and cache_service.redis:
                 # Clear all route cache keys
-                cache_service.redis.delete_pattern("routes:*")
+                keys = cast(List[str], cast(Any, cache_service.redis.keys("routes:*")))
+                for key in keys or []:
+                    cache_service.redis.delete(key)
                 cache_invalidated = True
         except Exception as e:
             logger.warning(f"Cache invalidation failed: {e}")
@@ -523,8 +531,8 @@ async def get_system_state(
         cached_routes = 0
         try:
             if cache_service and cache_service.redis:
-                cached_routes = cache_service.redis.dbsize()
-        except:
+                cached_routes = int(cast(Any, cache_service.redis.dbsize()) or 0)
+        except Exception:
             pass
         
         # Average occupancy (placeholder)

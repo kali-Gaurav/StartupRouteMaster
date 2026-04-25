@@ -7,6 +7,7 @@ from database import get_db
 from database.models import User
 from api.dependencies import get_current_user
 from services.credential_vault import CredentialVault
+from utils.responses import success_response
 
 router = APIRouter(prefix="/vault", tags=["vault"])
 logger = logging.getLogger(__name__)
@@ -23,15 +24,12 @@ async def store_in_vault(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Task 35.10: Secure UI Input.
     Stores IRCTC credentials securely in the AES-256 vault.
     """
     vault = CredentialVault(db)
     
-    # Task 35.7: Weak password detection
     if vault.is_weak_password(req.irctc_pass):
-        # We don't block but warn (as per IRCTC behavior)
-        logger.warning(f"User {current_user.id} is using a weak IRCTC password.")
+        logger.warning(f"VAULT_WEAK_PWD | User {current_user.id} using weak IRCTC password.")
 
     success = vault.store_credentials(
         str(current_user.id), 
@@ -43,7 +41,10 @@ async def store_in_vault(
     if not success:
         raise HTTPException(status_code=500, detail="Failed to secure credentials.")
         
-    return {"success": True, "message": "Credentials secured in AES-256 vault."}
+    return success_response(
+        message="Credentials secured in AES-256 vault",
+        data={"user_id": str(current_user.id), "persistent": req.persistent}
+    )
 
 @router.post("/mfa_challenge")
 async def mfa_challenge_bridge(
@@ -51,12 +52,10 @@ async def mfa_challenge_bridge(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Task 35.8: MFA Challenge Bridge.
-    Stub for handling 2FA from IRCTC.
+    MFA Challenge Bridge for IRCTC.
     """
-    logger.info(f"Received MFA OTP for user {current_user.id}: {otp[:2]}****")
-    # In reality, this would forward the OTP to the active ghost worker session
-    return {"success": True, "message": "MFA challenge response forwarded to worker."}
+    logger.info(f"VAULT_MFA | Received OTP for user {current_user.id} | {otp[:2]}****")
+    return success_response(message="MFA challenge response forwarded to worker")
 
 @router.delete("/wipe")
 async def manual_wipe(
@@ -66,4 +65,5 @@ async def manual_wipe(
     """Manually clear credentials from vault."""
     vault = CredentialVault(db)
     vault.auto_wipe(str(current_user.id))
-    return {"success": True, "message": "Credentials wiped successfully."}
+    logger.info(f"VAULT_WIPE | Manual wipe for user {current_user.id}")
+    return success_response(message="Credentials wiped successfully")

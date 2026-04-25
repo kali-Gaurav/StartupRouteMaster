@@ -112,7 +112,10 @@ class SystemMonitor:
             self._ram_percent = psutil.virtual_memory().percent
             
             # FDs
-            try: self._num_fds = self.process.num_fds()
+            try:
+                # psutil.Process.num_fds() is Unix-only and may not be recognized by all type checkers.
+                # For Windows compatibility or missing attributes, we use len(process.open_files()) or fallback to 0.
+                self._num_fds = getattr(self.process, 'num_fds', lambda: len(self.process.open_files()))()
             except: self._num_fds = 0
             
             # 3. Anomaly Detection [Task 4.6 & 13.7]
@@ -166,12 +169,12 @@ class SystemMonitor:
         """Task 4.7 & 4.8: Expose metrics API / Prometheus format."""
         p99 = self.latency_tracker.get_percentile(99)
         return {
-            "cpu": 0.0, # Aliased for compatibility
-            "ram": 0.0, # Aliased for compatibility
+            "cpu": self._cpu_percent,
+            "ram": self._ram_percent,
             "resource": {
-                "cpu_current": 0.0,
-                "cpu_predicted": 0.0,
-                "ram_percent": 0.0,
+                "cpu_current": self._cpu_percent,
+                "cpu_predicted": self.forecaster.predict_next(),
+                "ram_percent": self._ram_percent,
                 "rss_bytes": self.last_rss,
                 "rss_growth_bps": self.rss_growth_rate,
                 "fds": self._num_fds

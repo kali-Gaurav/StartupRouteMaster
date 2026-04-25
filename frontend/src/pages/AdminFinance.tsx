@@ -65,10 +65,10 @@ export default function AdminFinance() {
   const refreshFinance = async () => {
     try {
       const [v, o, c, b] = await Promise.all([
-        fetchWithAuth("/admin/vpa/stats"),
-        fetchWithAuth("/admin/finance/overview"),
-        fetchWithAuth("/admin/finance/charts"),
-        fetchWithAuth("/admin/finance/bank-feed")
+        fetchWithAuth("/v2/admin/vpa/stats"),
+        fetchWithAuth("/v2/admin/finance/overview"),
+        fetchWithAuth("/v2/admin/finance/charts"),
+        fetchWithAuth("/v2/admin/finance/bank-feed")
       ]);
       setVpaStats(await v.json());
       setOverview(await o.json());
@@ -80,7 +80,7 @@ export default function AdminFinance() {
   const forceReconcile = async () => {
     toast.info("Triggering automated bank reconciliation...");
     try {
-      const res = await fetchWithAuth("/admin/reconcile", { method: "POST" });
+      const res = await fetchWithAuth("/v2/admin/reconcile", { method: "POST" });
       const data = await res.json();
       if (data.matched > 0) {
         toast.success(`Matched ${data.matched} new payments!`);

@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Station, Segment
+from database import Base
+from database.models import Station, Segment
 from core.route_engine import RouteEngine
 
 

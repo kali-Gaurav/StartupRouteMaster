@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Create Spec Structure",
+  "description": "Creating spec directory structure and config file for RAPTOR optimization feature",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": ""
+  }
+}

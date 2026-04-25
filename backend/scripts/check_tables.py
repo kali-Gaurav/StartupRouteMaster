@@ -1,17 +1,27 @@
-import sqlite3
+import asyncio
+import logging
+import sys
 import os
 
-db_path = "backend/database/transit_graph.db"
-if not os.path.exists(db_path):
-    print(f"Error: {db_path} not found")
-    exit(1)
+# Add backend to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
-cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-tables = cursor.fetchall()
-print(f"Tables in {db_path}:")
-table_names = [t[0] for t in tables]
-for name in sorted(table_names):
-    print(f"  - {name}")
-conn.close()
+from database.session import initialize_database_pools, SessionUser
+from sqlalchemy import inspect
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    await initialize_database_pools()
+    
+    db = SessionUser()
+    try:
+        inspector = inspect(db.get_bind())
+        tables = inspector.get_table_names()
+        print("Existing Tables:")
+        for table in sorted(tables):
+            print(f" - {table}")
+    finally:
+        db.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())

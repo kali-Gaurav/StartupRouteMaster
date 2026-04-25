@@ -87,6 +87,7 @@ export interface BackendJourneyLeg {
   duration_minutes?: number;
   fare?: number;
   distance?: number;
+  metadata?: Record<string, any>;
 }
 
 export interface BackendJourney {
@@ -145,7 +146,7 @@ export interface BackendRoutesResponse {
   booking_tips?: string[];
   message?: string;
   reasons?: string[];
-  suggestions?: string[];
+  suggestions?: any[];
   metadata?: {
     engine?: string;
     latency_ms?: number;
@@ -181,6 +182,13 @@ export interface SearchRoutesParams {
   correlationId?: string;
   routeSource?: string;
   discoveryOnly?: boolean;
+  engineModel?: string;
+}
+
+export interface LoadMoreParams {
+  session_id: string;
+  category: string;
+  limit?: number;
 }
 
 function defaultDate(): string {
@@ -217,6 +225,10 @@ export async function searchRoutesApi(
     queryParams.append('discovery_only', 'true');
   }
 
+  if (params?.engineModel) {
+    queryParams.append('engine_model', params.engineModel);
+  }
+
   const url = getRailwayApiUrl(`/api/v3/search/unified?${queryParams.toString()}`);
   
   const headers: HeadersInit = { 'Accept': 'application/json' };
@@ -230,6 +242,24 @@ export async function searchRoutesApi(
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.message || `Routes search (V2) failed: ${res.status}`);
+  }
+
+  return (await res.json()) as BackendRoutesResponse;
+}
+
+export async function loadMoreRoutesApi(params: LoadMoreParams): Promise<BackendRoutesResponse> {
+  const queryParams = new URLSearchParams({
+    session_id: params.session_id,
+    category: params.category,
+    limit: (params.limit || 10).toString()
+  });
+
+  const url = getRailwayApiUrl(`/api/v3/search/load_more?${queryParams.toString()}`);
+  const res = await fetch(url);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Load more failed: ${res.status}`);
   }
 
   return (await res.json()) as BackendRoutesResponse;
@@ -287,7 +317,8 @@ export function mapBackendRoutesToRoutes(
           waitBefore: 0,
           liveSeatAvailability: j.availability_status ?? 'UNKNOWN',
           liveFare: leg.fare ?? 0,
-          seatAvailable: (j.availability_status || '').toUpperCase().includes('AVAILABLE')
+          seatAvailable: (j.availability_status || '').toUpperCase().includes('AVAILABLE'),
+          metadata: leg.metadata || {}
         });
       });
     }
@@ -302,9 +333,11 @@ export function mapBackendRoutesToRoutes(
       totalDistance: j.total_distance ?? 0,
       liveFareTotal: j.total_cost ?? 0,
       seatProbability: j.reliability_score ?? 0.85,
-      reliabilityBadge: j.reliability_badge, // [NEW]
-      isLocked: j.is_locked ?? true, // [NEW]
-      safetyScore: 100,
+      reliabilityBadge: j.reliability_badge,
+      isLocked: j.is_locked ?? true,
+      safetyScore: j.metadata?.safety_score ?? 100,
+      metadata: j.metadata,
+      redistribution_options: j.metadata?.redistribution_options || []
     });
   });
 

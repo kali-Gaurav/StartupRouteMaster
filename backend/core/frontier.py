@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set, Any
 from datetime import datetime
 
-@dataclass
+@dataclass(slots=True)
 class FrontierRoute:
     """Represents a route candidate in a station's Pareto frontier."""
     arrival_time: int  # Minutes from midnight
@@ -17,14 +17,18 @@ class FrontierRoute:
     total_wait: int
     total_distance: float
     reliability: float = 1.0  # [Task 173] 0.0 to 1.0 (1.0 is default/stable)
+    total_cost: float = 0.0    # [McRAPTOR] Estimated monetary cost
+    comfort_score: float = 0.5 # [McRAPTOR] 0.0 to 1.0 (Higher is better)
     score: float = 0.0
     trip_id: Optional[int] = None
     parent_trip_id: Optional[int] = None
     
     # [Task 2] Distance and Wait Time Weighting
-    distance_weight: float = 0.2    # 20% importance for distance
-    wait_weight: float = 0.15       # 15% importance for wait time
-    reliability_weight: float = 0.25 # [Task 173] 25% importance
+    distance_weight: float = 0.1
+    wait_weight: float = 0.1
+    reliability_weight: float = 0.2
+    cost_weight: float = 0.3    # [McRAPTOR] High priority for cost-sensitive users
+    comfort_weight: float = 0.3 # [McRAPTOR] High priority for premium users
     
     def dominates(self, other: 'FrontierRoute', 
                   cost_fn: Optional[Any] = None,
@@ -32,30 +36,45 @@ class FrontierRoute:
                   epsilon_mins: int = 0) -> bool:
         """
         [Task 42.6] Personalized Dominance.
-        If cost_fn is provided, we use weighted generalized cost.
-        Otherwise, we fall back to standard Pareto.
+        Updated for McRAPTOR: Includes Cost and Comfort.
         """
         if cost_fn and constraints:
-            self_cost = cost_fn(self.arrival_time, self.transfers, self.total_wait, self.total_distance, constraints)
-            other_cost = cost_fn(other.arrival_time, other.transfers, other.total_wait, other.total_distance, constraints)
+            # If a complex cost function is provided, we use it for a scalar comparison
+            # BUT we still allow Pareto dominance on time to avoid "cheap but slow" dominating "fast but slightly more expensive"
+            self_cost = cost_fn(self.arrival_time, self.transfers, self.total_wait, self.total_distance, self.total_cost, self.comfort_score, constraints)
+            other_cost = cost_fn(other.arrival_time, other.transfers, other.total_wait, other.total_distance, other.total_cost, other.comfort_score, constraints)
             
-            # Better if cost is lower AND arrival is not significantly worse
-            # (To avoid cost-dominating a much faster route)
-            return self_cost <= other_cost and self.arrival_time <= other.arrival_time + 120
+            # Pruning rule: Self dominates Other if it is significantly better in generalized cost
+            # AND not significantly worse in arrival time.
+            return self_cost <= other_cost and self.arrival_time <= other.arrival_time + 60
             
-        # [Legacy/Standard Pareto]
-        self_arr = self.arrival_time - epsilon_mins
-        strictly_better = (
-            self_arr < other.arrival_time or
-            self.transfers < other.transfers or
-            self.reliability > other.reliability
-        )
+        # [Multi-Criteria Pareto Dominance]
+        # Self dominates Other if it is NOT WORSE in any dimension AND BETTER in at least one.
+        
+        # Dimensions: arrival_time, transfers, reliability (inv), cost, comfort (inv)
+        # Higher is better for Reliability/Comfort, so we check >= and >.
+        # Lower is better for Arrival/Transfers/Cost, so we check <= and <.
+        
         not_worse = (
-            self_arr <= other.arrival_time and
+            (self.arrival_time - epsilon_mins) <= other.arrival_time and
             self.transfers <= other.transfers and
-            self.reliability >= other.reliability
+            self.total_cost <= other.total_cost and
+            self.reliability >= other.reliability and
+            self.comfort_score >= other.comfort_score
         )
-        return strictly_better and not_worse
+        
+        if not not_worse:
+            return False
+            
+        strictly_better = (
+            (self.arrival_time - epsilon_mins) < other.arrival_time or
+            self.transfers < other.transfers or
+            self.total_cost < other.total_cost or
+            self.reliability > other.reliability or
+            self.comfort_score > other.comfort_score
+        )
+        
+        return strictly_better
 
 class ParetoFrontier:
     """

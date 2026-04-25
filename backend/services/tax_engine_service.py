@@ -3,8 +3,9 @@ import math
 import io
 import csv
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,8 @@ class TaxEngineService:
     """
     Task 5: Platform Fee & GST Engine.
     Calculates dynamic fees and GST on service components.
+    
+    With metrics tracking for tax calculation operations.
     """
     
     GST_RATE = 0.18 # 18% GST on platform fee
@@ -23,6 +26,54 @@ class TaxEngineService:
         "GBP": 105.20,
         "INR": 1.00
     }
+    
+    def __init__(self):
+        """Initialize tax engine with metrics tracking."""
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = __import__('threading').Lock()
+        
+        logger.info("TaxEngineService initialized with metrics tracking")
+    
+    def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for tax calculation operations."""
+        with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+    
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type
+        }
+    
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "gst_rate": self.GST_RATE,
+            "metrics": self.get_metrics()
+        }
     
     def convert_currency(self, amount_inr: float, target_currency: str) -> float:
         """Internal conversion for display purposes."""
@@ -37,7 +88,7 @@ class TaxEngineService:
         count = db.query(Booking).filter(Booking.user_id == user_id).count()
         return count == 0
 
-    def calculate_breakdown(self, base_fare: float, discount_code: str = None, is_first_time: bool = False, display_currency: str = "INR") -> Dict[str, Any]:
+    def calculate_breakdown(self, base_fare: float, discount_code: Optional[str] = None, is_first_time: bool = False, display_currency: str = "INR") -> Dict[str, Any]:
         """
         Task 5.1: Dynamic fee calculation based on ticket value.
         Task 5.3: GST (18%) auto-calculation on the Service Fee component.
@@ -86,7 +137,7 @@ class TaxEngineService:
         logger.debug(f"Calculated breakdown: {breakdown}")
         return breakdown
 
-    def generate_tax_invoice_pdf(self, transaction_id: str, date_str: str, breakdown: Dict[str, Any]) -> io.BytesIO:
+    def generate_tax_invoice_pdf(self, transaction_id: str, date_str: str, breakdown: Dict[str, Any]) -> Optional[io.BytesIO]:
         """
         Task 5.4: Tax Invoice generator (PDF) for the user.
         Uses ReportLab to generate a clean, compliant invoice.
@@ -167,7 +218,8 @@ class TaxEngineService:
         for p in payments:
             # We estimate backwards if we didn't store the exact breakdown in columns
             # In production, this would read from a dedicated ledger table
-            breakdown = self.calculate_breakdown(p.amount - 20) # Rough estimate for demo export
+            amount = float(p.amount or 0)
+            breakdown = self.calculate_breakdown(amount - 20.0) # Rough estimate for demo export
             writer.writerow([
                 p.created_at.strftime("%Y-%m-%d"),
                 p.razorpay_order_id,

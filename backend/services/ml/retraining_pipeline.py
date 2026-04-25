@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import schedule
 import threading
@@ -20,6 +20,9 @@ from services.ml.delayed_models import (
     ReliabilityScoreModel, 
     TransferSuccessProbabilityModel
 )
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +38,27 @@ class MLRetrainingManager:
     def __init__(self, db_session_factory=SessionLocal):
         self.db_session_factory = db_session_factory
         self.running = False
+        # Circuit breaker for retraining operations
+        self._retraining_circuit_breaker = circuit_breaker(
+            name="ml_retraining",
+            failure_threshold=3,
+            recovery_timeout=3600.0  # 1 hour recovery
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="ml_retraining_manager",
+            default_tags={"component": "ml"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._retraining_circuit_breaker.state.value)
+        self._metrics.counter("training_cycles_total")
+        self._metrics.counter("training_cycles_success")
+        self._metrics.counter("training_cycles_failed")
+        self._metrics.histogram("training_cycle_duration_seconds")
 
     def run_full_training_cycle(self):
         """Trains all models and saves them to the model registry."""
         logger.info("🚀 Starting Full ML Retraining Cycle...")
+        start_time = time.perf_counter()
         session = self.db_session_factory()
         
         try:
@@ -57,9 +77,15 @@ class MLRetrainingManager:
             logger.info("  → Training TransferSuccessProbabilityModel...")
             transfer_model = TransferSuccessProbabilityModel()
             
-            logger.info("✅ ML Retraining Cycle Complete.")
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("training_cycle_duration_seconds", duration)
+            self._metrics.counter("training_cycles_success")
+            logger.info(f"✅ ML Retraining Cycle Complete in {duration:.2f}s.")
             
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("training_cycle_duration_seconds", duration)
+            self._metrics.counter("training_cycles_failed", tags={"error_type": type(e).__name__})
             logger.error(f"❌ Retraining cycle failed: {e}", exc_info=True)
         finally:
             session.close()
@@ -86,6 +112,35 @@ class MLRetrainingManager:
         thread = threading.Thread(target=self.schedule_retraining, daemon=True)
         thread.start()
         return thread
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "ml_retraining_manager",
+            "circuit_breaker_state": self._retraining_circuit_breaker.state.name,
+            "circuit_breaker_failures": self._retraining_circuit_breaker.failure_count,
+            "training_cycles_total": self._metrics.get_counter("training_cycles_total"),
+            "training_cycles_success": self._metrics.get_counter("training_cycles_success"),
+            "training_cycles_failed": self._metrics.get_counter("training_cycles_failed"),
+            "training_cycle_duration_p50": self._metrics.get_percentile("training_cycle_duration_seconds", 50),
+            "training_cycle_duration_p95": self._metrics.get_percentile("training_cycle_duration_seconds", 95),
+            "is_running": self.running,
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if self._retraining_circuit_breaker.state == CircuitState.CLOSED else "degraded",
+            "service": "ml_retraining_manager",
+            "circuit_breaker": self._retraining_circuit_breaker.state.name,
+            "is_scheduled": self.running,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._retraining_circuit_breaker.reset()
+        logger.info("🔄 [RETRAINING] Circuit breaker reset for ML retraining")
 
 if __name__ == "__main__":
     # Test execution

@@ -2,10 +2,15 @@ import asyncio
 import logging
 import time
 from typing import Dict, Set, List
+from datetime import datetime
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from services.jit_manager import jit_manager
 from core.ml_models.route_predictor import route_predictor
 from services.feedback_loop import feedback_loop
+from core.resilience import circuit_breaker_manager, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger("shadow-warmer")
 
@@ -13,8 +18,48 @@ class ShadowWarmer:
     """
     Subtask 1.13: Predictive Cache Pre-fetching.
     """
+    
     def __init__(self):
         self.warmed_routes: Set[str] = set()
+        
+        # Circuit breaker for ML model predictions
+        self._ml_breaker = circuit_breaker_manager.get_or_create(
+            "shadow_warmer_ml",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=30.0,
+                success_threshold=3
+            )
+        )
+        
+        # Circuit breaker for cache operations
+        self._cache_breaker = circuit_breaker_manager.get_or_create(
+            "shadow_warmer_cache",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=60.0,
+                success_threshold=3
+            )
+        )
+        
+        # Retry policy for prefetch operations
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            exponential_base=2.0,
+            jitter=True,
+            conditions=[
+                lambda e: isinstance(e, (ConnectionError, TimeoutError)),
+                lambda e: "cache" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("ShadowWarmer initialized with resilience patterns")
 
     async def warm_by_intent(self, client_id: str, intent: str, path: str):
         # VITAL: Skip warming for health/docs/root
@@ -53,5 +98,66 @@ class ShadowWarmer:
         for dest, prob in predictions:
             if prob > 0.8:
                 pass
+    
+    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for shadow warmer operations."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+    
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type,
+            "warmed_routes_count": len(self.warmed_routes),
+            "circuit_breaker_ml_state": self._ml_breaker.get_state().value,
+            "circuit_breaker_cache_state": self._cache_breaker.get_state().value
+        }
+    
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "circuit_breaker": {
+                "ml": {
+                    "state": self._ml_breaker.get_state().value,
+                    "failure_count": self._ml_breaker.failure_count,
+                    "success_count": self._ml_breaker.success_count
+                },
+                "cache": {
+                    "state": self._cache_breaker.get_state().value,
+                    "failure_count": self._cache_breaker.failure_count,
+                    "success_count": self._cache_breaker.success_count
+                }
+            },
+            "metrics": self.get_metrics()
+        }
+    
+    def reset_circuit_breakers(self):
+        """Reset circuit breakers."""
+        self._ml_breaker.reset()
+        self._cache_breaker.reset()
+        logger.info("Circuit breakers reset for shadow_warmer")
 
 shadow_warmer = ShadowWarmer()

@@ -3,6 +3,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -10,10 +11,18 @@ class TatkalSchedulerService:
     """
     Task 30: Tatkal Timing Precision.
     Manages the high-stakes execution of Tatkal bookings.
+    
+    With metrics tracking for tatkal operations.
     """
     
     def __init__(self):
         self.ntp_offset_ms = 0 # Simulated delta from NTP server
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("TatkalSchedulerService initialized with metrics tracking")
 
     async def sync_ntp_time(self):
         """Task 30.2: NTP Time sync for server clock."""
@@ -97,5 +106,52 @@ class TatkalSchedulerService:
             return {"success": True, "message": "Tatkal payload fired successfully"}
         else:
             return {"success": False, "message": "Failed to penetrate IRCTC servers"}
+
+    # =========================================================================
+    # METRICS TRACKING
+    # =========================================================================
+
+    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for tatkal operations."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type,
+            "ntp_offset_ms": self.ntp_offset_ms
+        }
+
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "ntp_offset_ms": self.ntp_offset_ms,
+            "metrics": self.get_metrics()
+        }
+
 
 tatkal_scheduler = TatkalSchedulerService()

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List
+from typing import List, Optional
 from schemas.unified_search import JourneyOption, UnifiedSearchRequest
 
 logger = logging.getLogger(__name__)
@@ -25,10 +25,11 @@ class UnifiedPlanner:
         
         # Use only high-speed engines (UltraTurbo)
         phase_1_results = await self._run_parallel_search(req, engines=["ultraturbo"])
+        preference = req.preferences or "balanced"
         
         if len(phase_1_results) >= threshold:
             logger.info("Found sufficient Phase 1 results.")
-            return self.rank(phase_1_results, req.preferences)[:req.max_results]
+            return self.rank(phase_1_results, preference)[:req.max_results]
 
         # --- PHASE 2: EXHAUSTIVE DISCOVERY ---
         logger.info("Phase 1 yielded insufficient results. Expanding to Phase 2 (Relaxed Discovery)...")
@@ -39,7 +40,7 @@ class UnifiedPlanner:
         phase_2_results = await self._run_parallel_search(req)
         
         all_results = self._deduplicate(phase_1_results + phase_2_results)
-        return self.rank(all_results, req.preferences)[:req.max_results]
+        return self.rank(all_results, preference)[:req.max_results]
 
     async def _run_parallel_search(self, req: UnifiedSearchRequest, engines: Optional[List[str]] = None) -> List[JourneyOption]:
         tasks = []
@@ -52,8 +53,10 @@ class UnifiedPlanner:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         journeys = []
         for res in results:
-            if not isinstance(res, Exception) and res:
+            if isinstance(res, list):
                 journeys.extend(res)
+            elif res and not isinstance(res, Exception):
+                journeys.append(res)
         return journeys
 
     def _deduplicate(self, journeys: List[JourneyOption]) -> List[JourneyOption]:

@@ -267,7 +267,7 @@ def get_active_trains(db_session) -> List[str]:
     Returns:
         List of train numbers
     """
-    from ...database.models import TrainMaster
+    from database.models import TrainMaster
     from datetime import datetime, timedelta
     
     try:

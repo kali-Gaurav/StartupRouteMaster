@@ -107,7 +107,7 @@ async def claim_booking(
             logger.error(f"Booking {booking_id} not found during claim.")
             raise HTTPException(status_code=404, detail="Booking not found.")
             
-        if booking.agent_id:
+        if booking.agent_id is not None:
             logger.info(f"Conflict: Booking {booking_id} already held by {booking.agent_id}")
             raise HTTPException(
                 status_code=409, 

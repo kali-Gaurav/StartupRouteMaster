@@ -88,7 +88,9 @@ async def run_etl():
         
         if new_stops:
             logger.info(f"Syncing {len(new_stops)} new stations...")
-            session.bulk_insert_mappings(Stop, new_stops)
+            from sqlalchemy.orm import Mapper
+            from typing import cast
+            session.bulk_insert_mappings(cast(Mapper, Stop), new_stops)
             session.commit()
 
         station_mapping = {s.stop_id: s.id for s in session.query(Stop).all()}
@@ -158,9 +160,11 @@ async def run_etl():
                             "operating_days": "1111111"
                         })
 
-            session.bulk_insert_mappings(StopTime, st_batch)
-            session.bulk_insert_mappings(StationSchedule, sched_batch)
-            session.bulk_insert_mappings(Segment, seg_batch)
+            from sqlalchemy.orm import Mapper
+            from typing import cast
+            session.bulk_insert_mappings(cast(Mapper, StopTime), st_batch)
+            session.bulk_insert_mappings(cast(Mapper, StationSchedule), sched_batch)
+            session.bulk_insert_mappings(cast(Mapper, Segment), seg_batch)
 
             if k % 50 == 0:
                 session.commit()

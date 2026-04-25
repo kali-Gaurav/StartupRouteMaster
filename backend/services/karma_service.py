@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 from sqlalchemy.orm import Session
 from database.models import User, AuditLog
 from services.credit_service import credit_service
@@ -17,7 +18,7 @@ KARMA_MILESTONES = [500, 1000, 2500, 5000, 10000]
 
 class KarmaService:
     @staticmethod
-    def add_karma(db: Session, user_id: str, event_type: str, reason: str = None) -> int:
+    def add_karma(db: Session, user_id: str, event_type: str, reason: Optional[str] = None) -> int:
         """
         Increments user karma score and checks for milestone bonuses.
         """

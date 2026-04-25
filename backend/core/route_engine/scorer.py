@@ -1,3 +1,4 @@
+from PIL.Image import logger
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 import logging
@@ -12,6 +13,13 @@ class RouteScorer:
         self.constraints = constraints
         self.graph = graph_accessor
         self.w = constraints.weights
+        self.is_conservative_mode = False # [Group 3] Drift fallback flag
+
+    def set_conservative_mode(self, active: bool):
+        """Toggles conservative fallback mode for drift mitigation."""
+        self.is_conservative_mode = active
+        if active:
+            logger.warning("🛡️ [SCORER] HEURISTIC FALLBACK ACTIVE: Penalizing complexity to favor reliability.")
 
     def score_route(self, raw_path: List[Dict]) -> Dict:
         """
@@ -19,6 +27,9 @@ class RouteScorer:
         """
         if not raw_path:
             return {"score": 999999}
+        
+        # Drift-aware penalty multiplier
+        p_mult = 2.5 if self.is_conservative_mode else 1.0
 
         # 1. Base Metrics
         total_duration = (raw_path[-1]["arr_time"] - raw_path[0]["dep_time"]) / 60
@@ -33,11 +44,10 @@ class RouteScorer:
         for tr in transfers:
             # Convert timestamp to hour
             arr_hour = (tr["arr_time"] // 3600) % 24
-            dep_hour = (tr["dep_time"] // 3600) % 24
             
             # Night window: 23:30 (84600s) to 05:00 (18000s)
             if (arr_hour >= 23 or arr_hour < 5):
-                night_penalty += 1000
+                night_penalty += (1000 * p_mult) # Scaled by p_mult
         
         score += night_penalty
 
@@ -51,14 +61,13 @@ class RouteScorer:
         score += pantry_bonus
 
         # 5. Rake Linkage Check (Task 13)
-        # If same trip_id continues, it's a rake-link, no penalty
         transfer_count = len(transfers)
         for i in range(len(raw_path) - 1):
             if raw_path[i]["trip_id"] == raw_path[i+1]["trip_id"]:
                 transfer_count -= 1 # Not a real transfer
         
         # Task 1: Transfer penalty
-        score += transfer_count * self.w.transfer
+        score += (transfer_count * self.w.transfer * p_mult)
 
         return {
             "path": raw_path,

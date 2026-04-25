@@ -14,9 +14,9 @@ class LazyGraphLoader:
     Prevents cold-start RAM spikes by loading graph components on-demand.
     Uses memory mapping and an LRU cache for high-frequency zones.
     """
-    def __init__(self, base_dir: str = None, max_zones_in_ram: int = 5):
+    def __init__(self, base_dir: Optional[str] = None, max_zones_in_ram: int = 5):
         from database.config import Config
-        self.base_dir = Path(Config.MEMMAP_DIR) / "zones"
+        self.base_dir = Path(base_dir or Config.MEMMAP_DIR) / "zones"
         self.max_zones = max_zones_in_ram
         self.loaded_zones: OrderedDict[int, Any] = OrderedDict()
         os.makedirs(self.base_dir, exist_ok=True)
@@ -27,6 +27,12 @@ class LazyGraphLoader:
         self.zone_size = 0
         self._load_metadata()
 
+    def _safe_int(self, val: Any, default: int = 0) -> int:
+        try:
+            return int(float(str(val)))
+        except (ValueError, TypeError):
+            return default
+
     def _load_metadata(self):
         try:
             from database.config import Config
@@ -34,7 +40,7 @@ class LazyGraphLoader:
             if timetable_path.exists():
                 data = np.load(timetable_path)
                 stop_ids = data['stop_ids']
-                self.stop_to_idx = {int(sid): i for i, sid in enumerate(stop_ids)}
+                self.stop_to_idx = {self._safe_int(sid): i for i, sid in enumerate(stop_ids)}
                 
                 max_idx = len(stop_ids) - 1
                 self.zone_size = (max_idx // self.num_zones) + 1
@@ -78,7 +84,7 @@ class LazyGraphLoader:
 
     def get_zone_id_for_stop(self, stop_id: int) -> int:
         """Determines zone mapping based on timetable index."""
-        idx = self.stop_to_idx.get(int(stop_id))
+        idx = self.stop_to_idx.get(self._safe_int(stop_id))
         if idx is None:
             # Fallback if stop not in timetable
             return 0

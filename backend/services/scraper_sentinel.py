@@ -4,11 +4,23 @@ import random
 import time
 import os
 import psutil
-from typing import Dict, Any, List, Optional
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+from enum import Enum
+from typing import Dict, Any, List, Optional, cast
+from datetime import datetime
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright, ViewportSize
 from core.nexus.audit.chaos import chaos_trap
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger("scraper-sentinel")
+
+
+class ScraperState(str, Enum):
+    OFFLINE = "offline"
+    DEGRADED = "degraded"
+    READY = "ready"
+    RUNNING = "running"
 
 class ScraperSentinel:
     """
@@ -30,6 +42,37 @@ class ScraperSentinel:
         self.BASE_MAX_CONTEXTS = 1    # Keep strictly thin (1 instance = ~100MB)
         self.BURST_MAX_CONTEXTS = 2   # Strict cap to prevent 500MB VPS OOM
         
+        # Resilience patterns
+        self._browser_circuit_breaker = circuit_breaker(
+            name="scraper_browser",
+            failure_threshold=3,
+            recovery_timeout=300.0  # 5 minutes
+        )
+        self._context_circuit_breaker = circuit_breaker(
+            name="scraper_context",
+            failure_threshold=10,
+            recovery_timeout=60.0
+        )
+        self._retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="scraper_sentinel",
+            default_tags={"component": "scraper"}
+        )
+        self._metrics.gauge("browser_circuit_breaker_state", lambda: self._browser_circuit_breaker.state.value)
+        self._metrics.gauge("context_circuit_breaker_state", lambda: self._context_circuit_breaker.state.value)
+        self._metrics.counter("contexts_created_total")
+        self._metrics.counter("contexts_acquired_total")
+        self._metrics.counter("contexts_released_total")
+        self._metrics.counter("contexts_failed_total")
+        self._metrics.counter("failures_recorded_total")
+        self._metrics.histogram("context_acquisition_duration_seconds")
+        
         # [Task 48.2] 100+ Realistic User-Agent Pool
         self.ua_pool = [
             f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36"
@@ -38,6 +81,24 @@ class ScraperSentinel:
             f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36"
             for v in range(118, 126)
         ]
+        
+        # [Day 2: Task 3] Proxy Rotator logic
+        self._proxies = [
+            None, # Direct connection fallback
+            # "http://proxy1.example.com:8080",
+            # "http://proxy2.example.com:8080"
+        ]
+        self._current_proxy_idx = 0
+
+    @property
+    def state(self) -> ScraperState:
+        if not self._pw or not self._browser:
+            return ScraperState.OFFLINE
+        if self._disabled_sources or any(self._failure_counts.values()):
+            return ScraperState.DEGRADED
+        if any(entry.get("in_use") for entry in self._contexts):
+            return ScraperState.RUNNING
+        return ScraperState.READY
 
     def is_available(self, source: str) -> bool:
         """[Task 48.7] Circuit Breaker check."""
@@ -66,7 +127,7 @@ class ScraperSentinel:
         if self._failure_counts[source] >= 3 and status_code in [407, 408, 502, 504]:
              logger.warning(f"🔄 [NEXUS:SENTINEL] {source} hit {self._failure_counts[source]} Proxy Timeouts. Triggering Proxy Rotation Hook!")
              # Here we rotate the proxy dynamically without destroying the chromium context
-             pass
+             self._rotate_proxy()
 
         # 3. Cumulative Breach
         if self._failure_counts[source] >= 5:
@@ -74,7 +135,29 @@ class ScraperSentinel:
             logger.error(f"[NEXUS:SENTINEL] Circuit Breaker Tripped ({source}). Backoff: {duration}s.")
             self._disabled_sources[source] = time.time() + duration
 
+    async def get_stats(self) -> Dict[str, Any]:
+        """Return a lightweight snapshot for health endpoints and dashboards."""
+        memory_mb = 0.0
+        try:
+            memory_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+
+        active_contexts = sum(1 for entry in self._contexts if entry.get("in_use"))
+        return {
+            "state": self.state.value,
+            "available_contexts": max(0, len(self._contexts) - active_contexts),
+            "active_contexts": active_contexts,
+            "total_contexts": len(self._contexts),
+            "disabled_sources": dict(self._disabled_sources),
+            "failure_counts": dict(self._failure_counts),
+            "recycling_threshold": self.recycling_threshold,
+            "memory_mb": round(memory_mb, 2),
+        }
+
     async def start(self):
+        """Initialize browser and warm pool with strict error handling [Task 102]."""
+        # Note: resilience decorators removed from here and should be applied inside or via wrapper
         """Initialize browser and warm pool with strict error handling [Task 102]."""
         async with self._lock:
             if self._pw: return
@@ -103,12 +186,15 @@ class ScraperSentinel:
 
     async def _create_new_context(self) -> Dict[str, Any]:
         """Creates a high-entropy, randomized browser identity [48.2]."""
-        if not self._browser: await self.start()
+        if not self._browser:
+            await self.start()
+        assert self._browser is not None
         
         ua = random.choice(self.ua_pool)
-        viewport = {"width": 1280 + random.randint(-100, 100), "height": 720 + random.randint(-50, 50)}
+        viewport_data = {"width": 1280 + random.randint(-100, 100), "height": 720 + random.randint(-50, 50)}
+        viewport = cast(ViewportSize, viewport_data)
         
-        logger.debug(f"Creating Identity: {ua[:40]}... {viewport['width']}x{viewport['height']}")
+        logger.debug(f"Creating Identity: {ua[:40]}... {viewport_data['width']}x{viewport_data['height']}")
         
         context = await self._browser.new_context(
             user_agent=ua,
@@ -227,6 +313,13 @@ class ScraperSentinel:
                 except: pass
                 self._contexts.remove(entry)
 
+    def _rotate_proxy(self):
+        """Advances the proxy index for future contexts."""
+        if not self._proxies:
+            return
+        self._current_proxy_idx = (self._current_proxy_idx + 1) % len(self._proxies)
+        logger.info(f"🌐 [SENTINEL] Proxy rotated to index {self._current_proxy_idx}")
+
     def _check_system_memory(self) -> bool:
         """[Task 48.3] Only allow scaling if > 500MB is free."""
         mem = psutil.virtual_memory()
@@ -241,5 +334,49 @@ class ScraperSentinel:
         if self._browser: await self._browser.close()
         if self._pw: await self._pw.stop()
         self._contexts = []
+
+
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "scraper_sentinel",
+            "browser_circuit_breaker_state": self._browser_circuit_breaker.state.name,
+            "browser_circuit_breaker_failures": self._browser_circuit_breaker.failure_count,
+            "context_circuit_breaker_state": self._context_circuit_breaker.state.name,
+            "context_circuit_breaker_failures": self._context_circuit_breaker.failure_count,
+            "contexts_created_total": self._metrics.get_counter("contexts_created_total"),
+            "contexts_acquired_total": self._metrics.get_counter("contexts_acquired_total"),
+            "contexts_released_total": self._metrics.get_counter("contexts_released_total"),
+            "contexts_failed_total": self._metrics.get_counter("contexts_failed_total"),
+            "failures_recorded_total": self._metrics.get_counter("failures_recorded_total"),
+            "context_acquisition_duration_p50": self._metrics.get_percentile("context_acquisition_duration_seconds", 50),
+            "context_acquisition_duration_p95": self._metrics.get_percentile("context_acquisition_duration_seconds", 95),
+            "current_state": self.state.value,
+            "active_contexts": sum(1 for entry in self._contexts if entry.get("in_use")),
+            "total_contexts": len(self._contexts),
+            "disabled_sources": dict(self._disabled_sources),
+            "failure_counts": dict(self._failure_counts),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if (self._browser_circuit_breaker.state == CircuitState.CLOSED and 
+                                   self._context_circuit_breaker.state == CircuitState.CLOSED) else "degraded",
+            "service": "scraper_sentinel",
+            "browser_circuit_breaker": self._browser_circuit_breaker.state.name,
+            "context_circuit_breaker": self._context_circuit_breaker.state.name,
+            "state": self.state.value,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self, breaker_name: str = "all"):
+        """Reset circuit breaker(s) to closed state."""
+        if breaker_name == "all" or breaker_name == "browser":
+            self._browser_circuit_breaker.reset()
+        if breaker_name == "all" or breaker_name == "context":
+            self._context_circuit_breaker.reset()
+        logger.info(f"🔄 [SCRAPER] Circuit breaker '{breaker_name}' reset")
 
 scraper_sentinel = ScraperSentinel()

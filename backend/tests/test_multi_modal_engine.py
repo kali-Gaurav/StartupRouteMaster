@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from unittest.mock import Mock, patch
 
 from services.multi_modal_route_engine import MultiModalRouteEngine
-from models import Stop, Route, Trip, StopTime, Transfer, Calendar
+from database.models import Stop, Route, Trip, StopTime, Transfer, Calendar
 from database import get_db
 
 

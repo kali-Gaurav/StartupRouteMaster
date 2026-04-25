@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Tuple, Any
 from rapidfuzz import process, fuzz
+from datetime import datetime
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,46 @@ class StationSuggestion:
     longitude: float = 0.0
     score: float = 100.0
     popularity: float = 0.0
+
+class StationSearchEngineMetrics:
+    """Metrics tracking for station search engine."""
+    
+    def __init__(self):
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = Lock()
+        self._query_counts: Dict[str, int] = {}
+    
+    def record_query(self, query: str, result_count: int, duration_ms: float):
+        """Record search query metrics."""
+        with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "query_length": len(query),
+                "result_count": result_count,
+                "duration_ms": duration_ms
+            })
+            self._query_counts[query[:20]] = self._query_counts.get(query[:20], 0) + 1
+    
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        with self._metrics_lock:
+            if not self._metrics:
+                return {"total_queries": 0, "avg_results": 0.0}
+            
+            total = len(self._metrics)
+            result_counts = [m["result_count"] for m in self._metrics]
+            durations = [m["duration_ms"] for m in self._metrics]
+            
+            return {
+                "total_queries": total,
+                "avg_results": sum(result_counts) / len(result_counts) if result_counts else 0.0,
+                "avg_duration_ms": sum(durations) / len(durations) if durations else 0.0,
+                "unique_query_prefixes": len(self._query_counts),
+                "cache_size": len(self._query_cache)
+            }
+
+# Global metrics instance
+_station_search_metrics = StationSearchEngineMetrics()
 
 class StationTrieNode:
     def __init__(self):
@@ -233,10 +275,29 @@ class StationSearchEngine:
             if len(final_results) >= limit: break
             
         self._query_cache[q] = (now, final_results)
+        
+        # Record metrics
+        duration_ms = (time.time() - now) * 1000
+        _station_search_metrics.record_query(q, len(final_results), duration_ms)
+        
         return final_results
 
     def resolve(self, query: str) -> Optional[StationSuggestion]:
         suggestions = self.suggest(query, limit=1)
         return suggestions[0] if suggestions else None
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        return _station_search_metrics.get_metrics()
+
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "initialized": self._initialized,
+            "stations_loaded": len(self._stations),
+            "cache_size": len(self._query_cache),
+            "metrics": self.get_metrics()
+        }
 
 station_search_engine = StationSearchEngine()

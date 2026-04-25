@@ -16,9 +16,24 @@ MAJOR_HUBS = {
     "PGT", "KOTA", "GHY", "PUNE", "MMCT", "BCT", "NZM", "TATA", "JSG", "VSKP", "NED"
 }
 
-# (Tier 2 - REGIONAL HUBS)
 REGIONAL_HUBS = {
     "R", "BSP", "REWA", "JBP", "STA", "BINA", "BKN", "BME", "RE", "GKP", "GD", "CPR"
+}
+
+
+# [Task 12.2] Hub-to-Airport/Terminal Mapping (Omniscient Foundation)
+HUB_TERMINAL_MAPPING = {
+    "NDLS": {"airports": ["DEL"], "bus_stands": ["Kashmere Gate", "Sarai Kale Khan"], "city": "Delhi"},
+    "HWH": {"airports": ["CCU"], "bus_stands": ["Esplanade"], "city": "Kolkata"},
+    "CSMT": {"airports": ["BOM"], "bus_stands": ["Dadar"], "city": "Mumbai"},
+    "SBC": {"airports": ["BLR"], "bus_stands": ["Majestic"], "city": "Bengaluru"},
+    "MAS": {"airports": ["MAA"], "bus_stands": ["Koyambedu"], "city": "Chennai"},
+    "SC": {"airports": ["HYD"], "bus_stands": ["MGBS"], "city": "Hyderabad"},
+    "ADI": {"airports": ["AMD"], "bus_stands": ["Gita Mandir"], "city": "Ahmedabad"},
+    "PNBE": {"airports": ["PAT"], "bus_stands": ["Mithapur"], "city": "Patna"},
+    "LKO": {"airports": ["LKO"], "bus_stands": ["Alambagh"], "city": "Lucknow"},
+    "GHY": {"airports": ["GAU"], "bus_stands": ["ISBT GHY"], "city": "Guwahati"},
+    "PUNE": {"airports": ["PNQ"], "bus_stands": ["Swargate"], "city": "Pune"},
 }
 
 

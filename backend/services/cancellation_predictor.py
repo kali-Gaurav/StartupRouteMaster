@@ -15,6 +15,8 @@ Features:
 - Route characteristics (demand, distance, day-type)
 - Model: Gradient Boosting (XGBoost/LightGBM)
 
+With resilience patterns: circuit breaker, retry, and comprehensive error handling.
+
 Author: RouteMaster Intelligence System
 Date: 2026-02-17
 """
@@ -24,8 +26,13 @@ import pickle
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 from dataclasses import dataclass
+from collections import deque
+import asyncio
+
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +55,8 @@ class CancellationPredictor:
     
     Uses historical booking data to forecast cancellations
     for revenue optimization and overbooking decisions.
+    
+    With resilience patterns: circuit breaker, retry, and metrics tracking.
     """
     
     # Cancellation rate targets by quota type
@@ -65,11 +74,38 @@ class CancellationPredictor:
     HIGH_RISK_THRESHOLD = 0.12  # >12%: high risk
     
     def __init__(self):
-        """Initialize cancellation predictor."""
+        """Initialize cancellation predictor with resilience patterns."""
         self.model = None
         self.is_trained = False
         self.feature_names = []
         self.logger = logging.getLogger(__name__)
+        
+        # Circuit breaker for model operations
+        self._model_breaker = circuit_breaker_manager.get_or_create(
+            "cancellation_predictor",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=60.0,
+                success_threshold=3
+            )
+        )
+        
+        # Retry policy for model operations
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            conditions=[
+                lambda e: isinstance(e, (OSError, IOError)),
+                lambda e: "memory" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("CancellationPredictor initialized with resilience patterns")
     
     def train_scaffold_model(self):
         """
@@ -141,6 +177,8 @@ class CancellationPredictor:
         
         Returns:
         - CancellationPrediction with rate, confidence, factors
+        
+        Protected by circuit breaker and retry logic.
         """
         # Build feature vector
         features = self._build_features(
@@ -154,20 +192,36 @@ class CancellationPredictor:
             historical_cancellation_rate=historical_cancellation_rate,
         )
         
-        # Make prediction
-        if self.is_trained and self.model:
-            try:
-                predicted_rate = float(self.model.predict(np.array([features]))[0])
-                predicted_rate = np.clip(predicted_rate, 0, 0.3)  # Reasonable bounds
-                confidence = self._calculate_confidence(features)
-            except Exception as e:
-                logger.error(f"Prediction error: {e}; using baseline")
+        async def _make_prediction():
+            # Make prediction
+            if self.is_trained and self.model:
+                try:
+                    feature_vector = np.asarray([features], dtype=float)
+                    predicted_rate = float(self.model.predict(feature_vector)[0])
+                    predicted_rate = np.clip(predicted_rate, 0, 0.3)  # Reasonable bounds
+                    confidence = self._calculate_confidence(features)
+                except Exception as e:
+                    self.logger.error(f"Prediction error: {e}; using baseline")
+                    predicted_rate = self.EXPECTED_CANCELLATION_RATES.get(quota_type, 0.08)
+                    confidence = 0.5
+            else:
+                # Baseline prediction
                 predicted_rate = self.EXPECTED_CANCELLATION_RATES.get(quota_type, 0.08)
                 confidence = 0.5
-        else:
-            # Baseline prediction
+            
+            return predicted_rate, confidence
+        
+        try:
+            predicted_rate, confidence = asyncio.run(
+                self._model_breaker.execute(
+                    self._retry_policy.execute,
+                    _make_prediction
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Prediction failed: {e}")
             predicted_rate = self.EXPECTED_CANCELLATION_RATES.get(quota_type, 0.08)
-            confidence = 0.5
+            confidence = 0.3
         
         # Determine recommendation
         if predicted_rate <= self.SAFE_THRESHOLD:
@@ -190,7 +244,7 @@ class CancellationPredictor:
             recommendation=recommendation,
         )
         
-        logger.info(
+        self.logger.info(
             f"Cancellation prediction for train {train_id} ({quota_type}): "
             f"{predicted_rate:.2%} (confidence: {confidence:.2f})"
         )
@@ -217,7 +271,7 @@ class CancellationPredictor:
             travel_dt = datetime.now()
         
         # Temporal features
-        day_of_week = travel_dt.dayofweek  # 0-6
+        day_of_week = travel_dt.weekday()  # 0-6
         month = travel_dt.month
         is_weekend = day_of_week >= 5
         is_holiday_season = month in [12, 1, 7, 8]  # Approximation
@@ -371,6 +425,60 @@ class CancellationPredictor:
             for name, imp in zip(self._get_feature_names(), importance)
             if imp > 0.01
         }
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, prediction: CancellationPrediction):
+        """Record prediction metrics for monitoring."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "train_id": prediction.train_id,
+                "quota_type": prediction.quota_type,
+                "predicted_rate": prediction.predicted_cancellation_rate,
+                "confidence": prediction.confidence_score,
+                "recommendation": prediction.recommendation
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_predictions": 0, "avg_confidence": 0.0}
+        
+        total = len(self._metrics)
+        rates = [m["predicted_rate"] for m in self._metrics]
+        confidences = [m["confidence"] for m in self._metrics]
+        safe_overbook = sum(1 for m in self._metrics if m["recommendation"] == "safe_to_overbook")
+        high_risk = sum(1 for m in self._metrics if m["recommendation"] == "high_risk_no_overbook")
+        
+        return {
+            "total_predictions": total,
+            "avg_predicted_rate": sum(rates) / len(rates) if rates else 0,
+            "avg_confidence": sum(confidences) / len(confidences) if confidences else 0,
+            "safe_overbook_count": safe_overbook,
+            "high_risk_count": high_risk,
+            "circuit_breaker_state": self._model_breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "model_trained": self.is_trained,
+            "circuit_breaker": {
+                "state": self._model_breaker.get_state().value,
+                "failure_count": self._model_breaker.failure_count,
+                "success_count": self._model_breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker."""
+        self._model_breaker.reset()
+        logger.info("Circuit breaker reset for cancellation predictor")
 
 
 # ============================================================================

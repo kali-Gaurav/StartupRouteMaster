@@ -17,7 +17,7 @@ Date: 2026-02-17
 
 import logging
 import numpy as np
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
@@ -37,7 +37,7 @@ class PricingContext:
     occupancy_rate: float  # Current occupancy
     time_to_departure_hours: float
     route_popularity: float  # 0 to 1
-    user_booking_history: Dict = None
+    user_booking_history: Optional[Dict[str, Any]] = None
     is_peak_season: bool = False
     is_holiday: bool = False
     competitor_price: Optional[float] = None
@@ -98,9 +98,10 @@ class DynamicPricingEngine:
         self.is_ready = False
         
         try:
-            self.demand_predictor.load_model()
+            if hasattr(self.demand_predictor, 'load_model') and self.demand_predictor.load_model():
+                self.is_ready = True
             self.route_ranker.load_model()
-            self.is_ready = True
+            self.is_ready = self.is_ready or self.route_ranker.is_trained
             logger.info("Dynamic pricing engine initialized with ML models")
         except Exception as e:
             logger.warning(f"ML models not available: {e}. Using fallback pricing.")

@@ -1,16 +1,57 @@
+from sqlalchemy.orm import Session
 import logging
 import re
 import httpx
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
+from collections import deque
 from services.cache_service import cache_service
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+
+class FraudDetectionServiceMetrics:
+    """Metrics tracking for fraud detection service."""
+    
+    def __init__(self):
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        self._lockout_counts: dict = {}
+    
+    async def record_check(self, result: str, duration_ms: float):
+        """Record fraud check metrics."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "result": result,
+                "duration_ms": duration_ms
+            })
+    
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_checks": 0, "blocked_count": 0}
+        
+        total = len(self._metrics)
+        blocked = sum(1 for m in self._metrics if m["result"] == "blocked")
+        
+        return {
+            "total_checks": total,
+            "blocked_count": blocked,
+            "block_rate": blocked / total if total > 0 else 0.0,
+            "lockout_counts": self._lockout_counts.copy()
+        }
+
 
 class FraudDetectionService:
     """
     Task 3: Fraudulent UTR Lockout.
     Implements velocity checks, lockout, and pattern matching.
+    
+    Enhanced with resilience patterns: circuit breakers, retry policies, and metrics tracking.
     """
     
     LOCKOUT_LIMIT = 3
@@ -24,14 +65,78 @@ class FraudDetectionService:
     # Task 3.7: Slack Webhook (Replace with real one in production)
     SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/dummy/webhook"
 
+    def __init__(self):
+        # Circuit breaker for external service calls (e.g., Slack notifications)
+        self._slack_breaker = circuit_breaker_manager.get_or_create(
+            "fraud_detection_slack",
+            CircuitConfig(failure_threshold=3, timeout_seconds=30.0, success_threshold=2)
+        )
+        
+        # Circuit breaker for cache operations
+        self._cache_breaker = circuit_breaker_manager.get_or_create(
+            "fraud_detection_cache",
+            CircuitConfig(failure_threshold=5, timeout_seconds=10.0, success_threshold=3)
+        )
+        
+        # Retry policy for external calls
+        self._slack_retry = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=10.0,
+            conditions=[
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "connection" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics = FraudDetectionServiceMetrics()
+        
+        logger.info("FraudDetectionService initialized with resilience patterns")
+
     def _notify_slack(self, message: str):
-        """Task 3.7: Slack notification for suspected fraud clusters."""
+        """Task 3.7: Slack notification for suspected fraud clusters with circuit breaker."""
+        async def _send_notification():
+            try:
+                # httpx.post(self.SLACK_WEBHOOK_URL, json={"text": message})
+                logger.warning(f"SLACK ALERT: {message}")
+            except Exception as e:
+                logger.error(f"Failed to send Slack alert: {e}")
+                raise
+        
         try:
-            # We don't await here to keep it simple, or use background task
-            logger.warning(f"SLACK ALERT: {message}")
-            # httpx.post(self.SLACK_WEBHOOK_URL, json={"text": message})
+            # Execute through circuit breaker with retry
+            self._slack_breaker.execute(
+                self._slack_retry.execute,
+                _send_notification
+            )
         except Exception as e:
-            logger.error(f"Failed to send Slack alert: {e}")
+            logger.error(f"Slack notification failed after retries: {e}")
+
+    def check_utr_collusion(self, db: Session, utr: str, current_user_id: str, current_fp: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Task 45.7: Detects if the same UTR is being submitted by different personas.
+        """
+        from database.models import BankTransaction, Booking
+        
+        # 1. Check historic bank attempts
+        previous_attempts = db.query(BankTransaction).filter(
+            BankTransaction.utr_number == utr,
+            BankTransaction.sender_phone != current_user_id
+        ).all()
+        
+        # 2. Check existing bookings
+        competing_bookings = db.query(Booking).filter(
+            Booking.utr_number == utr,
+            Booking.user_id != current_user_id
+        ).all()
+        
+        if previous_attempts or competing_bookings:
+            logger.critical(f"🚨 [COLLUSION] Shared UTR {utr} detected! Current User: {current_user_id}")
+            self._notify_slack(f"UTR COLLUSION: {utr} submitted by multiple users. Potential fraud cluster.")
+            return True, "This transaction ID has already been utilized by another account. Access Denied."
+            
+        return False, ""
 
     def is_geometric_pattern(self, utr: str) -> bool:
         """
@@ -113,7 +218,7 @@ class FraudDetectionService:
             if velocity == self.VELOCITY_LIMIT:
                 self._notify_slack(f"Velocity threshold breached by {identifier} (5 attempts / 10 mins).")
 
-    def validate_utr_advanced(self, utr: str, user_id: str, ip_address: str = None, device_fp: str = None) -> Tuple[bool, str]:
+    def validate_utr_advanced(self, db: Session, utr: str, user_id: str, ip_address: Optional[str] = None, device_fp: Optional[str] = None) -> Tuple[bool, str]:
         """
         Comprehensive UTR validation including fraud checks (Tasks 3.1, 3.2, 3.3).
         """
@@ -126,11 +231,27 @@ class FraudDetectionService:
             self._notify_slack(f"Geo-fence blocked UTR attempt from IP: {ip_address}")
             return False, "Payments are restricted to Indian IP addresses only."
 
+        # 1.1 Collusion Check [Task 45.7]
+        is_collusion, coll_msg = self.check_utr_collusion(db, utr, user_id, device_fp)
+        if is_collusion:
+            return False, coll_msg
+
         # 2. Check Lockouts for all identifiers (User, IP, Fingerprint)
         for ident in identifiers:
             is_blocked, reason = self.check_lockout(ident)
             if is_blocked:
                 return False, f"Blocked on identifier {ident.split(':')[0]}: {reason}"
+
+        # 2.5 Fingerprint Risk Check [Task 45.3]
+        if device_fp:
+            # We assume device_fp is the hash here for simplicity
+            from services.auth.fingerprint_service import fingerprint_service
+            # We need a DB session here. In a real app, we'd pass it or use a scoped session.
+            # For now, we use a heuristic based on cache if DB isn't available.
+            risk = (cache_service.get(f"fp_risk:{device_fp}") or 0.0)
+            if float(risk) > 0.8:
+                logger.critical(f"🛑 [FRAUD] High-Risk Device Blocked: {device_fp[:8]} | Score: {risk}")
+                return False, "Your device has been flagged for suspicious activity and cannot perform transactions."
 
         # 3. Check Honeypot (Task 3.10)
         if utr in self.HONEYPOT_UTRS:
@@ -153,3 +274,27 @@ class FraudDetectionService:
         return True, ""
 
 fraud_service = FraudDetectionService()
+# =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        return self._metrics.get_metrics()
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breakers": {
+                "slack": self._slack_breaker.get_metrics().to_dict(),
+                "cache": self._cache_breaker.get_metrics().to_dict()
+            },
+            "metrics": self._metrics.get_metrics()
+        }
+
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers."""
+        self._slack_breaker.reset()
+        self._cache_breaker.reset()
+        logger.info("All circuit breakers reset for fraud_detection_service")

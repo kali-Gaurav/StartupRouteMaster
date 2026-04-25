@@ -4,7 +4,7 @@ import time
 import json
 import os
 import sqlite3
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Sequence
 from datetime import datetime, date, timedelta
 
 from core.data_structures import Route, RouteSegment
@@ -39,6 +39,15 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
     def __init__(self):
         self.db_path = get_db_path()
 
+    def _safe_int(self, val: Any, default: int = 0) -> int:
+        """Resilient int conversion for alphanumeric train/trip IDs."""
+        if isinstance(val, int): return val
+        try:
+            return int(str(val))
+        except (ValueError, TypeError):
+            return default
+
+
     async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
         source_code = request.source_code
         dest_code = request.destination_code
@@ -51,9 +60,12 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
             return RoutingResponse(engine_name=self.engine_id, routes=[], latency_ms=0, yield_count=0)
             
         try:
-            # Use asyncio.to_thread to run the synchronous DB logic in a separate thread
+            # Use pre-resolved clusters if available, else fall back to codes
+            src_ids = request.src_cluster_ids or [request.source_code]
+            dst_ids = request.dst_cluster_ids or [request.destination_code]
+
             routes = await asyncio.wait_for(
-                asyncio.to_thread(self._find_routes_sync, source_code, dest_code, travel_date, limit),
+                asyncio.to_thread(self._find_routes_sync, src_ids, dst_ids, travel_date, limit),
                 timeout=5.0 
             )
             
@@ -87,20 +99,25 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
                 triage_status="FAILED",
                 metadata={"error": str(e)}
             )
-    def _find_routes_sync(self, source_code: str, dest_code: str, travel_date: date, limit: int) -> List[Route]:
-        s_norm = source_code.upper().strip()
-        d_norm = dest_code.upper().strip()
-        if s_norm == d_norm: return []
-
+    def _find_routes_sync(self, src_ids: List[Any], dst_ids: List[Any], travel_date: date, limit: int) -> List[Route]:
+        """
+        Subtask 1.2: High-Performance Direct Route Fetcher.
+        Accepts pre-resolved numeric IDs or codes for clusters.
+        """
         start_ts = time.perf_counter()
         
+        conn = None
         try:
             # Each thread needs its own connection
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             
-            src_ids = self._resolve_cluster_ids_sync(conn, source_code)
-            dst_ids = self._resolve_cluster_ids_sync(conn, dest_code)
+            # If IDs are strings (codes), resolve them. If ints, use directly.
+            if src_ids and isinstance(src_ids[0], str):
+                src_ids = self._resolve_cluster_ids_sync(conn, src_ids[0])
+            if dst_ids and isinstance(dst_ids[0], str):
+                dst_ids = self._resolve_cluster_ids_sync(conn, dst_ids[0])
+            
             if not src_ids or not dst_ids: return []
 
             cancelled = set()
@@ -151,9 +168,9 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
                 if arr_dt < dep_dt: arr_dt += timedelta(days=1)
 
                 rt.add_segment(RouteSegment(
-                    trip_id=int(row['tid']), 
-                    departure_stop_id=int(row['sid1']), 
-                    arrival_stop_id=int(row['sid2']), 
+                    trip_id=self._safe_int(row['tid']), 
+                    departure_stop_id=self._safe_int(row['sid1']), 
+                    arrival_stop_id=self._safe_int(row['sid2']), 
                     departure_time=dep_dt, 
                     arrival_time=arr_dt, 
                     duration_minutes=(row['ts2'] - row['ts1']) // 60, 
@@ -167,11 +184,11 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
                 results.append(rt)
 
             results.sort(key=lambda x: x.total_duration)
-            logger.info(f"⚡ Ultra-Turbo SYNC: Found {len(results)} direct routes for {source_code}->{dest_code} in {(time.perf_counter()-start_ts)*1000:.2f}ms")
+            logger.info(f"⚡ Ultra-Turbo SYNC: Found {len(results)} direct routes in {(time.perf_counter()-start_ts)*1000:.2f}ms")
             return results[:limit]
 
         finally:
-            if 'conn' in locals() and conn:
+            if conn:
                 conn.close()
 
     async def _resolve_cluster_ids(self, conn: Any, code: str) -> List[int]:
@@ -263,6 +280,7 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
         from database.session import AsyncSession
         from sqlalchemy import text
         is_session = isinstance(conn, AsyncSession)
+        rows: Sequence[Any]
         
         if is_session:
             # Re-map placeholders for SQLAlchemy
@@ -296,18 +314,18 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
                 LIMIT :limit
             """
             res = await conn.execute(text(q_sa), p_map)
-            rows = res.fetchall()
+            rows = res.mappings().all()
         else:
             params = src_ids + dst_ids + [db_date, limit]
             cursor = await conn.execute(query, params)
-            rows = await cursor.fetchall()
+            rows = list(await cursor.fetchall())
 
         results = []
         for row in rows:
             # row is tuple if aiosqlite, so we use indices
             # tid=0, tno=1, tname=2, sid1=3, sid2=4, code1=5, code2=6, ts1=7, ts2=8, d1=9, d2=10
             tno = str(row[1]) if is_session else str(row['tno'])
-            if int(tno) in cancelled: continue
+            if tno in cancelled: continue
             
             rt = Route()
             ts1 = row[7] if is_session else row['ts1']
@@ -326,7 +344,7 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
             if arr_dt < dep_dt: arr_dt += timedelta(days=1)
 
             rt.add_segment(RouteSegment(
-                trip_id=int(tid), departure_stop_id=int(sid1), arrival_stop_id=int(sid2),
+                trip_id=self._safe_int(tid), departure_stop_id=self._safe_int(sid1), arrival_stop_id=self._safe_int(sid2),
                 departure_time=dep_dt, arrival_time=arr_dt,
                 duration_minutes=(ts2 - ts1) // 60,
                 distance_km=float((d2 or 0) - (d1 or 0)),
@@ -395,7 +413,7 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
             rt = Route()
             # Leg 1
             rt.add_segment(RouteSegment(
-                trip_id=int(row['tid1']), departure_stop_id=int(row['sid1a']), arrival_stop_id=int(row['sid1b']),
+                trip_id=self._safe_int(row['tid1']), departure_stop_id=self._safe_int(row['sid1a']), arrival_stop_id=self._safe_int(row['sid1b']),
                 departure_time=datetime.combine(travel_date, datetime.min.time()) + timedelta(seconds=row['ts1a']),
                 arrival_time=datetime.combine(travel_date, datetime.min.time()) + timedelta(seconds=row['ts1b']),
                 duration_minutes=(row['ts1b'] - row['ts1a']) // 60,
@@ -403,7 +421,7 @@ class UltraTurboDirectEngine(BaseRoutingEngine):
             ))
             # Leg 2
             rt.add_segment(RouteSegment(
-                trip_id=int(row['tid2']), departure_stop_id=int(row['sid2a']), arrival_stop_id=int(row['sid2b']),
+                trip_id=self._safe_int(row['tid2']), departure_stop_id=self._safe_int(row['sid2a']), arrival_stop_id=self._safe_int(row['sid2b']),
                 departure_time=datetime.combine(travel_date, datetime.min.time()) + timedelta(seconds=row['ts2a']),
                 arrival_time=datetime.combine(travel_date, datetime.min.time()) + timedelta(seconds=row['ts2b']),
                 duration_minutes=(row['ts2b'] - row['ts2a']) // 60,

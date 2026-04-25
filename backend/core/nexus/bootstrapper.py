@@ -57,8 +57,8 @@ class NexusBootstrapper:
                 from utils.integrity import integrity_engine
                 for idx, layer in enumerate(layers):
                     # Parallel init of nodes in the same layer
-                    # [Gap 1] Boot Timeout Guard: 30s per layer
-                    async with asyncio.timeout(30.0):
+                    # [Gap 1] Boot Timeout Guard: 120s per layer
+                    async with asyncio.timeout(120.0):
                          async with asyncio.TaskGroup() as tg:
                              for node_name in layer:
                                  node = self.nodes[node_name]

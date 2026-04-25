@@ -109,6 +109,27 @@ async def get_optional_user(request: Request, token: str = Depends(oauth2_scheme
         return auth_manager.sync_user(user_data)
     except: return None
 
+
+async def get_current_user_optional(request: Request, db: Session):
+    """Direct-call helper for contexts where FastAPI dependency injection is unavailable."""
+    auth_header = request.headers.get("authorization", "")
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        from core.container import container
+        auth_service = await container.get("auth")
+        user_data = await auth_service.verify_token(token, request)
+
+        from microservices.shared.auth import SharedAuthManager
+        from services.multi_layer_cache import multi_layer_cache
+        auth_manager = SharedAuthManager(db, multi_layer_cache.redis)
+        return auth_manager.sync_user(user_data)
+    except:
+        return None
+
 async def verify_webhook_signature(request: Request):
     webhook_body = await request.body()
     signature = request.headers.get("X-Razorpay-Signature")

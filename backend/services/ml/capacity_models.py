@@ -4,6 +4,7 @@ Predicts seat availability probability and occupancy trends.
 """
 
 import logging
+import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -12,6 +13,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
 from database.models import SeatAvailability, TrainMaster
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +25,37 @@ class CapacityPredictionModel:
     Uses historical availability logs (The Moat Dataset).
     """
     
+    # [G19.5] ML Resilience Layer: Class-level decorators for scoping
+    _prediction_circuit_breaker = circuit_breaker(
+        name="capacity_prediction",
+        failure_threshold=5,
+        recovery_timeout=60.0
+    )
+    _prediction_retry_policy = retry_policy(
+        max_attempts=3,
+        strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+        base_delay=0.5,
+        max_delay=10.0
+    )
+
     def __init__(self):
         self.is_trained = False
         # Placeholder for actual model (XGBoost/RandomForest)
-        self.model = None 
+        self.model = None
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="capacity_prediction_model",
+            default_tags={"component": "ml"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._prediction_circuit_breaker.state.value)
+        self._metrics.counter("predictions_total")
+        self._metrics.counter("predictions_success")
+        self._metrics.counter("predictions_failed")
+        self._metrics.histogram("prediction_duration_seconds") 
 
+    @track_metrics(service="capacity_prediction_model", operation="predict_availability_probability")
+    @_prediction_circuit_breaker
+    @_prediction_retry_policy
     def predict_availability_probability(self, session: Session, train_number: str, 
                                         class_code: str, travel_date: datetime, 
                                         quota: str = "GN") -> float:
@@ -95,3 +125,31 @@ class CapacityPredictionModel:
         # Penalty = (1 - P)^2 * 100 
         # Example: P=1.0 -> 0 penalty. P=0.0 -> 100 penalty.
         return round(((1.0 - probability) ** 2) * 100, 2)
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "capacity_prediction_model",
+            "circuit_breaker_state": self._prediction_circuit_breaker.state.name,
+            "circuit_breaker_failures": self._prediction_circuit_breaker.failure_count,
+            "predictions_total": self._metrics.get_counter("predictions_total"),
+            "predictions_success": self._metrics.get_counter("predictions_success"),
+            "predictions_failed": self._metrics.get_counter("predictions_failed"),
+            "prediction_duration_p50": self._metrics.get_percentile("prediction_duration_seconds", 50),
+            "prediction_duration_p95": self._metrics.get_percentile("prediction_duration_seconds", 95),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if self._prediction_circuit_breaker.state == CircuitState.CLOSED else "degraded",
+            "service": "capacity_prediction_model",
+            "circuit_breaker": self._prediction_circuit_breaker.state.name,
+            "is_trained": self.is_trained,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._prediction_circuit_breaker.reset()
+        logger.info("🔄 [CAPACITY] Circuit breaker reset for capacity prediction")

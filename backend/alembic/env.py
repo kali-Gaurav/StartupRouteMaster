@@ -23,16 +23,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 
 try:
     from database.config import Config
-    from database.session import Base
+    from database.session import Base, TransitBase
     import database.models
 except ImportError:
     from database.config import Config
-    from database.session import Base
+    from database.session import Base, TransitBase
     import backend.database.models
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-target_metadata = Base.metadata
+# [Production Sync] Include TransitBase in the unified metadata to prevent false drop detections
+target_metadata = [Base.metadata, TransitBase.metadata]
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

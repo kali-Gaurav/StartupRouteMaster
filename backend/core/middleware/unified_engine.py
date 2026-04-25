@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from fastapi import Request
 
 from core.state_manager import state_manager, SystemState
+from core.system_monitor import system_monitor
 from core.orchestrator import orchestrator
 from core.metrics import jit_metrics
 from services.jit_manager import jit_manager
@@ -186,8 +187,7 @@ class UnifiedSmartMiddlewareEngine:
             
             async with asyncio.timeout(timeout):
                 # 8. DISTRIBUTED PROXYING (Task 7.11)
-                if path.startswith("/api/v2/search"):
-                    return await self._proxy_to_microservice(scope, receive, send, "search", "/search")
+                # NOTE: /api/v2/search proxy disabled — microservice not running, handled by local router
                 if path.startswith("/api/auth/validate"):
                     return await self._proxy_to_microservice(scope, receive, send, "auth", "/validate")
                 

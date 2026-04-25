@@ -95,42 +95,42 @@ export default function AdminOperations() {
 
   const loadSurge = async () => {
     try {
-      const res = await fetchWithAuth("/admin/system/surge-detection");
+      const res = await fetchWithAuth("/v2/admin/system/surge-detection");
       setSurgeStatus(await res.json());
     } catch (e) { console.error("Surge check error"); }
   };
 
   const loadSystemHealth = async () => {
     try {
-      const res = await fetchWithAuth("/admin/system/health");
+      const res = await fetchWithAuth("/v2/admin/system/health");
       setSystemHealth(await res.json());
     } catch (e) { console.error("Health error"); }
   };
 
   const loadProductivity = async () => {
     try {
-      const res = await fetchWithAuth("/admin/operations/productivity");
+      const res = await fetchWithAuth("/v2/admin/operations/productivity");
       setProductivity(await res.json());
     } catch (e) { console.error("Ops stats error"); }
   };
 
   const loadTrends = async () => {
     try {
-      const res = await fetchWithAuth("/admin/operations/trends");
+      const res = await fetchWithAuth("/v2/admin/operations/trends");
       setTrends(await res.json());
     } catch (e) { console.error("Ops trends error"); }
   };
 
   const loadPending = async () => {
     try {
-      const res = await fetchWithAuth("/admin/bookings/pending");
+      const res = await fetchWithAuth("/v2/admin/bookings/pending");
       setPendingBookings(await res.json());
     } catch (e) { console.error("Pending bookings error"); }
   };
 
   const loadRefunds = async () => {
     try {
-      const res = await fetchWithAuth("/admin/finance/refunds");
+      const res = await fetchWithAuth("/v2/admin/finance/refunds");
       setRefunds(await res.json());
     } catch (e) { console.error("Refunds error"); }
   };
@@ -138,7 +138,7 @@ export default function AdminOperations() {
   const fetchDetails = async (id: string) => {
     setLoading(true);
     try {
-      const res = await fetchWithAuth(`/admin/bookings/${id}/details`);
+      const res = await fetchWithAuth(`/v2/admin/bookings/${id}/details`);
       setSelectedBooking(await res.json());
       setPnrInput("");
     } catch (e) { toast.error("Failed to load details"); }
@@ -151,7 +151,7 @@ export default function AdminOperations() {
       return;
     }
     try {
-      await fetchWithAuth(`/admin/bookings/${id}/complete`, {
+      await fetchWithAuth(`/v2/admin/bookings/${id}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pnr_number: pnrInput })

@@ -25,6 +25,20 @@ export interface RouteSegment {
   // because most of the route search responses only contain codes.
   from_stop_id?: number;
   to_stop_id?: number;
+  metadata?: Record<string, any>;
+}
+
+export interface IncentiveOffer {
+  type: "CASHBACK" | "LOUNGE_ACCESS" | "MEAL_VOUCHER" | "KARMA_CREDITS";
+  value: string;
+  description: string;
+}
+
+export interface RedistributionOption {
+  alternative_route_id: string;
+  incentives: IncentiveOffer[];
+  system_benefit_score: number;
+  reason: string;
 }
 
 export interface Route {
@@ -40,6 +54,8 @@ export interface Route {
   safetyScore: number;
   reliabilityBadge?: 'green' | 'yellow' | 'red';
   isLocked?: boolean;
+  metadata?: Record<string, any>;
+  redistribution_options?: RedistributionOption[];
 }
 
 export const categoryIcons: Record<string, string> = {
@@ -522,6 +538,7 @@ interface ApiRoute {
     seat_prob: number;
     safety_score: number;
   };
+  metadata?: Record<string, any>;
 }
 
 export const mapApiRouteToRoute = (apiRoute: ApiRoute): Route => {
@@ -563,5 +580,7 @@ export const mapApiRouteToRoute = (apiRoute: ApiRoute): Route => {
     liveFareTotal,
     seatProbability: apiRoute.objectives.seat_prob,
     safetyScore: apiRoute.objectives.safety_score,
+    metadata: apiRoute.metadata,
+    redistribution_options: apiRoute.metadata?.redistribution_options || []
   };
 };

@@ -16,7 +16,7 @@ Date: 2026-02-17
 
 import logging
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
@@ -142,6 +142,9 @@ class YieldManagementEngine:
         1: 1.8,      # 1-3 days: 80% premium
         0: 2.5,      # <24 hours: 150% premium (last-minute)
     }
+
+    # [P10] Adaptive Economic Latch
+    GLOBAL_CERTAINTY_INDEX = 1.0 # 0-1, higher = more reliable system
     
     def __init__(self):
         """Initialize yield management engine."""
@@ -174,6 +177,10 @@ class YieldManagementEngine:
         # Start with base fare
         price = base_fare
         factors = {'base': base_fare}
+
+        # [P10] Self-Healing: Contract range if certainty is low
+        dynamic_max = 2.5 * self.GLOBAL_CERTAINTY_INDEX
+        dynamic_min = 0.8 + (1.0 - self.GLOBAL_CERTAINTY_INDEX) * 0.2
         
         # 1. Occupancy-based multiplier
         occupancy_mult = self._get_occupancy_multiplier(occupancy_rate)
@@ -204,10 +211,27 @@ class YieldManagementEngine:
         if is_holiday:
             price *= 1.20  # 20% premium
             factors['holiday'] = 1.20
+
+        # [P6] Heartbeat Congestion Surge
+        if db:
+            try:
+                from database.models import StationRealtimeHeartbeat
+                hb = db.query(StationRealtimeHeartbeat).filter_by(station_code=origin).first()
+                if hb and "delayed" in hb.status_summary.lower():
+                    # High Hub Stress = High Value Scarcity
+                    try:
+                        delayed_count = int(hb.status_summary.split()[0])
+                        if delayed_count > 8:
+                            congestion_mult = 1.25 
+                            price *= congestion_mult
+                            factors['hub_congestion'] = congestion_mult
+                    except: pass
+            except Exception as e:
+                logger.error(f"Failed to fetch heartbeat for yield: {e}")
         
         # Apply bounds
         multiplier = price / base_fare
-        multiplier = np.clip(multiplier, *self.BASE_PRICE_MULTIPLIER_RANGE)
+        multiplier = np.clip(multiplier, dynamic_min, dynamic_max)
         price = base_fare * multiplier
         
         factors['final_multiplier'] = multiplier

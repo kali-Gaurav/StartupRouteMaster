@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from core.nexus.audit.governor import nexus_governor as governor
 from core.nexus.audit.triage import nexus_triage as triage
 import time
+from utils.responses import v3_response, success_response, error_response
 
 router = APIRouter(prefix="/governor", tags=["Nexus Governor"])
 
@@ -11,7 +12,7 @@ async def get_governor_stats():
     stats = await governor.get_stats()
     triage_report = await triage.get_deep_diagnostics()
     
-    return {
+    return v3_response({
         "timestamp": time.time(),
         "vps": {
             "cpu_p": stats["cpu_percent"],
@@ -25,7 +26,7 @@ async def get_governor_stats():
             "backoff_factor": triage_report["backoff_factor"]
         },
         "system_status": triage_report["node_status"]
-    }
+    })
 
 @router.post("/evict")
 async def manual_evict():
@@ -34,5 +35,5 @@ async def manual_evict():
     if multi_layer_cache.redis:
         await multi_layer_cache.redis.delete("rapidapi:*")
         await multi_layer_cache.redis.delete("search_v3:*")
-        return {"status": "success", "message": "Purged search caches."}
-    return {"status": "error", "message": "Redis not available."}
+        return success_response("Purged search caches.")
+    return error_response("Redis not available.", status_code=503)

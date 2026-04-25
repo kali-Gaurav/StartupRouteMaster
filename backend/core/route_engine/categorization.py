@@ -65,8 +65,15 @@ class CategorizationEngine:
         sorted_optimal = sorted(hydrated, key=lambda x: x.get("score", 0), reverse=True)
         top_5_optimal = sorted_optimal[:5]
 
-        # 5. Structural Buckets — use segment count (legs) for reliable transfer detection
-        # 1 segment = direct (0 transfers), 2 = 1T, 3 = 2T, 4+ = 3T+
+        # 5. Multimodal Specific Buckets (G8.1.1)
+        flights = [rd for rd in hydrated if rd.get("metadata", {}).get("mode") == "FLIGHT"]
+        buses = [rd for rd in hydrated if rd.get("metadata", {}).get("mode") == "BUS"]
+        interlined = [rd for rd in hydrated if rd.get("metadata", {}).get("is_interlined") == True]
+
+        flights_fastest = sorted(flights, key=lambda x: x.get("total_duration", 99999))[:3]
+        bus_cheapest = sorted(buses, key=lambda x: x.get("total_cost", 999999))[:5]
+
+        # 6. Structural Buckets — use segment count (legs) for reliable transfer detection
         def get_transfer_count(rd):
             segs = rd.get("segments", rd.get("legs", []))
             return max(0, len(segs) - 1)
@@ -74,30 +81,33 @@ class CategorizationEngine:
         direct = sorted([rd for rd in hydrated if get_transfer_count(rd) == 0],
                         key=lambda x: x.get("score", 0), reverse=True)
         one_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) == 1],
-                              key=lambda x: x.get("score", 0), reverse=True)[:15]
+                              key=lambda x: x.get("score", 0), reverse=True)
         two_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) == 2],
-                              key=lambda x: x.get("score", 0), reverse=True)[:10]
+                              key=lambda x: x.get("score", 0), reverse=True)
         three_plus_transfer = sorted([rd for rd in hydrated if get_transfer_count(rd) >= 3],
-                                     key=lambda x: x.get("score", 0), reverse=True)[:5]
+                                     key=lambda x: x.get("score", 0), reverse=True)
 
-        # 6. Final Response with Metadata
+        # 7. Final Response with Metadata
         response = {
             "top_3_confirmed_fastest": top_3_confirmed,
             "top_10_fastest_total": top_10_fastest,
             "top_5_optimal": top_5_optimal,
-            "direct": direct,                            # All direct routes
-            "one_transfer": one_transfer,                # Capped at 15
-            "two_transfer": two_transfer,                # Capped at 10
-            "three_plus_transfer": three_plus_transfer,  # Capped at 5
-            "alternative_sorted": sorted_by_speed[:20],
+            "flights_fastest": flights_fastest,
+            "bus_cheapest": bus_cheapest,
+            "interlined_multimodal": interlined,
+            "direct": direct,
+            "one_transfer": one_transfer,
+            "two_transfer": two_transfer,
+            "three_plus_transfer": three_plus_transfer,
+            "alternative_sorted": sorted_by_speed,
             "metadata": {
                 "total_yield": len(hydrated),
                 "confirmed_yield": len(confirmed),
+                "flight_yield": len(flights),
+                "bus_yield": len(buses),
                 "persona": persona.value
             }
         }
-        
-        # [8.7] Persona-based prioritisation could be handled by re-ordering keys or via frontend
         return response
 
     @staticmethod

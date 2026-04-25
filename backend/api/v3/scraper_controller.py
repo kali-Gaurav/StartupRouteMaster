@@ -17,7 +17,7 @@ async def get_scraper_health():
     stats = await scraper_sentinel.get_stats()
     return {
         "status": "OPERATIONAL" if stats["available_contexts"] > 0 else "CONGESTED",
-        "fiber_state": scraper_sentinel.state.value,
+        "fiber_state": stats["state"],
         "telemetry": stats,
         "timestamp": datetime.utcnow().isoformat()
     }

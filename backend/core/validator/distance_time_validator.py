@@ -7,8 +7,9 @@ between train_routes, stop_times, and schedule tables
 import logging
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from sqlalchemy import and_, func, text
 from sqlalchemy.orm import Session
@@ -133,7 +134,7 @@ class DistanceTimeConsistencyValidator:
                 next_st = stop_times[i + 1]
                 
                 await self._validate_segment(
-                    trip.id, current, next_st, trip
+                    cast(int, trip.id), current, next_st, trip
                 )
         
         # Compute statistics
@@ -155,20 +156,23 @@ class DistanceTimeConsistencyValidator:
             return
         
         # Calculate recorded duration
-        if next_st.arrival_time and current_st.departure_time:
-            delta = next_st.arrival_time - current_st.departure_time
-            if delta.total_seconds() < 0:
-                # Next day arrival
-                delta = delta + timedelta(days=1)
-            recorded_duration = int(delta.total_seconds() // 60)
+        if next_st.arrival_time is not None and current_st.departure_time is not None:
+            recorded_duration = self._calculate_duration_minutes(
+                current_st.departure_time,
+                next_st.arrival_time
+            )
+            if recorded_duration is None:
+                return
         else:
             return
         
         # Calculate distance using Haversine formula
-        if current_stop.stop_lat and current_stop.stop_lon and next_stop.stop_lat and next_stop.stop_lon:
+        if current_stop.latitude is not None and current_stop.longitude is not None and next_stop.latitude is not None and next_stop.longitude is not None:
             distance_km = self._haversine_distance(
-                current_stop.stop_lat, current_stop.stop_lon,
-                next_stop.stop_lat, next_stop.stop_lon
+                float(cast(Any, current_stop.latitude)),
+                float(cast(Any, current_stop.longitude)),
+                float(cast(Any, next_stop.latitude)),
+                float(cast(Any, next_stop.longitude))
             ) / 1000
         else:
             distance_km = None
@@ -184,6 +188,9 @@ class DistanceTimeConsistencyValidator:
         # Validate various aspects
         issues = []
         
+        current_stop_id = cast(int, current_st.stop_id)
+        next_stop_id = cast(int, next_st.stop_id)
+
         # Check 1: Distance vs recorded time
         if distance_km and recorded_duration > 0:
             implied_speed = (distance_km / recorded_duration) * 60
@@ -193,8 +200,8 @@ class DistanceTimeConsistencyValidator:
                     issue_type="speed_anomaly",
                     severity="warning",
                     trip_id=trip_id,
-                    from_stop_id=current_st.stop_id,
-                    to_stop_id=next_st.stop_id,
+                    from_stop_id=current_stop_id,
+                    to_stop_id=next_stop_id,
                     message=f"Implied speed {implied_speed:.1f} km/h is below minimum {self.MIN_TRAIN_SPEED_KMPH} km/h",
                     confidence=0.8
                 ))
@@ -203,8 +210,8 @@ class DistanceTimeConsistencyValidator:
                     issue_type="speed_anomaly",
                     severity="warning",
                     trip_id=trip_id,
-                    from_stop_id=current_st.stop_id,
-                    to_stop_id=next_st.stop_id,
+                    from_stop_id=current_stop_id,
+                    to_stop_id=next_stop_id,
                     message=f"Implied speed {implied_speed:.1f} km/h exceeds maximum {self.MAX_TRAIN_SPEED_KMPH} km/h",
                     confidence=0.7
                 ))
@@ -220,8 +227,8 @@ class DistanceTimeConsistencyValidator:
                     issue_type="time_variance",
                     severity="info",
                     trip_id=trip_id,
-                    from_stop_id=current_st.stop_id,
-                    to_stop_id=next_st.stop_id,
+                    from_stop_id=current_stop_id,
+                    to_stop_id=next_stop_id,
                     message=f"Travel time variance {variance_percent:.1f}% exceeds tolerance {self.TIME_VARIANCE_TOLERANCE_PERCENT}%",
                     suggested_value=expected_duration,
                     confidence=0.6
@@ -233,8 +240,8 @@ class DistanceTimeConsistencyValidator:
                 issue_type="unreasonable_duration",
                 severity="error",
                 trip_id=trip_id,
-                from_stop_id=current_st.stop_id,
-                to_stop_id=next_st.stop_id,
+                from_stop_id=current_stop_id,
+                to_stop_id=next_stop_id,
                 message=f"Travel time too short: {recorded_duration} minutes",
                 confidence=0.95
             ))
@@ -243,20 +250,20 @@ class DistanceTimeConsistencyValidator:
                 issue_type="unreasonable_duration",
                 severity="warning",
                 trip_id=trip_id,
-                from_stop_id=current_st.stop_id,
-                to_stop_id=next_st.stop_id,
+                from_stop_id=current_stop_id,
+                to_stop_id=next_stop_id,
                 message=f"Travel time very long: {recorded_duration} minutes (> 24 hours)",
                 confidence=0.9
             ))
         
         # Check 4: Zero duration between non-identical stops
-        if recorded_duration == 0 and current_st.stop_id != next_st.stop_id:
+        if recorded_duration == 0 and current_stop_id != next_stop_id:
             issues.append(ValidationIssue(
                 issue_type="zero_duration",
                 severity="error",
                 trip_id=trip_id,
-                from_stop_id=current_st.stop_id,
-                to_stop_id=next_st.stop_id,
+                from_stop_id=current_stop_id,
+                to_stop_id=next_stop_id,
                 message="Zero duration between different stops",
                 confidence=0.99
             ))
@@ -316,6 +323,28 @@ class DistanceTimeConsistencyValidator:
         
         return R * c
 
+    @staticmethod
+    def _calculate_duration_minutes(departure_time: Any, arrival_time: Any) -> Optional[int]:
+        """Convert departure/arrival times to a duration in minutes."""
+        if departure_time is None or arrival_time is None:
+            return None
+
+        if isinstance(departure_time, datetime):
+            departure_dt = departure_time
+        else:
+            departure_dt = datetime.combine(datetime.min, departure_time)
+
+        if isinstance(arrival_time, datetime):
+            arrival_dt = arrival_time
+        else:
+            arrival_dt = datetime.combine(datetime.min, arrival_time)
+
+        delta = arrival_dt - departure_dt
+        if delta.total_seconds() < 0:
+            delta += timedelta(days=1)
+
+        return int(delta.total_seconds() // 60)
+
     async def compare_distance_sources(self) -> Dict[str, Any]:
         """Compare distances from different sources (calculated vs recorded)"""
         try:
@@ -343,7 +372,3 @@ class DistanceTimeConsistencyValidator:
         except Exception as e:
             logger.warning(f"Could not compare distance sources: {e}")
             return {"error": str(e)}
-
-
-# Add missing import
-from datetime import timedelta

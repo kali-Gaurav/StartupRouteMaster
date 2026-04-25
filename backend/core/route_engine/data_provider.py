@@ -10,14 +10,17 @@ Provides unified data access with automatic fallback mechanism:
 
 import logging
 import os
+import functools
 import time
 import json
 from typing import Optional, Dict, Any, List
 from datetime import datetime, time as time_obj
 import asyncio
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from database.models import Coach, Fare, Seat, SeatInventory, StopTime, Segment, Trip, TrainMaster
 from database.session import SessionTransit as SessionLocal
+from database.config import Config
 from services.multi_layer_cache import multi_layer_cache
 from core.pricing.fare_calculator import calculate_fare
 
@@ -25,17 +28,19 @@ logger = logging.getLogger(__name__)
 
 # Import RapidAPI client
 try:
-    from services.booking.rapid_api_client import RapidAPIClient
+    from services.booking.rapid_api_client import RapidAPIClient as _RapidAPIClient
     RAPIDAPI_AVAILABLE = True
 except (ImportError, ValueError):
+    _RapidAPIClient = None
     RAPIDAPI_AVAILABLE = False
     logger.warning("RapidAPIClient not available - verification will use database only")
 
 # Import Rappid client
 try:
-    from services.realtime_ingestion.api_client import AsyncRappidAPIClient
+    from services.realtime_ingestion.api_client import AsyncRappidAPIClient as _AsyncRappidAPIClient
     RAPPID_AVAILABLE = True
 except (ImportError, ValueError):
+    _AsyncRappidAPIClient = None
     RAPPID_AVAILABLE = False
     logger.warning("AsyncRappidAPIClient not available")
 
@@ -45,31 +50,31 @@ class DataProvider:
     Unified data provider with automatic live API fallback to database.
     """
 
-    def __init__(self, config=None):
-        self.config = config
-        self.session = None # Lazy initialization
+    def __init__(self, config: Optional[type[Config]] = None):
+        self.config: type[Config] = config or Config
+        self.session: Optional[Session] = None # Lazy initialization
         
         # Initialize RapidAPI client (no longer used directly by unified methods)
         self.rapidapi_client = None
-        if RAPIDAPI_AVAILABLE:
+        if RAPIDAPI_AVAILABLE and _RapidAPIClient is not None:
             rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
             if rapidapi_key:
                 try:
-                    self.rapidapi_client = RapidAPIClient(rapidapi_key)
+                    self.rapidapi_client = _RapidAPIClient(rapidapi_key)
                 except Exception as e:
                     logger.warning(f"Failed to initialize RapidAPI client: {e}")
 
         # Initialize Rappid client (Task 28)
         self.rappid_client = None
-        if RAPPID_AVAILABLE:
-            self.rappid_client = AsyncRappidAPIClient()
+        if RAPPID_AVAILABLE and _AsyncRappidAPIClient is not None:
+            self.rappid_client = _AsyncRappidAPIClient()
             logger.info("Rappid.in client initialized successfully")
 
         # High-level services for intelligent verification
         from services.seat_verification import SeatVerificationService
         from services.fare_service import FareService
         self.seat_service = SeatVerificationService()
-        self.fare_service = FareService(config)
+        self.fare_service = FareService(self.config)
 
     def detect_available_features(self):
         """Legacy compatibility for VerificationService."""
@@ -106,8 +111,14 @@ class DataProvider:
                     if cached: return json.loads(cached)
 
                 logger.info(f"Rappid.in Call: {train_number} status lookup")
+                from core.nexus.scraper.resilience import scraper_resilience_nodes
+                node = scraper_resilience_nodes.get("rappid")
+                
+                async def _fetch():
+                    return await self.rappid_client.fetch_train_status(train_number)
+
                 api_start = time.perf_counter()
-                status = await self.rappid_client.fetch_train_status(train_number)
+                status = await node.execute_safe(_fetch, trace_id=f"search_{train_number}") if node else await _fetch()
                 latency = (time.perf_counter() - api_start) * 1000
                 
                 if not status:
@@ -141,6 +152,30 @@ class DataProvider:
             except Exception as e:
                 await rappid_health.record_failure(str(e))
                 logger.error(f"Rappid.in fetch failed for {train_number}: {e}")
+
+        # [Day 3] Fallback to NTES Scraper if Rappid fails (Guandao Resilience)
+        try:
+            from core.nexus.scraper.resilience import scraper_resilience_nodes
+            from providers.clients.ntes_scraper import NtesScraperClient, to_unified_live_status
+            ntes_node = scraper_resilience_nodes.get("ntes")
+            
+            if ntes_node:
+                ntes_client = NtesScraperClient()
+                logger.info(f"🕵️ [GUANDAO] Attempting NTES Fallback for {train_number}")
+                
+                raw_ntes = await ntes_node.execute_safe(ntes_client.get_live_status, train_number)
+                if raw_ntes:
+                    unified = to_unified_live_status(raw_ntes, train_number)
+                    if unified:
+                        return {
+                            "delay_mins": unified.delay_minutes,
+                            "platform": None,
+                            "current_station": unified.current_station_name or "Unknown"
+                        }
+        except Exception as e:
+            logger.warning(f"Guandao NTES fallback failed: {e}")
+
+        return default_res
 
     # Maintain backward compatibility
     async def get_live_delay(self, train_number: str) -> int:
@@ -339,11 +374,14 @@ class DataProvider:
         rapidapi_class = class_mapping.get(coach_preference, "SL")
         
         try:
-            res = await self.fare_service.get_fare(
-                train_no=train_number,
-                from_station=from_station,
-                to_station=to_station,
-                class_code=rapidapi_class
+            res = await asyncio.to_thread(
+                functools.partial(
+                    self.fare_service.get_fare,
+                    train_no=train_number,
+                    from_station=from_station,
+                    to_station=to_station,
+                    class_code=rapidapi_class,
+                )
             )
             
             if res and res.get("success"):
@@ -385,6 +423,9 @@ class DataProvider:
         """Real database lookup for cached train availability."""
         try:
             self._ensure_session()
+            session: Optional[Session] = self.session
+            if session is None:
+                return None
             from database.models import TrainAvailabilityCache
             from sqlalchemy import and_
             
@@ -397,7 +438,7 @@ class DataProvider:
             except:
                 j_date = datetime.utcnow().date()
 
-            record = self.session.query(TrainAvailabilityCache).filter(and_(
+            record = session.query(TrainAvailabilityCache).filter(and_(
                 TrainAvailabilityCache.train_number == train_no,
                 TrainAvailabilityCache.from_station_code == from_code,
                 TrainAvailabilityCache.to_station_code == to_code,
@@ -425,19 +466,25 @@ class DataProvider:
         """Get fares from database for a segment or trip."""
         try:
             self._ensure_session()
+            session: Optional[Session] = self.session
+            if session is None:
+                return {}
             # Try segment-specific fares first
-            fares = self.session.query(Fare).filter(Fare.segment_id == segment_id).all()
+            fares = session.query(Fare).filter(Fare.segment_id == segment_id).all()
             
             # Fallback: Trip-level fares if segment ID is null or no fares found
             if not fares:
                 if segment_id:
-                    seg = self.session.query(Segment).filter(Segment.id == segment_id).first()
+                    seg = session.query(Segment).filter(Segment.id == segment_id).first()
                     if seg:
-                        fares = self.session.query(Fare).filter(Fare.trip_id == seg.trip_id).all()
+                        fares = session.query(Fare).filter(Fare.trip_id == seg.trip_id).all()
             
             result = {}
             for fare in fares:
-                result[fare.class_type] = float(fare.amount)
+                class_type = getattr(fare, "class_type", None)
+                amount = getattr(fare, "amount", 0) or 0
+                if class_type is not None:
+                    result[str(class_type)] = float(amount)
             return result
         except Exception as e:
             logger.error(f"Database fare lookup failed: {e}")
@@ -462,8 +509,11 @@ class DataProvider:
                 "jd": date_str, "ct": class_type, "q": quota, "sa": seats, 
                 "st": status, "f": fare, "rp": json.dumps(raw), "lu": now, "ca": now
             }
-            self.session.execute(text(sql), params)
-            self.session.commit()
+            session: Optional[Session] = self.session
+            if session is None:
+                return
+            session.execute(text(sql), params)
+            session.commit()
         except Exception as e:
             logger.error(f"Failed to save to local availability cache: {e}")
 
@@ -475,15 +525,27 @@ class DataProvider:
             # We save to the main 'fares' table or a cache table
             # Looking at schema, 'fares' is for actual segments. 
             # We'll use it if we can find the trip_id.
-            trip = self.session.query(Trip).filter(Trip.trip_id == train_no).first()
+            session: Optional[Session] = self.session
+            if session is None:
+                return
+            trip = session.query(Trip).filter(Trip.trip_id == train_no).first()
             if trip:
                 sql = """
                     INSERT INTO fares (id, trip_id, class_type, amount, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (:id, :trip_id, :class_type, :amount, :last_updated)
                     ON CONFLICT(trip_id, class_type) DO UPDATE SET amount=excluded.amount, last_updated=excluded.last_updated
                 """
-                self.session.execute(text(sql), (str(uuid.uuid4()), trip.id, class_type, amount, datetime.utcnow().isoformat()))
-                self.session.commit()
+                session.execute(
+                    text(sql),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "trip_id": trip.id,
+                        "class_type": class_type,
+                        "amount": amount,
+                        "last_updated": datetime.utcnow().isoformat(),
+                    },
+                )
+                session.commit()
         except Exception as e:
             logger.error(f"Failed to save fare to local cache: {e}")
 

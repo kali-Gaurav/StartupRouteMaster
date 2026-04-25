@@ -36,6 +36,7 @@ RUN adduser --disabled-password --gecos '' appuser && \
 
 # Copy application code
 COPY --chown=appuser:appuser ./backend /app
+RUN chmod +x /app/start.sh
 
 # Set environment variables
 ENV ENVIRONMENT=production
@@ -49,5 +50,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 EXPOSE 8000
 
-# Gunicorn with Uvicorn workers for production (Task 11)
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "app:app"]
+# Unified startup entrypoint
+CMD ["/app/start.sh"]

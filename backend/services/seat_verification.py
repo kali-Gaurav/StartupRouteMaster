@@ -5,7 +5,7 @@ import json
 import asyncio
 import uuid
 from typing import Dict, Any, Optional
-from core.redis import async_redis_client
+from core.redis_client import async_redis_client
 from services.multi_layer_cache import multi_layer_cache, AvailabilityQuery
 from datetime import datetime, date
 
@@ -27,6 +27,14 @@ class SeatVerificationService:
     _detected_version: Optional[str] = None
 
     def __init__(self):
+        # API configuration
+        from database.config import Config
+        self.api_key = Config.RAPIDAPI_KEY
+        self.api_host = Config.RAPIDAPI_HOST
+        self.base_url_v1 = f"https://{Config.RAPIDAPI_HOST}/v1"
+        self.base_url_v2 = f"https://{Config.RAPIDAPI_HOST}/v2"
+        self._session: Optional[aiohttp.ClientSession] = None
+        
         # proactively detect version in background so first user request isn't slowed
         if not SeatVerificationService._detected_version:
             try:
@@ -35,6 +43,16 @@ class SeatVerificationService:
             except RuntimeError:
                 # not in an event loop yet; detection will occur on first call
                 pass
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            headers = {
+                "X-RapidAPI-Key": self.api_key,
+                "X-RapidAPI-Host": self.api_host,
+                "Content-Type": "application/json",
+            }
+            self._session = aiohttp.ClientSession(headers=headers)
+        return self._session
 
     async def _detect_working_version(self) -> str:
         """Determine which API version actually responds successfully.
@@ -47,7 +65,7 @@ class SeatVerificationService:
         from database.config import Config
         pref = getattr(Config, "RAPIDAPI_PREFERRED_VERSION", "")
         if pref and pref.lower() in ("v3", "v2", "v1"):
-            SeatVerificationService._detected_version = pref.lower()
+            SeatVerificationService._detected_version = str(pref.lower())
             return SeatVerificationService._detected_version
 
         # simple probe
@@ -188,9 +206,9 @@ class SeatVerificationService:
 
         # 1. Hot Cache (Redis)
         query = AvailabilityQuery(
-            train_id=int(train_no) if train_no.isdigit() else 0, 
-            from_stop_id=abs(hash(from_code)) % 1000000, 
-            to_stop_id=abs(hash(to_code)) % 1000000, 
+            train_id=str(train_no) if train_no.isdigit() else "0", 
+            from_stop_id=str(abs(hash(from_code)) % 1000000), 
+            to_stop_id=str(abs(hash(to_code)) % 1000000), 
             travel_date=travel_date, 
             quota_type=quota,
             class_type=class_type
@@ -451,8 +469,8 @@ class SeatVerificationService:
 
                         if existing:
                             existing.status_text, existing.seats_available = status, item.get("seat_avl")
-                            existing.fare, existing.last_updated_at = item.get("total_fare"), datetime.utcnow()
-                            existing.raw_payload = json.dumps(item)
+                            existing.fare, existing.last_updated_at = item.get("total_fare"), datetime.utcnow()  # type: ignore
+                            existing.raw_payload = json.dumps(item)  # type: ignore
                             existing.ticket_fare = item.get("ticket_fare")
                             existing.catering_charge = item.get("catering_charge")
                             existing.alt_cnf_seat = item.get("alt_cnf_seat")

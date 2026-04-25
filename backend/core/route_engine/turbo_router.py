@@ -32,6 +32,7 @@ class TurboRouter(BaseRoutingEngine):
 
     def __init__(self, db_session=None):
         self.db_factory = SessionLocal
+        self.db = db_session
         self.wait_config = DynamicWaitConfig(
             min_wait_minutes=getattr(Config, 'TRANSFER_WINDOW_MIN', 30) or 30,
             max_wait_minutes=getattr(Config, 'TRANSFER_WINDOW_MAX', 240) or 240,
@@ -43,6 +44,14 @@ class TurboRouter(BaseRoutingEngine):
             }
         )
         self.frontier_manager = FrontierManager(max_routes_per_station=10)
+
+    def _safe_int(self, val: Any, default: int = 0) -> int:
+        """Resilient int conversion for alphanumeric train/trip IDs."""
+        if isinstance(val, int): return val
+        try:
+            return int(str(val))
+        except (ValueError, TypeError):
+            return default
 
     def _get_hub_adjacency(self, db, hubs: List[str]) -> Dict[str, Set[int]]:
         """
@@ -91,7 +100,7 @@ class TurboRouter(BaseRoutingEngine):
               AND c.{day_name} = 1
             LIMIT :lim
         """
-        params = {f"s{i}": sid for i, sid in enumerate(src_ids)}
+        params: Dict[str, Any] = {f"s{i}": sid for i, sid in enumerate(src_ids)}
         params.update({f"d{i}": sid for i, sid in enumerate(dst_ids)})
         params.update({"dt": db_date, "lim": limit * 2})
         
@@ -105,13 +114,13 @@ class TurboRouter(BaseRoutingEngine):
             duration = (arr_sec - dep_sec) // 60
             
             results.append({
-                "train_no": str(r['tno']), "train_name": str(r['tname']), "trip_id": int(r['tid']),
+                "train_no": str(r['tno']), "train_name": str(r['tname']), "trip_id": self._safe_int(r['tid']),
                 "dep": self._min_to_time(dep_sec // 60), "arr": self._min_to_time(arr_sec // 60),
                 "duration": duration,
                 "distance": max(0.0, float((r['d2'] or 0.0) - (r['d1'] or 0.0)) / 1000.0),
                 "type": "direct", "phase_found": SearchPhase.STRICT,
                 "src_code": str(r['code1']), "dst_code": str(r['code2']),
-                "src_id": int(r['sid1']), "dst_id": int(r['sid2']), "score": 100
+                "src_id": self._safe_int(r['sid1']), "dst_id": self._safe_int(r['sid2']), "score": 100
             })
         return results
 
@@ -219,8 +228,12 @@ class TurboRouter(BaseRoutingEngine):
         try:
             # Note: TurboRouter currently returns a list of Dicts. 
             # We'll need to convert these to Route objects for the standardized response.
+            # [Task 41.22] Use pre-resolved clusters from context
+            src_ids = request.src_cluster_ids or [request.source_code]
+            dst_ids = request.dst_cluster_ids or [request.destination_code]
+
             raw_results = await asyncio.wait_for(
-                asyncio.to_thread(self._find_routes_sync, source_code, dest_code, departure_date, limit),
+                asyncio.to_thread(self._find_routes_sync, src_ids, dst_ids, departure_date, limit, request.db_session),
                 timeout=5.0 
             )
             
@@ -231,12 +244,39 @@ class TurboRouter(BaseRoutingEngine):
             routes = []
             for r in raw_results:
                 try:
-                    if r.get('type') == '1-transfer':
+                    if r.get('type') == '2-transfer':
+                        legs = r.get("legs", [])
+                        if len(legs) < 3:
+                            continue
+                        segs = []
+                        prev_arr = departure_date
+                        for leg_idx, leg in enumerate(legs):
+                            dep_dt = self._parse_turbo_time(leg.get('dep'), prev_arr)
+                            if dep_dt < prev_arr:
+                                dep_dt += timedelta(days=1)
+                            arr_dt = self._parse_turbo_time(leg.get('arr'), dep_dt)
+                            if arr_dt < dep_dt:
+                                arr_dt += timedelta(days=1)
+                            seg = RouteSegment(
+                                trip_id=self._safe_int(leg.get('train', 0)),
+                                departure_stop_id=0, arrival_stop_id=0,
+                                departure_code=leg.get('from'), arrival_code=leg.get('to'),
+                                departure_time=dep_dt, arrival_time=arr_dt,
+                                duration_minutes=int((arr_dt - dep_dt).total_seconds() // 60),
+                                distance_km=0.0, train_number=str(leg.get('train'))
+                            )
+                            segs.append(seg)
+                            prev_arr = arr_dt
+                        route = Route(segments=segs)
+                        route.metadata["engine"] = self.engine_id
+                        route.metadata["hubs"] = r.get("hubs", "")
+                        routes.append(route)
+                    elif r.get('type') == '1-transfer':
                         legs = r.get("legs", [])
                         s1_dep = self._parse_turbo_time(legs[0].get('dep'), departure_date)
                         s1_arr = self._parse_turbo_time(legs[0].get('arr'), departure_date)
                         if s1_arr < s1_dep: s1_arr += timedelta(days=1)
-                        seg1 = RouteSegment(trip_id=int(legs[0].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
+                        seg1 = RouteSegment(trip_id=self._safe_int(legs[0].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
                                            departure_code=legs[0].get('from'), arrival_code=legs[0].get('to'),
                                            departure_time=s1_dep, arrival_time=s1_arr,
                                            duration_minutes=int((s1_arr - s1_dep).total_seconds() // 60),
@@ -246,7 +286,7 @@ class TurboRouter(BaseRoutingEngine):
                         if s2_dep < s1_arr: s2_dep += timedelta(days=1)
                         s2_arr = self._parse_turbo_time(legs[1].get('arr'), s2_dep)
                         if s2_arr < s2_dep: s2_arr += timedelta(days=1)
-                        seg2 = RouteSegment(trip_id=int(legs[1].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
+                        seg2 = RouteSegment(trip_id=self._safe_int(legs[1].get('train', 0)), departure_stop_id=0, arrival_stop_id=0,
                                            departure_code=legs[1].get('from'), arrival_code=legs[1].get('to'),
                                            departure_time=s2_dep, arrival_time=s2_arr,
                                            duration_minutes=int((s2_arr - s2_dep).total_seconds() // 60),
@@ -262,9 +302,9 @@ class TurboRouter(BaseRoutingEngine):
                             arr_dt += timedelta(days=1)
 
                         seg = RouteSegment(
-                            trip_id=int(r['train_no']),
-                            departure_stop_id=int(r.get('src_id', 0)),
-                            arrival_stop_id=int(r.get('dst_id', 0)),
+                            trip_id=self._safe_int(r['train_no']),
+                            departure_stop_id=self._safe_int(r.get('src_id', 0)),
+                            arrival_stop_id=self._safe_int(r.get('dst_id', 0)),
                             departure_time=dep_dt,
                             arrival_time=arr_dt,
                             duration_minutes=r.get('duration', int((arr_dt - dep_dt).total_seconds() // 60)),
@@ -308,17 +348,21 @@ class TurboRouter(BaseRoutingEngine):
                 metadata={"error": str(e)}
             )
 
-    def _find_routes_sync(self, source_code: str, dest_code: str, departure_date: datetime, limit: int = 15) -> List[Dict[str, Any]]:
+    def _find_routes_sync(self, src_ids: List[Any], dst_ids: List[Any], departure_date: datetime, limit: int = 15, session: Any = None) -> List[Dict[str, Any]]:
         start_ts = time.perf_counter()
-        gc.disable() # Disable garbage collection during hot path
-        db = self.db_factory()
-        self.frontier_manager.reset() # Reset for new search
+        gc.disable() 
+        
+        # Use provided session or create a thread-local one
+        db = session if session else self.db_factory()
+        self.frontier_manager.reset() 
         try:
-            src_ids = self._get_city_cluster(db, source_code)
-            dst_ids = self._get_city_cluster(db, dest_code)
+            # If IDs are codes (str), resolve. If IDs are ints, use directly.
+            if src_ids and isinstance(src_ids[0], str):
+                src_ids = self._get_city_cluster(db, src_ids[0])
+            if dst_ids and isinstance(dst_ids[0], str):
+                dst_ids = self._get_city_cluster(db, dst_ids[0])
             
             if not src_ids or not dst_ids:
-                logger.warning(f"Turbo: Could not resolve station clusters for {source_code}->{dest_code}")
                 return []
                 
             day_mask = (1 << departure_date.weekday())
@@ -338,8 +382,8 @@ class TurboRouter(BaseRoutingEngine):
             exceptions_rows = db.execute(text(
                 "SELECT t.trip_id, cd.exception_type FROM calendar_dates cd JOIN trips t ON cd.service_id = t.service_id WHERE cd.date = :dt"
             ), {"dt": departure_date.date()}).fetchall()
-            gtfs_cancelled = {int(r[0]) for r in exceptions_rows if r[1] == 2}
-            gtfs_adds = {int(r[0]) for r in exceptions_rows if r[1] == 1}
+            gtfs_cancelled = {self._safe_int(r[0]) for r in exceptions_rows if r[1] == 2}
+            gtfs_adds = {self._safe_int(r[0]) for r in exceptions_rows if r[1] == 1}
 
             # [Gap 25] Batch Fetch Direct Blobs (Optimize N*M queries)
             all_codes = list(set(src_codes + dst_codes))
@@ -371,7 +415,7 @@ class TurboRouter(BaseRoutingEngine):
             all_cluster_direct.sort(key=lambda x: (x['duration'], x['src_code']))
             
             for r in all_cluster_direct:
-                t_no = int(r['train_no'])
+                t_no = self._safe_int(r['train_no'])
                 if overlay.is_cancelled(t_no) or t_no in gtfs_cancelled: continue
                 
                 jid = f"direct_{r['train_no']}_{r['dep']}"
@@ -387,7 +431,7 @@ class TurboRouter(BaseRoutingEngine):
             if not all_routes:
                 fallback_routes = self._fallback_sql_search(db, src_ids, dst_ids, departure_date, limit)
                 for r in fallback_routes:
-                    t_no = int(r['train_no'])
+                    t_no = self._safe_int(r['train_no'])
                     if overlay.is_cancelled(t_no) or t_no in gtfs_cancelled: continue
                     jid = f"direct_{r['train_no']}_{r['dep']}"
                     if jid not in seen_journey_ids:
@@ -407,13 +451,29 @@ class TurboRouter(BaseRoutingEngine):
                     all_routes.append(r)
                     seen_journey_ids.add(jid)
             
+            # 3. [Phase 2] 2-Transfer Search for long-distance or underserved corridors
+            # Only activate if we have fewer than half the limit from direct + 1-transfer
+            if len(all_routes) < limit // 2:
+                two_tr_results = self._search_two_transfer_binary(
+                    db, src_ids, dst_ids, src_codes, dst_codes,
+                    day_mask, limit * 3, major_hubs,
+                    gtfs_cancelled, gtfs_adds, blob_map
+                )
+                for r in two_tr_results:
+                    jid = f"2tr_{r['hubs']}_{r['legs'][0]['train']}_{r['legs'][1]['train']}_{r['legs'][2]['train']}"
+                    if jid not in seen_journey_ids:
+                        r['phase_found'] = SearchPhase.RELAXED
+                        all_routes.append(r)
+                        seen_journey_ids.add(jid)
+
             # [Task Group 1 Constraint] Show routes in order of travel time
             all_routes.sort(key=lambda x: x.get('duration', 999999))
-            print(f"🛡️ [TURBO:DEBUG] _find_routes_sync returning {len(all_routes)} routes.")
+            logger.debug(f"[TURBO] _find_routes_sync returning {len(all_routes)} routes.")
             return all_routes[:limit]
         finally:
-            db.close()
-            gc.enable() # Subtask 5.3
+            if not session: # Only close if we created it locally
+                db.close()
+            gc.enable() 
 
     def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int]) -> List[Dict[str, Any]]:
         """[Elite] Direct Intersection Logic using Binary Fiber Index."""
@@ -427,8 +487,8 @@ class TurboRouter(BaseRoutingEngine):
             for tid in common_trips:
                 s_data, d_data = src_trains[tid], dst_trains[tid]
                 src_day_offset = s_data['dep'] // 1440
-                required_mask = (1 << ((int(query_weekday) - src_day_offset) % 7))
-                if ((s_data['mask'] & required_mask) or int(tid) in gtfs_adds) and s_data['seq'] < d_data['seq']:
+                required_mask = (1 << ((self._safe_int(query_weekday) - src_day_offset) % 7))
+                if ((s_data['mask'] & required_mask) or self._safe_int(tid) in gtfs_adds) and s_data['seq'] < d_data['seq']:
                     day_offset = (d_data['arr'] // 1440) - (s_data['dep'] // 1440)
                     duration = d_data['arr'] - s_data['dep']
                     if duration < 0: duration += 1440 # Basic wrap
@@ -552,14 +612,14 @@ class TurboRouter(BaseRoutingEngine):
                     
                     for tid1 in t1_options:
                         # [Task 27.3] Cancellation check for leg 1
-                        if overlay.is_cancelled(int(tid1)) or int(tid1) in gtfs_cancelled: continue
+                        if overlay.is_cancelled(self._safe_int(tid1)) or self._safe_int(tid1) in gtfs_cancelled: continue
                         
                         s_data, h1_data = s_trains[tid1], h_arrival_trains[tid1]
                         
                         # [Task 6] Midnight Crossover Fix for Leg 1
                         src_day_offset = s_data['dep'] // 1440
-                        req_start_day = (int(query_weekday) - src_day_offset) % 7
-                        runs_1 = (s_data['mask'] & (1 << req_start_day)) or int(tid1) in gtfs_adds
+                        req_start_day = (self._safe_int(query_weekday) - src_day_offset) % 7
+                        runs_1 = (s_data['mask'] & (1 << req_start_day)) or self._safe_int(tid1) in gtfs_adds
                         if not runs_1 or s_data['seq'] >= h1_data['seq']: continue
                         
                         arr_day = h1_data['arr'] // 1440
@@ -579,7 +639,7 @@ class TurboRouter(BaseRoutingEngine):
                                 t2_options = set(h_departure_trains.keys()).intersection(d_trains.keys())
                                 for tid2 in t2_options:
                                     if tid1 == tid2: continue # [4.13] No collision
-                                    if overlay.is_cancelled(int(tid2)) or int(tid2) in gtfs_cancelled: continue
+                                    if overlay.is_cancelled(self._safe_int(tid2)) or self._safe_int(tid2) in gtfs_cancelled: continue
                                     
                                     h2_data, d_data = h_departure_trains[tid2], d_trains[tid2]
                                     
@@ -605,12 +665,12 @@ class TurboRouter(BaseRoutingEngine):
                                     # We depart h_dep on 'target_mask_day'.
                                     # Leg 2 must have started on (target_mask_day - leg2_start_offset).
                                     req_day_A = (target_mask_day - leg2_start_offset) % 7
-                                    runs_A = (h2_data['mask'] & (1 << req_day_A)) or int(tid2) in gtfs_adds
+                                    runs_A = (h2_data['mask'] & (1 << req_day_A)) or self._safe_int(tid2) in gtfs_adds
                                     
                                     # Case B: Next Day Connection (Overnight wait)
                                     # We depart h_dep on 'target_mask_day + 1'.
                                     req_day_B = (target_mask_day + 1 - leg2_start_offset) % 7
-                                    runs_B = (h2_data['mask'] & (1 << req_day_B)) or int(tid2) in gtfs_adds
+                                    runs_B = (h2_data['mask'] & (1 << req_day_B)) or self._safe_int(tid2) in gtfs_adds
                                     
                                     if not (runs_A or runs_B): continue
                                     
@@ -686,6 +746,193 @@ class TurboRouter(BaseRoutingEngine):
             logger.error(f"Transfer Binary Error: {e}")
             return []
 
+    def _search_two_transfer_binary(
+        self, db, src_ids: List[int], dst_ids: List[int],
+        src_codes: List[str], dst_codes: List[str],
+        mask: int, limit: int, hubs: List[str],
+        gtfs_cancelled: Set[int], gtfs_adds: Set[int],
+        blob_map: Dict[str, bytes]
+    ) -> List[Dict[str, Any]]:
+        """
+        [Phase 2] 2-Transfer binary search: Src -> Hub1 -> Hub2 -> Dst.
+        Strategy: Select disjoint hub pairs, chain 3 legs via binary intersection.
+        Uses aggressive pruning to stay within latency budget.
+        """
+        try:
+            from core.route_engine.engine import route_engine
+            overlay = route_engine.overlay
+            from core.context import check_timeout
+
+            # Unpack all blobs once
+            data = {code: self._unpack_trains(blob_map[code]) for code in blob_map}
+            
+            query_weekday = math.log2(mask) if mask > 0 else 0
+            results = []
+            
+            # Strategic hub pairs: geographically spaced for maximum coverage
+            # We skip pairs that are in the same metro cluster
+            hub_pairs_checked = 0
+            max_hub_pairs = 50  # Budget cap to prevent combinatorial explosion
+
+            for i, h1 in enumerate(hubs):
+                h1_trains = data.get(h1)
+                if not h1_trains:
+                    continue
+                for j, h2 in enumerate(hubs):
+                    if i >= j or h1 == h2:
+                        continue
+                    h2_trains = data.get(h2)
+                    if not h2_trains:
+                        continue
+                    
+                    hub_pairs_checked += 1
+                    if hub_pairs_checked > max_hub_pairs:
+                        break
+                    
+                    check_timeout()
+
+                    # Leg 1: Any Src -> Hub1
+                    for s in src_codes:
+                        if s == h1:
+                            continue
+                        s_trains = data.get(s)
+                        if not s_trains:
+                            continue
+                        
+                        leg1_common = set(s_trains.keys()).intersection(h1_trains.keys())
+                        # Limit leg1 candidates to top-5 by departure time
+                        leg1_candidates = []
+                        for tid1 in leg1_common:
+                            if overlay.is_cancelled(self._safe_int(tid1)) or self._safe_int(tid1) in gtfs_cancelled:
+                                continue
+                            sd1 = s_trains[tid1]
+                            hd1 = h1_trains[tid1]
+                            if sd1['seq'] >= hd1['seq']:
+                                continue
+                            src_day_offset = sd1['dep'] // 1440
+                            req_day = (self._safe_int(query_weekday) - src_day_offset) % 7
+                            if not ((sd1['mask'] & (1 << req_day)) or self._safe_int(tid1) in gtfs_adds):
+                                continue
+                            leg1_candidates.append((tid1, sd1, hd1))
+                        
+                        leg1_candidates.sort(key=lambda x: x[1]['dep'])
+                        leg1_candidates = leg1_candidates[:5]  # Prune
+                        
+                        for tid1, sd1, hd1 in leg1_candidates:
+                            arr1_mod = hd1['arr'] % 1440
+                            arr1_day = hd1['arr'] // 1440
+                            target_day_h1 = (int(query_weekday) + arr1_day) % 7
+
+                            # Leg 2: Hub1 -> Hub2
+                            leg2_common = set(h1_trains.keys()).intersection(h2_trains.keys())
+                            for tid2 in leg2_common:
+                                if tid2 == tid1:
+                                    continue
+                                if overlay.is_cancelled(self._safe_int(tid2)) or self._safe_int(tid2) in gtfs_cancelled:
+                                    continue
+                                hd1_l2 = h1_trains[tid2]
+                                hd2 = h2_trains[tid2]
+                                if hd1_l2['seq'] >= hd2['seq']:
+                                    continue
+                                
+                                dep2_mod = hd1_l2['dep'] % 1440
+                                leg2_start_offset = hd1_l2['dep'] // 1440
+                                req_day2 = (target_day_h1 - leg2_start_offset) % 7
+                                if not ((hd1_l2['mask'] & (1 << req_day2)) or self._safe_int(tid2) in gtfs_adds):
+                                    continue
+                                
+                                # Transfer 1 validation: arrival at H1 -> departure from H1
+                                wait1 = (dep2_mod - arr1_mod) % 1440
+                                penalty1 = self._get_transfer_penalty(db, h1, h1)
+                                if wait1 < (self.wait_config.min_wait_minutes + penalty1):
+                                    # Try next-day
+                                    wait1 = wait1 + 1440
+                                if wait1 > self.wait_config.max_wait_minutes * 2:
+                                    continue
+                                
+                                arr2_mod = hd2['arr'] % 1440
+                                arr2_day = hd2['arr'] // 1440
+                                target_day_h2 = (target_day_h1 + arr2_day) % 7
+
+                                # Leg 3: Hub2 -> Any Dst
+                                for d in dst_codes:
+                                    if d == h2:
+                                        continue
+                                    d_trains = data.get(d)
+                                    if not d_trains:
+                                        continue
+                                    
+                                    leg3_common = set(h2_trains.keys()).intersection(d_trains.keys())
+                                    for tid3 in leg3_common:
+                                        if tid3 == tid1 or tid3 == tid2:
+                                            continue
+                                        if overlay.is_cancelled(self._safe_int(tid3)) or self._safe_int(tid3) in gtfs_cancelled:
+                                            continue
+                                        hd2_l3 = h2_trains[tid3]
+                                        dd3 = d_trains[tid3]
+                                        if hd2_l3['seq'] >= dd3['seq']:
+                                            continue
+                                        
+                                        dep3_mod = hd2_l3['dep'] % 1440
+                                        leg3_start_offset = hd2_l3['dep'] // 1440
+                                        req_day3 = (target_day_h2 - leg3_start_offset) % 7
+                                        if not ((hd2_l3['mask'] & (1 << req_day3)) or self._safe_int(tid3) in gtfs_adds):
+                                            continue
+                                        
+                                        # Transfer 2 validation
+                                        wait2 = (dep3_mod - arr2_mod) % 1440
+                                        penalty2 = self._get_transfer_penalty(db, h2, h2)
+                                        if wait2 < (self.wait_config.min_wait_minutes + penalty2):
+                                            wait2 = wait2 + 1440
+                                        if wait2 > self.wait_config.max_wait_minutes * 2:
+                                            continue
+                                        
+                                        # Total journey metrics
+                                        leg1_dur = (hd1['arr'] - sd1['dep']) % 1440
+                                        leg2_dur = (hd2['arr'] - hd1_l2['dep']) % 1440
+                                        leg3_dur = (dd3['arr'] - hd2_l3['dep']) % 1440
+                                        total_duration = leg1_dur + wait1 + leg2_dur + wait2 + leg3_dur
+                                        
+                                        # Max journey time guard (36 hours for 2-transfer)
+                                        if total_duration > 2160:
+                                            continue
+                                        
+                                        total_dist = float(
+                                            (hd1['dist'] - sd1['dist']) +
+                                            (hd2['dist'] - hd1_l2['dist']) +
+                                            (dd3['dist'] - hd2_l3['dist'])
+                                        )
+                                        
+                                        dst_id = dst_ids[dst_codes.index(d)]
+                                        fr = FrontierRoute(total_duration, 2, wait1 + wait2, total_dist)
+                                        if not self.frontier_manager.is_dominated(dst_id, fr):
+                                            results.append({
+                                                "type": "2-transfer",
+                                                "hubs": f"{h1}->{h2}",
+                                                "score": 60 - (wait1 + wait2) / 30.0,
+                                                "legs": [
+                                                    {"train": str(tid1), "from": s, "to": h1,
+                                                     "dep": self._min_to_time(sd1['dep']),
+                                                     "arr": self._min_to_time(hd1['arr'])},
+                                                    {"train": str(tid2), "from": h1, "to": h2,
+                                                     "dep": self._min_to_time(hd1_l2['dep']),
+                                                     "arr": self._min_to_time(hd2['arr'])},
+                                                    {"train": str(tid3), "from": h2, "to": d,
+                                                     "dep": self._min_to_time(hd2_l3['dep']),
+                                                     "arr": self._min_to_time(dd3['arr'])}
+                                                ],
+                                                "duration": total_duration,
+                                                "distance": total_dist
+                                            })
+                                            if len(results) >= limit:
+                                                return results
+                if hub_pairs_checked > max_hub_pairs:
+                    break
+            return results
+        except Exception as e:
+            logger.error(f"2-Transfer Binary Search Error: {e}")
+            return []
+
     def _parse_turbo_time(self, time_str: str, base_date: datetime) -> datetime:
         """[RO-003] Robust GTFS time parsing (HH:MM:SS) that handles H>=24."""
         try:
@@ -701,5 +948,9 @@ class TurboRouter(BaseRoutingEngine):
         return f"{m // 60:02d}:{m % 60:02d}:00"
 
     def __del__(self):
-        try: self.db.close()
-        except: pass
+        db = getattr(self, "db", None)
+        if db is not None:
+            try:
+                db.close()
+            except:
+                pass

@@ -1,8 +1,8 @@
 import time
 import logging
 import asyncio
-from typing import Optional, Dict, Any
-from core.redis import async_redis_client
+from typing import Dict, Any
+from .redis_client import async_redis_client
 
 logger = logging.getLogger("routemaster.rate_limit")
 
@@ -61,7 +61,7 @@ class HybridRateLimiter:
             # Atomic increment in Redis and get total
             # We use SETNX + INCRBY or similar
             # For simplicity here:
-            await self._redis.incrby(f"rl:{key}", 1)
+            await self._redis.incr(f"rl:{key}")
             await self._redis.expire(f"rl:{key}", window * 2)
         except Exception as e:
             logger.error(f"Redis RL Sync Error: {e}")

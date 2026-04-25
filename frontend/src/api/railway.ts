@@ -1,9 +1,5 @@
-/**
- * Railway API — routes, stations, health, stats. No UI.
- * Uses getRailwayApiUrl (root paths: /routes, /stations/search, /health).
- */
-
 import { getRailwayApiUrl } from "@/lib/utils";
+import { v3Fetch } from "@/lib/apiClient";
 
 export interface Station {
   code: string;
@@ -29,13 +25,8 @@ export interface BackendRoutesResponse {
 
 export async function searchStations(q: string): Promise<Station[]> {
   if (!q || q.trim().length < 2) return [];
-  const url = getRailwayApiUrl("/stations/search?q=" + encodeURIComponent(q.trim())); // Fixed path
-  const res = await fetch(url);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as { detail?: string }).detail ?? "Stations search failed: " + res.status);
-  }
-  const data = (await res.json()) as { stations?: Array<Record<string, unknown>> };
+  const url = getRailwayApiUrl("/stations/search?q=" + encodeURIComponent(q.trim()));
+  const data = await v3Fetch<{ stations?: Array<Record<string, unknown>> }>(url);
   const list = data.stations ?? [];
   return list.map((s: Record<string, unknown>) => ({
     code: (s.station_code ?? s.code ?? "") as string,
@@ -68,23 +59,17 @@ export async function searchRoutes(
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (params?.correlationId) headers["X-Correlation-Id"] = params.correlationId;
 
-  const res = await fetch(getRailwayApiUrl("/search/"), { // Fixed: added trailing slash
+  return v3Fetch<BackendRoutesResponse>(getRailwayApiUrl("/search/"), {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { message?: string; detail?: string | unknown[] };
-    const msg = typeof err.message === "string" ? err.message : (Array.isArray(err.detail) ? (err.detail[0] as { msg?: string })?.msg : err.detail);
-    throw new Error((msg as string) ?? "Routes search failed: " + res.status);
-  }
-  return res.json();
 }
 
 export async function healthCheck(): Promise<boolean> {
   try {
-    const res = await fetch(getRailwayApiUrl("/health"));
-    return res.ok;
+    await v3Fetch(getRailwayApiUrl("/health"));
+    return true;
   } catch {
     return false;
   }
@@ -92,8 +77,8 @@ export async function healthCheck(): Promise<boolean> {
 
 export async function healthLive(): Promise<boolean> {
   try {
-    const res = await fetch(getRailwayApiUrl("/health/live"));
-    return res.ok;
+    await v3Fetch(getRailwayApiUrl("/health/live"));
+    return true;
   } catch {
     return false;
   }
@@ -101,15 +86,13 @@ export async function healthLive(): Promise<boolean> {
 
 export async function healthReady(): Promise<boolean> {
   try {
-    const res = await fetch(getRailwayApiUrl("/health/ready"));
-    return res.ok;
+    await v3Fetch(getRailwayApiUrl("/health/ready"));
+    return true;
   } catch {
     return false;
   }
 }
 
 export async function getStats(): Promise<{ total_stations?: number; total_trains?: number; total_routes?: number }> {
-  const res = await fetch(getRailwayApiUrl("/stats"));
-  if (!res.ok) throw new Error("Failed to fetch stats");
-  return res.json();
+  return v3Fetch(getRailwayApiUrl("/stats"));
 }

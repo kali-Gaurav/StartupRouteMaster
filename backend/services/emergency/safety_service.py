@@ -1,23 +1,84 @@
 import math
 import json
 import logging
+import time
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 from database.session import SessionTransit
 from database.models import Trip, Booking, StopTime, Stop, TrainLiveUpdate, Route, StationRank
 from services.multi_layer_cache import multi_layer_cache
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import retry_async, RetryPolicy
+from collections import deque
+import asyncio
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
 class SafetyService:
     """
     Core engine for passenger safety, emergency detection, and geofencing.
+    
+    With resilience patterns: circuit breaker, retry, and metrics tracking.
     """
     
     DEVIATION_THRESHOLD_KM = 5.0
     STATIONARY_THRESHOLD_MINUTES = 30
     STATIONARY_MOVE_THRESHOLD_KM = 0.5 # 500m movement counts as "moving"
+
+    def __init__(self):
+        """Initialize safety service with resilience patterns."""
+        # Circuit breaker for database operations
+        self._db_breaker = circuit_breaker_manager.get_or_create(
+            "safety_service_db",
+            CircuitConfig(failure_threshold=5, timeout_seconds=30.0)
+        )
+        
+        # Additional circuit breakers
+        self._redis_circuit_breaker = circuit_breaker(
+            name="safety_service_redis",
+            failure_threshold=5,
+            recovery_timeout=30.0
+        )
+        
+        # Retry policy
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            conditions=[
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "connection" in str(e).lower()
+            ]
+        )
+        self._redis_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.1,
+            max_delay=2.0
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        self._metrics_client = MetricsClient(
+            service_name="safety_service",
+            default_tags={"component": "emergency"}
+        )
+        self._metrics_client.gauge("db_circuit_breaker_state", lambda: self._db_breaker.get_state().value if hasattr(self._db_breaker, 'get_state') else 0)
+        self._metrics_client.gauge("redis_circuit_breaker_state", lambda: self._redis_circuit_breaker.state.value)
+        self._metrics_client.counter("deviation_checks_total")
+        self._metrics_client.counter("deviation_checks_deviated")
+        self._metrics_client.counter("stationary_checks_total")
+        self._metrics_client.counter("stationary_checks_triggered")
+        self._metrics_client.counter("dead_zone_predictions_total")
+        self._metrics_client.counter("dead_zone_predictions_upcoming")
+        self._metrics_client.histogram("check_duration_seconds")
+        
+        logger.info("SafetyService initialized with resilience patterns")
 
     @staticmethod
     def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -47,6 +108,7 @@ class SafetyService:
                 min_dist = dist
         return min_dist
 
+    @track_metrics(service="safety_service", operation="check_journey_deviation")
     async def check_journey_deviation(self, user_id: str, lat: float, lon: float, db_user: Session) -> Dict[str, Any]:
         """
         Checks if the user is synced with their train's real-time position.
@@ -121,6 +183,7 @@ class SafetyService:
         finally:
             transit_db.close()
 
+    @track_metrics(service="safety_service", operation="check_stationary_alert")
     async def check_stationary_alert(self, user_id: str, lat: float, lon: float) -> Dict[str, Any]:
         """
         Detects if a user is stationary in a high-risk zone for too long.
@@ -243,6 +306,53 @@ class SafetyService:
             
         finally:
             transit_db.close()
+
+# =========================================================================
+# RESILIENCE PATTERNS
+# =========================================================================
+
+    async def _record_metrics(self, check_type: str, result: Dict[str, Any]):
+        """Record safety check metrics for monitoring."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "check_type": check_type,
+                "status": result.get("status", "unknown"),
+                "deviated": result.get("status") == "deviated"
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_checks": 0, "deviation_rate": 0.0}
+        
+        total = len(self._metrics)
+        deviated = sum(1 for m in self._metrics if m.get("deviated", False))
+        
+        return {
+            "total_checks": total,
+            "deviation_count": deviated,
+            "deviation_rate": deviated / total if total > 0 else 0.0,
+            "circuit_breaker_state": self._db_breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breaker": {
+                "state": self._db_breaker.get_state().value,
+                "failure_count": self._db_breaker.failure_count,
+                "success_count": self._db_breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker."""
+        self._db_breaker.reset()
+        logger.info("Circuit breaker reset for safety service")
+
 
 # Singleton
 safety_service = SafetyService()

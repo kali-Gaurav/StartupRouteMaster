@@ -5,12 +5,48 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from database.models import BookingRequest, BookingRequestPassenger, BookingQueue, User
 from services.telegram_service import send_telegram_message, format_booking_alert
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import retry_async, RetryPolicy
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
 class BookingQueueService:
+    """
+    Service for managing booking queue with resilience patterns.
+    """
+    
     def __init__(self, db: Session):
         self.db = db
+        
+        # Circuit breaker for database operations
+        self._db_breaker = circuit_breaker_manager.get_or_create(
+            "booking_queue_db",
+            CircuitConfig(failure_threshold=5, timeout_seconds=30.0)
+        )
+        
+        # Circuit breaker for telegram notifications
+        self._telegram_breaker = circuit_breaker_manager.get_or_create(
+            "booking_queue_telegram",
+            CircuitConfig(failure_threshold=3, timeout_seconds=30.0)
+        )
+        
+        # Retry policy
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            conditions=[
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "connection" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("BookingQueueService initialized with resilience patterns")
 
     async def create_request(
         self,
@@ -99,3 +135,56 @@ class BookingQueueService:
             
         self.db.commit()
         return request
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, action: str, success: bool):
+        """Record queue operation metrics for monitoring."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "action": action,
+                "success": success
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_action = {}
+        for m in self._metrics:
+            action = m["action"]
+            by_action[action] = by_action.get(action, 0) + 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_action,
+            "circuit_breaker_states": {
+                "db": self._db_breaker.get_state().value,
+                "telegram": self._telegram_breaker.get_state().value
+            }
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breakers": {
+                "db": self._db_breaker.get_state().value,
+                "telegram": self._telegram_breaker.get_state().value
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers."""
+        self._db_breaker.reset()
+        self._telegram_breaker.reset()
+        logger.info("All circuit breakers reset for booking queue service")

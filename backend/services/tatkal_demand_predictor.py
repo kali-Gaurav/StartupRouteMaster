@@ -15,7 +15,7 @@ class TatkalDemandPredictor:
     Optimized for 500MB VPS: Zero-impact boot.
     """
     def __init__(self):
-        self.model = None
+        self.model: Any = None
         self.is_trained = False
         self._overflow_key = "nexus_ml_tatkal_predictor"
         self._executor = ThreadPoolExecutor(max_workers=1)
@@ -89,6 +89,8 @@ class TatkalDemandPredictor:
             'current_occupancy_rate', 'price_premium', 'competition_factor'
         ]
         
+        if self.model is None:
+            return 0.5
         f_arr = np.array([[float(features.get(k, 0.0)) for k in feature_order]], dtype=np.float32)
         prob = self.model.predict(f_arr)[0]
         return float(np.clip(prob, 0, 1))
@@ -99,6 +101,28 @@ class TatkalDemandPredictor:
          # For Elite V3, we use direct async calls. 
          # Placeholder to prevent crash in legacy dash.
          return {"sellout_probability": 0.5, "urgency_level": "medium", "action": "Sync-Layer-Dormant"}
+
+    def load_model(self) -> bool:
+        """Sync wrapper to warm up the predictor in sync contexts."""
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                logger.warning("Cannot sync-load Tatkal model while event loop is running.")
+                return False
+
+            new_loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(new_loop)
+                return new_loop.run_until_complete(self._ensure_model())
+            finally:
+                new_loop.close()
+        except Exception as e:
+            logger.error(f"Failed to load Tatkal model synchronously: {e}")
+            return False
 
 # Global instance
 tatkal_demand_predictor = TatkalDemandPredictor()

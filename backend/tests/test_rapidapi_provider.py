@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 
-from backend.services.rapidapi_provider import RapidApiProvider
-from backend.schemas.rapidapi_models import TrainSchedule, TrainsBetweenStations, SeatAvailability, LiveStatus, PNRStatus
+from services.rapidapi_provider import RapidApiProvider
+from schemas.rapidapi_models import TrainSchedule, TrainsBetweenStations, SeatAvailability, LiveStatus, PNRStatus
 
 @pytest.fixture
 def provider():

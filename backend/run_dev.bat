@@ -4,10 +4,11 @@ echo 🛡️ RouteMaster Watchdog (Windows): Initializing...
 
 :start
 echo 🚀 Starting app protocol v2.5...
-python backup_system.py
+echo 📥 Restoring system state from R2...
+python services/storage_sync.py down
 
 :: Run uvicorn
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 echo ⚠️ Backend process exited with code %errorlevel%
 

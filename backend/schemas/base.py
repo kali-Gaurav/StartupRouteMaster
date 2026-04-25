@@ -145,14 +145,6 @@ class PassengerDetailsSchema(BaseModel):
     class Config:
         from_attributes = True
 
-class BookingCreateSchema(BaseModel):
-    route_id: str
-    travel_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
-    booking_details: Dict[str, Any]
-    amount_paid: float = Field(..., ge=0)
-    passenger_details: Optional[List[PassengerDetailsSchema]] = None
-
-
 class LocationUpdateSchema(BaseModel):
     latitude: float
     longitude: float
@@ -230,21 +222,6 @@ class BookingListSchema(BaseModel):
                 "total": 0,
                 "skip": 0,
                 "limit": 20
-            }
-        }
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "full_name": "John Doe",
-                "age": 35,
-                "gender": "M",
-                "phone_number": "+919876543210",
-                "email": "john@example.com",
-                "document_type": "Aadhar",
-                "document_number": "1234-5678-9012",
-                "concession_type": None,
-                "meal_preference": "Veg"
             }
         }
 
@@ -508,7 +485,7 @@ class BookingRequestCreateSchema(BaseModel):
     class_type: str = Field("3A", pattern="^(SL|3A|2A|1A|CC|EC)$") # Use RapidAPI style codes
     quota: str = Field("GN", pattern="^(GN|TQ|LD|SS|DF|FT)$")      # Use RapidAPI style codes
     route_details: Optional[Dict[str, Any]] = None  # Full route segments JSON
-    passengers: List[BookingRequestPassengerSchema] = Field(..., min_items=1, max_items=6)
+    passengers: List[BookingRequestPassengerSchema] = Field(..., min_length=1, max_length=6)
 
     class Config:
         json_schema_extra = {

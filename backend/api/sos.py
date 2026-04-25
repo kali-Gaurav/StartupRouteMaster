@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request, Body, Depends, UploadFile, File
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import Any, cast, Dict, List, Optional
 from datetime import datetime, timedelta
 import uuid
 import logging
@@ -15,18 +15,20 @@ import asyncio
 # create logger for this module
 logger = logging.getLogger(__name__)
 
-from database.models import User
+from database.models import User, SOSEvent, SOSTelemetry
 from database.config import Config
 from api.dependencies import get_optional_user
 from services.multi_layer_cache import multi_layer_cache
 from api.websockets import manager
 from services.emergency.alert_manager import EmergencyAlertManager
 from utils.limiter import limiter
+from database.session import SessionLocal
 
 import threading
 
 from services.emergency.safety_service import safety_service
 from sqlalchemy.orm import Session
+import sqlalchemy as sa
 from database import get_db
 
 router = APIRouter(prefix="/sos", tags=["sos"])
@@ -48,17 +50,26 @@ async def update_sos_telemetry(
     Task 4.2: Automated Route Deviant Alert & Geofencing.
     Analyzes live telemetry against the expected railway path.
     """
-    event = _load_event(event_id)
-    if not event: raise HTTPException(status_code=404)
+    event_data = await _load_event_async(event_id, db)
+    if not event_data: raise HTTPException(status_code=404)
     
-    # 1. Update basic state
-    event["lat"] = payload.lat
-    event["lng"] = payload.lng
-    event["battery_level"] = payload.battery_level
+    # 1. Update basic state in event data (Redis/Snapshot)
+    event_data["lat"] = payload.lat
+    event_data["lng"] = payload.lng
+    event_data["battery_level"] = payload.battery_level
     
-    # 2. Geofencing Audit (Deep Logic)
-    # Use user_id from event or current session
-    target_user_id = event.get("user_id") or (user.id if user else None)
+    # 2. Persist granular telemetry point to DB
+    new_telemetry = SOSTelemetry(
+        event_id=event_id,
+        lat=payload.lat,
+        lng=payload.lng,
+        battery_level=payload.battery_level,
+        timestamp=datetime.utcnow()
+    )
+    db.add(new_telemetry)
+    
+    # 3. Geofencing Audit (Deep Logic)
+    target_user_id = event_data.get("user_id") or (str(user.id) if user is not None else None)
     
     deviation_report = {"status": "skipped"}
     if target_user_id:
@@ -69,63 +80,32 @@ async def update_sos_telemetry(
             db_user=db
         )
     
-    # 3. Handle Deviation
+    # 4. Handle Deviation
     if deviation_report.get("status") == "deviated":
-        event["priority"] = "critical"
-        event["extra"] = f"{event.get('extra', '')} | 🚩 GEOFENCE_VIOLATION: {deviation_report['distance_km']}km off-track"
+        event_data["priority"] = "critical"
+        event_data["extra"] = f"{event_data.get('extra', '')} | 🚩 GEOFENCE_VIOLATION: {deviation_report['distance_km']}km off-track"
         await manager.broadcast_sos({"type": "GEOFENCE_ALERT", "event_id": event_id, "report": deviation_report})
 
-    _save_event(event)
+    await _save_event_async(event_data, db)
+    db.commit()
+    
     return {
         "status": "ok",
         "geofence": deviation_report,
-        "is_critical": event.get("priority") == "critical"
+        "is_critical": event_data.get("priority") == "critical"
     }
 
-# Use the singleton instance directly
-_redis = multi_layer_cache.redis
-_local_events: List[Dict[str, Any]] = []
+# Registry Keys
 SOS_KEY_PREFIX = "sos:event:"
 SOS_INDEX_KEY = "sos:events"
 SOS_STREAM_KEY = "sos:stream:priority" # Task 7
 PNR_REGISTRY_KEY = "sos:registry:pnr" # Task 3: O(1) PNR lookup
 
-# Task 22: Persistent storage for SOS events in case of server restart
-# Ensure path is absolute for Windows stability
-_BASE_DIR = Config.BASE_DIR
-EMERGENCY_FILE_CACHE = os.path.join(_BASE_DIR, "emergency_cache.json")
-MEDIA_DIR = os.path.join(_BASE_DIR, "media", "sos")
+# Note: EMERGENCY_FILE_CACHE for local-json is deprecated in favor of SOSEvent tables
+MEDIA_DIR = os.path.join(Config.BASE_DIR or "", "media", "sos")
 
-_save_lock = threading.Lock()
+def _compress(data: Any) -> Optional[str]:
 
-def _save_to_file():
-    global _local_events
-    with _save_lock:
-        try:
-            # Atomic write to prevent corruption on Windows
-            temp_file = EMERGENCY_FILE_CACHE + ".tmp"
-            with open(temp_file, 'w') as f:
-                json.dump(_local_events, f)
-            if os.path.exists(EMERGENCY_FILE_CACHE):
-                os.remove(EMERGENCY_FILE_CACHE)
-            os.rename(temp_file, EMERGENCY_FILE_CACHE)
-        except Exception as e:
-            logger.error(f"Failed to save emergency cache to file: {e}")
-
-def _load_from_file():
-    global _local_events
-    if os.path.exists(EMERGENCY_FILE_CACHE):
-        with _save_lock:
-            try:
-                with open(EMERGENCY_FILE_CACHE, 'r') as f:
-                    _local_events = json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load emergency cache from file: {e}")
-
-# Initial load
-_load_from_file()
-
-def _compress(data: Any) -> str:
     """Compress data using zlib and encode to base64 string."""
     if not data: return None
     try:
@@ -199,13 +179,46 @@ class SOSEventResponse(BaseModel):
     active_participants: Optional[List[str]] = []
     location_history: Optional[List[Dict[str, Any]]] = []
 
-# --- Internal Helpers ---
+# --- Persistence Helpers ---
+
 def _event_key(event_id: str) -> str:
     return f"{SOS_KEY_PREFIX}{event_id}"
 
-def _save_event(event: Dict[str, Any]):
+async def _get_redis_index_ids() -> List[str]:
+    ids: List[str] = []
+    if multi_layer_cache.redis:
+        try:
+            import redis as redis_module
+            from database.config import Config
+
+            sync_redis: Any = redis_module.from_url(Config.REDIS_URL)
+            raw_ids = cast(Any, sync_redis.smembers(SOS_INDEX_KEY))
+            if hasattr(raw_ids, "__await__"):
+                raw_ids = await raw_ids
+            raw_ids = raw_ids or []
+            ids = [i.decode("utf-8") if isinstance(i, bytes) else i for i in raw_ids]
+        except Exception:
+            pass
+    return ids
+
+async def _get_redis_value(key: str) -> Optional[Any]:
+    if multi_layer_cache.redis:
+        try:
+            import redis as redis_module
+            from database.config import Config
+
+            sync_redis: Any = redis_module.from_url(Config.REDIS_URL)
+            value = cast(Any, sync_redis.get(key))
+            if hasattr(value, "__await__"):
+                value = await value
+            return value
+        except Exception:
+            pass
+    return None
+
+async def _save_event_async(event: Dict[str, Any], db: Optional[Session] = None):
     """
-    Saves event to Redis and Local Memory.
+    Saves event to Redis immediately and schedules a DB commit.
     Task 6: Encrypts and Compresses for storage.
     """
     from utils.encryption import encrypt_sos_event
@@ -219,44 +232,131 @@ def _save_event(event: Dict[str, Any]):
     if storage_event.get("call_logs") and isinstance(storage_event["call_logs"], list):
         storage_event["call_logs"] = _compress(storage_event["call_logs"])
 
-    # 3. Save to Redis (Synchronous fallback for legacy logic)
-    multi_layer_cache.set_sync(_event_key(storage_event['id']), storage_event)
+    # 3. Save to Multi-Layer Cache (L1 + L2)
+    # Using 'put' instead of non-existent 'set_sync'
+    await multi_layer_cache.put(_event_key(storage_event['id']), storage_event, ttl=86400 * 3) # 3 Day TTL
     
-    # Update PNR Registry
-    trip = storage_event.get("trip")
-    if trip and trip.get("pnr_number") and multi_layer_cache.redis:
-        # PNR lookup is high-frequency, keep in redis
-        multi_layer_cache.set_sync(f"{PNR_REGISTRY_KEY}:{trip.get('pnr_number')}", storage_event['id'])
-        
-    # 4. Save to Local Memory (Task 6: Keep uncompressed in RAM for API performance)
-    global _local_events
-    for i, e in enumerate(_local_events):
-        if e['id'] == event['id']:
-            _local_events[i] = event.copy()
-            _save_to_file()
-            return
-    _local_events.append(event.copy())
-    _save_to_file()
+    # 4. Update Index & Registry in Redis
+    if multi_layer_cache.redis:
+        try:
+            await multi_layer_cache.redis.sadd(SOS_INDEX_KEY, storage_event['id'])
+            trip = storage_event.get("trip")
+            if trip and trip.get("pnr_number"):
+                await multi_layer_cache.redis.setex(f"{PNR_REGISTRY_KEY}:{trip.get('pnr_number')}", 86400 * 7, storage_event['id'])
+        except Exception as e:
+            logger.error(f"Redis Index Update Failed: {e}")
 
-def _load_event(event_id: str) -> Optional[Dict[str, Any]]:
+    # 5. Background DB Persistence (Production Sync)
+    # We use a non-blocking task but inside the same loop to avoid thread-exhaustion
+    async def _async_persist():
+        # Use provided DB session if available, else create one
+        _db = db or SessionLocal()
+        try:
+            sos_record = _db.query(SOSEvent).filter(SOSEvent.id == event['id']).first()
+            if not sos_record:
+                sos_record = SOSEvent(id=event['id'])
+                _db.add(sos_record)
+            
+            # Sync fields (Directly from decrypted event)
+            sos_record.user_id = cast(Any, event.get("user_id"))
+            status_value = cast(Any, event.get("status", "ACTIVE"))
+            sos_record.status = cast(Any, status_value.upper())
+            priority_value = cast(Any, event.get("priority", "high"))
+            sos_record.priority = cast(Any, priority_value)
+            if event.get("category") is not None:
+                sos_record.category = cast(Any, event["category"])
+            if event.get("extra") is not None:
+                sos_record.extra = cast(Any, event["extra"])
+            if event.get("name") is not None:
+                sos_record.name = cast(Any, event["name"])
+            if event.get("phone") is not None:
+                sos_record.phone = cast(Any, event["phone"])
+            if event.get("email") is not None:
+                sos_record.email = cast(Any, event["email"])
+            if event.get("lat") is not None:
+                sos_record.lat = cast(Any, float(event["lat"]))
+            if event.get("lng") is not None:
+                sos_record.lng = cast(Any, float(event["lng"]))
+            
+            # Use JSON fields for lists
+            sos_record.call_logs = cast(Any, event.get("call_logs", []))
+            sos_record.chat_history = cast(Any, event.get("chat_history", []))
+            sos_record.structured_info = cast(Any, event.get("structured_info", {}))
+            sos_record.active_participants = cast(Any, event.get("active_participants", []))
+            sos_record.trip_data = cast(Any, event.get("trip", {}))
+            
+            if event.get("triggered_at"):
+                try:
+                    sos_record.triggered_at = cast(Any, datetime.fromisoformat(event["triggered_at"]))
+                except Exception:
+                    pass
+            if event.get("resolved_at"):
+                try:
+                    sos_record.resolved_at = cast(Any, datetime.fromisoformat(event["resolved_at"]))
+                except Exception:
+                    pass
+            if event.get("acknowledged_at"):
+                try:
+                    sos_record.acknowledged_at = cast(Any, datetime.fromisoformat(event["acknowledged_at"]))
+                except Exception:
+                    pass
+            
+            _db.commit()
+            logger.debug(f"💾 [DB_SYNC] SOSEvent {event['id']} persisted.")
+        except Exception as e:
+            logger.error(f"DB persistence failed for {event.get('id')}: {e}")
+        finally:
+            if not db:
+                _db.close() # Close only if we created it
+
+    asyncio.create_task(_async_persist())
+
+async def _load_event_async(event_id: str, db: Optional[Session] = None) -> Optional[Dict[str, Any]]:
     """
-    Loads event and Task 6: Decompresses/Decrypts it.
+    Loads event from Redis or Postgres and Task 6: Decompresses/Decrypts it.
     """
     from utils.encryption import decrypt_sos_event
+    
+    # 1. Try Redis
     raw_event = None
     if multi_layer_cache.redis:
         try:
-            # Note: multi_layer_cache.redis is async, this needs sync fallback or async rewrite.
-            # For now, we use local memory fallback or a quick sync connection.
-            import redis
-            from database.config import Config
-            sync_redis = redis.from_url(Config.REDIS_URL)
-            raw = sync_redis.get(_event_key(event_id))
-            if raw: raw_event = json.loads(raw)
-        except Exception: pass
-    if not raw_event:
-        raw_event = next((e for e in _local_events if e['id'] == event_id), None)
-    
+            raw = await multi_layer_cache.get(_event_key(event_id))
+            if raw: raw_event = raw
+        except Exception:
+            pass
+
+    _db = db or SessionLocal()
+    try:
+        # 2. Try Postgres Fallback
+        if not raw_event:
+            sos_record = _db.query(SOSEvent).filter(SOSEvent.id == event_id).first()
+            if sos_record:
+                raw_event = {
+                "id": sos_record.id,
+                "user_id": sos_record.user_id,
+                "status": sos_record.status.lower(),
+                "priority": sos_record.priority,
+                "category": sos_record.category,
+                "extra": sos_record.extra,
+                "name": sos_record.name,
+                "phone": sos_record.phone,
+                "email": sos_record.email,
+                "lat": sos_record.lat,
+                "lng": sos_record.lng,
+                "call_logs": sos_record.call_logs,
+                "chat_history": sos_record.chat_history,
+                "structured_info": sos_record.structured_info,
+                "active_participants": sos_record.active_participants,
+                "trip": sos_record.trip_data,
+                "triggered_at": sos_record.triggered_at.isoformat(),
+                "resolved_at": (cast(Any, sos_record.resolved_at).isoformat() if cast(Any, sos_record.resolved_at) else None),
+                "acknowledged_at": (cast(Any, sos_record.acknowledged_at).isoformat() if cast(Any, sos_record.acknowledged_at) else None)
+            }
+    finally:
+        if not db:
+            _db.close()
+
     if raw_event:
         chat_data = raw_event.get("chat_history")
         if isinstance(chat_data, str) and chat_data.startswith("c:"):
@@ -367,30 +467,24 @@ class MeshRelayPayload(BaseModel):
 async def health(): return {"status": "ok"}
 
 @router.get('/heatmap')
-async def get_incident_heatmap(precision: float = 0.1):
+async def get_incident_heatmap(precision: float = 0.1, db: Session = Depends(get_db)):
     """
     Task 36: Real-time Incident Visualizer (Heatmaps).
     Aggregates active incidents into a grid-based density map.
     """
     all_events = []
-    ids = []
-    if multi_layer_cache.redis:
-        try:
-            # Use sync connection for quick iteration
-            import redis
-            from database.config import Config
-            sync_redis = redis.from_url(Config.REDIS_URL)
-            raw_ids = sync_redis.smembers(SOS_INDEX_KEY) or []
-            ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
-        except Exception: pass
+    ids = await _get_redis_index_ids()
     
     if not ids:
-        all_events = _local_events
-    else:
-        for eid in ids:
-            e = _load_event(eid)
-            if e: all_events.append(e)
-            
+        # Fallback: Query all active events from DB
+        active_records = db.query(SOSEvent).filter(SOSEvent.status.in_(["ACTIVE", "RESPONDING"])).all()
+        ids = [str(r.id) for r in active_records]
+    
+    for eid in ids:
+        e = await _load_event_async(eid, db)
+        if e is not None:
+            all_events.append(e)
+
     heatmap = {}
     for e in all_events:
         if e.get("status") in ["active", "responding"]:
@@ -406,42 +500,45 @@ async def get_incident_heatmap(precision: float = 0.1):
     return result
 
 @router.get('/pnr/{pnr}')
-async def get_sos_by_pnr(pnr: str):
-    if multi_layer_cache.redis:
-        try:
-            import redis
-            from database.config import Config
-            sync_redis = redis.from_url(Config.REDIS_URL)
-            event_id = sync_redis.get(f"{PNR_REGISTRY_KEY}:{pnr}")
-            if event_id:
-                event_id = event_id.decode('utf-8') if isinstance(event_id, bytes) else event_id
-                event = _load_event(event_id)
-                if event and event.get("status") in ["active", "responding"]:
-                    return _map_event_to_res(event)
-        except Exception: pass
-    for e in _local_events:
-        trip = e.get("trip")
-        if trip and str(trip.get("pnr_number")) == str(pnr):
-            if e.get("status") in ["active", "responding"]:
-                return _map_event_to_res(e)
+async def get_sos_by_pnr(pnr: str, db: Session = Depends(get_db)):
+    event_id = await _get_redis_value(f"{PNR_REGISTRY_KEY}:{pnr}")
+    if event_id:
+        if isinstance(event_id, bytes):
+            event_id = event_id.decode('utf-8')
+        event = await _load_event_async(str(event_id), db)
+        if event and event.get("status") in ["active", "responding"]:
+            return _map_event_to_res(event)
+
+    # DB Fallback for PNR (Search in JSON trip_data)
+    event_record = db.query(SOSEvent).filter(
+        sa.or_(
+            SOSEvent.status == "ACTIVE",
+            SOSEvent.status == "RESPONDING"
+        )
+    ).all()
+    
+    for r in event_record:
+        trip_data = r.trip_data
+        if isinstance(trip_data, dict) and str(trip_data.get("pnr_number")) == str(pnr):
+            event = await _load_event_async(str(r.id), db)
+            if event is not None:
+                return _map_event_to_res(event)
+
     raise HTTPException(status_code=404, detail="No active SOS for this PNR.")
 
 @router.get('/all')
-async def get_all_sos():
-    ids = []
-    if multi_layer_cache.redis:
-        try:
-            import redis
-            from database.config import Config
-            sync_redis = redis.from_url(Config.REDIS_URL)
-            raw_ids = sync_redis.smembers(SOS_INDEX_KEY) or []
-            ids = [i.decode('utf-8') if isinstance(i, bytes) else i for i in raw_ids]
-        except Exception: pass
-    if not ids: return [_map_event_to_res(e) for e in _local_events]
+async def get_all_sos(db: Session = Depends(get_db)):
+    ids = await _get_redis_index_ids()
+
+    if not ids:
+        active_records = db.query(SOSEvent).filter(SOSEvent.status.in_( ["ACTIVE", "RESPONDING"] ) ).all()
+        ids = [str(r.id) for r in active_records]
+
     events = []
     for eid in ids:
-        e = _load_event(eid)
-        if e: events.append(_map_event_to_res(e))
+        e = await _load_event_async(str(eid), db)
+        if e is not None:
+            events.append(_map_event_to_res(e))
     return events
 
 @router.get("/risk-check")
@@ -450,47 +547,47 @@ async def check_location_risk(lat: float, lng: float):
     return risk_service.check_area_risk(lat, lng)
 
 @router.get('/{event_id}')
-async def get_sos_by_id(event_id: str):
-    event = _load_event(event_id)
+async def get_sos_by_id(event_id: str, db: Session = Depends(get_db)):
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404, detail="Incident not found.")
     return _map_event_to_res(event)
 
 @router.post('/mesh-sync')
-async def sync_mesh_alert(payload: MeshRelayPayload):
-    existing = _load_event(payload.original_event_id)
+async def sync_mesh_alert(payload: MeshRelayPayload, db: Session = Depends(get_db)):
+    existing = await _load_event_async(payload.original_event_id, db)
     if payload.large_payload_b64:
         if existing: existing["extra"] = f"{existing.get('extra', '')} | 📁 HIGH-FIDELITY DATA RELAYED (WiFi-Direct)"
         else: payload.data["extra"] = f"{payload.data.get('extra', '')} | 📁 HIGH-FIDELITY DATA RELAYED (WiFi-Direct)"
 
     if existing:
         existing["extra"] = f"{existing.get('extra', '')} | 📡 MESH RELAY SEEN (Relay: {payload.relayed_by_user_id})"
-        _save_event(existing)
+        await _save_event_async(existing)
         return {"status": "merged", "event_id": payload.original_event_id}
     
     event = payload.data
     event["id"] = payload.original_event_id
     event["extra"] = f"{event.get('extra', '')} | 🛰️ ORIGINATED VIA MESH (Relay: {payload.relayed_by_user_id})"
-    _save_event(event)
+    await _save_event_async(event)
     alert_mgr = EmergencyAlertManager()
     enriched = await alert_mgr.process_sos_alert(event)
-    _save_event(enriched)
+    await _save_event_async(enriched)
     return {"status": "initiated_via_mesh", "event_id": payload.original_event_id}
 
 @router.post('/confirm-safe')
-async def confirm_passenger_safe(token: str):
+async def confirm_passenger_safe(token: str, db: Session = Depends(get_db)):
     from utils.tracking_links import tracking_link_gen
     event_id = tracking_link_gen.verify_token(token)
     if not event_id: raise HTTPException(status_code=400, detail="Invalid token.")
-    event = _load_event(event_id)
+    event = await _load_event_async(event_id, db)
     if event:
         event["status"] = "resolved"
         event["resolved_at"] = datetime.utcnow().isoformat()
-        _save_event(event)
+        await _save_event_async(event)
         await manager.broadcast_sos(event)
     return {"status": "success"}
 
 @router.post('/')
-async def trigger_sos(request: Request, payload: SOSPayload):
+async def trigger_sos(request: Request, payload: SOSPayload, user: Optional[User] = Depends(get_optional_user), db: Session = Depends(get_db)):
     from utils.bloom_filter import sos_bloom_filter
     if payload.phone and sos_bloom_filter.is_blocked(payload.phone):
         raise HTTPException(status_code=403, detail="Safety filter rejection.")
@@ -502,6 +599,7 @@ async def trigger_sos(request: Request, payload: SOSPayload):
         "extra": payload.extra, "trip": payload.trip.dict() if payload.trip else None,
         "chat_history": payload.chat_history or [], "status": "active", "priority": "high",
         "triggered_at": datetime.utcnow().isoformat(),
+        "user_id": user.id if user else None,
         "accel_g_force": payload.accel_g_force,
         "impact_duration_ms": payload.impact_duration_ms,
         "post_impact_motion": payload.post_impact_motion,
@@ -525,29 +623,28 @@ async def trigger_sos(request: Request, payload: SOSPayload):
     is_night = now.hour >= 23 or now.hour <= 4
     res["auto_dim_screen"] = (enriched.get("battery_level", 1.0) < 0.15) or is_night
     # Task 44: Silent-Panic Vibration Pattern
-    # [Pulse, Pause, Pulse, Pause] in ms
     if res.get("priority") == "critical":
-        res["vibration_pattern"] = [100, 50, 100, 50, 500, 50, 500] # SOS in Morse-ish
+        res["vibration_pattern"] = [100, 50, 100, 50, 500, 50, 500] 
     else:
-        res["vibration_pattern"] = [50, 100, 50, 100] # Confirmation double-pulse
+        res["vibration_pattern"] = [50, 100, 50, 100] 
     
     # Task 46: High-Frequency GPS 'Burst' Mode
     if res.get("priority") == "critical" or res.get("panic_score", 0) >= 8:
         res["gps_burst_interval_ms"] = 2000 # 2s burst
         res["gps_burst_duration_s"] = 60
     else:
-        res["gps_burst_interval_ms"] = 0 # No burst
+        res["gps_burst_interval_ms"] = 0 
     
-    _save_event(enriched)
+    await _save_event_async(enriched)
     return res
 
 @router.get('/{event_id}/family-view')
-async def get_sos_family_view(event_id: str):
+async def get_sos_family_view(event_id: str, db: Session = Depends(get_db)):
     """
     Task 52: Dynamic Incident Redaction for Family View.
     Returns a softened, non-technical view for emergency contacts.
     """
-    event = _load_event(event_id)
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     
     # 1. Empathetic Status Mapping
@@ -577,12 +674,12 @@ async def get_sos_family_view(event_id: str):
     return redacted
 
 @router.get('/{event_id}/autofill')
-async def get_sos_autofill(event_id: str):
+async def get_sos_autofill(event_id: str, db: Session = Depends(get_db)):
     """
     Task 48: Dynamic SOS Form Autofill (AI-Assisted).
     Extracts entities from transcript to suggest form values.
     """
-    event = _load_event(event_id)
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     
     from utils.sos_entities import SOSEntityExtractor
@@ -607,16 +704,14 @@ async def get_sos_autofill(event_id: str):
     return suggestions
 
 @router.post('/{event_id}/feedback')
-async def submit_admin_feedback(event_id: str, payload: AdminFeedbackPayload):
-    event = _load_event(event_id)
+async def submit_admin_feedback(event_id: str, payload: AdminFeedbackPayload, db: Session = Depends(get_db)):
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     if payload.is_false_positive and event.get("phone"):
         from utils.bloom_filter import sos_bloom_filter
         sos_bloom_filter.add(event.get("phone"))
     
-    from database.session import SessionLocal
     from database.models import RLFeedbackLog, User
-    db = SessionLocal()
     try:
         admin_user = db.query(User).filter(User.supabase_id == "ADMIN_SYSTEM").first()
         if not admin_user:
@@ -627,19 +722,19 @@ async def submit_admin_feedback(event_id: str, payload: AdminFeedbackPayload):
         db.add(log)
         db.commit()
     except Exception: pass
-    finally: db.close()
+    
     event["admin_feedback"] = payload.dict()
-    _save_event(event)
+    await _save_event_async(event)
     return {"status": "feedback_recorded"}
 
 @router.post('/{event_id}/handshake')
-async def perform_safety_handshake(event_id: str, party: str = Body(..., embed=True)):
+async def perform_safety_handshake(event_id: str, party: str = Body(..., embed=True), db: Session = Depends(get_db)):
     """
     Task 56: Multi-party Safety Handshake.
     Parties: 'victim', 'responder', 'admin'.
     Broadcasts completion when all 3 acknowledge.
     """
-    event = _load_event(event_id)
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     
     handshake = event.get("handshake_status", {"victim": False, "responder": False, "admin": False})
@@ -655,15 +750,16 @@ async def perform_safety_handshake(event_id: str, party: str = Body(..., embed=T
         await manager.broadcast_sos({"type": "SAFE_HANDSHAKE_COMPLETE", "event_id": event_id})
         logger.info(f"✅ [HANDSHAKE] Triple-confirmation complete for incident {event_id}")
 
-    _save_event(event)
+    await _save_event_async(event)
     return {"status": "handshake_updated", "current_status": handshake}
 
 @router.post('/{event_id}/acknowledge')
-async def acknowledge_sos(event_id: str):
-    event = _load_event(event_id)
+async def acknowledge_sos(event_id: str, db: Session = Depends(get_db)):
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     event['status'] = 'responding'
-    _save_event(event)
+    event['acknowledged_at'] = datetime.utcnow().isoformat()
+    await _save_event_async(event)
     await manager.broadcast_sos(event)
     return _map_event_to_res(event)
 
@@ -675,12 +771,12 @@ class DebriefPayload(BaseModel):
     responder_ids: Optional[List[str]] = [] # IDs of users who helped
 
 @router.post('/{event_id}/debrief')
-async def submit_passenger_debrief(event_id: str, payload: DebriefPayload):
+async def submit_passenger_debrief(event_id: str, payload: DebriefPayload, db: Session = Depends(get_db)):
     """
     Task 40: Multi-language Post-Incident Debrief.
     Collects feedback and rewards responders with Karma.
     """
-    event = _load_event(event_id)
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     
     # 1. Store Debrief
@@ -689,27 +785,28 @@ async def submit_passenger_debrief(event_id: str, payload: DebriefPayload):
     
     # 2. Reward Responders (Task 32 integration)
     if payload.responder_ids:
-        from database.session import SessionLocal
         from database.models import User, Profile
-        db = SessionLocal()
         try:
             for rid in payload.responder_ids:
-                prof = db.query(Profile).join(User, User.id == Profile.user_id).filter(User.supabase_id == rid).first()
-                if prof:
-                    prof.karma_score += 10 # Reward for helping
-                    prof.help_count += 1
+                updated = db.query(Profile).join(User, User.id == Profile.user_id).filter(User.supabase_id == rid).update(
+                    {
+                        "karma_score": Profile.karma_score + 10,
+                        "help_count": Profile.help_count + 1,
+                    },
+                    synchronize_session=False
+                )
+                if updated:
                     logger.info(f"🏆 [KARMA] Rewarded responder {rid} with +10 karma.")
             db.commit()
         except Exception as e:
             logger.error(f"Failed to reward responders: {e}")
-        finally: db.close()
         
-    _save_event(event)
+    await _save_event_async(event)
     return {"status": "debrief_accepted", "message": "Thank you for your feedback. Responders have been rewarded."}
 
 @router.post('/{event_id}/resolve')
-async def resolve_sos(event_id: str):
-    event = _load_event(event_id)
+async def resolve_sos(event_id: str, db: Session = Depends(get_db)):
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
     event['status'] = 'resolved'
     event['resolved_at'] = datetime.utcnow().isoformat()
@@ -722,54 +819,58 @@ async def resolve_sos(event_id: str):
             if trip and trip.get("pnr_number"):
                 sync_redis.delete(f"{PNR_REGISTRY_KEY}:{trip.get('pnr_number')}")
         except Exception: pass
-    _save_event(event)
+    await _save_event_async(event)
     await manager.broadcast_sos(event)
     return _map_event_to_res(event)
 
 @router.post("/{event_id}/battery")
-async def update_battery_status(event_id: str, battery_level: float = Body(...), lat: float = Body(...), lng: float = Body(...), is_last_breath: bool = Body(False), motion_level: float = Body(1.0)):
-    event = _load_event(event_id)
-    if not event: raise HTTPException(status_code=404)
+async def update_battery_status(event_id: str, battery_level: float = Body(...), lat: float = Body(...), lng: float = Body(...), is_last_breath: bool = Body(False), motion_level: float = Body(1.0), db: Session = Depends(get_db)):
+    event_data = await _load_event_async(event_id, db)
+    if not event_data: raise HTTPException(status_code=404)
     
     # Task 5.16: High-frequency state update (Zero overhead)
-    event["lat"], event["lng"], event["battery_level"] = lat, lng, battery_level
-    event["last_motion_level"] = motion_level
+    event_data["lat"], event_data["lng"], event_data["battery_level"] = lat, lng, battery_level
+    event_data["last_motion_level"] = motion_level
     
     if is_last_breath or battery_level < 0.02:
-        event["priority"] = "critical"
-        event["extra"] = f"{event.get('extra', '')} | 💀 LAST BREATH SYNC"
+        event_data["priority"] = "critical"
+        event_data["extra"] = f"{event_data.get('extra', '')} | 💀 LAST BREATH SYNC"
 
     # Task 5.17: Throttled Enrichment (Max once every 10 seconds)
     now_ts = datetime.utcnow().timestamp()
-    last_sync = event.get("_last_background_sync", 0)
+    last_sync = event_data.get("_last_background_sync", 0)
     
     if now_ts - last_sync > 10: # 10s throttle
-        event["_last_background_sync"] = now_ts
+        event_data["_last_background_sync"] = now_ts
         async def background_update():
             try:
                 from services.emergency.alert_manager import EmergencyAlertManager
                 alert_mgr = EmergencyAlertManager()
-                await alert_mgr.process_sos_alert(event)
+                await alert_mgr.process_sos_alert(event_data)
+                # Redis update is handled via process_sos_alert calling save? 
+                # Actually, we should call save after enrichment
+                await _save_event_async(event_data)
             except Exception as e:
                 logger.error(f"Background battery update failed: {e}")
         asyncio.create_task(background_update())
     else:
-        # Just broadcast the raw update immediately for UI smoothness
-        await manager.broadcast_sos(event)
+        # Just broadcast for UI and sync to Redis for quick lookups
+        await _save_event_async(event_data)
+        await manager.broadcast_sos(event_data)
 
-    _save_event(event)
     return {"status": "ok", "auto_dim_screen": battery_level < 0.15}
 
 @router.post("/{event_id}/voice-note")
-async def upload_voice_note(event_id: str, file: UploadFile = File(...)):
-    event = _load_event(event_id)
+async def upload_voice_note(event_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    event = await _load_event_async(event_id, db)
     if not event: raise HTTPException(status_code=404)
-    event_media_dir = os.path.join(MEDIA_DIR, event_id)
+    event_media_dir = os.path.join(str(MEDIA_DIR), event_id)
     os.makedirs(event_media_dir, exist_ok=True)
-    file_path = os.path.join(event_media_dir, file.filename)
+    filename = cast(str, file.filename)
+    file_path = os.path.join(event_media_dir, filename)
     with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
     if "chat_history" not in event: event["chat_history"] = []
     event["chat_history"].append({"sender": "user", "type": "voice_note", "content": "[VOICE NOTE]", "media_url": f"/media/sos/{event_id}/{file.filename}", "timestamp": datetime.utcnow().isoformat()})
-    _save_event(event)
+    await _save_event_async(event)
     await manager.broadcast_sos(event)
     return {"status": "uploaded"}

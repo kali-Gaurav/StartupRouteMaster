@@ -3,33 +3,33 @@ from sqlalchemy.orm import Session
 from database.session import get_db
 from database.models import Booking, PaymentSession, EscrowStatus, AuditLog, BankTransaction
 from services.unlock_service import UnlockService
-from utils.security import signature_guard # [30.3]
+from utils.security import signature_guard 
+from utils.responses import success_response, v3_response
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, cast
 import logging
 from datetime import datetime
 import re
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("api.webhooks")
 router = APIRouter(prefix="/webhooks", tags=["Payments & Reconciliation"])
 
-# [28.1] Trusted Provider IPs
-TRUSTED_WEBHOOK_IPS = {"127.0.0.1", "::1"} # Localhost for dev
+TRUSTED_WEBHOOK_IPS = {"127.0.0.1", "::1"} 
 
 def verify_ip(request: Request):
-    """[28.2] Strict IP Source Validation."""
-    client_ip = request.headers.get("x-forwarded-for") or request.client.host
+    """Strict IP Source Validation."""
+    client_ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "127.0.0.1")
     if "," in client_ip: client_ip = client_ip.split(",")[0].strip()
     
     if client_ip not in TRUSTED_WEBHOOK_IPS:
-        logger.warning(f"Unauthorized Webhook Attempt from IP: {client_ip}")
+        logger.warning(f"UNAUTHORIZED_WEBHOOK_ATTEMPT | IP: {client_ip}")
         raise HTTPException(status_code=403, detail="Unauthorized source IP.")
     return client_ip
 
 class PaymentWebhook(BaseModel):
     utr_number: str
     amount: float
-    event_id: Optional[str] = None # [21.1] For Idempotency
+    event_id: Optional[str] = None 
     session_code: Optional[str] = None 
     booking_id: Optional[str] = None
     status: str = "SUCCESS"
@@ -40,7 +40,7 @@ class BankSMSPayload(BaseModel):
     received_at: Optional[datetime] = None
 
 def parse_bank_sms(text: str) -> Optional[Dict[str, Any]]:
-    """[12.3] Regex-parse common Bank SMS templates for UTR and Amount."""
+    """Regex-parse common Bank SMS templates for UTR and Amount."""
     utr_match = re.search(r'\b(\d{12})\b', text)
     amt_match = re.search(r'(?:Rs|Amt|INR)\.?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
     if utr_match:
@@ -50,7 +50,7 @@ def parse_bank_sms(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 class SupabaseAuthPayload(BaseModel):
-    type: str # INSERT, UPDATE, DELETE
+    type: str 
     record: Optional[Dict[str, Any]] = None
     old_record: Optional[Dict[str, Any]] = None
 
@@ -60,32 +60,32 @@ async def supabase_auth_webhook(
     db: Session = Depends(get_db),
     client_ip: str = Depends(verify_ip)
 ):
-    """
-    Supabase Auth Webhook listener.
-    Syncs verification status and profile data from auth.users.
-    """
+    """Syncs verification status and profile data from auth.users."""
     from services.user_service import UserService
     user_service = UserService(db)
     
     if payload.type in ("INSERT", "UPDATE"):
-        record = payload.record
+        record = payload.record or {}
+        if not record:
+            return success_response(data={"status": "ignored", "reason": "No record data provided"})
+
         sb_id = record.get("id")
+        if not sb_id:
+            return success_response(data={"status": "ignored", "reason": "No Supabase ID found"})
+
         email = record.get("email")
         phone = record.get("phone")
-        # Supabase confirm fields
         email_confirmed = record.get("email_confirmed_at") is not None
         phone_confirmed = record.get("phone_confirmed_at") is not None
         is_verified = email_confirmed or phone_confirmed
         confirmed_at = record.get("email_confirmed_at") or record.get("phone_confirmed_at")
         
-        user = user_service.get_user_by_supabase_id(sb_id)
+        user = user_service.get_user_by_supabase_id(str(sb_id))
         if not user and email:
             user = user_service.get_user_by_email(email)
-            if user:
-                user.supabase_id = sb_id
+            if user: user.supabase_id = sb_id
         
         if not user:
-            # Create new user if not exists (fail-safe sync)
             user_data = {
                 "supabase_id": sb_id,
                 "email": email,
@@ -96,38 +96,36 @@ async def supabase_auth_webhook(
             }
             user = user_service.create_user_with_data(user_data)
         else:
-            # Update verification status
-            user.is_verified = is_verified
-            user.verified_at = confirmed_at
+            setattr(user, "is_verified", is_verified)
+            setattr(user, "verified_at", confirmed_at)
             if email: user.email = email
             if phone: user.phone_number = phone
         
         db.commit()
-        logger.info(f"Synced Supabase user {sb_id} (Verified: {is_verified})")
+        logger.info(f"SUPABASE_AUTH_SYNC | {sb_id} | Verified: {is_verified}")
     
-    return {"status": "success"}
+    return success_response(data={"status": "success"})
 
 @router.post("/bank-sms")
 async def bank_sms_webhook(payload: BankSMSPayload, db: Session = Depends(get_db)):
-    """[12.2] Bank SMS Listener. Auto-verifies bookings if UTR matches."""
+    """Bank SMS Listener. Auto-verifies bookings if UTR matches."""
     parsed = parse_bank_sms(payload.text)
     if not parsed:
-        return {"status": "ignored", "reason": "No UTR found"}
+        return success_response(data={"status": "ignored", "reason": "No UTR found"})
         
     utr = parsed["utr"]
     amount = parsed["amount"]
     
-    # [21.7] Idempotency for SMS
     existing_tx = db.query(BankTransaction).filter(BankTransaction.utr_number == utr).first()
-    if existing_tx and existing_tx.status == "PROCESSED":
-        return {"status": "accepted", "message": "Duplicate UTR (Idempotent).", "is_replay": True}
+    if existing_tx is not None:
+        if getattr(existing_tx, "status", None) == "PROCESSED":
+            return success_response(data={"status": "accepted", "message": "Duplicate UTR (Idempotent).", "is_replay": True})
 
     booking = db.query(Booking).filter(Booking.utr_number == utr).first()
-    if booking and booking.escrow_status == EscrowStatus.UTR_SUBMITTED:
+    if booking is not None and getattr(booking, "escrow_status", None) == EscrowStatus.UTR_SUBMITTED:
         booking.escrow_status = EscrowStatus.VERIFIED
         booking.escrow_message = "Auto-verified via Bank SMS."
         
-        # Record Transaction
         tx = BankTransaction(utr_number=utr, amount=amount, raw_sms=payload.text, status="PROCESSED")
         db.add(tx)
         
@@ -136,31 +134,24 @@ async def bank_sms_webhook(payload: BankSMSPayload, db: Session = Depends(get_db
                          performed_by="SYSTEM_SMS_BOT", reason=f"UTR {utr} matched SMS.")
         db.add(audit)
         db.commit()
-        return {"status": "verified", "booking_id": booking.id}
+        logger.info(f"BANK_SMS_VERIFIED | {booking.id} | UTR: {utr}")
+        return success_response(data={"status": "verified", "booking_id": booking.id})
             
-    return {"status": "accepted", "matched": bool(booking)}
+    return success_response(data={"status": "accepted", "matched": bool(booking)})
 
 @router.post("/payment-simulate")
 async def payment_webhook_handler(
     payload: PaymentWebhook, 
     db: Session = Depends(get_db),
     client_ip: str = Depends(verify_ip),
-    authenticated: bool = Depends(signature_guard) # [30.3]
+    authenticated: bool = Depends(signature_guard) 
 ):
-    """
-    Simulated payment webhook handler.
-    [21.3] Idempotency Check using event_id.
-    [21.2] Distributed Locking with automatic release.
-    [24.3] Fuzzy UTR Matching.
-    """
+    """Simulated payment webhook handler."""
     from services.multi_layer_cache import multi_layer_cache
     from utils.payments import standardize_utr
     await multi_layer_cache.initialize()
     
-    # [24.3] Standardize incoming UTR
     payload.utr_number = standardize_utr(payload.utr_number)
-    
-    # Unique identifier for this logical event
     event_ref = payload.event_id or f"utr_{payload.utr_number}"
     lock_key = f"lock:webhook:{event_ref}"
     
@@ -170,13 +161,11 @@ async def payment_webhook_handler(
             raise HTTPException(status_code=429, detail="Processing in progress.")
 
     try:
-        # 1. Idempotency Check (Subtask 21.3)
         if payload.event_id:
             existing = db.query(BankTransaction).filter(BankTransaction.event_id == payload.event_id).first()
             if existing:
-                return {"status": "accepted", "message": "Already processed.", "is_replay": True}
+                return success_response(data={"status": "accepted", "message": "Already processed.", "is_replay": True})
 
-        # 2. Matching Logic
         booking = None
         if payload.booking_id:
             booking = db.query(Booking).filter(Booking.id == payload.booking_id).first()
@@ -191,10 +180,10 @@ async def payment_webhook_handler(
                 ).first()
 
         if not booking:
+            logger.error(f"WEBHOOK_MATCH_FAILED | UTR: {payload.utr_number} | Session: {payload.session_code}")
             raise HTTPException(status_code=404, detail="No matching booking found.")
 
-        # 3. Process Payment (Subtask 21.4 - Atomic)
-        booking.utr_number = payload.utr_number
+        setattr(booking, "utr_number", payload.utr_number)
         
         tx = BankTransaction(
             utr_number=payload.utr_number, 
@@ -205,9 +194,8 @@ async def payment_webhook_handler(
         db.add(tx)
 
         if booking.service_type == "UNLOCK":
-            UnlockService.fulfill_unlock(db, booking.id)
+            UnlockService.fulfill_unlock(db, cast(str, booking.id))
         else:
-            # [26.3] Use centralized transition
             booking.update_escrow_status(
                 db, 
                 EscrowStatus.VERIFIED, 
@@ -217,9 +205,9 @@ async def payment_webhook_handler(
             )
         
         db.commit()
-        return {"status": "accepted", "message": "Payment processed successfully."}
+        logger.info(f"PAYMENT_WEBHOOK_SUCCESS | {booking.id} | UTR: {payload.utr_number}")
+        return success_response(data={"status": "accepted", "message": "Payment processed successfully."})
 
     finally:
-        # [21.2] Release Lock
         if multi_layer_cache.redis:
             await multi_layer_cache.redis.delete(lock_key)

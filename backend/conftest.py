@@ -4,18 +4,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+BACKEND = Path(__file__).resolve().parent
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
-# Make `api.*` imports resolve to `backend.api.*` so tests that import `api.chat` patch the same modules
-import importlib
-_backend_api = importlib.import_module("backend.api")
-import sys as _sys
-_sys.modules['api'] = _backend_api
-# Also alias commonly-used submodules so tests that import `api.*` get the same module objects
-try:
-    _backend_chat = importlib.import_module("backend.api.chat")
-    _sys.modules['api.chat'] = _backend_chat
-except Exception:
-    pass
+# Removed backend.api aliasing
 
 import json
 import pytest
@@ -41,17 +34,20 @@ def db():
     )
 
     # Avoid geoalchemy2 DDL calls which require SpatiaLite/PostGIS in sqlite
+    _gasqlite = None
+    _orig_after_create = None
     try:
-        import geoalchemy2.dialects.sqlite as _gasqlite
+        import geoalchemy2.admin.dialects.sqlite as _gasqlite
         _orig_after_create = getattr(_gasqlite, 'after_create', None)
         _gasqlite.after_create = lambda *a, **kw: None
     except Exception:
+        _gasqlite = None
         _orig_after_create = None
 
     Base.metadata.create_all(bind=engine)
 
     # restore if we changed it
-    if _orig_after_create is not None:
+    if _gasqlite is not None and _orig_after_create is not None:
         _gasqlite.after_create = _orig_after_create
 
     SessionLocal = sessionmaker(bind=engine)
@@ -72,7 +68,7 @@ def db():
     session.commit()
 
     # Override FastAPI dependency so endpoints use this test session
-    from backend import app as _app_module
+    import app as _app_module
     _app_module.app.dependency_overrides[get_db] = lambda: (session)
 
     yield session

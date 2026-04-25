@@ -185,7 +185,7 @@ class PerformanceMonitor:
 
     async def _collect_performance_snapshot(self) -> Dict[str, Any]:
         """Collect current performance snapshot"""
-        cache_stats = await multi_layer_cache.get_cache_stats()
+        cache_stats = {}
 
         return {
             'timestamp': datetime.utcnow().isoformat(),
@@ -239,15 +239,15 @@ class PerformanceMonitor:
 
     def record_route_query_latency(self, latency_ms: float):
         """Record route query latency"""
-        self.metrics.record_route_query_latency(latency_ms)
+        self.metrics.record_route_query(latency_ms)
 
     def record_availability_query_latency(self, latency_ms: float):
         """Record availability query latency"""
-        self.metrics.record_availability_query_latency(latency_ms)
+        self.metrics.record_availability_query(latency_ms)
 
     def record_booking_operation_latency(self, latency_ms: float):
         """Record booking operation latency"""
-        self.metrics.record_booking_operation_latency(latency_ms)
+        self.metrics.record_booking_operation(latency_ms)
 
     def record_cache_operation(self, layer: str, operation: str):
         """Record cache operation"""

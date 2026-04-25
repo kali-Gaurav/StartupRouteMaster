@@ -37,18 +37,32 @@ class FinancialSentinelNode(NexusNode):
 
     async def _periodic_sentinel(self):
         while True:
-            # [Task 21] Signal Health
+            # [Task 21] Signal Health — heartbeat every 120s (recovery threshold is 300s)
             from core.nexus.bootstrapper import nexus_boot
             nexus_boot.recovery.record_heartbeat(self.name)
-            
-            await asyncio.sleep(self.sync_interval)
+
+            # Sleep in 120s chunks so heartbeat stays fresh during 600s sync interval
+            elapsed = 0
+            while elapsed < self.sync_interval:
+                await asyncio.sleep(120)
+                elapsed += 120
+                nexus_boot.recovery.record_heartbeat(self.name)
+
             try:
                 # 1. Parity Check [Task 4.3]
                 from .parity import financial_parity
                 if not await financial_parity.verify_system_parity():
-                    logger.critical("[NEXUS:FINANCIAL] LEDGER DISCREPANCY DETECTED. Blocking payouts.")
+                    logger.critical("[NEXUS:FINANCIAL] LEDGER SUM DISCREPANCY DETECTED. Blocking payouts.")
                 
-                # 2. S3 Sync [Task 4.2]
+                # 2. Cryptographic Integrity Check [Project Sentinel]
+                from services.sentinel_service import SentinelService
+                from database.session import AsyncSessionUser
+                async with AsyncSessionUser() as db:
+                    integrity = await SentinelService.verify_chain_integrity(db)
+                    if not integrity.get("is_clean"):
+                        logger.critical(f"[NEXUS:FINANCIAL] LEDGER TAMPER DETECTED: Rows {integrity.get('tampered_rows')}. System in EMERGENCY mode.")
+
+                # 3. S3 Sync [Task 4.2]
                 await self.sync_mgr.sync_to_r2("database/user_store.db")
                 logger.info("[NEXUS:FINANCIAL] Sentinel Out-of-Band Backup Successful.")
             except Exception as e:

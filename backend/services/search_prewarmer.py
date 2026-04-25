@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import os
 import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple
@@ -53,10 +54,14 @@ class SearchPreWarmer:
             random.shuffle(pairs) # Randomize to avoid thundering herd on same pairs
             targets = pairs[:limit]
             
-            # 2. Set Dates (Today and Tomorrow if late)
+            # 2. Set Dates (Today and Tomorrow if late — only if snapshot already cached)
             dates = [datetime.now()]
             if datetime.now().hour > 18: 
-                dates.append(datetime.now() + timedelta(days=1))
+                tomorrow = datetime.now() + timedelta(days=1)
+                from core.route_engine.snapshot_manager import SnapshotManager
+                _sm = SnapshotManager()
+                if os.path.exists(_sm._get_filename(tomorrow)):
+                    dates.append(tomorrow)
             
             # 3. Execution (Sequential to avoid VPS RAM spikes, but fast)
             constraints = RouteConstraints(
@@ -80,10 +85,17 @@ class SearchPreWarmer:
                             src_cluster_ids=[],
                             dst_cluster_ids=[]
                         )
-                        await route_engine.orchestrator.search_all_tiers(req)
+        # Set request_timeout_ctx so engines get 20s instead of the 5s fallback.
+                        # Without this, zombie threads fill the default thread pool.
+                        from core.context import request_timeout_ctx
+                        _token = request_timeout_ctx.set(10.0)  # 10s per engine max to avoid saturating thread pool
+                        try:
+                            await route_engine.orchestrator.search_all_tiers(req)
+                        finally:
+                            request_timeout_ctx.reset(_token)
                         count += 1
-                        # Yield to other tasks
-                        await asyncio.sleep(0.1)
+                        # Yield to other tasks — longer sleep to allow HTTP requests to get thread pool time
+                        await asyncio.sleep(2.0)
                         
                         if count >= limit: break
                     except Exception as e:
@@ -106,7 +118,7 @@ class SearchPreWarmer:
         # 1. First Run (Startup)
         logger.info("🕒 [PREWARMER] Initializing startup warmup in 5 seconds...")
         await asyncio.sleep(5) 
-        await self.run_warmup_cycle(limit=15)
+        await self.run_warmup_cycle(limit=5)  # Small startup warmup — enough to prime graph, not starve HTTP
         
         while True:
             # 2. Daily Schedule (Pre-Peak check)

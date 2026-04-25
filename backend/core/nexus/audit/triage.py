@@ -38,6 +38,13 @@ class TriageEngine:
         """Reactive signal for adaptive throttling [Task 29.1]"""
         return self._backoff_factor
 
+    async def report_latency(self, latency_ms: int) -> None:
+        """Report artificial latency to the triage engine and nudge backoff."""
+        if latency_ms <= 0:
+            return
+        self._backoff_factor = min(1.0, self._backoff_factor + min(0.15, latency_ms / 60000.0))
+        logger.debug(f"[TRIAGE] Reported latency {latency_ms}ms, backoff now {self._backoff_factor:.3f}")
+
     def _calculate_raw_backoff(self, status: SystemStatus) -> float:
         """Determines target backoff level based on triage [Task 29.1]"""
         mapping = {

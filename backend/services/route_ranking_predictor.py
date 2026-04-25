@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 
 import logging
+from typing import Any, Optional
 
 from database.config import Config
 
@@ -19,7 +20,7 @@ class RouteRankingPredictor:
     """
 
     def __init__(self):
-        self.model = None
+        self.model: Optional[Any] = None
         self.model_path = Config.ROUTE_RANKING_MODEL_PATH or "route_ranking_model.pkl"
         self.is_trained = False
 
@@ -93,10 +94,16 @@ class RouteRankingPredictor:
         route_features: dict with keys matching training features.
         Returns: float probability [0,1]
         """
-        if not self.is_trained and self.model is None:
+        if self.model is None:
             if not self.load_model():
                 logger.warning("Model not trained and cannot load, using default ranking")
                 return 0.5  # neutral
+
+        if self.model is None:
+            logger.warning("Model still unavailable after load attempt, using default ranking")
+            return 0.5
+
+        model = self.model
 
         # Ensure features are in the same order as training
         feature_order = ['route_duration_hours', 'route_cost_rupees', 'num_transfers', 
@@ -107,11 +114,11 @@ class RouteRankingPredictor:
         df = pd.DataFrame([route_features])
         df = df[feature_order]  # Reorder columns to match training
         
-        if hasattr(self.model, "predict_proba"):
-            prob = self.model.predict_proba(df)[0][1]  # prob of class 1 (booking)
+        if hasattr(model, "predict_proba"):
+            prob = model.predict_proba(df)[0][1]  # prob of class 1 (booking)
         else:
             # Fallback for regressors
-            prob = self.model.predict(df)[0]
+            prob = model.predict(df)[0]
             
         return float(np.clip(prob, 0.0, 1.0))
 

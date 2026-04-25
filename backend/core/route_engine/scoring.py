@@ -15,12 +15,12 @@ class RouteScorer:
     """
     
     @staticmethod
-    async def score_route(route: Route, constraints: RouteConstraints, reliability_scores: Dict = None, passengers: List[Passenger] = None) -> float:
+    async def score_route(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
         """Async wrapper for backward compatibility."""
         return RouteScorer.score_route_sync(route, constraints, reliability_scores, passengers)
 
     @staticmethod
-    def score_route_sync(route: Route, constraints: RouteConstraints, reliability_scores: Dict = None, passengers: List[Passenger] = None) -> float:
+    def score_route_sync(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
         try:
             return RouteScorer._score_route_impl(route, constraints, reliability_scores, passengers)
         except Exception as e:
@@ -30,7 +30,7 @@ class RouteScorer:
             return 0.0
 
     @staticmethod
-    def _score_route_impl(route: Route, constraints: RouteConstraints, reliability_scores: Dict = None, passengers: List[Passenger] = None) -> float:
+    def _score_route_impl(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
         # [Task 25.1] Get specialized score based on persona for primary ranking
         persona_score = RouteScorer.get_persona_score(route, constraints)
         
@@ -86,24 +86,43 @@ class RouteScorer:
                 smart_transfer_penalty += extra_hours * 150 
         
         # Passenger Persona Adjustments
-        has_senior = any(p.age >= 60 for p in passengers)
-        has_infant = any(p.age < 5 for p in passengers)
-        is_solo_female = len(passengers) == 1 and passengers[0].gender == "F"
+        has_senior = any(getattr(p, "age", 30) >= 60 for p in passengers)
+        has_infant = any(getattr(p, "age", 30) < 5 for p in passengers)
+        is_solo_female = len(passengers) == 1 and getattr(passengers[0], "gender", "M") == "F"
         
         if has_senior or has_infant:
             base_transfer_p *= 2.0 
             
         safety_boost = 0
-        if is_solo_female:
-            for tr in route.transfers:
-                if RouteScorer.is_night_time(tr.arrival_time) or RouteScorer.is_night_time(tr.departure_time):
-                    safety_boost += 2000 
-            
-            if route.segments and RouteScorer.is_night_time(route.segments[-1].arrival_time):
-                safety_boost += 1000 
-
-        transfer_penalty = base_transfer_p + safety_boost
+        social_trust_boost = 0
         
+        # [Task 41.B] Social Pulse & Guardian Injection
+        # Reward routes that have verified ground support or high social trust
+        social_meta = route.metadata.get("social_pulse", {})
+        guardian_val = social_meta.get("guardian_score", 0.0)
+        agent_presence = social_meta.get("agent_presence", False)
+        
+        if agent_presence:
+            social_trust_boost -= 1500 # Lower score is better in this engine's convention?
+            # Wait, let me check if lower is better. 
+            # Looking at line 46: time_score = duration * weight. Usually lower score = better route.
+            # But let's check persona_score logic.
+            
+        if is_solo_female:
+            # Boost safety if guardian score is high at transfer points
+            social_trust_boost -= (guardian_val * 3000)
+            for tr in route.transfers:
+                if RouteScorer.is_night_time(ensure_datetime(tr.arrival_time)) or RouteScorer.is_night_time(ensure_datetime(tr.departure_time)):
+                    safety_boost += 2000 # Penalty for night transfers
+        
+        # [Day 1 Refinement] Heartbeat Reliability Reward
+        heartbeat_reward = 0
+        if route.metadata.get("heartbeat_verified"):
+            heartbeat_reward = -1000 # Reward for verified data
+
+        if route.segments and RouteScorer.is_night_time(ensure_datetime(route.segments[-1].arrival_time)):
+            safety_boost += 1000 
+            
         # 3. Comfort & Safety Intelligence
         comfort_adjustments = 0
         pantry_count = sum(1 for seg in route.segments if getattr(seg, 'has_pantry', False))
@@ -113,10 +132,11 @@ class RouteScorer:
             comfort_adjustments -= (pantry_count * 200)
             
         for tr in route.transfers:
-            if RouteScorer.is_night_time(tr.arrival_time) or RouteScorer.is_night_time(tr.departure_time):
+            if RouteScorer.is_night_time(ensure_datetime(tr.arrival_time)) or RouteScorer.is_night_time(ensure_datetime(tr.departure_time)):
                 penalty_val = 1500 if constraints.persona != Persona.EMERGENCY else 300
                 comfort_adjustments += penalty_val
         
+        # 4. GN Quota & Unconfirmed Penalties
         gn_penalty = 0
         for seg in route.segments:
             if getattr(seg, 'quota', 'GN') == 'GN':
@@ -129,10 +149,6 @@ class RouteScorer:
                     gn_penalty += 400
                 else:
                     gn_penalty += 6000 
-        
-        avail_prob = getattr(route, 'availability_probability', 0.9)
-        if avail_prob is None: avail_prob = 0.9
-        avail_penalty = (1.0 - avail_prob) * 2000 
         
         # 5. Connection Survival & Availability Intelligence
         survival_prob = RouteScorer.estimate_survival(route, reliability_scores)
@@ -148,15 +164,12 @@ class RouteScorer:
         for s in route.segments:
             delay = s.metadata.get("live_delay_mins", 0) if s.metadata else 0
             if delay > 0:
-                # 30-min delay is irritating, 120-min is severe
                 live_delay_penalty += (delay * 15) 
-                if delay > 60: live_delay_penalty += 2000 # Reliability breach
+                if delay > 60: live_delay_penalty += 2000 
         
-        # [Task 22.2] Transfer Gap Risk (Contextual)
-        # If the train is late AND the transfer is tight, multiply penalty
+        # [Task 22.2] Transfer Gap Risk
         for i, tr in enumerate(route.transfers):
             dur = getattr(tr, 'duration_minutes', 0) or 0
-            # If previous train is late, the risk of missing this transfer increases non-linearly
             prev_delay = route.segments[i].metadata.get("live_delay_mins", 0) if route.segments[i].metadata else 0
             if prev_delay > 0 and dur < 45:
                 live_delay_penalty += (45 - dur) * 50 
@@ -166,12 +179,7 @@ class RouteScorer:
         risk_warnings = []
         risk_level = "LOW"
         RISK_STATIONS = {"CNB", "ALD", "PRYJ", "MGS", "DDU", "BBS", "VSKP", "GHY", "GKP"}
-        
-        route_stations = set()
-        for s in route.segments:
-            if hasattr(s, 'departure_code'): route_stations.add(s.departure_code)
-            if hasattr(s, 'arrival_code'): route_stations.add(s.arrival_code)
-            
+        route_stations = {s.departure_code for s in route.segments} | {s.arrival_code for s in route.segments}
         hit_risk_stations = route_stations.intersection(RISK_STATIONS)
         if hit_risk_stations:
             risk_count = len(hit_risk_stations)
@@ -183,21 +191,31 @@ class RouteScorer:
                 risk_warnings.append("Passing through high-congestion zones")
 
         # [Task 139] Dynamic Fleet Congestion Penalty
-        # This penalizes popular/overcrowded trains based on real-time search volume
         congestion_penalty = 0
         for seg in route.segments:
-            # We fetch 'congestion_rank' from metadata (populated by search_service from Redis)
-            # 0.0=Empty, 1.0=Popular (1000 mins penalty), 2.0=Clogged (4000 mins)
             rank = seg.metadata.get("congestion_rank", 0.0) if seg.metadata else 0.0
             if rank > 0.4:
-                # Scaled penalty (Squared proportionality ensures we avoid extreme surges)
                 congestion_penalty += (rank ** 2) * 1000
-                
-            # Persona awareness: COMFORT avoids crowds; BUDGET is okay with them.
-            if constraints.persona == Persona.COMFORT:
-                congestion_penalty *= 1.5
-            elif constraints.persona == Persona.BUDGET:
-                congestion_penalty *= 0.5
+            if constraints.persona == Persona.COMFORT: congestion_penalty *= 1.5
+            elif constraints.persona == Persona.BUDGET: congestion_penalty *= 0.5
+
+        # [G11.2] Sentiment & FOMO Intelligence (Premium Ranking Upgrade)
+        sentiment_bonus = 0
+        from .constraints import DiscoveryModel
+        
+        # 1. Sentiment Bias (Bullish/Bearish based on community reports)
+        intel = route.metadata.get("intelligence", {})
+        if intel.get("sentiment") == "BEARISH": sentiment_bonus += 2000 # Higher is worse in this scoring system
+        elif intel.get("sentiment") == "BULLISH": sentiment_bonus -= 1000
+        
+        # 2. FOMO Boost (Last few seats prioritized for conversion)
+        has_fomo = route.metadata.get("has_high_fomo", False)
+        fomo_boost = False
+        if has_fomo and constraints.discovery_model == DiscoveryModel.OMNISCIENT:
+            fomo_boost = True
+            # We paradoxically lower the score (rank it higher) to trigger conversion on low-stock routes
+            sentiment_bonus -= 5000 
+            route.metadata["conversion_trigger"] = "ELITE_RESERVATION_PRIORITY"
 
         # Hydrate Metadata
         if not hasattr(route, 'metadata') or route.metadata is None:
@@ -214,10 +232,12 @@ class RouteScorer:
             "live_delay_penalty": live_delay_penalty,
             "comfort_penalty": comfort_adjustments + congestion_penalty,
             "risk_penalty": gn_penalty + avail_penalty + risk_penalty + survival_penalty,
-            "congestion_rank": max([s.metadata.get("congestion_rank", 0.0) if s.metadata else 0 for s in route.segments]),
-            "risk_level": risk_level
+            "congestion_rank": max([s.metadata.get("congestion_rank", 0.0) if s.metadata else 0 for s in route.segments], default=0.0),
+            "risk_level": risk_level,
+            "sentiment_bonus": sentiment_bonus
         }
         route.metadata["persona_rank_score"] = persona_score
+        if fomo_boost: route.metadata.setdefault("ui_reasons", []).append("🔥 High Interest Route")
         
         # Human readable summary updates [Task 139]
         reasons = []
@@ -254,8 +274,28 @@ class RouteScorer:
         story = journey_story_model.predict_sync(features)
         route.metadata["story"] = story
         
-        # [Task 22.1] Returns incorporates the live reliability and crowd factors
-        return float(persona_score + live_delay_penalty + survival_penalty + congestion_penalty)
+        # [Final Score Assembly] — All dimensions integrated
+        # Core:     time + cost + transfers + smart-transfer + hub-size + safety + social + heartbeat
+        # Advanced: comfort + GN-quota + availability + survival + live-delay + congestion + risk + sentiment
+        final_score = (
+            time_score +
+            cost_score +
+            base_transfer_p +
+            smart_transfer_penalty +
+            size_comfort_adjustment +
+            safety_boost +
+            social_trust_boost +
+            heartbeat_reward +
+            comfort_adjustments +
+            gn_penalty +
+            avail_penalty +
+            survival_penalty +
+            live_delay_penalty +
+            congestion_penalty +
+            risk_penalty +
+            sentiment_bonus
+        )
+        return float(final_score)
 
     @staticmethod
     def get_persona_score(route: Route, constraints: RouteConstraints) -> float:

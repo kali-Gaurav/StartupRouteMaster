@@ -29,7 +29,7 @@ class SeatAllocationService:
         trip_id: str,
         passengers: List[Dict],
         coach_preference: str = "AC_THREE_TIER",
-        travel_date: date = None
+        travel_date: Optional[date] = None
     ) -> Dict:
         """
         Allocate seats by querying SeatInventory in database.
@@ -39,39 +39,45 @@ class SeatAllocationService:
 
         # UNIFIED LOGIC: Find inventory in database
         inventory = self.db.query(SeatInventory).filter(
-            SeatInventory.stop_time_id == int(trip_id), # Simplified
-            SeatInventory.travel_date == travel_date,
-            SeatInventory.coach_type == coach_preference
+            SeatInventory.train_number == str(trip_id),
+            SeatInventory.journey_date == travel_date,
+            SeatInventory.class_type == coach_preference
         ).first()
 
         # Fallback for "Rich Database" development: If missing, auto-populate
         if not inventory:
             logger.info("Auto-populating SeatInventory for trip %s", trip_id)
             inventory = SeatInventory(
-                travel_date=travel_date,
-                coach_type=coach_preference,
-                seats_available=64,
-                stop_time_id=int(trip_id)
+                train_number=str(trip_id),
+                journey_date=travel_date,
+                class_type=coach_preference,
+                quota="GN",
+                total_seats=64,
+                available_seats=64,
+                status_text="AVAILABLE 64",
+                from_station_code="UNKNOWN",
+                to_station_code="UNKNOWN"
             )
             self.db.add(inventory)
             self.db.commit()
             self.db.refresh(inventory)
 
         count = len(passengers)
-        success = inventory.seats_available >= count
+        success = inventory.available_seats >= count
 
         allocated_seats = []
         waiting_list = []
 
         if success:
-            inventory.seats_available -= count
+            inventory.available_seats -= count
             self.db.commit()
             
+            base_seat_number = (inventory.total_seats - inventory.available_seats) - count + 1
             for i, p in enumerate(passengers):
                 allocated_seats.append({
                     "passenger": p.get("full_name"),
                     "coach": f"{coach_preference[:2]}-1",
-                    "seat": {"seat_number": 64 - inventory.seats_available - i, "seat_type": "LOWER"},
+                    "seat": {"seat_number": base_seat_number + i, "seat_type": "LOWER"},
                     "fare_applicable": 1500.0
                 })
         else:

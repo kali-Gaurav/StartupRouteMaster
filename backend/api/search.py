@@ -1,12 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
-import datetime as dt_mod
-try:
-    import _datetime
-    if not hasattr(dt_mod, 'datetime_CAPI') and hasattr(_datetime, 'datetime_CAPI'):
-        setattr(dt_mod, 'datetime_CAPI', getattr(_datetime, 'datetime_CAPI'))
-except Exception:
-    pass
-
 from sqlalchemy.orm import Session
 import logging
 import time
@@ -16,7 +8,7 @@ from typing import Dict, List, Optional, Any
 
 from database.session import SessionLocal, get_db
 from schemas import SearchRequestSchema, LoadMoreRequestSchema
-from core.route_engine import route_engine
+from core.route_engine import get_route_engine
 from database.models import Stop, Disruption
 from services.station_service import StationService
 from services.search_service import SearchService
@@ -53,7 +45,7 @@ async def search_routes_endpoint(
         if jit_metrics.surge_level >= SurgeLevel.CRITICAL:
             auth_header = request.headers.get("authorization")
             if not auth_header and not search_request.session_id:
-                logger.warning(f"🛑 Surge Level 3: Blocking unauthenticated request from {request.client.host}")
+                logger.warning(f"🛑 Surge Level 3: Blocking unauthenticated request from {request.client.host if request.client else 'unknown'}")
                 return SafeJSONResponse(
                     status_code=503,
                     content={
@@ -83,8 +75,9 @@ async def search_routes_endpoint(
                     budget_category=search_request.budget,
                     limit=limit,
                     session_id=search_request.session_id,
-                    client_ip=request.client.host,
-                    request=request
+                    client_ip=request.client.host if request.client else None,
+                    request=request,
+                    multi_modal=search_request.multi_modal
                 ),
                 timeout=adaptive_timeout # Subtask 1.3: Adaptive Timeout
             )
@@ -224,8 +217,6 @@ async def quick_search_endpoint(
             source=source,
             destination=destination,
             travel_date=date_str,
-            women_safety_mode=women_safety_mode,
-            offset=offset,
             limit=limit
         )
         

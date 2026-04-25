@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from core.route_engine.constraints import RouteConstraints
 
 class UnifiedSearchRequest(BaseModel):
     source: str = Field(..., min_length=2)
@@ -12,6 +13,7 @@ class UnifiedSearchRequest(BaseModel):
     )
     multi_modal: bool = True
     max_results: int = 10
+    constraints: RouteConstraints = Field(default_factory=RouteConstraints)
 
 class JourneySegment(BaseModel):
     mode: str

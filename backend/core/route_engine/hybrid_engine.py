@@ -6,7 +6,7 @@ from typing import List, Optional, Any
 from .csa_kernel import CSARoutingKernel
 from .scoring import RouteScorer
 from .constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, TransferConnection
+from core.data_structures import Route, RouteSegment, TransferConnection, ensure_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ class HybridRouteEngine:
     async def find_routes(self, source_stop_id: int, dest_stop_id: int,
                          departure_date: datetime, constraints: RouteConstraints,
                          graph: Optional[Any] = None) -> List[Route]:
+        departure_date = ensure_datetime(departure_date)
         # Normalize time to seconds from start of day
         start_time_secs = departure_date.hour * 3600 + departure_date.minute * 60
         
@@ -49,8 +50,8 @@ class HybridRouteEngine:
             rt = Route()
             for i, step in enumerate(path):
                 # Connection times are seconds from start of day
-                dep_dt = datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['dep_time'])
-                arr_dt = datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['arr_time'])
+                dep_dt = ensure_datetime(datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['dep_time']))
+                arr_dt = ensure_datetime(datetime.combine(base_date, datetime.min.time()) + timedelta(seconds=step['arr_time']), dep_dt)
                 
                 # Handle midnight rollover (simplified)
                 if arr_dt < dep_dt:
@@ -73,14 +74,22 @@ class HybridRouteEngine:
                 # Add transfer if not the first segment
                 if i > 0:
                     prev_seg = rt.segments[-2]
-                    wait_mins = int((seg.departure_time - prev_seg.arrival_time).total_seconds() / 60)
+                    prev_arrival = ensure_datetime(prev_seg.arrival_time, ensure_datetime(seg.departure_time))
+                    curr_departure = ensure_datetime(seg.departure_time, ensure_datetime(prev_arrival))
+                    wait_mins = int((curr_departure - prev_arrival).total_seconds() / 60)
                     tc = TransferConnection(
                         station_id=seg.departure_stop_id,
                         station_code=seg.departure_code,
-                        arrival_time=prev_seg.arrival_time,
-                        departure_time=seg.departure_time,
+                        arrival_time=prev_arrival,
+                        departure_time=curr_departure,
                         duration_minutes=wait_mins,
-                        station_name=seg.departure_code
+                        station_name=seg.departure_code,
+                        facilities_score=0.0,
+                        safety_score=0.0,
+                        platform_from=None,
+                        platform_to=None,
+                        is_multi_station=False,
+                        transfer_type="WALK"
                     )
 
                     rt.add_transfer(tc)

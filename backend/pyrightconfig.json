@@ -1,0 +1,9 @@
+{
+  "include": ["."],
+  "exclude": [".venv"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["."],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.11"
+}

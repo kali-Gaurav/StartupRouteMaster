@@ -92,7 +92,35 @@ export async function fetchWithAuth(
   return res;
 }
 
-// ensureSlash is replaced by the inline logic in fetchWithAuth for Task 4
+export interface V3Response<T> {
+  status: string;
+  success: boolean;
+  data: T;
+  request_id?: string;
+  metadata?: Record<string, any>;
+}
+
+export async function v3Fetch<T>(
+  pathOrUrl: string,
+  init?: RequestInit
+): Promise<T> {
+  const res = await fetchWithAuth(pathOrUrl, init);
+  const json = await res.json() as V3Response<T> | T;
+  
+  // If it's a V3 response and success is true, return the data
+  if (json && typeof json === "object" && "success" in json && "data" in json) {
+    if (json.success) {
+      return json.data;
+    } else {
+      // Handle the case where success is false but it's a 200 OK (unlikely with our backend protocol but safe)
+      throw new Error((json as any).message || "API operation failed");
+    }
+  }
+  
+  // Fallback for legacy V1/V2 responses that aren't wrapped
+  return json as T;
+}
+
 export function getApiBase(): string {
   return API_BASE.replace(/\/$/, "");
 }

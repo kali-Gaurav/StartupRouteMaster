@@ -11,6 +11,7 @@ Inference runs during routing to score alternatives.
 """
 
 import logging
+import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -23,8 +24,9 @@ import joblib
 import pickle
 
 from database.models import TrainLiveUpdate, TrainMaster, TrainStation
-
-
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +222,13 @@ class DelayPredictionModel:
     Trained on historical TrainLiveUpdate data.
     """
     
+    # [G19.5] ML Resilience Layer: Class-level decorators for scoping
+    _prediction_circuit_breaker = circuit_breaker(
+        name="delay_prediction_model",
+        failure_threshold=5,
+        recovery_timeout=60.0
+    )
+
     def __init__(self, model_path: Optional[str] = None):
         self.model = None
         self.scaler = StandardScaler()
@@ -228,6 +237,16 @@ class DelayPredictionModel:
             'distance_km', 'halt_minutes', 'historical_delay_mean',
             'historical_delay_std', 'historical_delay_max'
         ]
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="delay_prediction_model",
+            default_tags={"component": "ml"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._prediction_circuit_breaker.state.value)
+        self._metrics.counter("predictions_total")
+        self._metrics.counter("predictions_success")
+        self._metrics.counter("predictions_failed")
+        self._metrics.histogram("prediction_duration_seconds")
         
         if model_path:
             self.load(model_path)
@@ -317,6 +336,8 @@ class DelayPredictionModel:
             logger.error(f"❌ Training failed: {e}")
             return 0.0, 0.0
     
+    @track_metrics(service="delay_prediction_model", operation="predict")
+    @_prediction_circuit_breaker
     def predict(
         self,
         session: Session,
@@ -336,6 +357,7 @@ class DelayPredictionModel:
         Returns:
             Predicted delay in minutes or None
         """
+        start_time = time.perf_counter()
         if self.model is None:
             logger.warning("Model not trained")
             return current_delay  # Return current as fallback
@@ -353,12 +375,18 @@ class DelayPredictionModel:
             
             prediction = int(max(0, self.model.predict(X_scaled)[0]))
             
-            logger.debug(f"Predicted delay for {train_number}: {prediction}min")
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("prediction_duration_seconds", duration)
+            self._metrics.counter("predictions_success", tags={"train": train_number})
+            logger.debug(f"Predicted delay for {train_number}: {prediction}min in {duration:.3f}s")
             return prediction
         
         except Exception as e:
+            duration = time.perf_counter() - start_time
+            self._metrics.histogram("prediction_duration_seconds", duration)
+            self._metrics.counter("predictions_failed", tags={"error_type": type(e).__name__})
             logger.error(f"Prediction error: {e}")
-            return current_delay
+            raise
 
 
 class ReliabilityScoreModel:
@@ -367,6 +395,13 @@ class ReliabilityScoreModel:
     Scores trains 0-100 for ranking.
     """
     
+    # [G19.5] ML Resilience Layer: Class-level decorators for scoping
+    _reliability_circuit_breaker = circuit_breaker(
+        name="reliability_score_model",
+        failure_threshold=5,
+        recovery_timeout=60.0
+    )
+
     def __init__(self, model_path: Optional[str] = None):
         self.model = None
         self.scaler = StandardScaler()
@@ -374,6 +409,16 @@ class ReliabilityScoreModel:
             'avg_delay', 'delay_variance', 'on_time_percentage',
             'max_delay', 'min_delay', 'delay_std'
         ]
+        # Metrics tracking
+        self._reliability_metrics = MetricsClient(
+            service_name="reliability_score_model",
+            default_tags={"component": "ml"}
+        )
+        self._reliability_metrics.gauge("circuit_breaker_state", lambda: self._reliability_circuit_breaker.state.value)
+        self._reliability_metrics.counter("scoring_total")
+        self._reliability_metrics.counter("scoring_success")
+        self._reliability_metrics.counter("scoring_failed")
+        self._reliability_metrics.histogram("scoring_duration_seconds")
         
         if model_path:
             self.load(model_path)
@@ -439,6 +484,7 @@ class ReliabilityScoreModel:
             logger.error(f"❌ Training failed: {e}")
             return 0.0
     
+    @_reliability_circuit_breaker
     def get_reliability_score(
         self,
         session: Session,

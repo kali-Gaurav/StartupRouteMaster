@@ -2,10 +2,14 @@ import aiohttp
 import logging
 import asyncio
 import json
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 from database.config import Config
-from core.redis import async_redis_client
+from core.redis_client import async_redis_client
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,45 @@ class LiveStatusService:
         self.base_url = Config.LIVE_STATUS_BASE_URL
         self.enabled = Config.ENABLE_LIVE_STATUS
         self.cache_ttl = 60 # Cache live status for 60 seconds
+        
+        # Circuit breaker for API operations
+        self._api_circuit_breaker = circuit_breaker(
+            name="live_status_service_api",
+            failure_threshold=5,
+            recovery_timeout=60.0
+        )
+        # Circuit breaker for Redis operations
+        self._redis_circuit_breaker = circuit_breaker(
+            name="live_status_service_redis",
+            failure_threshold=5,
+            recovery_timeout=30.0
+        )
+        # Retry policies
+        self._api_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        self._redis_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.LINEAR_BACKOFF,
+            base_delay=0.1,
+            max_delay=2.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="live_status_service",
+            default_tags={"component": "realtime_ingestion"}
+        )
+        self._metrics.gauge("api_circuit_breaker_state", lambda: self._api_circuit_breaker.state.value)
+        self._metrics.gauge("redis_circuit_breaker_state", lambda: self._redis_circuit_breaker.state.value)
+        self._metrics.counter("status_requests_total")
+        self._metrics.counter("status_requests_success")
+        self._metrics.counter("status_requests_failed")
+        self._metrics.counter("status_requests_cached")
+        self._metrics.counter("status_requests_coalesced")
+        self._metrics.histogram("status_request_duration_seconds")
 
     @classmethod
     async def get_session(cls) -> aiohttp.ClientSession:
@@ -39,6 +82,9 @@ class LiveStatusService:
             await cls._session.close()
             cls._session = None
 
+    @track_metrics(service="live_status_service", operation="get_live_status")
+    @_api_circuit_breaker
+    @_api_retry_policy
     async def get_live_status(self, train_number: str) -> Optional[Dict[str, Any]]:
         """
         Fetches live status for a specific train number, using Redis cache and persistent session.
@@ -156,3 +202,41 @@ class LiveStatusService:
             "source": "RappidAPI Live",
             "raw_data": data
         }
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "live_status_service",
+            "api_circuit_breaker_state": self._api_circuit_breaker.state.name,
+            "api_circuit_breaker_failures": self._api_circuit_breaker.failure_count,
+            "redis_circuit_breaker_state": self._redis_circuit_breaker.state.name,
+            "redis_circuit_breaker_failures": self._redis_circuit_breaker.failure_count,
+            "status_requests_total": self._metrics.get_counter("status_requests_total"),
+            "status_requests_success": self._metrics.get_counter("status_requests_success"),
+            "status_requests_failed": self._metrics.get_counter("status_requests_failed"),
+            "status_requests_cached": self._metrics.get_counter("status_requests_cached"),
+            "status_requests_coalesced": self._metrics.get_counter("status_requests_coalesced"),
+            "status_request_duration_p50": self._metrics.get_percentile("status_request_duration_seconds", 50),
+            "status_request_duration_p95": self._metrics.get_percentile("status_request_duration_seconds", 95),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if (self._api_circuit_breaker.state == CircuitState.CLOSED and 
+                                   self._redis_circuit_breaker.state == CircuitState.CLOSED) else "degraded",
+            "service": "live_status_service",
+            "api_circuit_breaker": self._api_circuit_breaker.state.name,
+            "redis_circuit_breaker": self._redis_circuit_breaker.state.name,
+            "is_enabled": self.enabled,
+            "session_active": self._session is not None and not self._session.closed,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self, breaker_name: str = "all"):
+        """Reset circuit breaker(s) to closed state."""
+        if breaker_name == "all" or breaker_name == "api":
+            self._api_circuit_breaker.reset()
+        if breaker_name == "all" or breaker_name == "redis":
+            self._redis_circuit_breaker.reset()
+        logger.info(f"🔄 [LIVE_STATUS] Circuit breaker '{breaker_name}' reset")

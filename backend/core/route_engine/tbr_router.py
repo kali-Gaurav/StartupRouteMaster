@@ -8,7 +8,7 @@ import math
 import numpy as np
 from collections import defaultdict
 from datetime import datetime
-from typing import List, Optional, Any, Dict, Set, Tuple, Union
+from typing import List, Optional, Any, Dict, Set, Tuple, Union, cast
 
 from core.data_structures import Route, RouteSegment, TransferConnection, ensure_datetime
 from core.route_engine.constraints import RouteConstraints
@@ -21,7 +21,8 @@ logger = logging.getLogger("tbr_router")
 
 # [Issue 14] Constants for strict routing
 MAX_COMPRESSED_SEGMENTS = 10
-MAX_TRANSFERS_LIMIT = 3
+MAX_TRANSFERS_LIMIT = 5
+
 MIN_TRANSFER_BUFFER_SEC = 900 # 15 minutes default
 AVG_TRAIN_SPEED_KMPH = 60
 
@@ -91,9 +92,9 @@ class TripBasedRouter(BaseRoutingEngine):
             self._edge_lookup_map = {}
             self._trip_to_stops_map = {}
 
-    def get_graph(self, date: datetime):
+    async def get_graph(self, date: datetime):
         from .engine import route_engine
-        return route_engine._get_current_graph(date)
+        return await route_engine._get_current_graph(date)
 
     async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
         source_stop_id = request.src_cluster_ids
@@ -106,12 +107,21 @@ class TripBasedRouter(BaseRoutingEngine):
 
         if not graph: 
             graph = await self.get_graph(departure_date)
+        if graph is None:
+            return RoutingResponse(
+                engine_name=self.engine_id,
+                routes=[],
+                latency_ms=0.0,
+                yield_count=0,
+                triage_status="FAILED",
+                metadata={"error": "GRAPH_UNAVAILABLE"},
+            )
             
         # [Gap 3] Adaptive Search Budget based on distance
         s_id = source_stop_id[0] if isinstance(source_stop_id, list) else source_stop_id
         d_id = dest_stop_id[0] if isinstance(dest_stop_id, list) else dest_stop_id
-        src_stop = graph.stop_cache.get(s_id)
-        dst_stop = graph.stop_cache.get(d_id)
+        src_stop = graph.stop_cache.get(int(s_id))
+        dst_stop = graph.stop_cache.get(int(d_id))
         
         # [Nexus Upgrade] Expanded Base Budget for High-Performance Local SSD
         # Since we migrated to C-Drive/LocalSSD, we can afford 4x more node explorations
@@ -122,7 +132,7 @@ class TripBasedRouter(BaseRoutingEngine):
         if load_more:
              base_budget *= 2 # Extra boost for load more requests
         
-        if src_stop and dst_stop:
+        if src_stop is not None and dst_stop is not None:
             dist = haversine(src_stop.latitude, src_stop.longitude, dst_stop.latitude, dst_stop.longitude)
             # Scale budget: Long journeys need MUCH deeper searches (up to 2,000,000 nodes for Cross-Country)
             distance_multiplier = min(5.0, max(1.0, dist / 400.0)) 
@@ -192,30 +202,30 @@ class TripBasedRouter(BaseRoutingEngine):
             src_ids = set(source_id)
         else:
             src_ids = {source_id}
-            src_stop = graph.stop_cache.get(source_id)
+            src_stop = graph.stop_cache.get(int(source_id))
             if src_stop:
                 for code in get_metro_group_codes(src_stop.code):
                     s = graph.get_stop_by_code(code)
-                    if s: src_ids.add(s.id)
+                    if s: src_ids.add(int(cast(Any, s.id)))
 
         if isinstance(dest_id, list):
             dst_ids = set(dest_id)
         else:
             dst_ids = {dest_id}
-            dst_stop = graph.stop_cache.get(dest_id)
+            dst_stop = graph.stop_cache.get(int(dest_id))
             if dst_stop:
                 for code in get_metro_group_codes(dst_stop.code):
                     d = graph.get_stop_by_code(code)
-                    if d: dst_ids.add(d.id)
+                    if d: dst_ids.add(int(cast(Any, d.id)))
 
         # 1. Local Caches and Variables
         _reach_cache = {}
         bridge_sids = set()
         if constraints and getattr(constraints, 'metadata', None):
-             bridges = constraints.metadata.get("cross_cluster_bridges", {})
-             for hc in bridges.get("src_hubs", []) + bridges.get("dst_hubs", []):
+                bridges = constraints.metadata.get("cross_cluster_bridges", {})
+                for hc in bridges.get("src_hubs", []) + bridges.get("dst_hubs", []):
                   h_stop = graph.get_stop_by_code(hc)
-                  if h_stop: bridge_sids.add(h_stop.id)
+                  if h_stop: bridge_sids.add(int(cast(Any, h_stop.id)))
         
         delay_lookup = {}
         # [Yield Fix] Store multiple labels per stop/round with Diversity tracking
@@ -229,46 +239,14 @@ class TripBasedRouter(BaseRoutingEngine):
         self.cost_fn = self.calculate_generalized_cost
         self.constraints = constraints
         
-        # [Task 42.1] Define Quotas for diverse transfer-counts
-        quotas = {0: 15, 1: 10, 2: 5, 3: 3}
-        
-        # [Task 22.1] Helper for station-to-cluster heuristic
-        from core.hubs import MEGA_HUBS, MAJOR_HUBS
-        
-        # Resolve hub IDs once per search
-        hub_ids = set()
-        for code in (MEGA_HUBS | MAJOR_HUBS):
-            stop = graph.get_stop_by_code(code)
-            if stop: hub_ids.add(stop.id)
-            
-        interesting_stations = hub_ids | set(dst_ids)
-        
-        def can_reach_goal_or_hub(trip_id: int) -> bool:
-            """O(1) check if a trip hits any hub or goal."""
-            t_stops = graph.get_trip_stop_ids(trip_id)
-            if not t_stops: return False
-            for sid in t_stops:
-                if sid in interesting_stations: return True
-            return False
-            
-        def get_heuristic(sid: int, destinations: List[int]) -> int:
-            """Simple haversine-based time heuristic in minutes."""
-            s_node = graph.stop_cache.get(sid)
-            if not s_node or not s_node.lat: return 0
-            
-            min_h = float('inf')
-            for did in destinations:
-                d_node = graph.stop_cache.get(did)
-                if not d_node or not d_node.lat: continue
-                dist = haversine(s_node.lat, s_node.lon, d_node.lat, d_node.lon)
-                # Assume 80 km/h average for heuristic (750m per sec)
-                h_sec = (dist / 80.0) * 3600
-                min_h = min(min_h, h_sec)
-            return int(min_h) if min_h != float('inf') else 0
+        # [Task 42.1] Define Quotas for diverse transfer-counts (Generation 12.1 High Yield Overhaul)
+        quotas = {0: 300, 1: 200, 2: 100, 3: 50, 4: 30, 5: 20}
+        if load_more:
+            quotas = {0: 500, 1: 300, 2: 200, 3: 100, 4: 60, 5: 40}
         
         # [Yield Modification] Massive slack and pareto limits for maximum 2, 3 transfer yields
         slack_sec = 86400 if load_more else 43200 # 24h or 12h slack
-        max_labels_per_stop = 25 if load_more else 15 # Optimal Pareto yield limit
+        max_labels_per_stop = 35 if load_more else 25 # Increased Pareto yield limit
         
         # 2. Closure Functions
         def get_delay(tid):
@@ -299,13 +277,14 @@ class TripBasedRouter(BaseRoutingEngine):
         def get_heuristic(curr_sid: int, goal_sids: Set[int]) -> int:
             if curr_sid in _h_cache: return _h_cache[curr_sid]
             
-            c_mat = getattr(graph.snapshot, 'coordinate_matrix', None)
+            snapshot = cast(Any, graph.snapshot)
+            c_mat = getattr(snapshot, 'coordinate_matrix', None) if snapshot is not None else None
             if c_mat is None: 
                 # Fallback to legacy stop_cache if matrix missing
                 _h_cache[curr_sid] = 0
                 return 0
             
-            sid_idx = graph.snapshot.stop_id_to_idx.get(curr_sid)
+            sid_idx = snapshot.stop_id_to_idx.get(curr_sid) if snapshot is not None else None
             if sid_idx is None: 
                 _h_cache[curr_sid] = 0
                 return 0
@@ -314,7 +293,7 @@ class TripBasedRouter(BaseRoutingEngine):
             min_km = 999999.0
             
             for d_id in goal_sids:
-                did_idx = graph.snapshot.stop_id_to_idx.get(d_id)
+                did_idx = snapshot.stop_id_to_idx.get(d_id) if snapshot is not None else None
                 if did_idx is None: continue
                 dy, dx = c_mat[did_idx]
                 # Manhattan-Euclidean (Faster than Haversine for A* search)
@@ -332,7 +311,8 @@ class TripBasedRouter(BaseRoutingEngine):
         _edges_arr = self._edges
         _tbr_nodes = trip_nodes
         _tbr_idx = t_index
-        _transfers_limit = MAX_TRANSFERS_LIMIT
+        # [Task 12.1] Sync transfer limit with constraints
+        _transfers_limit = getattr(constraints, 'max_transfers', MAX_TRANSFERS_LIMIT)
         _min_buffer = MIN_TRANSFER_BUFFER_SEC
         departure_ts = int(departure_date.timestamp())
 
@@ -386,15 +366,9 @@ class TripBasedRouter(BaseRoutingEngine):
 
         logger.info(f"🚀 [TBR:NEXUS] Seeded {len(pq)} initial states. (Total: {total_deps}, Pushed: {pq_pushed}, SkipIdx: {skipped_idx}, SkipSeq: {skipped_seq}, ReachFilter: {filtered_by_reach})")
 
-        # [Quota Upgrade for User Massive Yield Requirement]
-        # Increased quotas to allow fuller exploration of multi-transfer routes
-        quotas = {0: 200, 1: 100, 2: 50, 3: 30}
-        if load_more:
-            quotas = {0: 400, 1: 200, 2: 100, 3: 60}
-            
         found_search_routes = []
         # [Nexus: Goal-Based Discovery] (Task 121)
-        # Fast Initial Search = 200 routes, Deep discovery = 1000 routes
+        # Fast Initial Search = 250 routes, Deep discovery = 1000 routes
         target_yield = 250 if not load_more else 1000
         best_time_final = float('inf')
         pruned_time = 0; pruned_dominance = 0; found_goals = 0
@@ -424,18 +398,9 @@ class TripBasedRouter(BaseRoutingEngine):
             t_start, t_count = t_info
             delay_secs = get_delay(curr.trip_id)
 
-            # [Nexus Technique: Goal-Directed Alighting Scan] (Task 121)
-            # Handled in optimized unified loop below for simplicity and speed.
-
             # 2. Optimized Loop: Only check destinations and high-impact hubs
-            # Retrieve hub stops on this trip using pattern segments
             pid = graph.snapshot._trip_to_pid.get(curr.trip_id)
-            pattern_segs = graph.get_pattern_segments(pid) if pid is not None else []
             
-            # To maintain yield, we check:
-            # - Any destination stop on this trip
-            # - Any stop that HAS outbound transfers for this trip (Nexus Insight)
-            # - Every 5th stop (for general discovery if not many hubs)
             interesting_indices = set()
             for d_id in dst_ids:
                 idx = graph.get_stop_sequence_in_trip(curr.trip_id, d_id)
@@ -454,7 +419,6 @@ class TripBasedRouter(BaseRoutingEngine):
                     interesting_indices.add(idx)
             
             # Fallback: add periodic stops to ensure we don't miss anything 
-            # if transfer graph is sparse in some regions
             for i in range(curr.boarded_idx + 5, t_count, 5):
                 interesting_indices.add(i)
             
@@ -467,22 +431,30 @@ class TripBasedRouter(BaseRoutingEngine):
                 is_dom = False
                 prev_rid = curr.round_num
                 
-                # Estimate distance so far (heuristic-based or from parent)
-                dist_km = (curr.wait_mins * 0.5) + (curr.round_num * 100) # Dummy for cost calculation
-                current_cost = self.cost_fn(current_arr_ts, curr.round_num, curr.wait_mins, dist_km, constraints)
+                # Estimate distance so far
+                dist_km = (curr.wait_mins * 0.5) + (curr.round_num * 100) 
+                
+                # [McRAPTOR] Estimate fare and comfort for TBR
+                fare = 175.0 + (max(0, dist_km - 100) * 1.2)
+                train_num = snapshot.trip_to_train.get(curr.trip_id, "")
+                comfort = 0.5 
+                if any(p in train_num for p in ["VANDE", "RAJ", "SHT", "DUR"]): comfort += 0.3
+                
+                current_cost = self.calculate_generalized_cost(
+                    current_arr_ts, curr.round_num, curr.wait_mins, 
+                    dist_km, fare, comfort, 1.0, constraints
+                )
 
-                # 1. Global Dominance (Is there a much CHEAPER/FASTER route?)
+                # 1. Global Dominance
                 for r in range(prev_rid + 1):
-                    # [Yield Fix] Increase dominance multiplier to 5.0x for multi-transfers (from 3.0x)
-                    # Higher multiplier allows more path diversity while still pruning extreme outliers
-                    dominance_factor = 5.0 if curr.round_num >= 2 else 3.0  # More lenient on multi-transfers
+                    # [Yield Fix] High Multiplier for massive diversity
+                    dominance_factor = 5.0 if curr.round_num >= 2 else 3.0
                     if current_cost > best_cost[curr_sid][r] * dominance_factor: 
                         is_dom = True; break
                 
                 if not is_dom:
                     # 2. Local Variety
                     round_vars = variety_labels[curr_sid][curr.round_num]
-                    # Prune only if cost is significantly higher than existing labels in SAME round
                     if any(current_cost >= ex * 1.05 for ex in round_vars):
                         is_dom = True
                 
@@ -490,6 +462,7 @@ class TripBasedRouter(BaseRoutingEngine):
                     pruned_dominance += 1; continue
                 
                 # 3. Update Pareto Frontier
+                round_vars = variety_labels[curr_sid][curr.round_num]
                 best_cost[curr_sid][curr.round_num] = min(best_cost[curr_sid][curr.round_num], current_cost)
                 best_arrival[curr_sid][curr.round_num] = min(best_arrival[curr_sid][curr.round_num], current_arr_ts)
                 round_vars.append(current_cost)
@@ -511,7 +484,6 @@ class TripBasedRouter(BaseRoutingEngine):
                 
                 # 5. Inter-Station & Leg-based Transfer Expansion
                 if curr.round_num < _transfers_limit:
-                    # Retrieve transfer edges using the new memmap index
                     index_pos_in_mmap = _edge_lookup_map.get((curr.trip_id, curr_sid))
                     
                     if index_pos_in_mmap is not None and _edge_index_mmap is not None and _edges_arr is not None:
@@ -553,12 +525,12 @@ class TripBasedRouter(BaseRoutingEngine):
         
         # Hydrate and Tiered Quota Filtering
         hydrated = []
+        src_hydrate_id = source_id[0] if isinstance(source_id, list) else source_id
+        dst_hydrate_id = dest_id[0] if isinstance(dest_id, list) else dest_id
         for sr in found_search_routes:
-            rt = self._hydrate_tbr_route(sr, graph, source_id, dest_id)
+            rt = self._hydrate_tbr_route(sr, graph, int(src_hydrate_id), int(dst_hydrate_id))
             if rt: hydrated.append(rt)
             
-        # Moved quotas definition to start, before loop
-
         if not hydrated:
             return []
             
@@ -577,7 +549,7 @@ class TripBasedRouter(BaseRoutingEngine):
             for r in tier_routes:
                 if admitted >= quota: break
                 
-                # Broad sanity filter: Don't show routes that are massively slower than best
+                # Broad sanity filter
                 if r.total_duration > best_overall_duration + (slack_sec // 60) * 2:
                     continue
                 
@@ -659,7 +631,13 @@ class TripBasedRouter(BaseRoutingEngine):
                 arrival_time=s1.arrival_time,
                 departure_time=s2.departure_time,
                 duration_minutes=duration_minutes,
-                station_name=hub_stop.name if hub_stop else f"Stop {s1.arrival_stop_id}"
+                station_name=hub_stop.name if hub_stop else f"Stop {s1.arrival_stop_id}",
+                facilities_score=0.0,
+                safety_score=0.0,
+                platform_from=None,
+                platform_to=None,
+                is_multi_station=False,
+                transfer_type="TRANSFER"
             )
             transfers.append(tc)
 
@@ -667,5 +645,7 @@ class TripBasedRouter(BaseRoutingEngine):
             segments=compressed_segs, transfers=transfers,
             total_duration=int((compressed_segs[-1].arrival_time - compressed_segs[0].departure_time).total_seconds() // 60)
         )
-        rt.metadata["engine"] = "tbr_v4_a_star"
+        rt.metadata["engine"] = "tbr_v4_a_star"    # TBR-specific override removed to use unified BaseRoutingEngine.calculate_generalized_cost
         return rt
+
+    # TBR-specific override removed to use unified BaseRoutingEngine.calculate_generalized_cost

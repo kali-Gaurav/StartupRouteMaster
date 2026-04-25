@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any, Awaitable, Dict, cast
 import logging
 import time
 
@@ -41,8 +41,8 @@ async def ready_check():
         }
     try:
         # Probe critical services
-        db = await container.get("db", timeout=2.0)
-        cache = await container.get("cache", timeout=2.0)
+        db = await cast(Awaitable[Any], container.get("db", timeout=2.0))
+        cache = await cast(Awaitable[Any], container.get("cache", timeout=2.0))
         return {"status": "ready", "timestamp": datetime.utcnow().isoformat()}
     except Exception as e:
         return {"status": "not_ready", "reason": str(e)[:100]}

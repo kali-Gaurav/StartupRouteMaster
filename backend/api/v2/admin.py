@@ -1,5 +1,6 @@
+from database.models import CommissionTracking
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Body
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, cast
 from services.multi_layer_cache import multi_layer_cache
 from dependencies import get_route_engine, get_db
 from datetime import datetime, timedelta, date
@@ -110,13 +111,13 @@ class ConfigUpdateRequest(BaseModel):
 async def update_config(payload: ConfigUpdateRequest, db: Session = Depends(get_db)):
     """Subtask 25.1: Update a specific configuration key with auditing."""
     config = db.query(PlatformConfig).filter(PlatformConfig.key == payload.key).first()
-    old_val = config.value if config else "NONE"
+    old_val = str(config.value) if config else "NONE"
     
     if not config:
         config = PlatformConfig(key=payload.key, value=payload.value)
         db.add(config)
     else:
-        config.value = payload.value
+        setattr(config, "value", payload.value)
     
     audit = AuditLog(
         entity_type="System", entity_id=payload.key, action="CONFIG_UPDATE",
@@ -177,9 +178,9 @@ async def verify_payment(booking_id: str, db: Session = Depends(get_db)):
     await ws_manager.broadcast_log(booking_id, f"Payment verified by Admin. Status: {booking.escrow_status.value}", booking.escrow_status.value)
     
     # [25.2] Merchant Limit Tracking: Increment volume
-    if booking.merchant_vpa:
+    if booking.merchant_vpa is not None:
         from services.payment_vpa_service import PaymentVPAService
-        PaymentVPAService.increment_volume(db, booking.merchant_vpa, booking.amount_paid)
+        PaymentVPAService.increment_volume(db, str(booking.merchant_vpa), float(cast(float, booking.amount_paid)))
     
     return {"success": True, "message": f"Booking {booking_id} verified successfully."}
 

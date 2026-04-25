@@ -11,14 +11,22 @@ class ScraperOrchestratorNode(NexusNode):
         super().__init__(name, critical=critical, dependencies=dependencies if dependencies else ["cache"])
         
     async def on_start(self):
-        """[Task 48.1] Initialize Scraper Sentinel Pool."""
+        """[Task 48.1] Initialize Scraper Sentinel Pool and Live Ingestion."""
         logger.info("[NEXUS:SCRAPER] Activating Scraper Sentinel (Layer 3)...")
         await scraper_sentinel.start()
-        logger.info("[NEXUS:SCRAPER] Browser Context Pool: WARM.")
+        
+        # [Task 48.9] Start Live Ingestion Worker (Real-time Pipeline)
+        from services.realtime_ingestion.ingestion_worker import start_ingestion_service
+        logger.info("[NEXUS:SCRAPER] Starting Live Data Ingestion Worker...")
+        start_ingestion_service(interval_minutes=15) # Optimized for VPS
+        
+        logger.info("[NEXUS:SCRAPER] Browser Context Pool: WARM | Ingestion: ACTIVE.")
         
     async def on_stop(self):
-        """[Task 1.6] Total shutdown of browser instances."""
-        logger.info("[NEXUS:SCRAPER] Halting Scraper Sentinel.")
+        """[Task 1.6] Total shutdown of browser instances and workers."""
+        logger.info("[NEXUS:SCRAPER] Halting Scraper Sentinel and Ingestion.")
+        from services.realtime_ingestion.ingestion_worker import stop_ingestion_service
+        stop_ingestion_service()
         await scraper_sentinel.stop()
 
 scraper_node = ScraperOrchestratorNode()

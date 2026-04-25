@@ -1,5 +1,6 @@
 import logging
 import uuid
+from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from database.session import get_db
@@ -16,7 +17,7 @@ async def get_balance(user: User = Depends(get_current_user), db: Session = Depe
     """
     [Task 42.D] Fetch current credit balance (Paid + Bonus).
     """
-    return credit_service.get_user_balance(db, user.id)
+    return credit_service.get_user_balance(db, cast(str, user.id))
 
 @router.post("/purchase")
 async def purchase_credits(

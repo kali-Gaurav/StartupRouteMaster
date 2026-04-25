@@ -51,10 +51,32 @@ class NexusTelemetry:
             # Calculate Average Latency
             avg_latency = sum(self.latencies) / requests_in_window if requests_in_window > 0 else 0
 
+            # Calculate P95 Latency [Elite]
+            p95_latency = 0
+            if requests_in_window > 0:
+                sorted_latencies = sorted(list(self.latencies))
+                idx = int(requests_in_window * 0.95)
+                p95_latency = sorted_latencies[min(idx, requests_in_window - 1)]
+
+            guardian_data = {
+                "active_missions": 0,
+                "high_risk_missions": 0
+            }
+            try:
+                from guardian_ai.memory_store import guardian_memory
+                active_missions = await guardian_memory.get_all_active_missions()
+                high_risk = sum(1 for m in active_missions if m.risk_level.name in ["HIGH", "CRITICAL"])
+                guardian_data["active_missions"] = len(active_missions)
+                guardian_data["high_risk_missions"] = high_risk
+            except Exception as e:
+                logger.warning(f"Could not fetch Guardian telemetry: {e}")
+
             return {
                 "requests_per_sec": round(rps, 2),
                 "avg_latency_ms": round(avg_latency, 2),
-                "request_count_last_min": requests_in_window
+                "p95_latency_ms": round(p95_latency, 2),
+                "request_count_last_min": requests_in_window,
+                "guardian": guardian_data
             }
 
 # Global Singleton

@@ -4,7 +4,7 @@ import logging
 import os
 import secrets
 from enum import Enum, IntEnum
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, Tuple
 from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.responses import JSONResponse
 
@@ -56,7 +56,7 @@ class PriorityRouter:
             ("/api/admin", PriorityLevel.ESSENTIAL, RouteCategory.SYSTEM),
         ]
 
-    def classify(self, path: str, method: str) -> (PriorityLevel, RouteCategory):
+    def classify(self, path: str, method: str) -> Tuple[PriorityLevel, RouteCategory]:
         for prefix, priority, category in self.rules:
             if path.startswith(prefix):
                 return priority, category

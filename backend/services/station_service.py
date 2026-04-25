@@ -10,7 +10,7 @@ import json
 import logging
 
 from database.models import Stop
-from core.redis import redis_client
+from core.redis_client import redis_client
 
 logger = logging.getLogger(__name__)
 

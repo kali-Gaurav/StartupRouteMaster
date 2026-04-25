@@ -28,9 +28,17 @@ async def test_redis():
     logger.info(f"Testing Redis: {url.split('@')[-1]}")
     try:
         r = redis.Redis.from_url(url, ssl_cert_reqs=None, socket_connect_timeout=5.0)
-        await r.ping()
+        ping_result = r.ping()
+        if asyncio.iscoroutine(ping_result):
+            ping_result = await ping_result
+
+        if not ping_result:
+            raise RuntimeError("Redis ping returned False")
+
         logger.info("[OK] Redis Connection Successful")
-        await r.close()
+        close_result = r.close()
+        if asyncio.iscoroutine(close_result):
+            await close_result
         return True
     except Exception as e:
         log_error(f"[FAIL] Redis Connection Failed: {e}")

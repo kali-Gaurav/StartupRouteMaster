@@ -50,9 +50,23 @@ returns `HTTP 410` to remind clients to use Supabase clients.
 
 ## Database migrations
 
-All schema changes are managed with Alembic.  Run `alembic upgrade head` after
-starting the container or before deploying to ensure the Supabase database is
-up‑to‑date.
+All schema changes are managed with Alembic. The backend deployment script (`start.sh`) automatically runs `alembic upgrade head` upon boot to ensure the database schema is production-ready.
+
+For local development or manual runs, execute:
+```powershell
+alembic upgrade head
+```
+
+## Deployment & Containerization
+
+The backend defines unified expectations for both Docker and platform-native deployments (like Railway/nixpacks):
+
+1. **Entrypoint:** All production deployments must boot using `start.sh`.
+2. **Migrations:** `start.sh` automatically invokes `alembic upgrade head` before starting the application loop.
+3. **Watchdog:** A simple watchdog loop in `start.sh` ensures the server restarts upon critical failure.
+
+- **Docker (Local/Dev):** Uses `Dockerfile` to build a lightweight image that runs `start.sh`.
+- **Docker (Prod):** Uses `Dockerfile.prod` to run as a non-root `appuser` with optimized `gunicorn` configurations via `start.sh`.
 
 ## Remaining work
 

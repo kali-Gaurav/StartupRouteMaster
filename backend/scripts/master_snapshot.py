@@ -4,6 +4,7 @@ import logging
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nexus.snapshot")
@@ -29,7 +30,7 @@ class ProductionSnapshotForge:
             ".env.example"
         ]
 
-    def create_snapshot(self) -> str:
+    def create_snapshot(self) -> Optional[str]:
         """Saves a timestamped snapshot of critical production files."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         snapshot_name = f"nexus_snapshot_{timestamp}.tar.gz"

@@ -22,7 +22,10 @@ RUN pip install --no-cache-dir -r requirements.txt uvicorn
 # Copy application code
 COPY backend /app
 
+# Ensure start script is executable
+RUN chmod +x /app/start.sh
+
 EXPOSE 8000
 
-# Use absolute path for uvicorn or ensure it's in PATH
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use unified start script
+CMD ["/app/start.sh"]

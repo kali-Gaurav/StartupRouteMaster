@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, Any
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from ...database.models import Stop, Trip, StopTime, Route as GTFRoute, Transfer, Calendar, CalendarDate
@@ -237,7 +237,8 @@ class ETLValidator:
             
             # Check sequence
             for i, st in enumerate(stop_times):
-                if st.stop_sequence != i:
+                stop_sequence = getattr(st, "stop_sequence", None)
+                if stop_sequence != i:
                     msg = f"Trip {trip.id}: stop_sequence not monotonic at position {i}"
                     errors.append(msg)
                     break

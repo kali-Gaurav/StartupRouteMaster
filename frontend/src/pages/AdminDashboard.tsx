@@ -166,6 +166,7 @@ export default function AdminDashboard() {
     { portal: "Financial Suite", status: "ONLINE", latency: 18 },
     { portal: "Inventory Sentinel", status: "ONLINE", latency: 125 },
     { portal: "AI Intelligence", status: metrics.alert ? "DEGRADED" : "ONLINE", latency: 1400 },
+    { portal: "Kimi Hive Swarm", status: "ONLINE", latency: 14 },
     { portal: "Security & Audit", status: "ONLINE", latency: 12 },
   ];
 
@@ -199,8 +200,8 @@ export default function AdminDashboard() {
   const loadAIAnalytics = async () => {
     try {
       const [s, i] = await Promise.all([
-        fetchWithAuth("/admin/ai/sentiment"),
-        fetchWithAuth("/admin/ai/intent-analytics")
+        fetchWithAuth("/v2/admin/ai/sentiment"),
+        fetchWithAuth("/v2/admin/ai/intent-analytics")
       ]);
       setAiSentiment(await s.json());
       setAiIntent(await i.json());
@@ -210,7 +211,7 @@ export default function AdminDashboard() {
   const loadInventory = async () => {
     try {
       const [f] = await Promise.all([
-        fetchWithAuth("/admin/inventory/freshness")
+        fetchWithAuth("/v2/admin/inventory/freshness")
       ]);
       setInventoryStats(await f.json());
     } catch (e) { console.error("Inventory data error"); }
@@ -218,21 +219,21 @@ export default function AdminDashboard() {
 
   const loadAuditLogs = async () => {
     try {
-      const res = await fetchWithAuth("/admin/audit/logs");
+      const res = await fetchWithAuth("/v2/admin/audit/logs");
       setAuditLogs(await res.json());
     } catch (e) { console.error("Audit logs error"); }
   };
 
   const loadSystemHealth = async () => {
     try {
-      const res = await fetchWithAuth("/admin/system/health");
+      const res = await fetchWithAuth("/v2/admin/system/health");
       setSystemHealth(await res.json());
     } catch (e) { console.error("System health error"); }
   };
 
   const loadResourceHistory = async () => {
     try {
-      const res = await fetchWithAuth("/admin/system/resource-history");
+      const res = await fetchWithAuth("/v2/admin/system/resource-history");
       const data = await res.json();
       setResourceHistory(data.reverse());
     } catch (e) { console.error("Resource history error"); }
@@ -240,7 +241,7 @@ export default function AdminDashboard() {
 
   const loadGeoLoad = async () => {
     try {
-      const res = await fetchWithAuth("/admin/user/geo-load");
+      const res = await fetchWithAuth("/v2/admin/user/geo-load");
       setGeoLoad(await res.json());
     } catch (e) { console.error("Geo load error"); }
   };
@@ -248,9 +249,9 @@ export default function AdminDashboard() {
   const loadUserAnalytics = async () => {
     try {
       const [s, r, f] = await Promise.all([
-        fetchWithAuth("/admin/user/stats"),
-        fetchWithAuth("/admin/user/top-routes"),
-        fetchWithAuth("/admin/user/funnel")
+        fetchWithAuth("/v2/admin/user/stats"),
+        fetchWithAuth("/v2/admin/user/top-routes"),
+        fetchWithAuth("/v2/admin/user/funnel")
       ]);
       setUserStats(await s.json());
       setTopRoutes(await r.json());
@@ -260,21 +261,21 @@ export default function AdminDashboard() {
 
   const loadSlowEndpoints = async () => {
     try {
-      const res = await fetchWithAuth("/admin/performance/slow-endpoints");
+      const res = await fetchWithAuth("/v2/admin/performance/slow-endpoints");
       setSlowEndpoints(await res.json());
     } catch (e) { console.error("Slow endpoints error"); }
   };
 
   const loadFrictionLeaderboard = async () => {
     try {
-      const res = await fetchWithAuth("/admin/performance/friction-leaderboard");
+      const res = await fetchWithAuth("/v2/admin/performance/friction-leaderboard");
       setFrictionLeaderboard(await res.json());
     } catch (e) { console.error("Friction error"); }
   };
 
   const loadPerformance = async () => {
     try {
-      const res = await fetchWithAuth("/admin/performance/status");
+      const res = await fetchWithAuth("/v2/admin/performance/status");
       setProviderHealth(await res.json());
     } catch (e) { console.error("Performance stats error"); }
   };
@@ -282,8 +283,8 @@ export default function AdminDashboard() {
   const loadFinance = async () => {
     try {
       const [o, r] = await Promise.all([
-        fetchWithAuth("/admin/finance/overview"),
-        fetchWithAuth("/admin/finance/refunds")
+        fetchWithAuth("/v2/admin/finance/overview"),
+        fetchWithAuth("/v2/admin/finance/refunds")
       ]);
       setFinanceOverview(await o.json());
       setRefunds(await r.json());
@@ -292,14 +293,14 @@ export default function AdminDashboard() {
 
   const loadStats = async () => {
     try {
-      const res = await fetchWithAuth("/admin/vpa/stats");
+      const res = await fetchWithAuth("/v2/admin/vpa/stats");
       setVpaStats(await res.json());
     } catch (e) { console.error("VPA stats error"); }
   };
 
   const loadPending = async () => {
     try {
-      const res = await fetchWithAuth("/admin/bookings/pending");
+      const res = await fetchWithAuth("/v2/admin/bookings/pending");
       setPendingBookings(await res.json());
     } catch (e) { console.error("Pending bookings error"); }
   };

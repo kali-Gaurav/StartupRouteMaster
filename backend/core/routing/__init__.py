@@ -1,4 +1,7 @@
 import logging
+import sys
+from pathlib import Path
+
 from fastapi import FastAPI
 
 logger = logging.getLogger("routemaster.routing")
@@ -29,7 +32,7 @@ def register_routers(app: FastAPI):
     from api.v2 import (
         search as search_v2, live, monitoring, user as user_v2, 
         booking as booking_v2, booking_ws, debug, admin, 
-        admin_auth, agent, unlock, webhooks, sessions, external_api,
+        admin_auth, agent, agents, unlock, webhooks, sessions, external_api,
         notifications, realtime, credits as credits_v2, karma,
         admin_commissions, admin_fraud
     )
@@ -44,6 +47,7 @@ def register_routers(app: FastAPI):
     app.include_router(admin.router, prefix=V2_PREFIX)
     app.include_router(admin_auth.router, prefix=V2_PREFIX)
     app.include_router(agent.router, prefix=V2_PREFIX)
+    app.include_router(agents.router, prefix=V2_PREFIX)
     app.include_router(unlock.router, prefix=V2_PREFIX)
     app.include_router(webhooks.router, prefix=V2_PREFIX)
     app.include_router(sessions.router, prefix=V2_PREFIX)
@@ -55,16 +59,25 @@ def register_routers(app: FastAPI):
     app.include_router(admin_commissions.router, prefix=V2_PREFIX)
     app.include_router(admin_fraud.router, prefix=V2_PREFIX)
 
-    # --- V3 ELITE API ROUTES ---
+    # --- AGENT SWARM API ---
+    from api.v2.agents import router as agents_router
+    app.include_router(agents_router, prefix=V2_PREFIX)
+
     from api.v3 import (
         search as search_v3, transit as transit_v3, governor as governor_v3, 
-        system as system_v3
+        system as system_v3, model_search as model_search_v3, sos as sos_v3,
+        bookings as bookings_v3, guardian as guardian_v3, intelligence as intelligence_v3
     )
     V3_PREFIX = "/api/v3"
     app.include_router(search_v3.router, prefix=V3_PREFIX)
     app.include_router(transit_v3.router, prefix=V3_PREFIX)
     app.include_router(governor_v3.router, prefix=V3_PREFIX)
     app.include_router(system_v3.router, prefix=V3_PREFIX)
+    app.include_router(model_search_v3.router, prefix=V3_PREFIX)
+    app.include_router(sos_v3.router, prefix=V3_PREFIX)
+    app.include_router(bookings_v3.router, prefix=V3_PREFIX)
+    app.include_router(guardian_v3.router, prefix=V3_PREFIX)
+    app.include_router(intelligence_v3.router, prefix=V3_PREFIX)
 
     # --- V1 API ROUTES ---
     from api import (
@@ -94,3 +107,13 @@ def register_routers(app: FastAPI):
     app.include_router(vault.router, prefix=V1_PREFIX)
     app.include_router(integrated_search.router, prefix=V1_PREFIX)
     app.include_router(admin_v1.router, prefix="/api/v1")
+    
+    # [P16] High-Value Voice & Analytics Gateway Integration
+    from api import voice_v1, analytics_v1
+    app.include_router(voice_v1.router, prefix="/api")
+    app.include_router(analytics_v1.router, prefix="/api")
+
+    # --- PATENT INNOVATION: Travel Planning System ---
+    # Crowd Control, Multi-Modal Planning, Station Amenities
+    from services.travel_planning_api import router as travel_planning_router
+    app.include_router(travel_planning_router, prefix="/api")

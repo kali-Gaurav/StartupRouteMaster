@@ -47,10 +47,10 @@ export default function AdminAI() {
   const refreshAI = async () => {
     try {
       const [s, i, d, p] = await Promise.all([
-        fetchWithAuth("/admin/ai/sentiment"),
-        fetchWithAuth("/admin/ai/intent-analytics"),
-        fetchWithAuth("/admin/ai/intent-distribution"),
-        fetchWithAuth("/admin/ai/top-phrases")
+        fetchWithAuth("/v2/admin/ai/sentiment"),
+        fetchWithAuth("/v2/admin/ai/intent-analytics"),
+        fetchWithAuth("/v2/admin/ai/intent-distribution"),
+        fetchWithAuth("/v2/admin/ai/top-phrases")
       ]);
       setSentiment(await s.json());
       setIntent(await i.json());

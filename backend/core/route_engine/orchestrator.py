@@ -3,13 +3,22 @@ import logging
 import time
 import struct
 import json
-from typing import List, Dict, Any, Optional, Callable, Set
+from typing import List, Dict, Any, Optional, Callable, Set, cast
 from datetime import datetime, timedelta
 from sqlalchemy import text
+from sqlalchemy.orm import Session
+import sys
+from pathlib import Path
+
+# [Task 117.9] Link backend module base index
+_root = Path(__file__).resolve().parent.parent.parent
+if str(_root) not in sys.path:
+    sys.path.append(str(_root))
 
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 from .constraints import RouteConstraints
 from core.data_structures import Route, RouteSegment, TransferConnection, Persona
+
 from .turbo_router import TurboRouter
 from .ultra_turbo import UltraTurboDirectEngine
 from .raptor import OptimizedRAPTOR
@@ -19,20 +28,26 @@ from .scoring import RouteScorer
 from .hydration import create_default_pipeline
 from .circuit_breaker import EngineCircuitBreaker
 from .throttler import EngineThrottler
+from .multimodal_engine import MultimodalEngine
 from core.pricing.fare_calculator import calculate_fare
 
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import os
 
-_cpu_executor = None
+# [Phase 3: Patent Innovation Layer]
+from core.route_engine.pareto_optimizer import pareto_optimizer
+from core.redistribution.engine import redistributor
+from core.knowledge.graph_store import knowledge_graph
+
+
+from core.nexus.spine import NeuralSpine
+from core.nexus.topology import ShardRouter, NexusCartographer, Region
+from core.nexus.merge_engine import NexusMergeEngine
 
 def get_cpu_executor():
-    global _cpu_executor
-    if _cpu_executor is None:
-        _cpu_executor = ProcessPoolExecutor(
-            max_workers=max(2, (os.cpu_count() or 4) // 2)
-        )
-    return _cpu_executor
+    """[Task 14 & 17] Formalized Neural Spine access."""
+    NeuralSpine.initialize()
+    return NeuralSpine._executor
 
 # Standard ThreadPool for I/O and lightweight concurrent logic
 import os
@@ -43,6 +58,21 @@ ROUTING_POOL = ThreadPoolExecutor(
 )
 
 logger = logging.getLogger(__name__)
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    """Safely convert value to int, handling alphanumeric strings like 'TEST123'."""
+    if val is None: return default
+    if isinstance(val, int): return val
+    try:
+        # Try direct conversion
+        return int(val)
+    except (ValueError, TypeError):
+        # Handle alphanumeric strings: extract digits or use default
+        try:
+            digits = ''.join(filter(str.isdigit, str(val)))
+            return int(digits) if digits else default
+        except:
+            return default
 
 class ProgressTracker:
     """[Task 22.7] Simple progress tracking for TaskGroup."""
@@ -57,27 +87,6 @@ class ProgressTracker:
             progress = (self.completed / self.total) * 100
             self.callback(progress)
 
-class HydrationPipeline:
-    """[Task 28.1] Modular pipeline for route result hydration."""
-    def __init__(self):
-        self.steps: List[Callable] = []
-
-    def add_step(self, step: Callable):
-        self.steps.append(step)
-
-    async def execute(self, routes: List[Route], constraints: RouteConstraints, graph: Any, db: Any):
-        for step in self.steps:
-            st = time.perf_counter()
-            if asyncio.iscoroutinefunction(step):
-                await step(routes, constraints, graph, db)
-            else:
-                step(routes, constraints, graph, db)
-            lat = (time.perf_counter() - st) * 1000
-            for r in routes:
-                if "hydration_stats" not in r.metadata: r.metadata["hydration_stats"] = {}
-                r.metadata["hydration_stats"][step.__name__] = round(lat, 2)
-
-
 class UnifiedRoutingOrchestrator:
     """
     10X Performance Orchestrator.
@@ -89,6 +98,54 @@ class UnifiedRoutingOrchestrator:
     """
     _global_resource_sem = asyncio.Semaphore(10)
 
+    async def _inject_multimodal_jumps(self, request: RoutingRequest, constraints: RouteConstraints, graph: Any):
+        """[Elite] Pre-scan for direct multimodal jumps (Flights/Buses) from major hubs."""
+        from core.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_TERMINAL_MAPPING
+        from services.providers.bus_provider import bus_provider
+        from database.models import Stop
+        
+        from services.providers.multimodal_mocks import flight_p
+
+        # We only look for jumps from the Source Hub or any Major Hub reachable in Round 0
+        source_hubs = [code for code in MEGA_HUBS | MAJOR_HUBS if code == request.source_code]
+        
+        # [Task 11.2] Rapid Bridge Expansion
+        for hub_code in source_hubs:
+            jumps = []
+            
+            # 1. Search Buses
+            bus_results = await bus_provider.search(hub_code, request.destination_code, request.departure_date.strftime("%Y-%m-%d"))
+            
+            # 2. Search Flights (if mega hub)
+            flight_results = []
+            if hub_code in MEGA_HUBS:
+                flight_results = await flight_p.search(hub_code, request.destination_code, request.departure_date.strftime("%Y-%m-%d"))
+
+            # Injection logic for RAPTOR to pick up
+            dest_stop = request.db_session.query(Stop).filter(Stop.code == request.destination_code).first()
+            if not dest_stop:
+                continue
+
+            for res_raw in bus_results + flight_results:
+                try:
+                    res = cast(Dict[str, Any], res_raw)
+                    dep_dt = datetime.fromisoformat(res["departure"]) if "departure" in res else request.departure_date + timedelta(hours=4)
+                    arr_dt = datetime.fromisoformat(res["arrival"]) if "arrival" in res else dep_dt + timedelta(hours=6)
+                    
+                    jumps.append({
+                        "to_stop_id": dest_stop.id,
+                        "departure_time": dep_dt,
+                        "arrival_time": arr_dt,
+                        "distance_km": res.get("distance_km", 500.0),
+                        "type": res["transport_type"].upper(),
+                        "provider_id": res["provider_id"],
+                        "cost": res.get("total_cost", 0.0)
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to parse multimodal result: {e}")
+            
+            constraints.multimodal_jumps[hub_code] = jumps
+
     def get_health(self) -> Dict[str, Any]:
         """[Task 40.3 / 41.9] High-Efficiency Health Metrics for VPS monitoring."""
         return {
@@ -98,15 +155,16 @@ class UnifiedRoutingOrchestrator:
         }
 
     def __init__(self, route_engine_instance):
-        from .tbr_router import TripBasedRouter # [Task 27.17]
         self.engine = route_engine_instance
+        from .tbr_router import TripBasedRouter
         self.engines: Dict[str, BaseRoutingEngine] = {
             "hub_tier_0": HubRoutingEngine(),
             "ultra_turbo_direct": UltraTurboDirectEngine(),
             "turbo_router": TurboRouter(),
-            "fastpath_bfs": FastPathRouter(None),
+            "fastpath_bfs": FastPathRouter(),
             "raptor": OptimizedRAPTOR(),
-            "trip_based": TripBasedRouter()
+            "trip_based": TripBasedRouter(),
+            "multimodal": MultimodalEngine()
         }
         self.hub_router = self.engines["hub_tier_0"]
         self.ultra_turbo = self.engines["ultra_turbo_direct"]
@@ -115,14 +173,6 @@ class UnifiedRoutingOrchestrator:
         self.raptor = self.engines["raptor"]
         self.tbr_router = self.engines["trip_based"] # [Task 27.17]
         
-        # Initialize Hydration Pipeline from Middleware
-        self.hydration_pipeline = create_default_pipeline()
-
-        # [Task 40.2] Initialize Intelligent Circuits for VPS Stability
-        self.circuits: Dict[str, EngineCircuitBreaker] = {
-            name: EngineCircuitBreaker(name) for name in self.engines.keys()
-        }
-
         # [Task 41.3] Initialize Adaptive Throttlers
         targets = {
             "hub_tier_0": 80.0,
@@ -136,6 +186,137 @@ class UnifiedRoutingOrchestrator:
             name: EngineThrottler(name, targets.get(name, 500.0)) for name in self.engines.keys()
         }
 
+        # Initialize Hydration Pipeline from Middleware
+        self.hydration_pipeline = create_default_pipeline()
+
+        # [Task 40.2] Initialize Intelligent Circuits for VPS Stability
+        self.circuits: Dict[str, EngineCircuitBreaker] = {
+            name: EngineCircuitBreaker(name) for name in self.engines.keys()
+        }
+
+    async def search_all_tiers(
+        self,
+        request: RoutingRequest,
+        skip_heavy: bool = False,
+        source_stop=None,
+        dest_stop=None,
+        on_progress=None,
+        discovery_cache_key=None
+    ) -> List[Route]:
+        return await self.stream_all_tiers(
+            request=request,
+            skip_heavy=skip_heavy,
+            source_stop=source_stop,
+            dest_stop=dest_stop,
+            on_progress=on_progress,
+            discovery_cache_key=discovery_cache_key
+        )
+
+    async def _inject_realtime_heartbeat(self, routes: List[Route], db: Session):
+        """
+        [P1 & P9] Cerebral Synapse Connection + Reliability Injection.
+        Injects proactively synced status and historical reliability weights.
+        """
+        if not routes or not db:
+            return
+            
+        start_ts = time.perf_counter()
+        station_codes = set()
+        for r in routes:
+            for seg in r.segments:
+                station_codes.add(str(getattr(seg, "from_station_code", getattr(seg, "departure_code", ""))).upper())
+        
+        from database.models import StationRealtimeHeartbeat
+        try:
+            heartbeats = db.query(StationRealtimeHeartbeat).filter(
+                StationRealtimeHeartbeat.station_code.in_(list(station_codes))
+            ).all()
+            hb_map = {str(hb.station_code).upper(): hb for hb in heartbeats}
+        except Exception as e:
+            logger.warning(f"Heartbeat DB lookup failed: {e}")
+            hb_map = {}
+        
+        now = datetime.utcnow()
+        for r in routes:
+            r_guardian_score = 0.0
+            r_active_agents = 0
+            
+            for seg in r.segments:
+                seg_from_code = str(getattr(seg, "from_station_code", getattr(seg, "departure_code", ""))).upper()
+                hb = hb_map.get(seg_from_code)
+                
+                if hb is not None:
+                    # 1. Pulse Verification (Delay/Status)
+                    expires_at = cast(Optional[datetime], getattr(hb, "expires_at", None))
+                    if expires_at is None or expires_at > now:
+                        seg.metadata["source"] = "pulse"
+                        trains = hb.trains_json if isinstance(hb.trains_json, list) else []
+                        match = next((t for t in trains if t.get("train_no") == seg.train_number), None)
+                        if match:
+                            seg.metadata["status"] = match.get("status", "ON_TIME")
+                            seg.metadata["delay"] = match.get("delay", 0)
+                            if "available_seats" in match:
+                                seg.metadata["live_seats"] = match.get("available_seats")
+                            r.metadata["heartbeat_verified"] = True
+                    
+                    # 2. [Task 41.B] Social Trust Pulse
+                    seg.metadata["guardian_score"] = getattr(hb, "guardian_score", 0.0)
+                    seg.metadata["active_agents"] = getattr(hb, "active_agents_count", 0)
+                    r_guardian_score = max(r_guardian_score, seg.metadata["guardian_score"])
+                    r_active_agents += seg.metadata["active_agents"]
+
+            # Aggregate route-level social pulse
+            r.metadata["social_pulse"] = {
+                "guardian_score": r_guardian_score,
+                "agent_presence": r_active_agents > 0,
+                "total_agents": r_active_agents
+            }
+            
+        latency = (time.perf_counter() - start_ts) * 1000
+        if latency > 10.0: # Audit only slow pulses
+            logger.info(f"📊 [LATENCY AUDIT:HEARTBEAT] Processed {len(routes)} routes in {latency:.2f}ms.")
+
+    def _is_valid_route(self, route: Route) -> bool:
+        return all(
+            getattr(seg, 'departure_time', None) is not None and
+            getattr(seg, 'arrival_time', None) is not None
+            for seg in route.segments
+        )
+
+    async def _filter_cancelled_trains(self, routes: List[Route], departure_date: datetime, db) -> List[Route]:
+        if not routes:
+            return []
+        if db is None or departure_date is None:
+            return routes
+        try:
+            date_str = departure_date.strftime("%Y-%m-%d")
+            c_rows = db.execute(text("SELECT train_no FROM cancelled_trains WHERE travel_date = :dt"), {"dt": date_str}).fetchall()
+            cancelled_trains = {str(r[0]) for r in c_rows if r and r[0] is not None}
+            filtered_routes = []
+            for route in routes:
+                train_numbers = {getattr(seg, 'train_number', None) for seg in getattr(route, 'segments', [])}
+                if not train_numbers.intersection(cancelled_trains):
+                    filtered_routes.append(route)
+            return filtered_routes
+        except Exception as e:
+            logger.warning(f"Orchestrator cancellation filter failed: {e}")
+            return routes
+
+    async def _search_tier_0_hubs_async(self, src_id: int, dst_id: int, date: datetime, db) -> List[Route]:
+        if not db or not src_id or not dst_id:
+            return []
+        try:
+            return await asyncio.to_thread(
+                cast(HubRoutingEngine, self.hub_router)._search_tier_0_hubs,
+                [src_id],
+                [dst_id],
+                date,
+                db
+            )
+        except Exception as e:
+            logger.error(f"Tier 0 hub search failed: {e}")
+            return []
+
     async def stream_all_tiers(
         self,
         request: RoutingRequest,
@@ -144,7 +325,7 @@ class UnifiedRoutingOrchestrator:
         dest_stop=None,
         on_progress: Optional[Callable[[float], None]] = None,
         discovery_cache_key: Optional[str] = None
-    ):
+    ) -> List[Route]:
         """[Task 30/105] Elite Resource-Aware Streaming Orchestrator."""
         source_code = request.source_code
         destination_code = request.destination_code
@@ -152,30 +333,80 @@ class UnifiedRoutingOrchestrator:
         constraints = request.constraints
         limit = request.limit
         db = request.db_session
+
+        # [Day 10] Multi-Layer Cache Check (Bypass heavy compute if hot)
+        from services.multi_layer_cache import multi_layer_cache
+        cache_key = f"nexus:search:{source_code}:{destination_code}:{departure_date.strftime('%Y%m%d')}:{constraints.persona.value}"
+        if not request.force_refresh:
+            cached_res = await multi_layer_cache.get(cache_key)
+            if cached_res:
+                logger.info(f"⚡ [CACHE:HIT] Serving {len(cached_res)} routes from L2 Cache.")
+                return cached_res
         # [Task 122 Refined] Nexus Governor Integration
         from core.nexus.audit.governor import nexus_governor
         gov_stats = await nexus_governor.get_stats()
         
-        # Determine which heavy engines to skip based on real-time system health
-        skip_heavy = False
-        import os
-        force_heavy = os.getenv("NEXUS_FORCE_CONTINUE_ON_STRESS", "true").lower() == "true"
-        max_ram = float(os.getenv("NEXUS_MAX_RAM", "95.0"))
-        max_cpu = float(os.getenv("NEXUS_MAX_CPU", "90.0"))
-
-        if not force_heavy:
-            if gov_stats["cpu_percent"] > max_cpu or gov_stats["ram_percent"] > max_ram:
-                skip_heavy = True
-                logger.warning(
-                    f"⚖️ [ORCHESTRATOR:GOVERNOR] High load detected (CPU: {gov_stats['cpu_percent']}%, RAM: {gov_stats['ram_percent']}%). "
-                    "Skipping heavy engines (RAPTOR, FastPath)."
-                )
-        else:
-            if gov_stats["cpu_percent"] > max_cpu or gov_stats["ram_percent"] > max_ram:
-                logger.critical(
-                    f"⚠️ [ORCHESTRATOR:ADMIN_ALERT] Resource Pressure High! (CPU: {gov_stats['cpu_percent']}%, RAM: {gov_stats['ram_percent']}%). "
-                    "Proceeding with heavy engines due to NEXUS_FORCE_CONTINUE_ON_STRESS."
-                )
+        # [Task 12.3] Omniscient Asset Management (Business Tier Aware)
+        from services.rapidapi_provider import rapidapi_provider
+        from .constraints import DiscoveryModel
+        
+        model = constraints.discovery_model or DiscoveryModel.BACKBONE
+        api_available = rapidapi_provider.is_healthy and not rapidapi_provider.quota_latch_active
+        system_stress = gov_stats["throttle_factor"] > 0.8 # Crisis threshold
+        
+        # Adaptive Engine Selection based on Business Model (3-Tier Implementation)
+        active_engines = []
+        
+        if model == DiscoveryModel.BACKBONE or system_stress:
+             # --- Tier 1: EXPRESS / FREE ---
+             # Focus: Speed & Direct Trains. No external API costs.
+             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router"]
+             constraints.max_transfers = min(constraints.max_transfers, 1) # Limit transfers to 1 for Free tier
+             constraints.timeout_ms = min(constraints.timeout_ms, 3000) # Fast 3s timeout
+             
+             if system_stress:
+                 logger.warning("📉 [ORCHESTRATOR:STRESS] Pressure Critical. Falling back to Core Backbone for safety.")
+             else:
+                 logger.info("🆓 [ORCHESTRATOR] Tier 1: EXPRESS (Free Tier).")
+        
+        elif model == DiscoveryModel.MULTIMODAL:
+             # --- Tier 2: PRO / SAFETY ---
+             # Focus: Reliability, Women's Safety, and Multi-modal discovery.
+             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router", "fastpath_bfs", "raptor"]
+             
+             # Safety weighting boost
+             if constraints.women_safety_priority:
+                 constraints.weights.safety = 5.0
+                 constraints.reliability_weight = 0.8
+             
+             constraints.max_transfers = min(constraints.max_transfers, 3) # Up to 3 transfers
+             
+             if api_available:
+                 active_engines.append("multimodal")
+             
+             # Force Skip Verification metadata (only discovery)
+             constraints.metadata["verification_mode"] = "DISCOVERY_ONLY"
+             logger.info("🚆 [ORCHESTRATOR] Tier 2: PRO / SAFETY (Standard Tier).")
+             
+        elif model == DiscoveryModel.OMNISCIENT:
+             # --- Tier 3: ELITE / OMNISCIENT ---
+             # Focus: Deep Intelligence, Real-time Verification, and Complex Interlining.
+             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router", "fastpath_bfs", "raptor", "trip_based"]
+             
+             if api_available:
+                 active_engines.append("multimodal")
+             
+             # Upgrade search depth for Omniscient to DEEP for high-yield
+             constraints.search_depth = "DEEP"
+             constraints.max_transfers = max(constraints.max_transfers, 5) # Allow complex 5-stage journeys
+             constraints.timeout_ms = max(constraints.timeout_ms, 12000) # 12s for deep discovery
+                 
+             constraints.metadata["verification_mode"] = "ELITE_VERIFY"
+             logger.info("🧠 [ORCHESTRATOR] Tier 3: ELITE / OMNISCIENT (Premium + 5-Transfer DEEP).")
+             
+        # Constraints override
+        if constraints.permitted_engines:
+            active_engines = [e for e in active_engines if any(pe.lower() in e.lower() for pe in constraints.permitted_engines)]
 
         start_time = time.perf_counter()
         from utils.station_utils import resolve_stations
@@ -188,39 +419,58 @@ class UnifiedRoutingOrchestrator:
                 _owned_session = True
             except Exception as e:
                 logger.error(f"Orchestrator: Failed to create fallback session: {e}")
-                return
+                return []
 
         try:
-            # Sync overlay & fetch cancelled
             graph = await self.engine._get_current_graph(departure_date)
             # Ensure all graph-dependent routers have the latest graph
             self.fast_router.graph = graph
-            self.raptor.graph = graph 
+            self.raptor.graph = graph
+
+            # [Task 126] Isolated Request Overlay (Copy-on-Write)
+            # This prevents concurrent requests from corrupting shared real-time state.
+            request_overlay = graph.overlay.fork()
+            await request_overlay.sync_with_db(db, departure_date.date(), graph.snapshot)
             
-            await graph.overlay.sync_with_db(db, departure_date.date(), graph.snapshot)
+            # [Task 12.1] Regional Topology Pruning (Nexus Fiber)
+            src_region = NexusCartographer.get_region_for_station(source_code)
+            dst_region = NexusCartographer.get_region_for_station(destination_code)
+            required_shards = ShardRouter.get_required_shards(source_code, destination_code, src_region, dst_region)
+            
+            logger.info(f"🌐 [TOPOLOGY] Query: {src_region} -> {dst_region} | Required Shards: {required_shards}")
+            
+            # Inject isolated overlay into request metadata for engines
+            request.metadata["overlay"] = request_overlay
+            request.metadata["shards"] = required_shards
+            
+            # Fetch cancelled trips for this request scope
             date_str = departure_date.strftime("%Y-%m-%d")
             c_rows = db.execute(text("SELECT train_no FROM cancelled_trains WHERE travel_date = :dt"), {"dt": date_str}).fetchall()
-            constraints.metadata = {"cancelled_trip_ids": {int(r[0]) for r in c_rows}}
+            constraints.metadata["cancelled_trip_ids"] = {_safe_int(r[0]) for r in c_rows if r and r[0]}
             
             if not source_stop or not dest_stop:
                 source_stop, dest_stop = await asyncio.to_thread(resolve_stations, db, source_code, destination_code)
             
-            if not source_stop or not dest_stop: return
+            if not source_stop or not dest_stop:
+                return []
 
             # [Task 5] Metro-Group Expansion: Resolve all stations in the metropolitan area
             from utils.station_utils import get_metro_group_codes
             
             def _resolve_cluster_ids_sync(code: str, session) -> List[int]:
-                if isinstance(code, int): return [code]
+                if isinstance(code, int):
+                    return [code]
                 c_str = str(code).upper().strip()
                 codes = get_metro_group_codes(c_str)
                 
-                ids = set()
+                ids: Set[int] = set()
                 q_stops = f"SELECT id FROM stops WHERE code IN ({','.join([':c'+str(i) for i in range(len(codes))])})"
                 params = {f"c{i}": c for i, c in enumerate(codes)}
                 for r in session.execute(text(q_stops), params).fetchall():
-                    ids.add(r[0])
-                if not ids: return []
+                    if r and r[0] is not None:
+                        ids.add(_safe_int(r[0]))
+                if not ids:
+                    return []
                 
                 q_clusters = f"""
                     SELECT scm2.station_id 
@@ -231,16 +481,22 @@ class UnifiedRoutingOrchestrator:
                 params_cl = {f"s{i}": sid for i, sid in enumerate(ids)}
                 try:
                     for r in session.execute(text(q_clusters), params_cl).fetchall():
-                        ids.add(r[0])
-                except: pass # Table might not exist
+                        if r and r[0] is not None:
+                            ids.add(_safe_int(r[0]))
+                except Exception:
+                    pass # Table might not exist
                 return list(ids)
 
             # Resolve clusters using the primary DB session
-            src_cluster_ids = await asyncio.to_thread(_resolve_cluster_ids_sync, source_code, db)
-            dst_cluster_ids = await asyncio.to_thread(_resolve_cluster_ids_sync, destination_code, db)
+            src_cluster_ids = [cast(int, i) for i in await asyncio.to_thread(_resolve_cluster_ids_sync, source_code, db)]
+            dst_cluster_ids = [cast(int, i) for i in await asyncio.to_thread(_resolve_cluster_ids_sync, destination_code, db)]
             
             if not src_cluster_ids: src_cluster_ids = [source_stop.id]
             if not dst_cluster_ids: dst_cluster_ids = [dest_stop.id]
+
+            # [Elite: Hub Bridge] Inject Multimodal Jumps if requested
+            if getattr(request, 'multi_modal', False):
+                await self._inject_multimodal_jumps(request, constraints, graph)
 
             # Resolved codes for engines that prefer codes
             src_cluster_codes = get_metro_group_codes(source_code)
@@ -250,630 +506,202 @@ class UnifiedRoutingOrchestrator:
             total_timeout = request_timeout_ctx.get() or 5.0
             
             engine_limit = max(limit * 2, 50) 
-            # Remove global seen_jids to allow discovery-tracking per engine
-            # Global dedup happens in _global_deduplicate (preserves discovered_by metadata)
-
+            
+            from database.session import SessionTransit
+            
+            # [Latency Fix] Streaming TTFR (Time to First Route)
+            # Instead of waiting for all engines, we yield chunks of results as they arrive.
+            seen_jids: Set[str] = set()
+            
             async def process_and_yield(name, coro, timeout):
-                circuit = self.circuits.get(name)
-                if circuit and not await circuit.can_execute():
-                    logger.warning(f"🛡️ [ORCHESTRATOR] Bypassing {name} (Circuit OPEN)")
-                    return []
-
-                start_exec = time.perf_counter()
+                # Each engine task gets its OWN session to prevent concurrent session corruption
+                db_internal = SessionTransit()
                 try:
+                    start_time = time.perf_counter()
                     async with asyncio.timeout(timeout):
-                        res = await coro
-                    
-                    if res is None: 
-                        if circuit: await circuit.record_failure("Engine returned None")
-                        return []
-                    
-                    all_raw = []
-                    if name in ("Turbo", "UltraTurbo") and res and isinstance(res[0], dict):
-                        # Hub/Turbo engines sometimes return raw dicts
-                        raw_routes = self._hydrate_turbo_results(res, source_code, destination_code, departure_date)
-                        for r in raw_routes: 
-                            if "engine" not in r.metadata: r.metadata["engine"] = name.lower()
-                        all_raw.extend(raw_routes)
-                    else:
-                        # Standard engines return Route objects
-                        for r in res: 
-                            if isinstance(r, Route): 
-                                if "engine" not in r.metadata: r.metadata["engine"] = name.lower()
-                        all_raw.extend(res)
-                        
-                    all_routes = [r for r in all_raw if self._is_valid_route(r)]
-                    
-                    # Detection of "Silent Malformation"
-                    if all_raw and not all_routes:
-                        if circuit: await circuit.record_failure("All results failed integrity check")
-                        return []
-                    
-                    if circuit: await circuit.record_success()
+                        response = await coro
 
-                    all_routes = await self._filter_cancelled_trains(all_routes, request)
+                    if not response:
+                        return []
+
+                    res = response.routes if hasattr(response, "routes") else (response if isinstance(response, list) else [])
+                    if not res:
+                        return []
+
+                    # 1. Basic Validation & Metadata
+                    all_routes = [r for r in res if self._is_valid_route(r)]
+                    for r in all_routes:
+                        r.metadata["engine"] = name.lower()
+
+                    # 2. Parallel Foundation Filters (Optimized for Day 1)
+                    all_routes = await self._filter_cancelled_trains(all_routes, departure_date, db_internal)
                     
-                    # [Task 30.4] Skip streaming dedup - let global dedup handle it (preserves discovery metadata)
-                    new_routes = all_routes
+                    # 3. [Aeon] Inject Pulse (Reliability + Social Trust)
+                    await self._inject_realtime_heartbeat(all_routes, db_internal)
+
+                    # 4. Deduplication
+                    new_routes = []
+                    for r in all_routes:
+                        if r.journey_id not in seen_jids:
+                            seen_jids.add(r.journey_id)
+                            new_routes.append(r)
 
                     if new_routes:
-                        should_hydrate = not constraints.discovery_only and gov_stats["ram_percent"] < 95
-                        if should_hydrate:
-                            await self.hydration_pipeline.execute(new_routes, constraints, graph, db)
+                        # 5. Eager Hydration
+                        if not constraints.discovery_only:
+                            await self.hydration_pipeline.execute(new_routes, constraints, graph, db_internal)
                         else:
-                            for r in new_routes: r.metadata["speculative"] = True
-                        
+                            for r in new_routes:
+                                r.metadata["discovery_mode"] = True
+
                         latency_total = (time.perf_counter() - start_time) * 1000
                         for r in new_routes:
                             r.metadata["orchestrator_latency_ms"] = round(latency_total, 2)
-                            r.metadata["is_hydrated"] = should_hydrate
-                            if "engine" not in r.metadata: r.metadata["engine"] = name.lower()
                             if "tier" not in r.metadata:
-                                if "ultra" in r.metadata["engine"]: r.metadata["tier"] = 1
-                                elif "turbo" in r.metadata["engine"]: r.metadata["tier"] = 2
-                                else: r.metadata["tier"] = 3
-                        
+                                engine_nm = r.metadata.get("engine", "default")
+                                r.metadata["tier"] = 1 if "ultra" in engine_nm else (2 if "turbo" in engine_nm else 3)
+
                         return new_routes
                     return []
-
                 except Exception as e:
-                    if circuit: await circuit.record_failure(str(e))
-                    logger.error(f" Engine {name} failed or timed out: {e}")
+                    logger.error(f"⚠️ Engine {name} failed or timed out: {e}")
                     return []
+                finally:
+                    db_internal.close()
 
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.error(f"⌛ Orchestrator Stream Deadline Exceeded for {source_code}->{destination_code}")
-        finally:
-            if _owned_session and db is not None:
-                try: db.close()
-                except: pass
+            def is_allowed(name: str) -> bool:
+                if not constraints.permitted_engines: return True
+                return any(e.lower() in name.lower() for e in constraints.permitted_engines)
 
-    async def _discover_from_engine_async(self, name: str, engine: BaseRoutingEngine, request: RoutingRequest, start_time: float, gov_stats: Dict):
-        """[Task 41.11] Unified discovery handler with Circuit Breakers & Throttling."""
-        throttler = self.throttlers.get(name)
-        circuit = self.circuits.get(name)
-        
-        # 1. Circuit & Throttler Guards
-        if circuit and not await circuit.can_execute():
-            return []
+            tasks = []
+            if is_allowed("HubTier0"):
+                tasks.append(asyncio.create_task(process_and_yield("HubTier0", self._search_tier_0_hubs_async(cast(int, source_stop.id), cast(int, dest_stop.id), departure_date, db), total_timeout)))
             
-        is_high_priority = (
-            request.constraints.persona in (Persona.PREMIUM, Persona.EMERGENCY) or 
-            request.constraints.quota != "GN"
-        )
-        if throttler and throttler.should_skip(is_premium=is_high_priority):
-            logger.warning(f"🚫 [THROTTLER] Skipping {name} due to critical latency.")
-            return []
-
-        # 2. Dynamic Limit Adjustment
-        engine_limit = request.limit
-        if throttler:
-            effective_limit = throttler.get_effective_limit(engine_limit)
-            request.limit = effective_limit
-
-        # 3. Execution & Timing
-        st_task = time.perf_counter()
-        try:
-            resp = await engine.find_routes(request)
-            lat_ms = (time.perf_counter() - st_task) * 1000
-            if throttler: throttler.record_latency(lat_ms)
-            if circuit: await circuit.record_success()
-            
-            if not resp or not resp.routes: return []
-            
-            # 4. Meta-tagging & Consistency
-            routes = resp.routes
-            for r in routes:
-                if "engine" not in r.metadata: r.metadata["engine"] = name.lower()
-                r.metadata["is_hydrated"] = False # discovery yield is raw
-                # [Task 41.9] Latency feedback to UI
-                r.metadata["engine_latency_ms"] = round(lat_ms, 1)
-            
-            # Post-Filter & Verification (Minimal sync check)
-            all_routes = [r for r in routes if self._is_valid_route(r)]
-            
-            if routes and not all_routes:
-                if circuit: await circuit.record_failure("Discovery produced invalid routes")
-                return []
-                
-            return all_routes
-
-        except Exception as e:
-            if circuit: await circuit.record_failure(str(e))
-            logger.error(f"❌ [ORCHESTRATOR] Engine {name} failed: {e}")
-            return []
-
-    async def search_all_tiers(
-        self,
-        request: RoutingRequest,
-        skip_heavy: bool = False,
-        source_stop=None,
-        dest_stop=None,
-        on_progress: Optional[Callable[[float], None]] = None 
-    ) -> List[Route]:
-        start_time = time.perf_counter()
-        from utils.station_utils import resolve_stations
-        
-        source_code = request.source_code
-        destination_code = request.destination_code
-        departure_date = request.departure_date
-        constraints = request.constraints
-        limit = request.limit
-        db = request.db_session
-
-        _owned_session = False
-        if db is None:
-            try:
-                from database.session import SessionTransit
-                db = SessionTransit()
-                _owned_session = True
-            except Exception as e:
-                logger.error(f"Orchestrator: Failed to create fallback session: {e}")
-                return []
-
-        try:
-            from .graph import TimeDependentGraph
-            # Sync overlay & fetch cancelled
-            # [Task 1.3] Ensure overlay is fresh for all engines
-            graph = await self.engine._get_current_graph(departure_date)
-            
-            # [TODO-08] Graph Snapshot Staleness Verifier
-            if hasattr(graph, 'snapshot') and graph.snapshot and hasattr(graph.snapshot, 'date'):
-                snapshot_date = getattr(graph.snapshot, 'date')
-                if isinstance(snapshot_date, datetime):
-                    age_days = (datetime.utcnow() - snapshot_date).days
-                    if age_days > 7:
-                        logger.error(f"🚨 [ORCHESTRATOR] CRITICAL: Graph snapshot is {age_days} days stale. Halting search.")
-                        return []
-
-            self.fast_router.graph = graph
-            self.raptor.graph = graph # [Audit] Ensure RAPTOR is pinned to current graph
-            
-            await graph.overlay.sync_with_db(db, departure_date.date(), graph.snapshot)
-
-            # [Task 29.9] Budget Trace
-            trace = {"start": start_time}
-            
-            # Resolve stations
-            if not source_stop or not dest_stop:
-                source_stop, dest_stop = await asyncio.to_thread(resolve_stations, db, source_code, destination_code)
-            trace["station_res"] = time.perf_counter()
-            
-            # [TODO-02] Strict Resolve Guard with Descriptive Telemetry
-            if not source_stop or not dest_stop:
-                failed_code = source_code if not source_stop else destination_code
-                logger.error(f"❌ [ORCHESTRATOR] Station Resolve Guard Triggered. Could not verify: {failed_code}")
-                return []
-
-            # [Task 27.13] Pre-resolve all cluster IDs once for efficiency
-            from database.session import get_raw_transit_conn
-            async with get_raw_transit_conn() as conn:
-                src_cluster_ids = await self.ultra_turbo._resolve_cluster_ids(conn, source_stop.code)
-                dst_cluster_ids = await self.ultra_turbo._resolve_cluster_ids(conn, dest_stop.code)
-            
-            # Convert to codes for Turbo
-            src_cluster_codes = [self.turbo_router._get_station_code(db, sid) for sid in src_cluster_ids]
-            dst_cluster_codes = [self.turbo_router._get_station_code(db, sid) for sid in dst_cluster_ids]
-
-            # [Task 29/22.8] Adaptive Timeout Inheritance
-            from core.context import request_timeout_ctx
-            total_timeout = request_timeout_ctx.get() or 5.0
-            elapsed_init = time.perf_counter() - start_time
-            remaining_timeout = max(0.5, total_timeout - (time.perf_counter() - start_time))
-            
-            from core.nexus.audit.governor import nexus_governor
-            gov_stats = await nexus_governor.get_stats()
-            
-            from core.resource_monitor import resource_monitor, SurgeLevel
-            level = resource_monitor.get_surge_level()
-            if level != SurgeLevel.NORMAL:
-                logger.info(f"System Surge Analysis: Level {level.name} detected.")
-
-            # [Task 29.8] MOVE ENTIRE PIPELINE INSIDE TIMEOUT
-            async with asyncio.timeout(remaining_timeout):
-                # 3. Execution
-                engine_limit = max(limit * 2, 50) 
-                num_tasks = 3 if skip_heavy else 5
-                progress = ProgressTracker(num_tasks, on_progress)
-                is_allowed = lambda n: constraints.permitted_engines is None or n in constraints.permitted_engines
-
-                # 3. Parallel Search Execution (Task 121: Elastic Collection)
-                all_tasks = {}
-                
-                # [TODO-11] Priority Staggering Tiers
-                engine_priorities = {
-                    "hub_tier_0": 0,
-                    "ultra_turbo_direct": 1,
-                    "turbo_router": 2,
-                    "fastpath_bfs": 5,
-                    "raptor": 8,
-                    "trip_based": 12
-                }
-
-                # Wrapped discover with prioritized staggering and timeout
-                async def prioritized_discover(name, engine, req):
-                    # Stagger based on priority (5ms per tier)
-                    priority = engine_priorities.get(name, 10)
-                    if priority > 0:
-                        await asyncio.sleep(0.005 * priority)
+            # Using Strategy registry for new engines
+            for name, engine in self.engines.items():
+                if name in active_engines:
+                    # update request with latest cluster logic
+                    request.src_cluster_ids = cast(List[int], src_cluster_ids)
+                    request.dst_cluster_ids = cast(List[int], dst_cluster_ids)
+                    request.graph = graph
                     
-                    try:
-                        # [TODO-11.2] Apply per-engine deadline to protect overall SLA
-                        async with asyncio.timeout(remaining_timeout * 1.5): # Slighly buffer
-                             return await self._discover_from_engine_async(name, engine, req, start_time, gov_stats)
-                    except (asyncio.TimeoutError, TimeoutError):
-                        logger.warning(f"Engine {name} hit internal timeout.")
-                        return []
-                    except Exception as e:
-                        logger.error(f"Engine {name} execution failed: {e}")
-                        return []
+                    # specific timeouts
+                    t = total_timeout
+                    if "fastpath" in name.lower(): t = total_timeout * 0.8
+                    if "raptor" in name.lower(): t = total_timeout * 0.9
+                    if "multimodal" in name.lower(): t = total_timeout * 1.5 # Allow more time for external APIs
+                    
+                    tasks.append(asyncio.create_task(process_and_yield(name, engine.find_routes(request), t)))
 
-                for name, engine in self.engines.items():
-                    if is_allowed(name):
-                        if skip_heavy and name in ["fastpath_bfs", "raptor", "trip_based"]:
-                            continue
-                        
-                        # Create specialized request
-                        req = request.model_copy(update={
-                            "graph": graph,
-                            "src_cluster_ids": src_cluster_ids,
-                            "dst_cluster_ids": dst_cluster_ids
-                        })
+            if not tasks:
+                return []
 
-                        # Use unified discovery helper with staggering
-                        all_tasks[name] = asyncio.create_task(prioritized_discover(name, engine, req))
+            done, pending = await asyncio.wait(tasks, timeout=total_timeout)
+            for task in pending:
+                task.cancel()
 
-                trace["engines_launched"] = time.perf_counter()
+            merged_routes: List[Route] = []
+            for task in done:
+                try:
+                    chunk = task.result()
+                    if chunk:
+                        merged_routes.extend(chunk)
+                except Exception as e:
+                    logger.error(f"Orchestrator task failed: {e}")
 
-                # Use as_completed to avoid waiting for the slowest engine if we already have enough
-                done, pending = await asyncio.wait(all_tasks.values(), timeout=10.0)
+            # --- Phase 2: Multi-Modal Interlining Pass (Task 12.5) ---
+            interlined_results = []
+            if model in [DiscoveryModel.MULTIMODAL, DiscoveryModel.OMNISCIENT]:
+                rail_routes = [r for r in merged_routes if r.metadata.get("mode", "RAIL") == "RAIL"]
+                # Multimodal engine identifies segments as individual modes
+                flight_routes = [r for r in merged_routes if r.metadata.get("mode") == "FLIGHT"]
+                bus_routes = [r for r in merged_routes if r.metadata.get("mode") == "BUS"]
                 
-                if pending:
-                    logger.warning(f"⏰ {len(pending)} engines timed out. Returning partial results.")
-                
-                # 4. Result Collection & Hydration
-                all_raw = []
-                for name, task in all_tasks.items():
-                    if task in done and not task.cancelled():
-                        try:
-                            res = task.result()
-                            if res:
-                                # [Task 30.5] Streaming Hydration for batch results
-                                should_hydrate = not constraints.discovery_only and gov_stats["ram_percent"] < 95
-                                if should_hydrate:
-                                    await self.hydration_pipeline.execute(res, constraints, graph, db)
-                                else:
-                                    for r in res: r.metadata["speculative"] = True
-                                
-                                all_raw.extend(res)
-                        except Exception as e:
-                            logger.error(f"Engine {name} failed: {e}")
+                if rail_routes and (flight_routes or bus_routes):
+                    from .interlining_engine import interlining_engine
+                    # 1. Rail -> Flight Stitching
+                    if flight_routes:
+                        stitched_air = await interlining_engine.find_interlined_routes(rail_routes, flight_routes)
+                        interlined_results.extend(stitched_air)
+                        logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched_air)} Rail-Air 'Jump' routes.")
+                    
+                    # 2. Rail -> Bus Stitching
+                    if bus_routes:
+                        stitched_bus = await interlining_engine.find_interlined_routes(rail_routes, bus_routes)
+                        interlined_results.extend(stitched_bus)
+                        logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched_bus)} Rail-Bus 'Jump' routes.")
+            
+            merged_routes.extend(interlined_results)
 
-                all_routes = [r for r in all_raw if self._is_valid_route(r)]
-                
-                # [Task 10] Discovery mode: Skip secondary filtering/hydration for raw performance testing
-                if not getattr(constraints, 'discovery_only', False):
-                    all_routes = await self._filter_cancelled_trains(all_routes, request)
-                
-                # [Task 27.16] Deep Deduplication and Scoring
-                unique_routes = self._global_deduplicate(all_routes)
-                
-                # [Task 27.16] Final Persona Sort
-                if constraints.persona in (Persona.BUDGET, Persona.ECONOMY):
-                    unique_routes.sort(key=lambda x: (x.total_cost, x.total_duration))
-                elif constraints.persona == Persona.EMERGENCY:
-                    from core.data_structures import ensure_datetime
-                    unique_routes.sort(key=lambda x: (ensure_datetime(x.segments[0].departure_time), x.total_duration))
-                elif constraints.persona in (Persona.COMFORT, Persona.PREMIUM):
-                    unique_routes.sort(key=lambda x: (len(x.transfers), x.score))
-                elif constraints.persona == Persona.FAMILY:
-                    unique_routes.sort(key=lambda x: (x.score, -getattr(x, 'reliability', 0.5)))
-                else:
-                    unique_routes.sort(key=lambda x: x.score)
-
-                trace["hydration_done"] = time.perf_counter()
-
-            # [Task 29.9] Performance Report
-            perf_report = {k: round((v - start_time) * 1000, 2) for k, v in trace.items() if k != "start"}
-            logger.info(f"🚀 Full Orchestration Success in {round((time.perf_counter()-start_time)*1000, 2)}ms. Trace: {perf_report}")
-
-            # 6. Sorting & Metadata
-            latency_total = (time.perf_counter() - start_time) * 1000
-            for r in unique_routes:
-                r.metadata["orchestrator_latency_ms"] = round(latency_total, 2)
-                if "engine" not in r.metadata: r.metadata["engine"] = "unknown"
-                if "tier" not in r.metadata:
-                    if r.metadata["engine"] == "ultra_turbo_direct": r.metadata["tier"] = 1
-                    elif "turbo" in r.metadata["engine"]: r.metadata["tier"] = 2
-                    else: r.metadata["tier"] = 3
-
+            # [Phase 3: Patent Optimization]
+            # 1. Apply Pareto Frontier to ensure diverse, optimal choices
+            final_routes = pareto_optimizer.find_frontier(merged_routes)
+            
+            # 2. Sort the frontier by persona preference
             if constraints.persona in (Persona.BUDGET, Persona.ECONOMY):
-                unique_routes.sort(key=lambda x: (x.total_cost, x.total_duration))
+                final_routes.sort(key=lambda x: (x.total_cost, x.total_duration))
             elif constraints.persona == Persona.EMERGENCY:
                 from core.data_structures import ensure_datetime
-                unique_routes.sort(key=lambda x: (ensure_datetime(x.segments[0].departure_time), x.total_duration))
+                final_routes.sort(key=lambda x: (ensure_datetime(x.segments[0].departure_time), x.total_duration))
             elif constraints.persona in (Persona.COMFORT, Persona.PREMIUM):
-                unique_routes.sort(key=lambda x: (len(x.transfers), x.score))
-            elif constraints.persona == Persona.FAMILY:
-                unique_routes.sort(key=lambda x: (x.score, -getattr(x, 'reliability', 0.5)))
+                final_routes.sort(key=lambda x: (len(x.transfers), -x.score))
             else:
-                unique_routes.sort(key=lambda x: x.score)
-            # [Yield Fix] Increase return cap to 500 (was 150) for better result variety
-            # Removed hard minimum to allow smaller result sets when appropriate
-            return unique_routes[:min(limit * 5, 500)]
+                final_routes.sort(key=lambda x: -x.score)
 
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.error(f"⌛ Orchestrator Deadline Exceeded for {source_code}->{destination_code}")
-            return [] # Fall-back gracefully
+            # [Phase 6: Cross-Modal Arbitrage]
+            try:
+                from services.agents.arbitrage_agent import arbitrage_agent
+                await arbitrage_agent.run({"routes": final_routes, "persona": constraints.persona})
+            except Exception as e:
+                logger.warning(f"Arbitrage analysis failed: {e}")
+
+            # 3. [Redistribution] Analyze for network load balancing
+            # If top routes are saturated, suggest 'Wait & Flow' alternatives
+            redist_options = await redistributor.analyze_and_redistribute(
+                request, final_routes, search_callback=self.stream_all_tiers
+            )
+            if redist_options:
+                logger.info(f"🔄 [REDISTRIBUTION] Generated {len(redist_options)} incentivized alternatives.")
+                # We inject these into the request metadata or a dedicated response field
+                # For now, we tag the routes themselves or prepare metadata for the caller
+                for opt in redist_options:
+                    # In a real API, this would be a separate 'suggestions' field
+                    pass
+
+            # [Day 10] Save to Multi-Layer Cache
+            if final_routes and not request.force_refresh:
+                await multi_layer_cache.put(cache_key, final_routes, ttl=3600, use_pickle=True) # 1 hour search cache
+
+            # [Elite Telemetry] Record latency for adaptive throttling
+            total_latency_ms = (time.perf_counter() - start_time) * 1000
+            from core.nexus.telemetry import nexus_telemetry
+            asyncio.create_task(nexus_telemetry.record_request(total_latency_ms))
+            
+            # Record redistribution success if options found
+            if redist_options:
+                request.metadata["redistribution_options"] = redist_options
+                request.metadata["redistribution_summary"] = redistributor.generate_redistribution_summary(redist_options)
+
+            return final_routes[:min(limit * 5, 500)]
+
+
+        except Exception as e:
+            logger.error(f"Orchestrator search failed: {e}")
+            # [Phase 1 Fix] Stale-cache fallback: serve cached results during engine failures
+            try:
+                stale_result = await multi_layer_cache.get(cache_key)
+                if stale_result:
+                    logger.warning(f"🔄 [FALLBACK] Serving {len(stale_result)} stale cached routes after engine failure.")
+                    for r in stale_result:
+                        r.metadata["stale_cache"] = True
+                        r.metadata["fallback_reason"] = str(e)[:100]
+                    return stale_result
+            except Exception as cache_err:
+                logger.error(f"Stale-cache fallback also failed: {cache_err}")
+            return []
         finally:
             if _owned_session and db is not None:
-                try: db.close()
-                except: pass
-
-    # --- PIPELINE STEPS ---
-
-    async def _step_realtime_propagation(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        """[Task 16 & Task 30] Advanced delay propagation across transfers."""
-        for r in routes:
-            for i, s in enumerate(r.segments):
-                delay = graph.overlay.get_trip_delay(int(s.trip_id))
-                if delay > 0:
-                    s.departure_time += timedelta(minutes=delay)
-                    s.arrival_time += timedelta(minutes=delay)
-                    s.metadata["live_delay_mins"] = delay
-                    if "alerts" not in r.metadata: r.metadata["alerts"] = []
-                    r.metadata["alerts"].append(f"Train {s.train_number} is running {delay}m late.")
-
-            # Re-calculate transfers and total duration
-            if len(r.segments) > 1:
-                r.total_duration = int((r.segments[-1].arrival_time - r.segments[0].departure_time).total_seconds() // 60)
-                for i in range(len(r.transfers)):
-                    # Update transfer wait times based on new realtime arrivals/departures
-                    arr_seg = r.segments[i]
-                    dep_seg = r.segments[i+1]
-                    wait = int((dep_seg.departure_time - arr_seg.arrival_time).total_seconds() // 60)
-                    r.transfers[i].duration_minutes = wait
-                    if wait < 15: # Critical Threshold
-                        r.metadata["reliability_badge"] = "CRITICAL"
-                        r.metadata["alerts"].append(f"Risky connection at {r.transfers[i].station_name} ({wait}m wait)!")
-
-    async def _step_vectorized_fares(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        from core.pricing.fare_calculator import calculate_fares_batch
-        import numpy as np
-        dists = np.array([float(r.total_distance or 0.0) for r in routes], dtype=np.float32)
-        batch_fares = calculate_fares_batch(dists, constraints.preferred_class or "SL", is_tatkal=constraints.quota == "TQ", db=db)
-        for i, r in enumerate(routes):
-            r.total_cost = float(batch_fares[i])
-            if r.total_distance > 0:
-                for s in r.segments:
-                    s.fare = round((s.distance_km / r.total_distance) * r.total_cost, 2)
-
-    def _step_realtime_platforms(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        for r in routes:
-            for s in r.segments:
-                platform = graph.overlay.platform_changes.get((s.trip_id, s.departure_stop_id))
-                if platform:
-                    s.metadata["platform_realtime"] = platform
-                    s.metadata["platform_note"] = "Live Update"
-                else:
-                    # [Task 28] Static Heatmap Fallback
-                    # Logic: Fast trains (12xxx) usually use lower PFs; Slow trains use higher ones.
-                    t_no = str(s.train_number)
-                    if t_no.isdigit():
-                        if t_no.startswith(("12", "22")): 
-                             pf = (int(t_no) % 3) + 1 # PFs 1, 2, 3
-                        else:
-                             pf = (int(t_no) % 5) + 4 # PFs 4, 5, 6, 7, 8
-                        s.metadata["platform_predicted"] = pf
-                    else:
-                        s.metadata["platform_predicted"] = "TBD"
-                    
-                    s.metadata["platform_note"] = "Historical Heuristic"
-
-    def _step_amenities(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        for r in routes:
-            for s in r.segments:
-                t_str = str(s.train_number)
-                s.metadata["amenities"] = {
-                    "pantry": t_str.startswith(("12", "22")),
-                    "e_catering": True,
-                    "charging": True,
-                    "wifi": t_str.startswith("120")
-                }
-
-    async def _step_multi_class_fares(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        # [Task 27] Try multiple classes if the preferred one is missing
-        from providers.gateway import provider_gateway
-        pref_classes = constraints.preferred_classes or (["3A", "2A", "SL"] if not constraints.preferred_class else [constraints.preferred_class])
-        
-        for r in routes:
-            total_cost = 0.0
-            for s in r.segments:
-                fare_found = False
-                for cls in pref_classes:
-                    try:
-                        f = await provider_gateway.get_fare(s.trip_id, s.departure_time.strftime("%Y-%m-%d"), s.from_stop_code, s.to_stop_code, cls)
-                        if f:
-                            s.metadata["fare"] = f.amount
-                            s.metadata["class"] = cls
-                            total_cost += f.amount
-                            fare_found = True
-                            break
-                    except Exception: continue
-                
-                if not fare_found:
-                    s.metadata["fare"] = 200.0 + (s.duration_minutes * 0.5)
-                    s.metadata["class"] = "SL"
-                    total_cost += s.metadata["fare"]
-
-            r.total_cost = total_cost
-        return routes
-
-    async def _step_reliability_badges(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        for r in routes:
-            rel_sum = 0
-            for s in r.segments:
-                s_rel = 0.95 if str(s.train_number).startswith("1") else 0.85
-                s.metadata["reliability_badge"] = "HIGH" if s_rel > 0.9 else "AVERAGE"
-                rel_sum += s_rel
-            r.metadata["avg_reliability"] = rel_sum / len(r.segments) if r.segments else 0.5
-
-    def _step_journey_story(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        for r in routes:
-            dur_rating = max(1, 5 - ((r.total_duration or 0) / 600.0))
-            cost_rating = max(1, 5 - ((r.total_cost or 0.0) / 1000.0))
-            tr_rating = max(1, 5 - (len(r.transfers) * 1.5))
-            r.metadata["rating"] = round((dur_rating * 0.4) + (cost_rating * 0.3) + (tr_rating * 0.3), 1)
-            parts = []
-            if len(r.segments) == 1: parts.append("Direct journey")
-            else: parts.append(f"{len(r.transfers)} transfer(s)")
-            if r.total_duration < 360: parts.append("Very fast")
-            dep_hour = r.segments[0].departure_time.hour if r.segments else 12
-            if 21 <= dep_hour or dep_hour <= 4: parts.append("Overnight")
-            r.metadata["journey_story"] = " • ".join(parts)
-
-    def _step_integrity_check(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        """[Task 28.10] Final data validation & optimized synchronous scoring."""
-        for r in routes:
-            if not r.total_cost or r.total_cost < 1: r.total_cost = 500.0
-            if not r.total_duration or r.total_duration < 1:
-                if r.segments:
-                    r.total_duration = int((r.segments[-1].arrival_time - r.segments[0].departure_time).total_seconds() / 60)
-            
-            # [Task 28.1] Use synchronous scoring to avoid massive event loop overhead
-            r.score = RouteScorer.score_route_sync(r, constraints)
-
-    # --- HELPERS ---
-
-    def _is_valid_route(self, route: Route) -> bool:
-        if not route.segments: return False
-        for s in route.segments:
-            from core.data_structures import ensure_datetime
-            dep = ensure_datetime(s.departure_time); arr = ensure_datetime(s.arrival_time)
-            if arr <= dep: return False
-        return True
-
-    def _global_deduplicate(self, routes: List[Route]) -> List[Route]:
-        if not routes: return []
-        unique_map: Dict[str, Route] = {}
-        for r in routes:
-            jid = r.journey_id
-            engine_name = r.metadata.get("engine", "unknown")
-            if jid not in unique_map:
-                unique_map[jid] = r
-                r.metadata["discovered_by"] = {engine_name}
-            else:
-                current_best = unique_map[jid]
-                # Combine discovery trail
-                if "discovered_by" not in current_best.metadata:
-                    current_best.metadata["discovered_by"] = {current_best.metadata.get("engine", "unknown")}
-                current_best.metadata["discovered_by"].add(engine_name)
-                
-                # Keep the better version (lower score is better for generalized cost)
-                if (r.score < current_best.score) or (r.total_duration < current_best.total_duration):
-                    # Transplant discovery trail to the new best
-                    r.metadata["discovered_by"] = current_best.metadata["discovered_by"]
-                    unique_map[jid] = r
-        return list(unique_map.values())
-
-    async def _filter_cancelled_trains(self, routes: List[Route], request: RoutingRequest) -> List[Route]:
-        """[Task 30.7] Fast O(1) In-Memory Cancellation Check using constraints metadata."""
-        if not routes: return routes
-        
-        cancelled_nos = request.constraints.metadata.get("cancelled_trip_ids", set())
-        
-        if not cancelled_nos and request.db_session:
-            try:
-                date_str = request.departure_date.strftime("%Y-%m-%d")
-                query = """
-                    SELECT train_no FROM cancelled_trains WHERE travel_date = :dt
-                    UNION
-                    SELECT t.trip_id 
-                    FROM calendar_dates cd 
-                    JOIN trips t ON cd.service_id = t.service_id 
-                    WHERE cd.date = :dt AND cd.exception_type = 2
-                """
-                rows = request.db_session.execute(text(query), {"dt": date_str}).fetchall()
-                cancelled_nos = {str(r[0]) for r in rows}
-            except Exception as e:
-                logger.error(f"Failed to fetch fallback cancellations: {e}")
-                
-        if not cancelled_nos: 
-            return routes
-            
-        valid_routes = []
-        for r in routes:
-            cancelled_legs = [s.train_number for s in r.segments if str(s.train_number) in cancelled_nos]
-            if not cancelled_legs: 
-                valid_routes.append(r)
-            else: 
-                r.metadata["cancellation_detected"] = True
-        return valid_routes
-
-
-
-    def _hydrate_turbo_results(self, turbo_raw: List[Dict], source: str, destination: str, base_date: datetime) -> List[Route]:
-        routes = []
-        for r in turbo_raw:
-            rt = Route()
-            def safe_int(v):
-                try: return int(v)
-                except: return 0
-
-            if r.get("type") in ("direct", "direct_backbone"):
-                dep_dt = self._parse_turbo_time(r.get('dep'), base_date)
-                arr_dt = self._parse_turbo_time(r.get('arr'), base_date)
-                # [Task 6] Handle midnight arrival if not already handled by parse
-                if arr_dt < dep_dt: arr_dt += timedelta(days=1)
-                
-                seg = RouteSegment(trip_id=safe_int(r.get('train_no')), departure_stop_id=0, arrival_stop_id=0,
-                                   departure_code=source, arrival_code=destination,
-                                   departure_time=dep_dt, arrival_time=arr_dt,
-                                   duration_minutes=int((arr_dt - dep_dt).total_seconds() // 60),
-                                   distance_km=float(r.get('distance', 0.0)), 
-                                   train_number=str(r.get('train_no')),
-                                   service_mask=127, metadata={})
-                rt.add_segment(seg); rt.metadata["engine"] = "turbo_direct"
-            elif r.get("type") == "1-transfer":
-                legs = r.get("legs", [])
-                s1_dep = self._parse_turbo_time(legs[0].get('dep'), base_date)
-                s1_arr = self._parse_turbo_time(legs[0].get('arr'), base_date); 
-                if s1_arr < s1_dep: s1_arr += timedelta(days=1)
-                
-                s1 = RouteSegment(trip_id=safe_int(legs[0].get('train')), departure_stop_id=0, arrival_stop_id=0,
-                                   departure_code=legs[0].get('from'), arrival_code=legs[0].get('to'),
-                                   departure_time=s1_dep, arrival_time=s1_arr,
-                                   duration_minutes=int((s1_arr - s1_dep).total_seconds() // 60),
-                                   distance_km=0.0, train_number=str(legs[0].get('train')),
-                                   service_mask=127, metadata={})
-                
-                s2_dep = self._parse_turbo_time(legs[1].get('dep'), base_date)
-                # Ensure transfer buffer logic respects the actual day of arrival
-                while s2_dep < s1_arr + timedelta(minutes=15): s2_dep += timedelta(days=1)
-                
-                s2_arr = self._parse_turbo_time(legs[1].get('arr'), base_date)
-                while s2_arr < s2_dep: s2_arr += timedelta(days=1)
-                
-                s2 = RouteSegment(trip_id=safe_int(legs[1].get('train')), departure_stop_id=0, arrival_stop_id=0,
-                                   departure_code=legs[1].get('from'), arrival_code=legs[1].get('to'),
-                                   departure_time=s2_dep, arrival_time=s2_arr,
-                                   duration_minutes=int((s2_arr - s2_dep).total_seconds() // 60),
-                                   distance_km=0.0, fare=0.0, train_number=str(legs[1].get('train')),
-                                   service_mask=127, metadata={})
-                rt.add_segment(s1); rt.add_segment(s2)
-                rt.add_transfer(TransferConnection(station_id=0, arrival_time=s1.arrival_time, 
-                                                   departure_time=s2.departure_time,
-                                                   duration_minutes=int((s2.departure_time - s1.arrival_time).total_seconds() // 60), 
-                                                   station_name=r.get("hub", "UNK")))
-                rt.metadata["engine"] = "turbo_transfer"
-            if rt.segments: routes.append(rt)
-        return routes
-
-    def _parse_turbo_time(self, time_str: str, base_date: datetime) -> datetime:
-        """[Task 9] Robust time parsing for GTFS hours >= 24."""
-        try:
-            parts = list(map(int, time_str.split(":")))
-            h, m = parts[0], parts[1]
-            extra_days = h // 24
-            return base_date.replace(hour=h % 24, minute=m, second=0, microsecond=0) + timedelta(days=extra_days)
-        except: return base_date
+                try:
+                    db.close()
+                except Exception:
+                    pass

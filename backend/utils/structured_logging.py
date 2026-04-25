@@ -68,6 +68,17 @@ class RequestIDFilter(logging.Filter):
         record.rid = get_request_id()
         return True
 
+class EmojiStripperFilter(logging.Filter):
+    """
+    Ensures log messages are encodable in non-UTF-8 terminals (Windows cp1252).
+    Strips emojis and other non-standard Unicode.
+    """
+    def filter(self, record):
+        if isinstance(record.msg, str):
+            # Encode to ascii and ignore errors, then back to str
+            record.msg = record.msg.encode('ascii', 'ignore').decode('ascii').strip()
+        return True
+
 class BufferedStreamHandler(logging.StreamHandler):
     """
     Task 39: High-Efficiency Buffered Logging.
@@ -125,8 +136,8 @@ def setup_logging():
 
     # Use standard StreamHandler for now to avoid buffering/locking hangs [Task 30 FIX]
     handler = logging.StreamHandler(sys.stdout)
-    # handler = BufferedStreamHandler(sys.stdout, buffer_size=30, flush_interval=3.0)
     handler.addFilter(RequestIDFilter())
+    handler.addFilter(EmojiStripperFilter())
     
     if Config.ENVIRONMENT == "production":
         # Add sampling filter to noisy loggers in production

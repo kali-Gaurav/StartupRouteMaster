@@ -39,6 +39,10 @@ class ChaosMesh:
 
     async def apply_trap(self, name: str):
         """[Task 25.2/25.3] Executes the latency/failure logic for an armed trap (Async)."""
+        # Fast path: skip thread pool overhead if no trap is armed (99% of prod requests)
+        trap = self._traps.get(name)
+        if not (trap and trap.get("armed")):
+            return
         await asyncio.to_thread(self.apply_trap_sync, name)
 
     def apply_trap_sync(self, name: str):

@@ -32,13 +32,13 @@ schedule==1.2.1
 scrapy==2.11.1
 itemadapter==0.8.0
 
-# Machine Learning
+# Machine Learning & Data
 scikit-learn==1.3.2
 lightgbm==4.3.0
 joblib==1.3.2
 numpy==1.26.2
 matplotlib==3.8.2
-# pyroaring provides bitmaps required by the station time index
+pandas>=2.0.0
 pyroaring==1.0.3
 
 # Authentication and security
@@ -48,6 +48,10 @@ python-multipart==0.0.9
 qrcode==7.4.2
 Pillow==10.2.0
 
+# Cloud & Infrastructure
+boto3
+botocore
+
 # Other utilities
 python-dotenv==1.0.1
 requests==2.31.0
@@ -55,8 +59,7 @@ httpx==0.25.2
 reportlab==4.0.9
 python-telegram-bot==20.7
 cryptography==42.0.2
-# Retry helper for resilient API calls
-tenacity==8.2.2
+tenacity==8.2.3
 prometheus-fastapi-instrumentator==7.0.0
 twilio==8.11.0
 sendgrid==6.11.0
@@ -66,13 +69,4 @@ deep-translator==1.11.4
 langdetect==1.0.9
 reverse-geocoder==1.5.1
 sse-starlette==2.0.0
-
-# Development and testing
-pytest==8.0.2
-pytest-asyncio==0.23.5
-pytest-cov==4.1.0
-pre-commit==3.6.2
-
-boto3
-
-botocore
+pybreaker>=1.4.1

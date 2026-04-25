@@ -4,12 +4,11 @@ from sqlalchemy import or_, func
 import logging
 import functools
 
-from database.models import Stop
-from services.station_search_service import station_search_engine
-from services.cache_service import cache_service
-
+logger = logging.getLogger(__name__)
 import time
 from collections import defaultdict
+
+from database.models import Stop
 
 # [Gap 1] Database-driven Metropolitan Station Unification Map
 # Fallback hardcoded groups for initial boot or if DB is empty (Task 121: Yield Expansion)
@@ -64,7 +63,15 @@ def get_metro_group_codes(station_code: str, db: Optional[Session] = None) -> Li
 import time
 from collections import defaultdict
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=4096)
+def _get_cached_station_data(query: str) -> Optional[Dict[str, Any]]:
+    """
+    Truly cacheable helper. Only used if Redis is down or for ultra-fast L1.
+    Since we can't store SQLAlchemy objects in LRU (due to session binding), 
+    we store raw dicts.
+    """
+    return None # This is a placeholder for the logic below
+
 def resolve_stations(db: Session, source_query: str, dest_query: str) -> Tuple[Optional[Stop], Optional[Stop]]:
     """
     Subtask 1.6: Optimized station resolution with multi-layer caching.
@@ -74,42 +81,36 @@ def resolve_stations(db: Session, source_query: str, dest_query: str) -> Tuple[O
         if not query: return None
         q = query.upper().strip()
         
-        # 1. L1 Cache (Local)
-        # Done via lru_cache decorator on the outer function
-        
+        # 1. L1 Cache (Local LRU)
+        # We use a manual dict for L1 to avoid session conflicts with objects
+        from .station_cache import station_l1_cache
+        if stop := station_l1_cache.get(q):
+            return stop
+
         # 2. L2 Cache (Redis)
-        cache_key = f"station_resolve:{q}"
+        from services.cache_service import cache_service
+        cache_key = f"station_resolve:v3:{q}"
         try:
             cached = cache_service.get(cache_key)
             if cached and cached.get("id") is not None:
-                # Fill L1 from L2
-                return Stop(
-                    id=cached.get("id"),
-                    stop_id=cached.get("stop_id"),
-                    code=cached.get("code"),
-                    name=cached.get("name"),
-                    city=cached.get("city"),
-                    state=cached.get("state"),
-                    latitude=cached.get("latitude", 0.0),
-                    longitude=cached.get("longitude", 0.0)
-                )
+                stop = Stop(**cached)
+                station_l1_cache.set(q, stop)
+                return stop
         except Exception: pass
         
         # 3. Database & Engine Fallback
+        from services.station_search_service import station_search_engine
         stop = db.query(Stop).filter(or_(Stop.stop_id == q, Stop.code == q)).first()
         if not stop:
             stop = db.query(Stop).filter(func.upper(Stop.name) == q).first()
         if not stop:
             resolved = station_search_engine.resolve(query)
             if resolved:
-                # Still need to fetch numeric ID from DB even if resolved via engine
                 stop = db.query(Stop).filter(Stop.code == resolved.code).first()
                 if not stop:
                     stop = Stop(
-                        stop_id=resolved.code,
-                        code=resolved.code,
-                        name=resolved.name,
-                        city=resolved.city, state=resolved.state,
+                        stop_id=resolved.code, code=resolved.code,
+                        name=resolved.name, city=resolved.city, state=resolved.state,
                         latitude=resolved.latitude, longitude=resolved.longitude
                     )
         
@@ -122,6 +123,7 @@ def resolve_stations(db: Session, source_query: str, dest_query: str) -> Tuple[O
             }
             try:
                 cache_service.put(cache_key, stop_data, ttl=86400) # 24h
+                station_l1_cache.set(q, stop)
             except Exception: pass
             
         return stop
@@ -139,6 +141,7 @@ def find_stations_by_partial_name(db: Session, query: str, limit: int = 10) -> L
     """
     if len(query) < 2: return []
     
+    from services.station_search_service import station_search_engine
     suggestions = station_search_engine.suggest(query, limit=limit)
     
     return [

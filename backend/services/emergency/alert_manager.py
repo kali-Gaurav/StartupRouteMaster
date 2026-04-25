@@ -2,6 +2,7 @@ import logging
 import time
 import math
 import asyncio
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Union
 from sqlalchemy.orm import Session
@@ -10,6 +11,9 @@ from sqlalchemy import text
 from database.session import SessionLocal, SessionTransit
 from database.models import Trip, Booking, StopTime, Stop, TrainLiveUpdate, Route
 from services.realtime_ingestion.position_estimator import TrainPositionEstimator
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,45 @@ class EmergencyAlertManager:
         self.db = SessionLocal()
         self.transit_db = SessionTransit()
         self.estimator = TrainPositionEstimator(self.transit_db)
+        
+        # Circuit breaker for database operations
+        self._db_circuit_breaker = circuit_breaker(
+            name="emergency_alert_manager_db",
+            failure_threshold=5,
+            recovery_timeout=60.0
+        )
+        # Circuit breaker for external API calls
+        self._api_circuit_breaker = circuit_breaker(
+            name="emergency_alert_manager_api",
+            failure_threshold=3,
+            recovery_timeout=120.0
+        )
+        # Retry policies
+        self._db_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        self._api_retry_policy = retry_policy(
+            max_attempts=2,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=1.0,
+            max_delay=30.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="emergency_alert_manager",
+            default_tags={"component": "emergency"}
+        )
+        self._metrics.gauge("db_circuit_breaker_state", lambda: self._db_circuit_breaker.state.value)
+        self._metrics.gauge("api_circuit_breaker_state", lambda: self._api_circuit_breaker.state.value)
+        self._metrics.counter("alerts_processed_total")
+        self._metrics.counter("alerts_success_total")
+        self._metrics.counter("alerts_failed_total")
+        self._metrics.counter("threat_classifications_total")
+        self._metrics.counter("authority_lookups_total")
+        self._metrics.histogram("alert_processing_duration_seconds")
 
     @staticmethod
     def _classify_threat(event: Dict[str, Any]) -> str:
@@ -83,7 +126,7 @@ class EmergencyAlertManager:
             target_types = ("RPF", "GRP") if threat_type == "security" else ("HOSPITAL", "FIRE") if threat_type in ["medical", "fire"] else ("RPF", "GRP", "HOSPITAL")
             lat_diff, lng_diff = 0.5, 0.5
             placeholders = ', '.join([':t' + str(i) for i in range(len(target_types))])
-            params = {f"t{i}": t for i, t in enumerate(target_types)}
+            params: Dict[str, Any] = {f"t{i}": t for i, t in enumerate(target_types)}
             params.update({"min_lat": lat - lat_diff, "max_lat": lat + lat_diff, "min_lng": lng - lng_diff, "max_lng": lng + lng_diff})
             
             query = text(f"SELECT name, type, contact_number, latitude, longitude, response_time_mins, station_code FROM emergency_authorities WHERE type IN ({placeholders}) AND latitude BETWEEN :min_lat AND :max_lat AND longitude BETWEEN :min_lng AND :max_lng")
@@ -134,78 +177,6 @@ class EmergencyAlertManager:
             try: transit_db.close()
             except: pass
         return None
-
-    async def _alert_nearby_trusted_users(self, trip_id: Optional[int], coach: str, excluded_user_id: Optional[str]):
-        if not trip_id: return
-        from database.models import Booking, User
-        from api.websockets import manager
-        try:
-            # Task 31: Adjacent Coach Resolution
-            # 1. Parse coach number (e.g., S4 -> S, 4)
-            import re
-            match = re.match(r"([A-Z]+)(\d+)", str(coach).upper())
-            if not match:
-                # Fallback to trip-wide if coach is malformed
-                nearby_users = self.db.query(User.supabase_id, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
-                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.supabase_id != excluded_user_id
-                ).all()
-            else:
-                c_prefix, c_num = match.groups()
-                c_num = int(c_num)
-                # We target same prefix and +/- 1 coach number
-                target_coaches = [f"{c_prefix}{c_num-1}", f"{c_prefix}{c_num}", f"{c_prefix}{c_num+1}"]
-                
-                logger.info(f"🎯 [PROXIMITY] Targeting coaches: {target_coaches}")
-                
-                # Query only users in those coaches (requires booking_details to have coach info)
-                # Since our current 'Booking' table doesn't have a direct 'coach' column,
-                # we rely on our previous logic or assuming booking_details stores it.
-                # For this implementation, we will mock the coach filtering logic.
-                
-                all_confirmed = self.db.query(User.supabase_id, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
-                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.supabase_id != excluded_user_id
-                ).all()
-                
-                nearby_users = []
-                for sid, details in all_confirmed:
-                    # Logic: if details contains 'coach' and it's in target_coaches
-                    if details and details.get("coach") in target_coaches:
-                        nearby_users.append((sid, details))
-                    elif not details: # Fallback if no details
-                        nearby_users.append((sid, details))
-
-            if nearby_users:
-                # Task 32: Sort by Karma Score
-                from database.models import Profile, User
-                
-                # Fetch karma by joining User and Profile
-                user_ids = [r[0] for r in nearby_users]
-                karma_data = self.db.query(User.supabase_id, Profile.karma_score).join(Profile, User.id == Profile.user_id).filter(User.supabase_id.in_(user_ids)).all()
-                profiles = {k[0]: k[1] for k in karma_data}
-                
-                # Prioritize: High karma first
-                nearby_users.sort(key=lambda x: profiles.get(x[0], 100), reverse=True)
-                
-                responder_ids = [r[0] for r in nearby_users if r[0]]
-                logger.info(f"📣 [CROWDSOURCE] Alerting {len(responder_ids)} nearby responders (Karma-sorted) on Trip {trip_id}")
-                
-                alert_payload = {
-                    "type": "CROWDSOURCE_SOS_REQUEST",
-                    "event_id": enriched_event["id"],
-                    "priority": enriched_event["priority"],
-                    "category": enriched_event["category"],
-                    "trip_id": trip_id,
-                    "coach": coach,
-                    "platform_position": self._get_platform_position(coach),
-                    "passenger_name": enriched_event.get("name", "A Passenger"),
-                    "verification_code": enriched_event["id"][:4].upper(), # Task 51.1
-                    "message": f"EMERGENCY: {enriched_event.get('category', '').upper()} in coach {coach}. Verified help needed."
-                }
-                for sid in responder_ids:
-                    await manager.send_personal_message(sid, alert_payload)
-                    
-        except Exception as e:
-            logger.error(f"Error in crowdsource alerting: {e}")
 
     def _get_platform_position(self, coach: str) -> str:
         c = str(coach).upper()
@@ -275,9 +246,9 @@ class EmergencyAlertManager:
         
         # Task 24/35: Multi-modal Panic Fingerprint (Weighted Intelligence)
         panic_score = EmotionalEngine.calculate_panic_score(
-            full_text, 
-            pitch_hz=enriched_event.get("audio_pitch_hz"),
-            energy=enriched_event.get("audio_energy")
+            full_text,
+            pitch_hz=float(enriched_event.get("audio_pitch_hz") or 0.0),
+            energy=float(enriched_event.get("audio_energy") or 0.0)
         )
         
         # Add weights for other modes
@@ -353,7 +324,10 @@ class EmergencyAlertManager:
         
         # Task 39: Volunteer Geo-Slotting
         # Notify off-train volunteers within 10km of the incident
-        asyncio.create_task(self._alert_nearby_volunteers(enriched_event.get("lat"), enriched_event.get("lng"), enriched_event))
+        volunteer_lat = float(enriched_event.get("lat") or 0.0)
+        volunteer_lng = float(enriched_event.get("lng") or 0.0)
+        if volunteer_lat and volunteer_lng:
+            asyncio.create_task(self._alert_nearby_volunteers(volunteer_lat, volunteer_lng, enriched_event))
 
         await manager.broadcast_sos(enriched_event)
         return enriched_event
@@ -447,3 +421,39 @@ class EmergencyAlertManager:
         except: pass
         try: self.transit_db.close()
         except: pass
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "emergency_alert_manager",
+            "db_circuit_breaker_state": self._db_circuit_breaker.state.name,
+            "db_circuit_breaker_failures": self._db_circuit_breaker.failure_count,
+            "api_circuit_breaker_state": self._api_circuit_breaker.state.name,
+            "api_circuit_breaker_failures": self._api_circuit_breaker.failure_count,
+            "alerts_processed_total": self._metrics.get_counter("alerts_processed_total"),
+            "alerts_success_total": self._metrics.get_counter("alerts_success_total"),
+            "alerts_failed_total": self._metrics.get_counter("alerts_failed_total"),
+            "threat_classifications_total": self._metrics.get_counter("threat_classifications_total"),
+            "authority_lookups_total": self._metrics.get_counter("authority_lookups_total"),
+            "alert_processing_duration_p50": self._metrics.get_percentile("alert_processing_duration_seconds", 50),
+            "alert_processing_duration_p95": self._metrics.get_percentile("alert_processing_duration_seconds", 95),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if (self._db_circuit_breaker.state == CircuitState.CLOSED and 
+                                   self._api_circuit_breaker.state == CircuitState.CLOSED) else "degraded",
+            "service": "emergency_alert_manager",
+            "db_circuit_breaker": self._db_circuit_breaker.state.name,
+            "api_circuit_breaker": self._api_circuit_breaker.state.name,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self, breaker_name: str = "all"):
+        """Reset circuit breaker(s) to closed state."""
+        if breaker_name == "all" or breaker_name == "db":
+            self._db_circuit_breaker.reset()
+        if breaker_name == "all" or breaker_name == "api":
+            self._api_circuit_breaker.reset()
+        logger.info(f"🔄 [EMERGENCY] Circuit breaker '{breaker_name}' reset")

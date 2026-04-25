@@ -57,7 +57,7 @@ class MLBatcher:
             jit_metrics.ml_batch_efficiency = (jit_metrics.ml_batch_efficiency + len(batch_to_process)) / 2
 
             # 3. Validation
-: Ensure results match batch size
+            # Ensure results match batch size
             if len(results) != len(batch_to_process):
                 # Fallback to individual results if kernel is incompatible
                 for i, (feat, future) in enumerate(batch_to_process):

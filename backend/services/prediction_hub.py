@@ -3,6 +3,7 @@ import asyncio
 import logging
 import time
 import os
+from queue import Empty
 from typing import Dict, Any
 
 # VITAL: Process-safe logging and logic
@@ -40,7 +41,7 @@ class PredictionHubWorker(mp.Process):
                 profile_data = self.task_queue.get(timeout=0.5)
                 
                 async def process_task():
-                    intent, confidence = await intent_predictor.predict(
+                    intent, confidence, sla_ok = await intent_predictor.predict_with_sla(
                         profile_data['method'], profile_data['path'], profile_data['headers']
                     )
                     
@@ -67,7 +68,7 @@ class PredictionHubWorker(mp.Process):
 
                 loop.run_until_complete(process_task())
 
-            except mp.queues.Empty:
+            except Empty:
                 continue
             except Exception:
                 pass

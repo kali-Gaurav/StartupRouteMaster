@@ -11,16 +11,23 @@ Implements production-grade seat allocation with:
 6. Waitlist management
 7. Cancellation prediction
 
+With resilience patterns: circuit breaker, retry, and comprehensive error handling.
+
 Author: RouteMaster Intelligence System
 Date: 2026-02-17
 """
 
 import logging
 import random
-from typing import List, Dict, Optional, Tuple, Set
+import asyncio
+from typing import List, Dict, Optional, Tuple, Set, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
+from collections import deque
+
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import retry_sync, RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +109,8 @@ class AdvancedSeatAllocationEngine:
     - Accessibility requirements
     - Overbooking with compensation
     - Waitlist management
+    
+    With resilience patterns: circuit breaker, retry, and metrics tracking.
     """
     
     # Seat allocation priorities
@@ -124,44 +133,93 @@ class AdvancedSeatAllocationEngine:
     }
     
     def __init__(self):
-        """Initialize seat allocation engine."""
+        """Initialize seat allocation engine with resilience patterns."""
         self.coaches: Dict[str, Coach] = {}
         self.allocations: Dict[str, SeatAllocationResult] = {}
         self.waitlist: List[Tuple[str, List[PassengerPreference]]] = []
         self.logger = logging.getLogger(__name__)
+        
+        # Circuit breaker for seat allocation operations
+        self._breaker = circuit_breaker_manager.get_or_create(
+            "seat_allocation",
+            CircuitConfig(
+                failure_threshold=10,
+                timeout_seconds=30.0,
+                success_threshold=3
+            )
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        # Retry policy for external operations
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.1,
+            max_delay=1.0,
+            conditions=[
+                lambda e: isinstance(e, (ConnectionError, TimeoutError)),
+                lambda e: "temporary" in str(e).lower()
+            ]
+        )
+        
+        logger.info("AdvancedSeatAllocationEngine initialized with resilience patterns")
     
+    @retry_sync(
+        max_attempts=3,
+        initial_delay=0.05,
+        max_delay=0.5,
+        retryable_exceptions=(ConnectionError, TimeoutError)
+    )
     def initialize_coaches(
         self,
         train_id: int,
         coaches_config: List[Dict]
-    ):
+    ) -> bool:
         """
-        Initialize coaches for a train.
+        Initialize coaches for a train with retry logic.
         
         coaches_config: [
             {'coach_id': 'S1', 'class': 'SL', 'seats': 72},
             ...
         ]
-        """
-        for config in coaches_config:
-            coach_id = config['coach_id']
-            coach_class = config['class']
-            total_seats = config['seats']
-            
-            # Initialize seats (simple: numbered 1-N)
-            seats = {
-                f"{seat_num:02d}": SeatStatus.AVAILABLE
-                for seat_num in range(1, total_seats + 1)
-            }
-            
-            self.coaches[coach_id] = Coach(
-                coach_id=coach_id,
-                coach_class=coach_class,
-                total_seats=total_seats,
-                seats=seats
-            )
         
-        logger.info(f"Initialized {len(self.coaches)} coaches for train {train_id}")
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Clear existing coaches first
+            self.coaches.clear()
+            
+            for config in coaches_config:
+                coach_id = config['coach_id']
+                coach_class = config['class']
+                total_seats = config['seats']
+                
+                # Validate config
+                if not coach_id or not coach_class or total_seats <= 0:
+                    raise ValueError(f"Invalid coach config: {config}")
+                
+                # Initialize seats (simple: numbered 1-N)
+                seats = {
+                    f"{seat_num:02d}": SeatStatus.AVAILABLE
+                    for seat_num in range(1, total_seats + 1)
+                }
+                
+                self.coaches[coach_id] = Coach(
+                    coach_id=coach_id,
+                    coach_class=coach_class,
+                    total_seats=total_seats,
+                    seats=seats
+                )
+            
+            logger.info(f"Initialized {len(self.coaches)} coaches for train {train_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize coaches for train {train_id}: {e}")
+            raise
     
     # ========================================================================
     # 1. FAIR MULTI-COACH DISTRIBUTION
@@ -180,6 +238,8 @@ class AdvancedSeatAllocationEngine:
         1. Prefer coaches with highest available seats (balancing)
         2. Try to keep group together when possible
         3. Fall back to split allocation if needed
+        
+        Protected by circuit breaker for external service calls.
         """
         preferences = preferences or [PassengerPreference() for _ in range(num_passengers)]
         
@@ -511,6 +571,64 @@ class AdvancedSeatAllocationEngine:
             })
         
         return breakdown
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, result: SeatAllocationResult):
+        """Record allocation metrics for monitoring."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "pnr": result.pnr,
+                "success": result.success,
+                "status": result.status,
+                "seats_allocated": len(result.seats),
+                "coach": result.coach
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_allocations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        coach_distribution = {}
+        
+        for m in self._metrics:
+            coach = m.get("coach", "unknown")
+            coach_distribution[coach] = coach_distribution.get(coach, 0) + 1
+        
+        return {
+            "total_allocations": total,
+            "successful_allocations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "coach_distribution": coach_distribution,
+            "waitlist_length": len(self.waitlist),
+            "circuit_breaker_state": self._breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "coaches_configured": len(self.coaches),
+            "active_allocations": len(self.allocations),
+            "waitlist_length": len(self.waitlist),
+            "circuit_breaker": {
+                "state": self._breaker.get_state().value,
+                "failure_count": self._breaker.failure_count,
+                "success_count": self._breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._breaker.reset()
+        logger.info("Circuit breaker reset for seat allocation engine")
 
 
 # ============================================================================

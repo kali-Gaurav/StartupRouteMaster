@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 import logging
+from typing import Optional
 from pydantic import BaseModel
 
 from database import get_db
@@ -39,7 +40,7 @@ async def create_refund(
 @router.post("/one_click_process/{booking_id}")
 async def one_click_process_refund(
     booking_id: str,
-    target_vpa: str = None,
+    target_vpa: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):

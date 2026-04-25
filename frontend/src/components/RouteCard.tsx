@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck, ExternalLink, Save, Check } from "lucide-react"; // Added ExternalLink, Save, Check
+import { ChevronDown, ChevronUp, Clock, Timer, Lock, ShieldCheck, ShieldAlert, BadgeCheck, ExternalLink, Save, Check, Zap, Sparkles, Gift, Coffee, TrendingDown, Info, ArrowRightCircle, Target, Percent, Briefcase } from "lucide-react"; 
+import { motion, AnimatePresence } from "framer-motion";
 import { Route, RouteSegment, formatDuration, formatCost, formatLiveFare, getAvailabilityBadgeClasses, getSeatAvailabilityState, formatAvailabilityForDisplay } from "@/data/routes";
 import { getStationByCode } from "@/data/stations";
 import { cn } from "@/lib/utils";
@@ -199,6 +200,59 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 Cheapest
               </span>
             )}
+            {route.metadata?.is_proximity_alt && (
+              <span className="px-2 py-1 bg-purple-500/15 text-purple-700 dark:text-purple-300 text-xs font-semibold rounded-full border border-purple-500/30 flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                Nearby Alternative
+              </span>
+            )}
+            {route.metadata?.is_ml_scored && (
+               <span className="px-2 py-1 bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 text-xs font-semibold rounded-full border border-indigo-500/30 flex items-center gap-1 animate-pulse">
+                <Zap className="w-3 h-3 fill-indigo-500" />
+                AI Confidence
+              </span>
+            )}
+            {route.metadata?.heartbeat_verified && (
+               <span className="px-2 py-1 bg-rose-500/15 text-rose-700 dark:text-rose-300 text-xs font-black rounded-full border border-rose-500/30 flex items-center gap-1">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                </span>
+                LIVE SYNC
+              </span>
+            )}
+            {route.metadata?.persona_tags?.map((tag: string, i: number) => (
+              <span key={i} className="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full border border-primary/20 uppercase tracking-tighter">
+                {tag}
+              </span>
+            ))}
+            
+            {/* Phase 6: Arbitrage Tags */}
+            {route.metadata?.arbitrage_tag === "BEST_VALUE" && (
+              <span className="px-2 py-1 bg-gradient-to-r from-yellow-400 to-amber-600 text-white text-[10px] font-black rounded-full border border-yellow-500 shadow-sm flex items-center gap-1 animate-shimmer">
+                <Target className="w-3 h-3" />
+                BEST VALUE
+              </span>
+            )}
+            {route.metadata?.arbitrage_tag === "TIME_ARBITRAGE" && (
+              <span className="px-2 py-1 bg-gradient-to-r from-blue-600 to-indigo-700 text-white text-[10px] font-black rounded-full border border-blue-400 shadow-sm flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                TIME OPTIMIZED
+              </span>
+            )}
+
+            {/* Phase 5: Reliability Index */}
+            {route.metadata?.cancellation_probability !== undefined && (
+              <span className={cn(
+                "px-2 py-1 text-[10px] font-bold rounded-full border flex items-center gap-1",
+                route.metadata.cancellation_probability < 0.1 
+                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" 
+                  : "bg-orange-500/10 text-orange-600 border-orange-500/20"
+              )}>
+                <Percent className="w-3 h-3" />
+                {Math.round((1 - route.metadata.cancellation_probability) * 100)}% RELIABLE
+              </span>
+            )}
           </div>
           <div className="text-right shrink-0">
             <div className="text-2xl font-bold text-foreground">
@@ -225,6 +279,11 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 {lastSegment.toName || getStationByCode(lastSegment.to)?.name || lastSegment.to}
               </span>
             </div>
+            {route.metadata?.pulse_status && (
+              <span className="text-[10px] font-black uppercase text-rose-500 bg-rose-500/10 px-1.5 py-0.5 rounded leading-none">
+                Hub Status: {route.metadata.pulse_status}
+              </span>
+            )}
           </div>
           
           <div className="flex items-center justify-between text-sm mb-3">
@@ -244,9 +303,19 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
             </span>
           </div>
 
-          {route.totalTransfers > 0 && (
             <div className="text-xs text-muted-foreground mb-3">
               {route.totalTransfers} transfer{route.totalTransfers > 1 ? 's' : ''}
+            </div>
+
+          {/* AI Reasoning [Task 10] */}
+          {route.metadata?.ui_reasons?.length > 0 && (
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              {route.metadata?.ui_reasons?.map((reason: string, i: number) => (
+                <div key={i} className="flex items-center gap-1 text-[10px] font-bold text-amber-600 dark:text-amber-400 bg-amber-500/5 px-2 py-0.5 rounded border border-amber-500/10">
+                  <div className="w-1 h-1 rounded-full bg-amber-500" />
+                  {reason}
+                </div>
+              ))}
             </div>
           )}
 
@@ -257,7 +326,7 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                 onClick={() => onUnlock(route)}
                 className="flex-1 min-w-[120px] py-3 px-4 rounded-lg font-bold text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-opacity flex items-center justify-center gap-2"
               >
-                <Lock size={16} /> Unlock Details - ₹39
+                <Lock size={16} /> Unlock Details - {route.metadata?.unlock_fee ? formatCost(route.metadata.unlock_fee) : "₹39"}
               </button>
             ) : (
               <>
@@ -284,6 +353,57 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
             )}
           </div>
         </div>
+
+        {/* Phase 4: Redistribution / Network Load Balancer */}
+        <AnimatePresence>
+          {route.redistribution_options && route.redistribution_options.length > 0 && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="px-5 pb-5 pt-0"
+            >
+              <div className="rounded-xl border border-primary/30 bg-gradient-to-br from-primary/5 to-transparent overflow-hidden shadow-sm">
+                <div className="bg-primary/10 px-4 py-2 flex items-center justify-between border-b border-primary/20">
+                  <div className="flex items-center gap-2 text-primary">
+                    <TrendingDown className="w-4 h-4" />
+                    <span className="text-xs font-black uppercase tracking-widest">Network Load Alert</span>
+                  </div>
+                  <div className="text-[10px] font-bold text-primary/60 italic">Incentivized Alternative</div>
+                </div>
+                
+                <div className="p-4 space-y-3">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    This corridor is experiencing high demand. Select this alternative to receive 
+                    <span className="font-bold text-foreground"> exclusive premium benefits</span>:
+                  </p>
+                  
+                  <div className="flex flex-wrap gap-2">
+                    {route.redistribution_options[0].incentives.map((offer, i) => (
+                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background border border-border shadow-xs animate-in slide-in-from-left duration-500" style={{ animationDelay: `${i * 0.1}s` }}>
+                        {offer.type === 'LOUNGE_ACCESS' && <Coffee className="w-3.5 h-3.5 text-amber-500" />}
+                        {offer.type === 'CASHBACK' && <Gift className="w-3.5 h-3.5 text-emerald-500" />}
+                        {offer.type === 'MEAL_VOUCHER' && <Info className="w-3.5 h-3.5 text-blue-500" />}
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-black leading-none text-foreground uppercase">{offer.value}</span>
+                          <span className="text-[8px] text-muted-foreground">{offer.description}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button 
+                    onClick={() => toast.success("Switching to Optimized Route...")}
+                    className="w-full flex items-center justify-center gap-2 py-2 bg-primary text-primary-foreground rounded-lg text-xs font-black uppercase tracking-widest hover:brightness-110 transition-all group"
+                  >
+                    Accept Optimized Path
+                    <ArrowRightCircle className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Segments Detail */}
@@ -324,8 +444,13 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
                     <span className="font-semibold text-sm">
                       Train {segment.trainNumber} - {segment.trainName}
                     </span>
-                    <span className={cn("text-xs font-semibold px-2 py-1 rounded", getAvailabilityBadgeClasses(getSeatAvailabilityState(segment.liveSeatAvailability)))}>
-                      {formatAvailabilityForDisplay(segment.liveSeatAvailability) === "Check at booking" ? "Check at booking" : `${formatAvailabilityForDisplay(segment.liveSeatAvailability)} seats`}
+                    <span className={cn("text-xs font-semibold px-2 py-1 rounded flex flex-col items-end", getAvailabilityBadgeClasses(getSeatAvailabilityState(segment.liveSeatAvailability)))}>
+                      <span>{formatAvailabilityForDisplay(segment.liveSeatAvailability) === "Check at booking" ? "Check at booking" : `${formatAvailabilityForDisplay(segment.liveSeatAvailability)} seats`}</span>
+                      {segment.metadata?.virtual_capacity && (
+                        <span className="text-[9px] font-black opacity-80 uppercase tracking-tighter">
+                          + {segment.metadata.overbook_count || 0} Virtual Capacity
+                        </span>
+                      )}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground mb-2">

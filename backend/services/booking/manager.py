@@ -7,23 +7,68 @@ import logging
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
+from collections import deque
 
 from .rapid_api_client import RapidAPIClient
 
 from sqlalchemy.orm import Session
 from database.models import SeatAvailability
 from database.session import SessionLocal
+from core.resilience import circuit_breaker_manager, CircuitConfig
+from core.retry import RetryPolicy
+
 logger = logging.getLogger(__name__)
 
 class SeatAvailabilityManager:
     """
     Manages seat availability lifecycle for search results.
+    
+    With resilience patterns: circuit breaker, retry, metrics tracking, and health checks.
     """
     
     def __init__(self, rapid_client: RapidAPIClient, cache_ttl_minutes: int = 15):
         self.api = rapid_client
         self.cache_ttl = cache_ttl_minutes * 60 # Convert to seconds for Redis
         self.default_daily_limit = 200
+        
+        # Circuit breaker for API operations
+        self._api_breaker = circuit_breaker_manager.get_or_create(
+            "seat_availability_api",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=30.0,
+                success_threshold=3
+            )
+        )
+        
+        # Circuit breaker for database operations
+        self._db_breaker = circuit_breaker_manager.get_or_create(
+            "seat_availability_db",
+            CircuitConfig(
+                failure_threshold=5,
+                timeout_seconds=10.0,
+                success_threshold=2
+            )
+        )
+        
+        # Retry policy for API calls
+        self._retry_policy = RetryPolicy(
+            max_attempts=3,
+            initial_delay=1.0,
+            max_delay=10.0,
+            exponential_base=2.0,
+            jitter=True,
+            conditions=[
+                lambda e: "timeout" in str(e).lower(),
+                lambda e: "429" in str(e)  # Rate limiting
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("SeatAvailabilityManager initialized with resilience patterns")
 
     async def get_availability(
         self, 
@@ -68,7 +113,7 @@ class SeatAvailabilityManager:
             await loop.run_in_executor(None, self._log_availability_sync, train_no, quota, class_type, date, data)
             
             # 6. Save to Distributed Cache
-            await multi_layer_cache.set(cache_key, data, ttl_seconds=self.cache_ttl)
+            await multi_layer_cache.put(cache_key, data, ttl=self.cache_ttl)
             return data
             
         return None
@@ -83,12 +128,12 @@ class SeatAvailabilityManager:
 
     async def _check_budget_redis(self, api_name: str) -> bool:
         """Checks if the daily API budget is exceeded using Redis for speed."""
-        from core.redis import redis_client
+        from core.redis_client import async_redis_client
         from datetime import date
         today_key = f"api_usage:{api_name}:{date.today().isoformat()}"
         
         try:
-            count = redis_client.get(today_key)
+            count = await async_redis_client.get(today_key)
             if count and int(count) >= self.default_daily_limit:
                 return False
         except Exception:
@@ -97,12 +142,12 @@ class SeatAvailabilityManager:
 
     async def _increment_budget_redis(self, api_name: str):
         """Increments the daily API usage count in Redis."""
-        from core.redis import redis_client
+        from core.redis_client import async_redis_client
         from datetime import date
         today_key = f"api_usage:{api_name}:{date.today().isoformat()}"
         try:
-            redis_client.incr(today_key)
-            redis_client.expire(today_key, 86400) # 24h TTL
+            await async_redis_client.incr(today_key)
+            await async_redis_client.expire(today_key, 86400) # 24h TTL
         except Exception:
             pass
 
@@ -211,3 +256,67 @@ class SeatAvailabilityManager:
     def _generate_cache_key(self, train_no, from_stn, to_stn, date, quota, class_type):
         """Standardized cache key for seat availability."""
         return f"avail:{train_no}:{from_stn}:{to_stn}:{date}:{quota}:{class_type}"
+
+    # =========================================================================
+    # RESILIENCE PATTERNS
+    # =========================================================================
+
+    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for availability operations."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type,
+            "circuit_breaker_api_state": self._api_breaker.get_state().value,
+            "circuit_breaker_db_state": self._db_breaker.get_state().value
+        }
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breaker": {
+                "api": {
+                    "state": self._api_breaker.get_state().value,
+                    "failure_count": self._api_breaker.failure_count,
+                    "success_count": self._api_breaker.success_count
+                },
+                "db": {
+                    "state": self._db_breaker.get_state().value,
+                    "failure_count": self._db_breaker.failure_count,
+                    "success_count": self._db_breaker.success_count
+                }
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers."""
+        self._api_breaker.reset()
+        self._db_breaker.reset()
+        logger.info("Circuit breakers reset for seat_availability_manager")

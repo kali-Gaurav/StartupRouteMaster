@@ -12,7 +12,7 @@ async def knock_gate(request: Request, key: str):
     [Task 2.6] Dynamic SSH Unlock (Port Knocking).
     If the key matches, the client's public IP is allowed on Port 22.
     """
-    client_ip = request.client.host
+    client_ip = request.client.host if request.client else "127.0.0.1"
     
     # 1. Verify Knock Key (High intensity admin key)
     from database.config import Config

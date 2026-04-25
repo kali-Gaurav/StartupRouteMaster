@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime
 
 from worker import reconcile_payments
-from models import Booking, Payment
+from database.models import Booking, Payment
 from database import SessionLocal
 from services.payment_service import PaymentService
 

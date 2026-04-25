@@ -2,7 +2,7 @@ import logging
 import asyncio
 from sqlalchemy import inspect
 # engine imported inside run_checks
-from core.redis import async_redis_client
+from core.redis_client import async_redis_client
 from services.scraper_sentinel import scraper_sentinel
 from services.ledger_service import ledger_service
 
@@ -38,10 +38,12 @@ class V3Preflight:
 
             # 2. Redis & Multi-Layer Cache Check [Task 47]
             try:
-                await async_redis_client.ping()
-                summary["redis"] = True
-                print("✅ Redis: Hot Connectivity Verified.")
-            except:
+                if async_redis_client.ping():
+                    summary["redis"] = True
+                    print("✅ Redis: Hot Connectivity Verified.")
+                else:
+                    raise RuntimeError("Redis ping returned false")
+            except Exception:
                 logger.error("🚨 Redis Connectivity Failed!")
 
             # 3. Scraper Sentinel Warm-Up [Task 48.1]

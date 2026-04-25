@@ -1,8 +1,13 @@
 import logging
 import httpx
 import base64
+import time
 from typing import Optional, Dict, Any
+from datetime import datetime
 from core.nexus.audit.chaos import chaos_trap
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 logger = logging.getLogger("nexus.captcha.gateway")
 
@@ -16,7 +21,35 @@ class CaptchaGateway:
         from config import Config
         self.api_key = getattr(Config, "CAPTCHA_SOLVER_KEY", "MOCK_KEY")
         self.provider = "rapidapi_solver" # Example
+        
+        # Circuit breaker for CAPTCHA resolution
+        self._captcha_circuit_breaker = circuit_breaker(
+            name="captcha_gateway",
+            failure_threshold=5,
+            recovery_timeout=120.0  # 2 minutes for external service
+        )
+        # Retry policy
+        self._captcha_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=1.0,
+            max_delay=30.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="captcha_gateway",
+            default_tags={"component": "scraper"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._captcha_circuit_breaker.state.value)
+        self._metrics.counter("captcha_requests_total")
+        self._metrics.counter("captcha_requests_success")
+        self._metrics.counter("captcha_requests_failed")
+        self._metrics.counter("captcha_requests_mock")
+        self._metrics.histogram("captcha_resolution_duration_seconds")
 
+    @track_metrics(service="captcha_gateway", operation="resolve_image_captcha")
+    @_captcha_circuit_breaker
+    @_captcha_retry_policy
     @chaos_trap("captcha_resolution")
     async def resolve_image_captcha(self, 
                                    image_bytes: bytes, 
@@ -65,3 +98,32 @@ class CaptchaGateway:
              return None
 
 captcha_gateway = CaptchaGateway()
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "captcha_gateway",
+            "circuit_breaker_state": self._captcha_circuit_breaker.state.name,
+            "circuit_breaker_failures": self._captcha_circuit_breaker.failure_count,
+            "captcha_requests_total": self._metrics.get_counter("captcha_requests_total"),
+            "captcha_requests_success": self._metrics.get_counter("captcha_requests_success"),
+            "captcha_requests_failed": self._metrics.get_counter("captcha_requests_failed"),
+            "captcha_requests_mock": self._metrics.get_counter("captcha_requests_mock"),
+            "captcha_resolution_duration_p50": self._metrics.get_percentile("captcha_resolution_duration_seconds", 50),
+            "captcha_resolution_duration_p95": self._metrics.get_percentile("captcha_resolution_duration_seconds", 95),
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if self._captcha_circuit_breaker.state == CircuitState.CLOSED else "degraded",
+            "service": "captcha_gateway",
+            "circuit_breaker": self._captcha_circuit_breaker.state.name,
+            "provider": self.provider,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._captcha_circuit_breaker.reset()
+        logger.info("🔄 [CAPTCHA] Circuit breaker reset for captcha gateway")

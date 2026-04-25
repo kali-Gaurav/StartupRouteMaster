@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 import logging
 from datetime import date
+from typing import Optional
 from pydantic import BaseModel
 
 from database import get_db
-from database.models import User
+from database.models import User, UnclaimedFund
 from api.dependencies import get_current_user
-from services.reconciliation_service import ReconciliationService
+from services.finance.reconciliation_orchestrator import get_reconciliation_orchestrator
 
 router = APIRouter(prefix="/admin/reconciliation", tags=["admin_reconciliation"])
 logger = logging.getLogger(__name__)
@@ -25,8 +26,9 @@ async def trigger_nightly_batch(
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    service = ReconciliationService(db)
-    results = service.reconcile_nightly_batch()
+    orchestrator = get_reconciliation_orchestrator(db)
+    # The new orchestrator uses process_pending_reconciliations logic
+    results = await orchestrator.reconcile_limbo_funds()
     return {"success": True, "details": results}
 
 @router.post("/upload_statement")
@@ -70,7 +72,7 @@ async def upload_bank_statement(
 
 @router.get("/profit_loss")
 async def get_profit_loss(
-    target_date: date = None,
+    target_date: Optional[date] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -109,3 +111,45 @@ async def rollback_transaction(
     if not res["success"]:
         raise HTTPException(status_code=400, detail=res["message"])
     return res
+@router.get("/limbo_transactions")
+async def get_limbo_transactions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """[Task 49.2] Fetch unclaimed and unmatched bank payments from the new FinOps store."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    limbo = db.query(UnclaimedFund).filter(UnclaimedFund.status == "UNCLAIMED").order_by(UnclaimedFund.received_at.desc()).all()
+    return {"success": True, "data": limbo}
+
+@router.post("/manual_settle_agent/{agent_id}")
+async def manual_settle_agent(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """[Task 44.4] Manually trigger settlement batch via the new SettlementEngine."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    from services.finance.settlement_engine import settlement_engine
+    await settlement_engine.run_daily_settlement(db) # In production we might filter by agent_id
+    return {"success": True, "message": "Settlement sequence initiated via FinOps Engine."}
+
+@router.post("/emergency_unlock")
+async def emergency_unlock(
+    current_user: User = Depends(get_current_user)
+):
+    """[Task 4.9] Override PLATFORM_FINANCIAL_LOCK and resume operations."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    from services.multi_layer_cache import multi_layer_cache
+    await multi_layer_cache.clear_all_caches() # Aggressive recovery
+    logger.critical(f"🏁 [SECURITY] Platform manually UNLOCKED and CACHE CLEANED by Admin: {current_user.id}")
+    
+    from services.ws_manager import ws_manager
+    await ws_manager.broadcast_global("🟢 SYSTEM ALERT: Platform Outage Resolved. Operations Resumed.", "SYSTEM_STATUS")
+    
+    return {"success": True, "message": "Global financial lock cleared and cache flushed."}

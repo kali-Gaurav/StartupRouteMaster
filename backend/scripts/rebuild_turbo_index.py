@@ -44,8 +44,14 @@ async def rebuild_v4_index():
             if not rows: continue
 
             blob = bytearray()
+            def _safe_int(v):
+                try: return int(v)
+                except:
+                    import re
+                    match = re.search(r'\d+', str(v))
+                    return int(match.group()) if match else 0
             for r in rows:
-                tid = int(r[0])
+                tid = _safe_int(r[0])
                 # Convert timestamps to relative minutes from midnight
                 dep_dt = r[1]
                 arr_dt = r[2]

@@ -31,7 +31,15 @@ class NexusSecurityNode(NexusNode):
         self._f2b_task = asyncio.create_task(self._f2b_loop(f2b_watcher))
         logger.info("[NEXUS:SECURITY] Fail2Ban Watchdog Initialized.")
         
-        # 5. Fingerprint Isolation [Task 2.4]
+        # 5. OS & SSL Audits [Task 2.5 & 2.7]
+        from .os_checker import os_checker
+        from .ssl_checker import ssl_checker
+        os_report = await os_checker.check_patches()
+        ssl_report = await ssl_checker.check_expiry()
+        
+        logger.info(f"[NEXUS:SECURITY] OS Status: {os_report['status']}, SSL Status: {ssl_report['status']}")
+
+        # 6. Fingerprint Isolation [Task 2.4]
         from .fingerprint import nexus_fp
         logger.info(f"[NEXUS:SECURITY] Fingerprint Store Ready: {nexus_fp.storage_dir}")
 
@@ -42,7 +50,7 @@ class NexusSecurityNode(NexusNode):
             from core.nexus.bootstrapper import nexus_boot
             nexus_boot.recovery.record_heartbeat(self.name)
             
-            watcher.scan_logs()
+            await watcher.scan_logs()
             await asyncio.sleep(300) # Every 5 minutes
 
     async def on_stop(self):

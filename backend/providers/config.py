@@ -23,3 +23,6 @@ class ProviderConfig:
     DEFAULT_TIMEOUT: int = 15  # seconds
 
 config = ProviderConfig()
+
+# Module-level constants for convenience imports
+DEFAULT_TIMEOUT = config.DEFAULT_TIMEOUT

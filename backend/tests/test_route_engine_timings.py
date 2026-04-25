@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from database import SessionLocal
-from models import Stop
+from database.models import Stop
 from route_engine import (
     RouteEngine,
     OptimizedRAPTOR,

@@ -5,9 +5,15 @@ from enum import Enum
 
 from core.data_structures import Persona
 
+class DiscoveryModel(Enum):
+    BACKBONE = "BACKBONE"      # Tier 1: Internal DB Only (Free)
+    MULTIMODAL = "MULTIMODAL"  # Tier 2: DB + API Discovery (Standard)
+    OMNISCIENT = "OMNISCIENT"  # Tier 3: DB + API + Real-time Verification (Premium)
+
 @dataclass
 class RouteConstraints:
     """Constraints for route finding"""
+    discovery_model: DiscoveryModel = DiscoveryModel.BACKBONE # Default to Free Tier
     max_journey_time: int =  60 * 60  # 60 hours in minutes (rail journeys can be long)
     max_transfers: int = 3
     min_transfer_time: int = 15  # minutes
@@ -64,6 +70,9 @@ class RouteConstraints:
     yield_goal: int = 35
     search_depth: str = "SHALLOW" # SHALLOW, MEDIUM, DEEP
 
+    # [Elite: Hub Bridge] Pre-resolved multimodal jumps (e.g., {"NDLS": [{"to_stop_id": 123, ...}]})
+    multimodal_jumps: dict = field(default_factory=dict)
+
     @dataclass
     class Weights:
         time: float = 1.0
@@ -71,6 +80,7 @@ class RouteConstraints:
         comfort: float = 0.2
         safety: float = 0.1
         transfer: float = 100.0 # Minutes of penalty per transfer
+        reliability: float = 1.0 # Penalty per unit of unreliability
 
     weights: Weights = field(default_factory=Weights)
     
@@ -110,6 +120,7 @@ class RouteConstraints:
             self.weights.cost = 0.8
             self.weights.comfort = 3.0 # Maximum comfort for families
             self.weights.transfer = 800.0 # Heavy penalty for transfers
+            self.weights.reliability = 5.0 # High weight on reliability
             self.max_transfers = min(self.max_transfers, 1) # Prefer direct
             
         # Task 2: Dynamic Weighting refinement

@@ -8,7 +8,7 @@ import json
 import os
 from datetime import datetime
 from enum import IntEnum
-from typing import Dict, Any, List, Callable, Coroutine, Optional, Set, Type
+from typing import Any, cast, Dict, List, Callable, Coroutine, Optional, Set, Type
 from dataclasses import dataclass, field
 
 class EngineTier(IntEnum):
@@ -41,7 +41,7 @@ class EngineRegistry:
         self._last_drop_time = 0
         self._load_state()
 
-    def register(self, name: str, tier: EngineTier, instance: Any = None, capabilities: List[str] = None, weight: int = 100):
+    def register(self, name: str, tier: EngineTier, instance: Any = None, capabilities: Optional[List[str]] = None, weight: int = 100):
         if name in self.engines:
             self.engines[name].instance = instance
             self.engines[name].tier = tier
@@ -225,7 +225,7 @@ class PenaltyBoxManager:
         self.error_threshold = error_threshold
         self.window_sec = window_sec
         self.jail_sec = jail_sec
-        self.redis = None 
+        self.redis: Optional[Any] = None
 
     async def report_error(self, ip: str):
         if not self.redis: return
@@ -239,8 +239,10 @@ class PenaltyBoxManager:
 
     async def is_jailed(self, ip: str) -> bool:
         if not self.redis: return False
-        try: return await self.redis.exists(f"penalty:jail:{ip}") > 0
-        except: return False
+        try:
+            return (await self.redis.exists(f"penalty:jail:{ip}")) > 0
+        except:
+            return False
 
 class SystemOrchestrator:
     def __init__(self):
@@ -380,22 +382,30 @@ class SystemOrchestrator:
                 db_ok = False
             
             # Check Redis Health
-            try: redis_ok = await multi_layer_cache.health_check()
-            except: redis_ok = False
+            try:
+                from core.providers import ServiceStatus
+                cache_status = await multi_layer_cache.health_check()
+                redis_ok = cache_status == ServiceStatus.HEALTHY
+            except:
+                redis_ok = False
             
             # State transitions
+            severed_state = getattr(SystemState, "SEVERED", None)
+            degraded_state = getattr(SystemState, "DEGRADED", None)
+            ready_state = getattr(SystemState, "READY", None)
+
             if not db_ok and not redis_ok:
-                if getattr(nexus_boot, 'state', None) != SystemState.SEVERED:
+                if severed_state is not None and getattr(nexus_boot, 'state', None) != severed_state:
                     logger.critical("👻 [NEXUS SHIELD] DB & Redis DEAD. Entering GHOST MODE (SEVERED).")
-                    nexus_boot.state = SystemState.SEVERED
+                    nexus_boot.state = severed_state
             elif not db_ok or not redis_ok:
-                if getattr(nexus_boot, 'state', None) != SystemState.DEGRADED:
+                if degraded_state is not None and getattr(nexus_boot, 'state', None) != degraded_state:
                     logger.warning("⚠️ [NEXUS SHIELD] Partial Outage. Entering DEGRADED mode.")
-                    nexus_boot.state = SystemState.DEGRADED
+                    nexus_boot.state = degraded_state
             else:
-                if getattr(nexus_boot, 'state', None) in [SystemState.SEVERED, SystemState.DEGRADED]:
+                if ready_state is not None and getattr(nexus_boot, 'state', None) in [severed_state, degraded_state]:
                     logger.info("☀️ [NEXUS SHIELD] Outage Resolved. Restoring READY state.")
-                    nexus_boot.state = SystemState.READY
+                    nexus_boot.state = ready_state
             
             # [Task 10] OS Latch File to prevent Docker Restart Loops
             try:

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from database.session import get_db
 from api.dependencies import get_current_user
 from database.models import User
+from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger("realtime-sse")
 router = APIRouter(prefix="/realtime", tags=["realtime"])

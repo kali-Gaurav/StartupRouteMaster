@@ -30,9 +30,19 @@ class ServiceRegistry:
             "last_seen": time.time(),
             "metadata": metadata or {}
         }
-        # TTL of 30s, requires heartbeat every 10s
-        await self.redis.setex(key, 30, json.dumps(data))
-        logger.info(f"📡 Registered node {node_id} for service {name} at {host}:{port}")
+    async def heartbeat_update(self, name: str, node_id: str, metadata: Dict[str, Any]):
+        """
+        [Task 4.6] Lightweight heartbeat to update node metrics (Load/CPU).
+        """
+        key = f"{self.prefix}{name}:{node_id}"
+        existing = await self.redis.get(key)
+        if existing:
+            data = json.loads(existing)
+            data["last_seen"] = time.time()
+            data["metadata"].update(metadata)
+            await self.redis.setex(key, 30, json.dumps(data))
+        else:
+            logger.warning(f"⚠️ Heartbeat for unknown node {node_id}. Re-registering.")
 
     async def get_nodes(self, name: str) -> List[Dict[str, Any]]:
         """

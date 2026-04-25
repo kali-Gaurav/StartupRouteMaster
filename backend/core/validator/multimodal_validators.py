@@ -49,7 +49,7 @@ class MultimodalRoute:
     total_duration_minutes: int
     mode_changes: int
     walking_distance_m: float = 0.0
-    transfer_connections: List[Dict] = None
+    transfer_connections: Optional[List[Dict]] = None
 
 
 class MultimodalValidator:

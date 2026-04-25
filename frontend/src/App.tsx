@@ -44,9 +44,13 @@ const AdminOperations = lazy(() => import("./pages/AdminOperations"));
 const AdminFinance = lazy(() => import("./pages/AdminFinance"));
 const AdminGrowth = lazy(() => import("./pages/AdminGrowth"));
 const AdminAI = lazy(() => import("./pages/AdminAI"));
+const AdminAgents = lazy(() => import("./pages/AdminAgents"));
 const AdminSystem = lazy(() => import("./pages/AdminSystem"));
 const AdminAudit = lazy(() => import("./pages/AdminAudit"));
 const AdminSettings = lazy(() => import("./pages/AdminSettings"));
+const AdminIntelligence = lazy(() => import("./pages/AdminIntelligence"));
+const AdminDrift = lazy(() => import("./pages/AdminDrift"));
+const AdminSwarm = lazy(() => import("./pages/AdminSwarm"));
 
 import ProtectedAdminRoute from "./components/auth/ProtectedAdminRoute";
 import AdminLayout from "./components/layout/AdminLayout";
@@ -175,9 +179,13 @@ const AppContent = () => {
               <Route path="finance" element={<AdminFinance />} />
               <Route path="growth" element={<AdminGrowth />} />
               <Route path="ai" element={<AdminAI />} />
+              <Route path="agents" element={<AdminAgents />} />
               <Route path="system" element={<AdminSystem />} />
               <Route path="audit" element={<AdminAudit />} />
               <Route path="settings" element={<AdminSettings />} />
+              <Route path="intelligence" element={<AdminIntelligence />} />
+              <Route path="drift" element={<AdminDrift />} />
+              <Route path="swarm" element={<AdminSwarm />} />
             </Route>
 
             {/* Mini App with Granular Resilience (Suggestion #25) */}

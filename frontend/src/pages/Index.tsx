@@ -25,6 +25,8 @@ import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { predictivePreloadService } from "@/services/predictivePreloadService";
 import { storageService } from "@/services/storageService";
 import { useSystemStatus } from "@/store/useSystemStatus";
+import { useRailwaySearch } from "@/hooks/useRailwaySearch";
+import { VoiceSearch } from "@/components/VoiceSearch";
 
 const Index = () => {
   const isBackendOnline = useBackendHealth();
@@ -43,6 +45,7 @@ const Index = () => {
   const [dateWindow] = useState(1); // ±N days around travel date
   const [sortBy, setSortBy] = useState<"duration" | "cost" | "score">("duration");
   const [discoveryOnly, setDiscoveryOnly] = useState(false);
+  const [engineModel, setEngineModel] = useState<string>("ENSEMBLE");
   /** Client-side sort preset for results (instant, no re-fetch). */
   const [sortPreset, setSortPreset] = useState<"duration" | "cost" | "reliable">("duration");
   const [filterTransfers, setFilterTransfers] = useState<number | null>(null);
@@ -57,6 +60,42 @@ const Index = () => {
   const hasTriggeredChatbotSearch = useRef<boolean>(false);
   const hasRestoredLastSearch = useRef<boolean>(false);
   const [unlockedRouteIds, setUnlockedRouteIds] = useState<Set<string>>(new Set());
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+
+  // [Point 18 & 30] Initialize Intelligent Streaming Hook
+  const {
+    search: triggerSearch,
+    loadMore,
+    isSearching: isHookSearching,
+    isStreaming,
+    isComplete,
+    cancelSearch,
+    error: hookError,
+  } = useRailwaySearch({
+    routeSource,
+    onProgressiveResults: (routes) => {
+      // Immediate partial update for that 'Buttery Smooth' feel
+      setAllRoutes(routes);
+      setOptimalRoutes(routes.slice(0, 10));
+    },
+    onSuccess: (finalRoutes, finalSuggestions) => {
+      setAllRoutes(finalRoutes);
+      setOptimalRoutes(finalRoutes.slice(0, 10));
+      setSuggestions(finalSuggestions || []);
+      reconcileUnlockedRoutes(finalRoutes);
+      setTimeout(() => {
+        document.getElementById("results")?.scrollIntoView({ behavior: "smooth" });
+      }, 100);
+    },
+    onError: (err) => {
+      setSearchError(err.message);
+    }
+  });
+
+  // Sync isSearching with hook state
+  useEffect(() => {
+    setIsSearching(isHookSearching);
+  }, [isHookSearching]);
 
   const {
     openReview: openBookingReview,
@@ -272,177 +311,17 @@ const Index = () => {
       return;
     }
 
-    setIsSearching(true);
-    setIsFromCache(false);
     setSearchError(null);
-    const searchStart = performance.now();
-
-    try {
-      // If route source is cached and backend unavailable, use local cache directly
-      if (routeSource === "cached") {
-        const normalizedDate = normalizeDate(travelDate || new Date().toISOString().slice(0, 10));
-        const cached = getCachedRoutes(origCode, destCode, normalizedDate);
-        if (cached) {
-          setIsFromCache(true);
-          setJourneyMessage(cached.journey_message ?? "Showing precomputed routes.");
-          setBookingTips(cached.booking_tips ?? []);
-          const allResults = mapBackendRoutesToRoutes(cached, origCode, destCode);
-          setOptimalRoutes(allResults.slice(0, 10));
-          setAllRoutes(allResults);
-          setViewMode("optimal");
-          setDisplayedAlternatives(5);
-          setSearchError(null);
-          toast({
-            title: "Precomputed Routes",
-            description: `Showing ${allResults.length} cached route(s) for ${normalizedDate}.`,
-          } as Toast);
-          setTimeout(() => {
-            document.getElementById("results")?.scrollIntoView({ behavior: "smooth" });
-          }, 100);
-          return;
-        } else {
-          toast({
-            title: "No Cached Routes",
-            description: "No precomputed routes available for this search. Try switching to Live mode.",
-            variant: "destructive",
-          } as Toast);
-          return;
-        }
-      }
-
-      // Live routes from backend
-      const data = await searchRoutesApi(origCode, destCode, 2, 50, {
-        date: travelDate || new Date().toISOString().slice(0, 10),
-        dateWindow: travelDate ? dateWindow : 0,
-        sortBy,
-        routeSource: routeSource,
-        discoveryOnly,
-        ...(flowCorrelationIdRef.current && { correlationId: flowCorrelationIdRef.current }),
-      });
-
-      setJourneyMessage(data.journey_message ?? null);
-      setBookingTips(data.booking_tips ?? []);
-
-      const hasRoutes =
-        (data.routes?.direct?.length ?? 0) > 0 ||
-        (data.routes?.one_transfer?.length ?? 0) > 0 ||
-        (data.routes?.two_transfer?.length ?? 0) > 0 ||
-        (data.routes?.three_transfer?.length ?? 0) > 0;
-
-      if (data.message && !hasRoutes) {
-        setOptimalRoutes([]);
-        setAllRoutes([]);
-        flowCorrelationIdRef.current = null;
-        toast({
-          title: "No routes found",
-          description: data.journey_message || data.message,
-          variant: "destructive",
-        } as Toast);
-        return;
-      }
-
-      if (data.stations && Object.keys(data.stations).length > 0) {
-        addStationsToCache(Object.values(data.stations));
-      }
-      
-      // Map all standard results
-      const allResults = mapBackendRoutesToRoutes(data, origCode, destCode);
-      setAllRoutes(allResults);
-      
-      // Use grouped journeys for the 'Optimal' view
-      if (data.data?.grouped_journeys) {
-        const gj = data.data.grouped_journeys;
-        // Merge top buckets into optimalRoutes
-        const optimal = [
-          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_3_confirmed_fastest } } as any, origCode, destCode),
-          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_5_optimal } } as any, origCode, destCode),
-          ...mapBackendRoutesToRoutes({ ...data, data: { ...data.data, journeys: gj.top_10_fastest_total } } as any, origCode, destCode)
-        ];
-        // Deduplicate optimal results by ID
-        const uniqueOptimal = Array.from(new Map(optimal.map(r => [r.id, r])).values());
-        setOptimalRoutes(uniqueOptimal);
-      } else {
-        setOptimalRoutes(allResults.slice(0, 10));
-      }
-
-      // Reconcile unlocked routes in bulk
-      reconcileUnlockedRoutes(allResults);
-
-      setViewMode("optimal");
-      setDisplayedAlternatives(5);
-      setSearchError(null);
-      // In this code path we've already handled the `cached` early-return above,
-      // so here the active source is the live backend — mark not-from-cache.
-      setIsFromCache(false);
-      if (flowCorrelationIdRef.current) {
-        ackFlow(flowCorrelationIdRef.current, "ROUTE_RENDERED").finally(() => {
-          flowCorrelationIdRef.current = null;
-        });
-      }
-      logPerf("search_latency", Math.round(performance.now() - searchStart));
-
-      toast({
-        title: "Routes Found!",
-        description: `Found ${allResults.slice(0, 10).length} optimal routes and ${allResults.length} total.`,
-      } as Toast);
-
-      setTimeout(() => {
-        document.getElementById("results")?.scrollIntoView({ behavior: "smooth" });
-      }, 100);
-    } catch (err) {
-      flowCorrelationIdRef.current = null;
-      const errMsg = err instanceof Error ? err.message : String(err);
-      const isTimeout = /timeout|504|exceeded/i.test(errMsg);
-      if (isTimeout) {
-        setSearchError("Search took too long. Try again or pick a different route (e.g. fewer transfers).");
-        toast({
-          title: "Search timed out",
-          description: "The server took too long. Try again or try a different From/To pair.",
-          variant: "destructive",
-        } as Toast);
-        return;
-      }
-      // Backend unavailable: use cached routes only for (origin, dest, date) we generated
-      const normalizedDate = normalizeDate(travelDate);
-      if (!normalizedDate) {
-        toast({
-          title: "Select a travel date",
-          description: "Cached routes are per date. Pick a date and try again, or start the backend for live search.",
-          variant: "destructive",
-        } as Toast);
-        return;
-      }
-      const cached = getCachedRoutes(origCode, destCode, normalizedDate);
-      if (cached) {
-        setIsFromCache(true);
-        setJourneyMessage(cached.journey_message ?? "Backend unavailable. Showing cached routes for this date.");
-        setBookingTips(cached.booking_tips?.length ? cached.booking_tips : ["Connect backend for live search and fares."]);
-        const allResults = mapBackendRoutesToRoutes(cached, origCode, destCode);
-        setOptimalRoutes(allResults.slice(0, 10));
-        setAllRoutes(allResults);
-        setViewMode("optimal");
-        setDisplayedAlternatives(5);
-        toast({
-          title: "Cached Routes",
-          description: `Showing ${allResults.length} route(s) for ${normalizedDate}. Start backend for live search.`,
-        } as Toast);
-        setTimeout(() => {
-          document.getElementById("results")?.scrollIntoView({ behavior: "smooth" });
-        }, 100);
-      } else {
-        setSearchError("Backend unavailable and no cached routes for this search. Try Delhi→Mumbai, Kolkata→Delhi, or start the backend for live search.");
-        logEvent("search_failed", { origin: origCode, destination: destCode, reason: "no_cache" }, "error");
-        toast({
-          title: "Backend Unavailable & No Cache",
-          description: "Try these cached routes: Delhi→Mumbai • Kolkata→Delhi • Chennai→Bangalore • Pune→Delhi • Lucknow→Mumbai",
-          variant: "destructive",
-        } as Toast);
-      }
-    } finally {
-      setIsSearching(false);
-      // Allow chatbot to trigger subsequent searches again
-      hasTriggeredChatbotSearch.current = false;
-    }
+    setIsFromCache(routeSource === "cached");
+    
+    // Trigger the Intelligent Stream Pipeline
+    await triggerSearch(origCode, destCode, travelDate, {
+      maxTransfers: 2,
+      maxResults: 50,
+      sortBy,
+      useStream: routeSource === "live", // Only stream in live mode
+      engineModel
+    });
   };
 
   const handleSearchRef = useRef(handleSearch);
@@ -491,6 +370,40 @@ const Index = () => {
     }
     return out;
   }, []); // history is loaded from localStorage on each memo call if needed
+
+  const handleLoadMoreCategory = async (category: string) => {
+    // Map UI category to backend pool keys
+    // UI: "DIRECT", "1 TRANSFER", "2 TRANSFERS", "MULTIMODAL"
+    // Backend pools: "direct", "1-transfer", "2-transfer", "3-plus"
+    let poolKey = "direct";
+    const catUpper = category.toUpperCase();
+    if (catUpper.includes("1")) poolKey = "1-transfer";
+    else if (catUpper.includes("2")) poolKey = "2-transfer";
+    else if (catUpper.includes("3") || catUpper.includes("+")) poolKey = "3-plus";
+    else if (catUpper.includes("MULTIMODAL")) poolKey = "multimodal";
+
+    try {
+      const more = await loadMore(poolKey);
+      if (more.length > 0) {
+        setAllRoutes(prev => [...prev, ...more]);
+        toast({
+          title: "Loaded More",
+          description: `Added ${more.length} more routes to ${category}.`,
+        });
+      } else {
+         toast({
+          title: "No More Routes",
+          description: `All available ${category} routes have been loaded.`,
+        });
+      }
+    } catch (err) {
+       toast({
+        title: "Load Failed",
+        description: "Could not fetch more routes. Please retry later.",
+        variant: "destructive"
+      });
+    }
+  };
 
   const categories = useMemo(() => {
     const uniqueCategories = new Set<string>();
@@ -755,29 +668,74 @@ const Index = () => {
                   Select both stations from the list for accurate results.
                 </p>
               )}
-              <button
-                onClick={handleSearch}
-                disabled={isSearching}
-                className={cn(
-                  "w-full py-4 px-6 rounded-lg font-bold text-lg",
-                  "bg-orange-500 hover:bg-orange-600 text-white",
-                  "hover:opacity-95 active:scale-[0.99] transition-all",
-                  "flex items-center justify-center gap-2",
-                  "disabled:opacity-50 disabled:cursor-not-allowed"
-                )}
-              >
-                {isSearching ? (
-                  <>
-                    <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Searching...
-                  </>
-                ) : (
-                  <>
-                    <Search className="w-6 h-6" />
-                    Search
-                  </>
-                )}
-              </button>
+              
+              <div className="px-6 mb-4">
+                <label className="block text-sm font-medium text-muted-foreground mb-2">Algorithm Model</label>
+                <select
+                  value={engineModel}
+                  onChange={e => setEngineModel(e.target.value)}
+                  className={cn(
+                    "w-full px-4 py-3 rounded-lg appearance-none cursor-pointer",
+                    "bg-secondary/50 border-2 border-border",
+                    "text-foreground",
+                    "focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none",
+                    "text-sm font-medium"
+                  )}
+                >
+                  <option value="ENSEMBLE">Ensemble (Best Results)</option>
+                  <option value="RAPTOR">RAPTOR Engine</option>
+                  <option value="TURBO">Turbo Routing</option>
+                </select>
+              </div>
+
+              <div className="flex gap-4 px-6 mb-6">
+                <button
+                  onClick={handleSearch}
+                  disabled={isSearching}
+                  className={cn(
+                    "flex-1 py-4 px-6 rounded-lg font-bold text-lg",
+                    "bg-orange-500 hover:bg-orange-600 text-white",
+                    "hover:opacity-95 active:scale-[0.99] transition-all",
+                    "flex items-center justify-center gap-2",
+                    "disabled:opacity-50 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {isSearching ? (
+                    <>
+                      <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Searching...
+                    </>
+                  ) : (
+                    <>
+                      <Search className="w-6 h-6" />
+                      Search
+                    </>
+                  )}
+                </button>
+                <VoiceSearch 
+                  onSearchResolved={async (src, dst, date) => {
+                    const resSrc = await resolveStationForChatbot(src);
+                    const resDst = await resolveStationForChatbot(dst);
+                    if (resSrc) setOrigin(resSrc);
+                    if (resDst) setDestination(resDst);
+                    if (date) {
+                        // date is "today" or "tomorrow" or ISO
+                        let actualDate = date;
+                        const today = new Date().toISOString().slice(0, 10);
+                        if (date === "today") actualDate = today;
+                        else if (date === "tomorrow") {
+                            const tom = new Date();
+                            tom.setDate(tom.getDate() + 1);
+                            actualDate = tom.toISOString().slice(0, 10);
+                        }
+                        setTravelDate(actualDate);
+                        if (resSrc && resDst) {
+                          runSearchFromCodes(resSrc.code, resDst.code, actualDate);
+                        }
+                    }
+                  }}
+                />
+              </div>
 
               {/* Quick Stats */}
               <div className="flex flex-wrap items-center justify-center gap-6 pt-4 border-t border-border px-6 pb-4">
@@ -845,14 +803,56 @@ const Index = () => {
                     <p className="text-sm font-medium text-amber-800 dark:text-amber-200">{journeyMessage}</p>
                   </div>
                 )}
-                {bookingTips.length > 0 && (
-                  <div className="mb-6 p-4 rounded-xl bg-primary/5 border border-primary/20">
-                    <p className="text-sm font-semibold text-foreground mb-2">Booking tips for confirmed seats:</p>
-                    <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
-                      {bookingTips.map((tip, i) => (
-                        <li key={i}>{tip}</li>
-                      ))}
-                    </ul>
+                {suggestions.length > 0 && (
+                  <div className="mb-8 p-0 rounded-2xl bg-gradient-to-r from-blue-600/10 to-indigo-600/5 border border-blue-500/20 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-700">
+                    <div className="flex flex-col md:flex-row items-center">
+                      <div className="bg-blue-600 p-4 md:p-6 flex items-center justify-center">
+                        <ArrowLeftRight className="w-8 h-8 text-white rotate-90 md:rotate-0" />
+                      </div>
+                      <div className="p-5 md:p-6 flex-1 text-center md:text-left">
+                        <div className="flex items-center justify-center md:justify-start gap-2 mb-1">
+                          <Sparkles className="w-4 h-4 text-blue-600 animate-pulse" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-blue-600">Smart Trip Stacking</span>
+                        </div>
+                        <h3 className="text-lg font-bold text-foreground mb-1">Complete Your Loop</h3>
+                        <p className="text-sm text-muted-foreground mb-4 max-w-lg">
+                          {suggestions[0].suggestion_text || `Fastest return available to ${origin?.name} on ${new Date(new Date(travelDate).getTime() + 172800000).toLocaleDateString()}.`}
+                        </p>
+                        <div className="flex flex-wrap items-center justify-center md:justify-start gap-4">
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 text-blue-700 dark:text-blue-400 text-xs font-bold border border-blue-500/20">
+                            <Zap className="w-3.5 h-3.5" /> High Confidence
+                          </div>
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs font-bold border border-emerald-500/20">
+                            <DollarSign className="w-3.5 h-3.5" /> Bundle Discount Available
+                          </div>
+                        </div>
+                      </div>
+                      <div className="p-6 md:p-8 border-t md:border-t-0 md:border-l border-border flex flex-col items-center justify-center gap-2">
+                         <div className="text-center mb-2">
+                           <span className="text-xs text-muted-foreground block uppercase font-bold tracking-tighter">Starts From</span>
+                           <span className="text-2xl font-black text-foreground">₹{suggestions[0].route?.fare || 499}</span>
+                         </div>
+                         <button
+                           onClick={() => {
+                             if (destination && origin) {
+                               const retDate = new Date(new Date(travelDate).getTime() + 172800000).toISOString().slice(0, 10);
+                               // Swap and trigger
+                               setOrigin(destination);
+                               setDestination(origin);
+                               setTravelDate(retDate);
+                               // We need to trigger the search manually because state updates are async
+                               runSearchFromCodes(destination.code, origin.code, retDate);
+                             }
+                           }}
+                           className="whitespace-nowrap px-8 py-3 rounded-xl bg-blue-600 text-white font-bold text-sm shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                         >
+                           Book Return Leg
+                         </button>
+                         <p className="text-[10px] font-bold text-red-500 mt-2 flex items-center gap-1">
+                            <ShieldAlert className="w-3 h-3" /> Return seats filling fast
+                         </p>
+                      </div>
+                    </div>
                   </div>
                 )}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
@@ -910,36 +910,27 @@ const Index = () => {
                         <Shield className="w-4 h-4" /> Most Reliable
                       </button>
                     </div>
-                    <div className="bg-card p-1 rounded-xl border border-border flex">
-                      <button
-                        onClick={() => setViewMode("optimal")}
-                        className={cn(
-                          "px-4 py-2 rounded-lg text-sm font-semibold transition-all",
-                          viewMode === "optimal"
-                            ? "bg-primary text-white shadow-sm"
-                            : "text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        Optimal Routes
-                      </button>
-                      <button
-                        onClick={() => setViewMode("all")}
-                        className={cn(
-                          "px-4 py-2 rounded-lg text-sm font-semibold transition-all",
-                          viewMode === "all"
-                            ? "bg-primary text-white shadow-sm"
-                            : "text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        All Possible
-                      </button>
+                    <div className="flex flex-col gap-4">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-muted-foreground uppercase tracking-tighter">Categories:</span>
+                        <div className="flex flex-wrap gap-2">
+                          {["OPTIMAL", "DIRECT", "1 TRANSFER", "2 TRANSFERS", "MULTIMODAL"].map((cat) => (
+                            <button
+                              key={cat}
+                              onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
+                              className={cn(
+                                "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
+                                selectedCategory === cat 
+                                  ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
+                                  : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                              )}
+                            >
+                              {cat}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-
-                    <CategoryFilter
-                      categories={categories}
-                      selected={selectedCategory}
-                      onChange={setSelectedCategory}
-                    />
                   </div>
                   <div className="flex flex-wrap items-center gap-3 mb-6">
                     <span className="text-sm font-medium text-muted-foreground">Transfers:</span>
@@ -1004,18 +995,35 @@ const Index = () => {
                         />
                       ))}
 
-                      {/* Load More Button */}
-                      {viewMode === "all" && displayedAlternatives < sortedRoutes.length && (
-                        <div className="flex justify-center pt-4">
+                      {/* Load More Button - Category Aware */}
+                      {selectedCategory && (
+                        <div className="flex justify-center pt-8">
                           <button
-                            onClick={() => setDisplayedAlternatives((prev) => prev + 5)}
+                            onClick={() => handleLoadMoreCategory(selectedCategory)}
+                            disabled={isSearching}
                             className={cn(
-                              "px-6 py-3 rounded-lg font-semibold text-sm",
-                              "border-2 border-primary text-primary",
-                              "hover:bg-primary hover:text-white transition-all"
+                              "px-10 py-4 rounded-2xl font-black text-sm uppercase tracking-widest",
+                              "bg-primary text-white shadow-xl shadow-primary/20",
+                              "hover:scale-105 active:scale-95 transition-all",
+                              "flex items-center gap-2",
+                              "disabled:opacity-50"
                             )}
                           >
-                            Load More ({sortedRoutes.length - displayedAlternatives} remaining)
+                            {isSearching ? (
+                               <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            ) : <Zap className="w-4 h-4" />}
+                            Load More {selectedCategory}
+                          </button>
+                        </div>
+                      )}
+                      
+                      {!selectedCategory && viewMode === "all" && displayedAlternatives < sortedRoutes.length && (
+                        <div className="flex justify-center pt-4">
+                           <button
+                            onClick={() => setDisplayedAlternatives((prev) => prev + 10)}
+                            className="text-sm font-bold text-primary hover:underline"
+                          >
+                            Show more alternatives...
                           </button>
                         </div>
                       )}

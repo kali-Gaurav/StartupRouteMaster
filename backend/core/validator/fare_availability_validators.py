@@ -50,7 +50,7 @@ class FareSegment:
     currency: CurrencyType = CurrencyType.INR
     fare_type: FareType = FareType.BASE
     seat_class: SeatClass = SeatClass.STANDARD
-    timestamp: datetime = None
+    timestamp: Optional[datetime] = None
 
     @property
     def total_fare(self) -> float:
@@ -69,7 +69,7 @@ class SeatInfo:
     premium_available: int = 0
     waitlist_count: int = 0
     total_capacity: int = 0
-    timestamp: datetime = None
+    timestamp: Optional[datetime] = None
 
     def get_available_for_class(self, seat_class: SeatClass) -> int:
         """Get available seats for a specific class"""
@@ -235,7 +235,7 @@ class FareAndAvailabilityValidator:
         return True
 
     def validate_discounts_applied_correctly(self, fare_segment: FareSegment,
-                                            discount_percent: float = None) -> bool:
+                                            discount_percent: Optional[float] = None) -> bool:
         """
         RT-078: Validate discounts are applied correctly.
         Discount should not exceed maximum allowed and should reduce fare.
@@ -326,7 +326,7 @@ class FareAndAvailabilityValidator:
         return True
 
     def validate_fare_caps_enforced(self, fare_and_avail: FareAndAvailability,
-                                   fare_cap: float = None) -> bool:
+                                   fare_cap: Optional[float] = None) -> bool:
         """
         RT-083: Validate fare caps are enforced.
         Total fare should not exceed specified cap.

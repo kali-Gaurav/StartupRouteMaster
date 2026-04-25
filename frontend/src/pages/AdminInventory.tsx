@@ -53,11 +53,11 @@ export default function AdminInventory() {
   const refreshInventory = async () => {
     try {
       const [s, v, d, st, sf] = await Promise.all([
-        fetchWithAuth("/admin/inventory/freshness"),
-        fetchWithAuth("/admin/inventory/velocity"),
-        fetchWithAuth("/admin/inventory/distribution"),
-        fetchWithAuth("/admin/inventory/status"),
-        fetchWithAuth("/admin/inventory/station-freshness")
+        fetchWithAuth("/v2/admin/inventory/freshness"),
+        fetchWithAuth("/v2/admin/inventory/velocity"),
+        fetchWithAuth("/v2/admin/inventory/distribution"),
+        fetchWithAuth("/v2/admin/inventory/status"),
+        fetchWithAuth("/v2/admin/inventory/station-freshness")
       ]);
       setStats(await s.json());
       setVelocity(await v.json());
@@ -70,7 +70,7 @@ export default function AdminInventory() {
   const triggerGlobalSync = async () => {
     toast.info("Initializing global inventory sync...");
     try {
-      const res = await fetchWithAuth("/admin/inventory/sync/trigger", { method: "POST" });
+      const res = await fetchWithAuth("/v2/admin/inventory/sync/trigger", { method: "POST" });
       const data = await res.json();
       toast.success(`Sync process started: ${data.run_id}`);
       refreshInventory();

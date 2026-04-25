@@ -144,9 +144,8 @@ async def unlock_journey_details(
         # 2. Payment/Unlock Check
         is_unlocked = False
         if current_user:
-            unlock_service = UnlockService(db)
             # Check DB to see if they completed the Payment Session Code flow
-            is_unlocked = await unlock_service.is_route_unlocked(current_user.id, journey_id)
+            is_unlocked = UnlockService.is_route_unlocked(db, current_user.id, journey_id)
             
         if not is_unlocked:
             # If not paid, return the journey but keep it locked (frontend prompts payment)

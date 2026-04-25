@@ -112,3 +112,25 @@ def sanitize_string(text: str, length_limit: int = 100) -> str:
     clean = re.sub(r'[^a-zA-Z0-9\s,]', '', clean)
     # 3. Truncate
     return clean[:length_limit].strip()
+
+def mask_result_by_tier(journey: dict, tier: str) -> dict:
+    """
+    [Industrial Rigor] Physically removes premium fields from basic responses.
+    Ensures that metadata like 'guardian_score' or 'ml_confidence' is never leaked.
+    """
+    tier = (tier or "BASIC").upper()
+    if tier == "ELITE":
+        return journey
+    
+    # Define restricted fields for ALL below ELITE
+    restricted = ["guardian_score", "ml_confidence", "detailed_risk_breakdown", "active_agent_count"]
+    
+    if tier == "BASIC":
+        # BASIC gets even less
+        restricted.extend(["predicted_availability", "social_security_index", "comfort_rank"])
+        
+    # Recursive masking if needed, but for now just flat pop
+    for field in restricted:
+        journey.pop(field, None)
+        
+    return journey

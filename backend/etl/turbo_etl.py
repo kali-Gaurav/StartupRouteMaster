@@ -6,7 +6,7 @@ import uuid
 import sys
 import gc
 from datetime import datetime, time, date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, cast
 
 # Ensure backend package is importable
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
@@ -41,9 +41,10 @@ async def run_turbo_etl():
     
     session = SessionLocal()
     run_id = f"run_{int(datetime.utcnow().timestamp())}"
+    etl_meta = None
     
     try:
-        etl_meta = ETLMetadata(run_id=run_id, status="running", source_version="v1.0")
+        etl_meta = ETLMetadata(run_id=run_id, status="running", trips_synced=0, source_version="v1.0")
         session.add(etl_meta)
         session.commit()
         
@@ -56,8 +57,8 @@ async def run_turbo_etl():
         
         # [Nexus Optimization] Partial Memory Load
         station_mapping = {s[1]: s[0] for s in session.query(Stop.id, Stop.stop_id).all()}
-        existing_trips = {t for t in session.query(Trip.trip_id).scalars().all()}
-        existing_calendars = {c for c in session.query(Calendar.service_id).scalars().all()}
+        existing_trips = {t[0] for t in session.query(Trip.trip_id).all()}
+        existing_calendars = {c[0] for c in session.query(Calendar.service_id).all()}
         existing_routes = {r[0]: r[1] for r in session.query(Route.route_id, Route.id).all()}
         
         trains = [dict(r) for r in conn.execute("SELECT * FROM trains_master").fetchall()]
@@ -65,7 +66,7 @@ async def run_turbo_etl():
         
         # [Elite Restoration] Synchronize TrainMaster for FTS5 Search
         logger.info(f"Syncing {len(trains)} trains to TrainMaster index...")
-        existing_train_master = {tm for tm in session.query(TrainMaster.train_number).scalars().all()}
+        existing_train_master = {tm[0] for tm in session.query(TrainMaster.train_number).all()}
         tm_to_add = []
         for t in trains:
             t_no = str(t['train_no'])
@@ -160,14 +161,17 @@ async def run_turbo_etl():
                                 "operating_days": "1111111"
                             })
 
-                etl_meta.trips_synced += 1
+                if etl_meta:
+                    # Use __dict__ or setattr to bypass static type checking for SQLAlchemy Column attributes
+                    setattr(etl_meta, 'trips_synced', (getattr(etl_meta, 'trips_synced') or 0) + 1)
 
             # Flush Batch
-            session.bulk_insert_mappings(Vehicle, vehicles_to_add)
-            session.bulk_insert_mappings(StopTime, stop_times_to_add)
-            session.bulk_insert_mappings(Segment, segments_to_add)
-            session.bulk_insert_mappings(StationSchedule, station_schedules_to_add)
-            session.bulk_insert_mappings(TrainPath, train_paths_to_add)
+            from sqlalchemy.orm import Mapper
+            session.bulk_insert_mappings(cast(Mapper, Vehicle), vehicles_to_add)
+            session.bulk_insert_mappings(cast(Mapper, StopTime), stop_times_to_add)
+            session.bulk_insert_mappings(cast(Mapper, Segment), segments_to_add)
+            session.bulk_insert_mappings(cast(Mapper, StationSchedule), station_schedules_to_add)
+            session.bulk_insert_mappings(cast(Mapper, TrainPath), train_paths_to_add)
             session.commit()
             
             # [Task 112] Strict Memory Pruning
@@ -175,17 +179,18 @@ async def run_turbo_etl():
             del station_schedules_to_add, train_paths_to_add
             gc.collect()
 
-        etl_meta.status = "success"
-        etl_meta.end_time = datetime.utcnow()
-        session.commit()
-        logger.info(f"🚀 Turbo ETL Phase 106 Success. {etl_meta.trips_synced} trips active.")
+        if etl_meta:
+            setattr(etl_meta, 'status', "success")
+            setattr(etl_meta, 'updated_at', datetime.utcnow())
+            session.commit()
+            logger.info(f"🚀 Turbo ETL Phase 106 Success. {etl_meta.trips_synced} trips active.")
 
     except Exception as e:
         logger.error(f"❌ ETL Failure: {e}")
         session.rollback()
-        if 'etl_meta' in locals():
-            etl_meta.status = "failed"
-            etl_meta.end_time = datetime.utcnow()
+        if etl_meta:
+            setattr(etl_meta, 'status', "failed")
+            setattr(etl_meta, 'updated_at', datetime.utcnow())
             session.commit()
         raise
     finally:

@@ -22,8 +22,14 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from datetime import datetime
 
-from .metrics import MetricsCollector, PerformanceMetricsCollector
-from .data_structures import EngineMode
+from .metrics import TelemetryMetrics
+
+
+class EngineMode(Enum):
+    """Mode of engine operation."""
+    OFFLINE = "offline"
+    HYBRID = "hybrid"
+    ONLINE = "online"
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +143,7 @@ class BaseEngine(ABC):
         self.mode = EngineMode.OFFLINE
 
         # Metrics
-        self.metrics = PerformanceMetricsCollector(
-            name=f"{engine_type}_engine",
-            window_size=1000
-        )
+        self.metrics = TelemetryMetrics()
 
         # Configuration
         self.config: Dict[str, Any] = {}

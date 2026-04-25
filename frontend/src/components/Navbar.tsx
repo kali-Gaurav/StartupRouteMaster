@@ -5,19 +5,24 @@ import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { prefetchBookings } from "@/lib/queryInvalidation";
 import { THEME_IDS, THEME_LABELS, type ThemeId } from "@/lib/themes/tokens";
+import { IncentiveWallet } from "@/components/profile/IncentiveWallet";
+import { Wallet } from "lucide-react";
 
 const TELEGRAM_BOT_URL = "https://t.me/RoutemasternagarindustrisBot";
 
 export function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
+  const [walletOpen, setWalletOpen] = useState(false);
   const themeRef = useRef<HTMLDivElement>(null);
+  const walletRef = useRef<HTMLDivElement>(null);
   const { isAuthenticated, logout } = useAuth();
   const { theme, setTheme, mode, setMode, rotationDisabled, setRotationDisabled } = useTheme();
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
       if (themeRef.current && !themeRef.current.contains(e.target as Node)) setThemeOpen(false);
+      if (walletRef.current && !walletRef.current.contains(e.target as Node)) setWalletOpen(false);
     };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
@@ -77,6 +82,29 @@ export function Navbar() {
               <MessageCircle className="w-4 h-4" />
               Use in Telegram
             </a>
+
+            {isAuthenticated && (
+              <div className="relative" ref={walletRef}>
+                <button
+                  onClick={() => setWalletOpen(!walletOpen)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all",
+                    walletOpen ? "bg-primary text-primary-foreground shadow-lg" : "bg-primary/10 text-primary hover:bg-primary/20"
+                  )}
+                >
+                  <Wallet className="w-4 h-4" />
+                  <span className="text-sm font-bold">Wallet</span>
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse ml-1" />
+                </button>
+
+                {walletOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-80 sm:w-96 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <IncentiveWallet />
+                  </div>
+                )}
+              </div>
+            )}
+
             {isAuthenticated && (
               <button
                 onClick={() => {

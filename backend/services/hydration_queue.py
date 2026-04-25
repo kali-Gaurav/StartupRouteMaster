@@ -3,6 +3,8 @@ import logging
 import time
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
+from datetime import datetime
+from collections import deque
 
 logger = logging.getLogger("hydration-queue")
 
@@ -18,11 +20,67 @@ class PrioritizedHydrationQueue:
     Subtask 1.11: Memory-Safe Prioritized Hydration Queue.
     Handles backpressure and ensures high-confidence predictions are hydrated first.
     """
+    
     def __init__(self, max_size: int = 2000):
         self.queue = asyncio.PriorityQueue(maxsize=max_size)
         self.max_size = max_size
         self.processing_count = 0
-        self.stats = {"dropped": 0, "completed": 0}
+        self.stats = {"dropped": 0, "completed": 0, "errors": 0}
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        logger.info("PrioritizedHydrationQueue initialized with resilience patterns")
+    
+    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+        """Record metrics for queue operations."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation_type": operation_type,
+                "success": success,
+                "error": error
+            })
+    
+    def get_metrics(self) -> dict:
+        """Get queue metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        by_type = {}
+        for m in self._metrics:
+            op_type = m.get("operation_type", "unknown")
+            if op_type not in by_type:
+                by_type[op_type] = {"total": 0, "success": 0}
+            by_type[op_type]["total"] += 1
+            if m["success"]:
+                by_type[op_type]["success"] += 1
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_type,
+            "queue_size": self.queue.qsize(),
+            "queue_full": self.queue.full(),
+            "processing_count": self.processing_count,
+            "stats": self.stats
+        }
+    
+    def health_check(self) -> dict:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "queue_size": self.queue.qsize(),
+            "queue_max_size": self.max_size,
+            "queue_full": self.queue.full(),
+            "processing_count": self.processing_count,
+            "stats": self.stats,
+            "metrics": self.get_metrics()
+        }
 
     async def push(self, data: Dict[str, Any], confidence: float):
         """

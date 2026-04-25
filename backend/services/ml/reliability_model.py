@@ -14,6 +14,7 @@ Architecture:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -22,6 +23,9 @@ import joblib
 
 from database.models import Stop, StopTime, TrainState
 from database.session import SessionLocal
+from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience.retry_policy import retry_policy, RetryStrategy
+from resilience.metrics import track_metrics, MetricsClient
 
 try:
     import lightgbm as lgb  # type: ignore[reportMissingImports]
@@ -58,6 +62,30 @@ class MLReliabilityModel:
         self.loaded = False
         self._feature_cache = {} # Cache for stop/trip features
         self._load_model()
+        # Circuit breaker for reliability predictions
+        self._reliability_circuit_breaker = circuit_breaker(
+            name="ml_reliability_model",
+            failure_threshold=5,
+            recovery_timeout=60.0
+        )
+        # Retry policy
+        self._reliability_retry_policy = retry_policy(
+            max_attempts=3,
+            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
+            base_delay=0.5,
+            max_delay=10.0
+        )
+        # Metrics tracking
+        self._metrics = MetricsClient(
+            service_name="ml_reliability_model",
+            default_tags={"component": "ml"}
+        )
+        self._metrics.gauge("circuit_breaker_state", lambda: self._reliability_circuit_breaker.state.value)
+        self._metrics.counter("predictions_total")
+        self._metrics.counter("predictions_success")
+        self._metrics.counter("predictions_failed")
+        self._metrics.counter("predictions_fallback")
+        self._metrics.histogram("prediction_duration_seconds")
 
     def _load_model(self):
         """Load pre-trained model from disk if available"""
@@ -87,10 +115,12 @@ class MLReliabilityModel:
         Predict route reliability.
         Task 43: Pruned fallback during resource surges.
         """
+        start_time = time.perf_counter()
         # 1. Check system load (Task 43)
         import psutil
         from database.config import Config
         if Config.SLIM_MODE or psutil.virtual_memory().percent > 90:
+            self._metrics.counter("predictions_fallback", tags={"reason": "system_load"})
             return await self._fallback_heuristic(
                 transfer_duration_minutes, distance_km, departure_time
             )
@@ -110,13 +140,23 @@ class MLReliabilityModel:
                     pred = self.model.predict_proba(X)[0][1]
                 else:
                     pred = self.model.predict(X)[0]
-                return float(np.clip(pred, 0.0, 1.0))
+                result = float(np.clip(pred, 0.0, 1.0))
+                
+                duration = time.perf_counter() - start_time
+                self._metrics.histogram("prediction_duration_seconds", duration)
+                self._metrics.counter("predictions_success")
+                logger.debug(f"🔮 [RELIABILITY] Predicted reliability {result:.3f} in {duration:.3f}s")
+                return result
             except Exception as e:
                 logger.warning(f"ML prediction failed: {e}, falling back to heuristics")
+                duration = time.perf_counter() - start_time
+                self._metrics.histogram("prediction_duration_seconds", duration)
+                self._metrics.counter("predictions_fallback", tags={"reason": "ml_error"})
                 return await self._fallback_heuristic(
                     transfer_duration_minutes, distance_km, departure_time
                 )
         else:
+            self._metrics.counter("predictions_fallback", tags={"reason": "model_unavailable"})
             return await self._fallback_heuristic(
                 transfer_duration_minutes, distance_km, departure_time
             )
@@ -317,6 +357,36 @@ class MLReliabilityModel:
 
         except Exception as e:
             logger.error(f"Failed to train reliability model: {e}")
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics for monitoring."""
+        return {
+            "service": "ml_reliability_model",
+            "circuit_breaker_state": self._reliability_circuit_breaker.state.name,
+            "circuit_breaker_failures": self._reliability_circuit_breaker.failure_count,
+            "predictions_total": self._metrics.get_counter("predictions_total"),
+            "predictions_success": self._metrics.get_counter("predictions_success"),
+            "predictions_failed": self._metrics.get_counter("predictions_failed"),
+            "predictions_fallback": self._metrics.get_counter("predictions_fallback"),
+            "prediction_duration_p50": self._metrics.get_percentile("prediction_duration_seconds", 50),
+            "prediction_duration_p95": self._metrics.get_percentile("prediction_duration_seconds", 95),
+            "is_trained": self.loaded,
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint data."""
+        return {
+            "status": "healthy" if self._reliability_circuit_breaker.state == CircuitState.CLOSED else "degraded",
+            "service": "ml_reliability_model",
+            "circuit_breaker": self._reliability_circuit_breaker.state.name,
+            "is_trained": self.loaded,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker to closed state."""
+        self._reliability_circuit_breaker.reset()
+        logger.info("🔄 [RELIABILITY] Circuit breaker reset for ML reliability model")
 
 
 # Singleton instance

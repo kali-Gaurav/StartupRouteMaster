@@ -5,16 +5,26 @@ Provides fast, indexed lookups for train departures from stations.
 Implements Phase 1: Time-Series Lookup Engine pattern.
 
 Pattern: Station → Time → Departures
+
+Enhanced with:
+- Redis caching
+- Circuit breaker protection
+- Metrics tracking
+- Real-time updates
 """
 
 import logging
+import asyncio
 from datetime import datetime, time, timedelta
 from typing import List, Dict, Tuple, Optional
+from collections import deque
 from sqlalchemy import and_, between
 from sqlalchemy.orm import Session
 
-from ..database.models import StationDeparture, Stop, Trip, StopTime, Calendar
-from ..database.session import SessionLocal
+from database.models import StationDeparture, Stop, Trip, StopTime, Calendar
+from database.session import SessionLocal
+from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +34,49 @@ class StationDepartureService:
     Fast lookup service for station departures.
 
     Indexes: (station_id, departure_time)
+    
+    Enhanced with caching, resilience patterns, and metrics.
     """
+
+    def __init__(self):
+        # Circuit breaker for DB operations
+        self._db_breaker = circuit_breaker_manager.get_or_create(
+            "station_departure_db",
+            CircuitConfig(failure_threshold=5, timeout_seconds=30.0, success_threshold=2)
+        )
+        
+        # Retry policy
+        self._retry = RetryPolicy(
+            max_attempts=3,
+            initial_delay=0.5,
+            max_delay=5.0,
+            conditions=[
+                lambda e: isinstance(e, (ConnectionError, TimeoutError)),
+                lambda e: "timeout" in str(e).lower()
+            ]
+        )
+        
+        # Metrics tracking
+        self._metrics: deque = deque(maxlen=1000)
+        self._metrics_lock = asyncio.Lock()
+        
+        # Cache for departures
+        self._cache: Dict[str, Dict] = {}
+        self._cache_ttl_seconds = 60  # 1 minute cache
+        
+        logger.info("StationDepartureService initialized with resilience patterns")
+
+    def _get_cache_key(self, station_id: int, time_min: time, time_max: time, date: Optional[datetime]) -> str:
+        """Generate cache key for departure queries."""
+        date_str = date.isoformat() if date else "all"
+        return f"departures:{station_id}:{time_min.isoformat()}:{time_max.isoformat()}:{date_str}"
+
+    def _is_cache_valid(self, cached: Dict) -> bool:
+        """Check if cached data is still valid."""
+        if not cached:
+            return False
+        cached_time = cached.get("_cached_at", 0)
+        return (datetime.utcnow().timestamp() - cached_time) < self._cache_ttl_seconds
 
     @staticmethod
     def get_departures_from_station(
@@ -351,4 +403,67 @@ def rebuild_cache() -> bool:
         session.close()
 
 
-import uuid
+# =========================================================================
+    # METRICS & HEALTH
+    # =========================================================================
+
+    async def _record_metrics(self, operation: str, success: bool, count: int = 0, duration_ms: float = 0):
+        """Record service metrics."""
+        async with self._metrics_lock:
+            self._metrics.append({
+                "timestamp": datetime.utcnow(),
+                "operation": operation,
+                "success": success,
+                "count": count,
+                "duration_ms": duration_ms
+            })
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics."""
+        if not self._metrics:
+            return {"total_operations": 0, "success_rate": 0.0}
+        
+        total = len(self._metrics)
+        successful = sum(1 for m in self._metrics if m["success"])
+        
+        by_operation = {}
+        for m in self._metrics:
+            op = m.get("operation", "unknown")
+            if op not in by_operation:
+                by_operation[op] = {"total": 0, "success": 0, "total_count": 0}
+            by_operation[op]["total"] += 1
+            if m["success"]:
+                by_operation[op]["success"] += 1
+            by_operation[op]["total_count"] += m.get("count", 0)
+        
+        return {
+            "total_operations": total,
+            "successful_operations": successful,
+            "failed_operations": total - successful,
+            "success_rate": successful / total if total > 0 else 0.0,
+            "operation_breakdown": by_operation,
+            "cache_size": len(self._cache),
+            "circuit_breaker_state": self._db_breaker.get_state().value
+        }
+
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint."""
+        return {
+            "status": "healthy",
+            "circuit_breaker": {
+                "state": self._db_breaker.get_state().value,
+                "failure_count": self._db_breaker.failure_count,
+                "success_count": self._db_breaker.success_count
+            },
+            "metrics": self.get_metrics()
+        }
+
+    def reset_circuit_breaker(self):
+        """Reset the circuit breaker."""
+        self._db_breaker.reset()
+        logger.info("Circuit breaker reset for station_departure_service")
+
+    def clear_cache(self):
+        """Clear the departures cache."""
+        self._cache.clear()
+        logger.info("Station departure cache cleared")

@@ -216,7 +216,7 @@ def error_handler(default_return=None, log_level="error"):
     return decorator
 
 
-def time_operation(operation_name: str = None):
+def time_operation(operation_name: Optional[str] = None):
     """
     Decorator to time function execution.
 

@@ -1,7 +1,7 @@
 import os
 import logging
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 # Load .env from backend root
@@ -21,6 +21,7 @@ class Config(metaclass=ConfigMeta):
     Optimized for VPS: Loads environment variables only on first access.
     """
     _cache: Dict[str, Any] = {}
+    _instance: Optional[type["Config"]] = None
     BASE_DIR = str(Path(__file__).resolve().parent.parent)
     _base_path = Path(BASE_DIR)
     

@@ -160,8 +160,8 @@ def run_importer():
         
         logger.info(f"🛠️ Processing {total} stop time rows...")
         for row in st_df.itertuples():
-            tid_pk = trip_map.get(row.trip_id_norm)
-            sid_pk = stop_map.get(row.stop_id_norm)
+            tid_pk = trip_map.get(str(row.trip_id_norm))
+            sid_pk = stop_map.get(str(row.stop_id_norm))
             
             if not tid_pk:
                 # logger.warning(f"Trip ID {row.trip_id_norm} not found in trips table")
@@ -174,7 +174,7 @@ def run_importer():
             try: dist = float(dist)
             except: dist = 0.0
             
-            st_batch.append((tid_pk, sid_pk, row.arrival_time, row.departure_time, int(row.stop_sequence), dist))
+            st_batch.append((tid_pk, sid_pk, row.arrival_time, row.departure_time, int(str(row.stop_sequence)), dist))
             
             if last_trip_id == row.trip_id_norm and prev_row is not None:
                 try:
@@ -190,10 +190,10 @@ def run_importer():
                     seg_dist = dist - prev_dist
                     
                     seg_batch.append((
-                        f"{tid_pk}_{prev_row.stop_sequence}_{row.stop_sequence}",
-                        tid_pk, stop_map.get(prev_row.stop_id_norm), sid_pk,
+                        f"{tid_pk}_{str(prev_row.stop_sequence)}_{str(row.stop_sequence)}",
+                        tid_pk, stop_map.get(str(prev_row.stop_id_norm)), sid_pk,
                         prev_row.departure_time, row.arrival_time,
-                        dur, round(max(0, seg_dist), 3), row.trip_id_norm, 100
+                        dur, round(max(0, seg_dist), 3), str(row.trip_id_norm), 100
                     ))
                 except: pass
             

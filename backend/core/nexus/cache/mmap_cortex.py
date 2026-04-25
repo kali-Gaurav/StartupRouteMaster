@@ -35,6 +35,7 @@ class NexusMmapCortex:
         self._mm: Optional[mmap.mmap] = None
         self._ensure_file_exists()
         self._map_file()
+        assert self._mm is not None, "Cortex failed to initialize mmap"
 
     def _ensure_file_exists(self):
         """Prepare the shared memory backing file with zero-padding."""
@@ -54,63 +55,70 @@ class NexusMmapCortex:
             logger.critical(f"🛑 [CORTEX] FAILED TO MAP SHARED SPINE: {e}")
             raise
 
+    @property
+    def mm(self) -> mmap.mmap:
+        """Get the mmap object, ensuring it's initialized."""
+        if self._mm is None:
+            raise RuntimeError("Nexus Cortex not properly initialized")
+        return self._mm
+
     # --------------------------------------------------------------------------
     # CORE ACCESSORS (Fast-Path)
     # --------------------------------------------------------------------------
     
     def get_byte(self, offset: int) -> int:
         """Returns the raw byte at the specified offset."""
-        return self._mm[offset]
+        return self.mm[offset]
 
     def set_byte(self, offset: int, value: int):
         """Sets the raw byte at the specified offset (Single-Writer Only)."""
-        self._mm[offset] = value
+        self.mm[offset] = value
 
     def get_bit(self, byte_offset: int, bit_offset: int) -> bool:
         """Check a specific bit status (Efficiency: < 10ns)."""
-        byte_val = self._mm[byte_offset]
+        byte_val = self.mm[byte_offset]
         return bool(byte_val & (1 << bit_offset))
 
     def set_bit(self, byte_offset: int, bit_offset: int, status: bool):
         """Set or Clear a bit (Must be called by a designated Master/Node)."""
-        current = self._mm[byte_offset]
+        current = self.mm[byte_offset]
         if status:
             new_val = current | (1 << bit_offset)
         else:
             new_val = current & ~(1 << bit_offset)
-        self._mm[byte_offset] = new_val
+        self.mm[byte_offset] = new_val
 
     def get_stress_index(self) -> int:
         """Returns the SSI (0-100) from Byte 1."""
-        return self._mm[1]
+        return self.mm[1]
 
     def set_stress_index(self, value: int):
         """Sets the SSI (0-100) at Byte 1."""
-        self._mm[1] = min(100, max(0, value))
+        self.mm[1] = min(100, max(0, value))
 
     def get_cpu_percent(self) -> int:
-        return self._mm[2]
+        return self.mm[2]
 
     def set_cpu_percent(self, value: int):
-        self._mm[2] = min(100, max(0, int(value)))
+        self.mm[2] = min(100, max(0, int(value)))
 
     def get_ram_percent(self) -> int:
-        return self._mm[3]
+        return self.mm[3]
 
     def set_ram_percent(self, value: int):
-        self._mm[3] = min(100, max(0, int(value)))
+        self.mm[3] = min(100, max(0, int(value)))
 
     def get_io_wait(self) -> int:
-        return self._mm[4]
+        return self.mm[4]
 
     def set_io_wait(self, value: int):
-        self._mm[4] = min(100, max(0, int(value)))
+        self.mm[4] = min(100, max(0, int(value)))
 
     def get_redis_percent(self) -> int:
-        return self._mm[5]
+        return self.mm[5]
 
     def set_redis_percent(self, value: int):
-        self._mm[5] = min(100, max(0, int(value)))
+        self.mm[5] = min(100, max(0, int(value)))
 
     # [Task 43] Search Deduplication bitset (1024 bytes = 8192 bits)
     IN_FLIGHT_OFFSET = 1000 
@@ -120,18 +128,18 @@ class NexusMmapCortex:
         byte_off = self.IN_FLIGHT_OFFSET + (hash_idx // 8)
         bit_off = hash_idx % 8
         
-        current = self._mm[byte_off]
+        current = self.mm[byte_off]
         if status:
             new_val = current | (1 << bit_off)
         else:
             new_val = current & ~(1 << bit_off)
-        self._mm[byte_off] = new_val
+        self.mm[byte_off] = new_val
 
     def is_in_flight(self, hash_idx: int) -> bool:
         """Check if an identical search is ALREADY being processed by another worker."""
         byte_off = self.IN_FLIGHT_OFFSET + (hash_idx // 8)
         bit_off = hash_idx % 8
-        return bool(self._mm[byte_off] & (1 << bit_off))
+        return bool(self.mm[byte_off] & (1 << bit_off))
 
     # [Task 44] Zero-Copy Hot Slabs (32KB allocated for top results)
     HOT_SLABS_OFFSET = 4096 
@@ -144,13 +152,13 @@ class NexusMmapCortex:
         start = self.HOT_SLABS_OFFSET + (idx * self.SLAB_SIZE)
         # Pad or truncate to SLAB_SIZE
         padded_data = data[:self.SLAB_SIZE].ljust(self.SLAB_SIZE, b'\x00')
-        self._mm[start:start+self.SLAB_SIZE] = padded_data
+        self.mm[start:start+self.SLAB_SIZE] = padded_data
 
     def get_slab(self, slab_idx: int) -> bytes:
         """Retrieve raw bytes from a designated slab (Fast-Path)."""
         idx = min(self.MAX_SLABS - 1, slab_idx)
         start = self.HOT_SLABS_OFFSET + (idx * self.SLAB_SIZE)
-        return self._mm[start:start+self.SLAB_SIZE].rstrip(b'\x00')
+        return self.mm[start:start+self.SLAB_SIZE].rstrip(b'\x00')
 
     # [Task 45] Atomic Zombie Watchdog (Heartbeats for 128 workers)
     HEARTBEAT_OFFSET = 8000 
@@ -160,13 +168,13 @@ class NexusMmapCortex:
         idx = min(127, worker_id)
         start = self.HEARTBEAT_OFFSET + (idx * 4)
         ts_bytes = int(time.time() % 10**8).to_bytes(4, byteorder='big')
-        self._mm[start:start+4] = ts_bytes
+        self.mm[start:start+4] = ts_bytes
 
     def get_heartbeat(self, worker_id: int) -> int:
         """Watchdog checks if worker is alive."""
         idx = min(127, worker_id)
         start = self.HEARTBEAT_OFFSET + (idx * 4)
-        return int.from_bytes(self._mm[start:start+4], byteorder='big')
+        return int.from_bytes(self.mm[start:start+4], byteorder='big')
 
     # [Task 46] Scraper Session Global Warming (Shared session cookies)
     SESSION_POOL_OFFSET = 9000 
@@ -177,13 +185,13 @@ class NexusMmapCortex:
         idx = min(9, slot_idx)
         start = self.SESSION_POOL_OFFSET + (idx * self.SESSION_SLOT_SIZE)
         encoded = session_data.encode().ljust(self.SESSION_SLOT_SIZE, b'\x00')
-        self._mm[start:start+self.SESSION_SLOT_SIZE] = encoded
+        self.mm[start:start+self.SESSION_SLOT_SIZE] = encoded
 
     def get_session(self, slot_idx: int) -> Optional[str]:
         """Worker retrieves a warm IRCTC session cookie."""
         idx = min(9, slot_idx)
         start = self.SESSION_POOL_OFFSET + (idx * self.SESSION_SLOT_SIZE)
-        raw = self._mm[start:start+self.SESSION_SLOT_SIZE].rstrip(b'\x00')
+        raw = self.mm[start:start+self.SESSION_SLOT_SIZE].rstrip(b'\x00')
         return raw.decode() if raw else None
 
     # --------------------------------------------------------------------------

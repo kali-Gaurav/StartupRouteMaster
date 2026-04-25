@@ -97,9 +97,9 @@ class DiscoveryQuery:
 
 @dataclass
 class AvailabilityQuery:
-    train_id: str # Changed to str for flexibility [47.2]
-    from_stop_id: str
-    to_stop_id: str
+    train_id: Union[str, int] # Accept numeric or string IDs
+    from_stop_id: Union[str, int]
+    to_stop_id: Union[str, int]
     travel_date: date
     quota_type: str = "GN"
     class_type: str = "SL"
@@ -155,57 +155,60 @@ class MultiLayerCache(ServiceProvider):
         self.health_latch = True # [Task 5.3] Zero-latency Latch
         self._heartbeat_task = None
         # [Task 22] Unified Resilience
-        from core.resilience import CircuitBreaker
-        self.redis_circuit = CircuitBreaker("redis_l2", failure_threshold=3, recovery_timeout=60)
+        from core.resilience import CircuitBreaker, CircuitConfig
+        self.redis_circuit = CircuitBreaker("redis_l2", CircuitConfig(failure_threshold=3, timeout_seconds=60.0))
 
     async def init(self):
         """IoC Lifecycle: Connect to Redis (Idempotent)."""
-        async with self._init_lock:
-            if self._initialized:
-                return
-            
-            from core.redis import URL, OPTS
-            from redis.asyncio import from_url
-            
-            # [Phase 3] Diagnostic Instrumentation: Connect Start
-            logger.info(f"⚡ [REDIS:CONNECT] Initializing L2 link to {URL[:20]}...")
-            start_time = time.perf_counter()
-            
-            try:
-                # [Phase 1/Task 127] Ensure the entire connection block has a strict timeout
-                async with asyncio.timeout(7.0):
-                    # Step 1: Handshake (Socket/TLS)
-                    self.redis = from_url(URL, **OPTS)
-                    handshake_time = (time.perf_counter() - start_time) * 1000
-                    logger.info(f"🤝 [REDIS:HANDSHAKE] TLS/TCP Handshake complete in {handshake_time:.2f}ms")
-                    
-                    # Step 2: Protocol Ping
-                    ping_start = time.perf_counter()
-                    await self.redis.ping()
-                    ping_latency = (time.perf_counter() - ping_start) * 1000
-                    logger.info(f"🏓 [REDIS:PING] Protocol verify successful. Latency: {ping_latency:.2f}ms")
-                    
-                    self._initialized = True
-                    self.health_latch = True
-                    self.status = ServiceStatus.HEALTHY
-                    
-                    if not self._pubsub_task or self._pubsub_task.done():
-                        self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
-                    
-                    if not self._heartbeat_task or self._heartbeat_task.done():
-                        # [Phase 4] Nexus Heartbeat Decoupling: Moved to background task
-                        self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
-                    
-                    self._eviction_task = asyncio.create_task(self._run_eviction_sentinel())
-                    
-            except (asyncio.TimeoutError, Exception) as e:
-                error_type = "Timeout" if isinstance(e, asyncio.TimeoutError) else type(e).__name__
-                total_time = (time.perf_counter() - start_time) * 1000
-                logger.warning(f"❌ [REDIS:FAILED] L2 Init dropped after {total_time:.2f}ms ({error_type}): {e}. Falling back to L1 (Memory).")
-                self.redis = None
+        if self._initialized:
+            logger.debug(f" [CACHE:INIT] '{self.name}' already initialized.")
+            return
+        
+        from core.redis_client import URL, OPTS
+        from redis.asyncio import from_url
+        
+        # [Phase 3] Diagnostic Instrumentation: Connect Start
+        logger.info(f"⚡ [REDIS:CONNECT] Initializing L2 link to {URL[:20]}...")
+        start_time = time.perf_counter()
+        
+        try:
+            # [Phase 1/Task 127] Ensure the entire connection block has a strict timeout
+            async with asyncio.timeout(7.0):
+                # Step 1: Handshake (Socket/TLS)
+                # [Nexus Fix] Use decode_responses=False for binary payloads (pickle/zlib)
+                CACHE_OPTS = OPTS.copy()
+                CACHE_OPTS["decode_responses"] = False
+                self.redis = from_url(URL, **CACHE_OPTS)
+                handshake_time = (time.perf_counter() - start_time) * 1000
+                logger.info(f"🤝 [REDIS:HANDSHAKE] TLS/TCP Handshake complete in {handshake_time:.2f}ms")
+                
+                # Step 2: Protocol Ping
+                ping_start = time.perf_counter()
+                await self.redis.ping()
+                ping_latency = (time.perf_counter() - ping_start) * 1000
+                logger.info(f"🏓 [REDIS:PING] Protocol verify successful. Latency: {ping_latency:.2f}ms")
+                
                 self._initialized = True
-                self.health_latch = False
-                self.status = ServiceStatus.DEGRADED # Signal we are in fallback mode
+                self.health_latch = True
+                self.status = ServiceStatus.HEALTHY
+                
+                if not self._pubsub_task or self._pubsub_task.done():
+                    self._pubsub_task = asyncio.create_task(self._listen_for_invalidations())
+                
+                if not self._heartbeat_task or self._heartbeat_task.done():
+                    # [Phase 4] Nexus Heartbeat Decoupling: Moved to background task
+                    self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+                
+                self._eviction_task = asyncio.create_task(self._run_eviction_sentinel())
+                
+        except (asyncio.TimeoutError, Exception) as e:
+            error_type = "Timeout" if isinstance(e, asyncio.TimeoutError) else type(e).__name__
+            total_time = (time.perf_counter() - start_time) * 1000
+            logger.warning(f"❌ [REDIS:FAILED] L2 Init dropped after {total_time:.2f}ms ({error_type}): {e}. Falling back to L1 (Memory).")
+            self.redis = None
+            self._initialized = True
+            self.health_latch = False
+            self.status = ServiceStatus.DEGRADED # Signal we are in fallback mode
 
     async def _run_heartbeat(self):
         """[Task 5.3] Periodic Redis Health Check to update the Latch."""
@@ -266,7 +269,7 @@ class MultiLayerCache(ServiceProvider):
     @property
     def warmup(self):
         if self._warmup_orchestrator is None:
-            from .cache_warmup import CacheWarmupOrchestrator
+            from .cache_warmup import CacheWarmupOrchestrator  # type: ignore
             self._warmup_orchestrator = CacheWarmupOrchestrator(self)
         return self._warmup_orchestrator
 
@@ -304,19 +307,19 @@ class MultiLayerCache(ServiceProvider):
             return self._process_xfetch(cached_item, refresh_callback, allow_stale)
         
         # 2. Layer 1: L2 (Redis) with Circuit Breaker [47.1]
-        if not self._is_l2_available():
+        if not self._is_l2_available() or self.redis is None:
             return None
 
         try:
             async def _fetch():
                 start_time = time.time()
-                data = await self.redis.get(key)
+                data = await self.redis.get(key) if self.redis else None
                 latency = (time.time() - start_time) * 1000
                 if latency > 200:
                      raise TimeoutError(f"Redis high latency: {latency:.1f}ms")
                 return data
 
-            data = await self.redis_circuit.call(_fetch)
+            data = await self.redis_circuit.execute(_fetch)
 
             if data:
                 # Determine if it's pickle or JSON based on signature or domain
@@ -325,8 +328,8 @@ class MultiLayerCache(ServiceProvider):
                 if key.startswith("hot_path:"):
                     # Fast binary path for Elite routes
                     cached_item = msgpack.unpackb(data, raw=False)
-                elif key.startswith("discovery:raw:"):
-                    # Pickle+Zlib for deep discovery
+                elif key.startswith("discovery:raw:") or key.startswith("nexus:search:"):
+                    # Pickle+Zlib for deep discovery and search results
                     cached_item = pickle.loads(zlib.decompress(data))
                 else:
                     cached_item = PayloadCompressor.decompress(data)
@@ -406,6 +409,9 @@ class MultiLayerCache(ServiceProvider):
 
         # [Task 47.5] Distributed Lock (Redlock pattern)
         lock_key = f"lock:{key}"
+        if self.redis is None:
+            return await fetch_callback()
+        
         lock = self.redis.lock(lock_key, timeout=20, blocking_timeout=15)
         
         try:
@@ -453,7 +459,7 @@ class MultiLayerCache(ServiceProvider):
         self.lru.put(key, xf_item, dynamic_limit=self._get_l1_capacity())
         
         # 2. Update L2 (Redis)
-        if self._is_l2_available():
+        if self._is_l2_available() and self.redis is not None:
             try:
                 if use_msgpack:
                     # [Task 145] Binary-First msgpack Path
@@ -585,7 +591,7 @@ class MultiLayerCache(ServiceProvider):
             await self.redis.setex(f"graph:snapshot:{date_str}", ttl, compressed)
         except: pass
 
-    def record_graph_metrics(self, nodes: int, edges: int, rebuild_time: float = None):
+    def record_graph_metrics(self, nodes: int, edges: int, rebuild_time: Optional[float] = None):
         GRAPH_NODES_TOTAL.set(nodes)
         GRAPH_EDGES_TOTAL.set(edges)
         if rebuild_time: GRAPH_LAST_REBUILD_TIMESTAMP.set(rebuild_time)

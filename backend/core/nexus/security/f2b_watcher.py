@@ -12,36 +12,30 @@ class Fail2BanWatcher:
         self.log_path = log_path
         self.blacklist: Set[str] = set()
         
-    def scan_logs(self):
-        """Analyze auth.log for suspicious IP footprints."""
+    async def scan_logs(self):
+        """Analyze auth.log for suspicious IP footprints and trigger firewall blocks."""
         if not os.path.exists(self.log_path):
              return self.blacklist
 
+        from .firewall import nexus_firewall
         new_bans = 0
         try:
             with open(self.log_path, 'r') as f:
-                # We read only the last N lines for performance
                 lines = f.readlines()[-200:]
                 
                 for line in lines:
-                    # Pattern 1: Failed password
-                    match = re.search(r"Failed password for .* from (\d+\.\d+\.\d+\.\d+)", line)
+                    match = re.search(r"(?:Failed password|Invalid user) .* from (\d+\.\d+\.\d+\.\d+)", line)
                     if match:
                         ip = match.group(1)
                         if ip not in self.blacklist:
                             self.blacklist.add(ip)
                             new_bans += 1
-                            
-                    # Pattern 2: Invalid user
-                    match = re.search(r"Invalid user .* from (\d+\.\d+\.\d+\.\d+)", line)
-                    if match:
-                        ip = match.group(1)
-                        if ip not in self.blacklist:
-                            self.blacklist.add(ip)
-                            new_bans += 1
+                            # ACTIVE DEFENSE: Trigger instant block
+                            logger.warning(f"🛡️ [NEXUS:F2B] Detected Attacker {ip}. Prompting Firewall Block.")
+                            await nexus_firewall.block_port(0, protocol=f"from {ip}") # Block all from IP
 
             if new_bans > 0:
-                logger.warning(f"🚨 [NEXUS:F2B] Detected {new_bans} New Malicious IPs. Blacklist Synchronized.")
+                logger.warning(f"🚨 [NEXUS:F2B] Synchronized {new_bans} New Bans to Firewall.")
                 
         except Exception as e:
             logger.error(f"🚨 F2B Watcher failed: {e}")

@@ -786,22 +786,15 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
       <AnimatePresence mode="wait">
         {isOpen && (
           <motion.div 
-            key="chatbot-presence-wrapper"
-            ref={containerRef} 
-            className="contents pointer-events-auto"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div 
-              key="chatbot-main-panel"
-              initial={{ scale: 0.8, opacity: 0, originX: 1, originY: 1 }}
+            key="chatbot-main-panel"
+            ref={containerRef}
+            initial={{ opacity: 0, scale: 0.8, originX: 1, originY: 1 }}
             animate={{ 
-              scale: 1, 
               opacity: 1,
+              scale: 1, 
               x: isError ? [0, -10, 10, -10, 10, 0] : 0 
             }}
-            exit={{ scale: 0.8, opacity: 0, originX: 1, originY: 1 }}
+            exit={{ opacity: 0, scale: 0.8, originX: 1, originY: 1 }}
             transition={{ 
               type: "spring", 
               damping: 25, 
@@ -968,17 +961,18 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
           {/* New Message Badge (Task 1.10) */}
           <AnimatePresence>
             {showNewMessageBadge && (
-              <motion.button 
-                key="new-message-badge"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 20 }}
-                onClick={() => scrollToNewMessage(true)}
-                className="absolute bottom-32 left-1/2 -translate-x-1/2 z-10 px-4 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-full shadow-lg flex items-center gap-2 hover:bg-cyan-600 transition-all border-2 border-white/20"
-              >
-                <ChevronDown className="w-3 h-3 animate-bounce" />
-                New Telemetry Received
-              </motion.button>
+              <div key="new-message-badge" className="absolute bottom-32 left-1/2 -translate-x-1/2 z-10">
+                <motion.button 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  onClick={() => scrollToNewMessage(true)}
+                  className="px-4 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-full shadow-lg flex items-center gap-2 hover:bg-cyan-600 transition-all border-2 border-white/20"
+                >
+                  <ChevronDown className="w-3 h-3 animate-bounce" />
+                  New Telemetry Received
+                </motion.button>
+              </div>
             )}
           </AnimatePresence>
 
@@ -1074,7 +1068,6 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
             </div>
           </div>
         </motion.div>
-      </motion.div>
         )}
       </AnimatePresence>
 
