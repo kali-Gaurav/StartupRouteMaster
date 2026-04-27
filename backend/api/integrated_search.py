@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from fastapi.responses import ORJSONResponse
 
 from database import SessionLocal, get_db
-from database.models import Stop, Trip, Route
+from database.models import Stop, Trip, Route, User
 from api.dependencies import get_optional_user
 from services.search_service import SearchService
 from services.booking_service import BookingService
@@ -38,7 +38,12 @@ _unified_search_results: Dict[str, Any] = {}
 
 @router.post("/search/unified", response_model=List[JourneyInfoResponse])
 @limiter.limit("30/minute")
-async def unified_search(request: Request, search_payload: SearchRequest, db: Session = Depends(get_db)):
+async def unified_search(
+    request: Request,
+    search_payload: SearchRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
     """
     [Task 50.1] V3 Master Orchestrator.
     Integrates Project Shield, Zero-Latency Cache, and Scraper Sentinel.
@@ -53,10 +58,11 @@ async def unified_search(request: Request, search_payload: SearchRequest, db: Se
     
     # [Task 50.1] Metadata Fingerprinting (Project Shield S2)
     fingerprint = request.headers.get("x-device-fingerprint", "GUEST_FP")
-    origin_ip = request.client.host
+    origin_ip = request.client.host if request.client else "UNKNOWN"
+    user_agent = request.headers.get("user-agent", "unknown")
     
     # 1. Block Scrapers/Bots Before CPU Work [45.1]
-    if not await fraud_service.validate_identity(db=db, user_id=None, fingerprint=fingerprint, city="UNKNOWN"):
+    if not await fraud_service.validate_identity(db=db, user=current_user, client_ip=origin_ip, user_agent=user_agent):
         raise HTTPException(status_code=403, detail="Security Filter: High-risk activity detected.")
 
     # 2. Canonical V3 Fingerprint [47.1]
@@ -88,7 +94,7 @@ async def unified_search(request: Request, search_payload: SearchRequest, db: Se
         # [Task 47.3] Probabilistic Background Refresh & Distributed Lock Protection
         response_data = await multi_layer_cache.get_or_set(
             key=cache_key,
-            func=fetch_fresh,
+            fetch_callback=fetch_fresh,
             ttl=TTL_ROUTE_SEARCH
         )
         
@@ -133,7 +139,7 @@ async def unlock_journey_details(
         seats_task = seat_service.verify_journey(journey)
         fares_task = fare_service.verify_journey_fares(journey, coach_preference)
         
-        seats_ok, fares_res = await asyncio.gather(seats_task, fares_task)
+        seats_ok, fares_res = await asyncio.gather(seats_task, fares_task, return_exceptions=False)
 
         if not seats_ok:
             return {"success": False, "message": "Seats not available for this route."}

@@ -102,8 +102,8 @@ class FraudService:
         return {
             "status": "healthy",
             "circuit_breakers": {
-                "redis": self._redis_breaker.get_metrics().to_dict(),
-                "database": self._db_breaker.get_metrics().to_dict()
+                "redis": self._redis_breaker.get_metrics(),
+                "database": self._db_breaker.get_metrics()
             },
             "metrics": self._metrics.get_metrics()
         }
@@ -125,7 +125,7 @@ class FraudService:
         return hashlib.sha256(seed.encode()).hexdigest()
 
     @staticmethod
-    async def validate_identity(db: Session, user: User, client_ip: str, user_agent: str, background_tasks=None, metadata: Optional[Dict[str, Any]] = None) -> float:
+    async def validate_identity(db: Session, user: Optional[User], client_ip: str, user_agent: str, background_tasks=None, metadata: Optional[Dict[str, Any]] = None) -> float:
         """
         [Task 45.B HARDENING] Atomic Sybil Detection + Background Persistence.
         """
@@ -135,6 +135,12 @@ class FraudService:
         if redis is None:
             raise RuntimeError("Redis unavailable for fraud validation")
         
+        if user is None:
+            user = User(id="GUEST_USER", last_fingerprint=None)
+            transient_guest = True
+        else:
+            transient_guest = False
+
         fp_hash = FraudService.generate_fingerprint(client_ip, user_agent, metadata)
         
         # 1. Atomic LUA script to prevent orphaned keys (INCR + EXPIRE)
@@ -156,11 +162,12 @@ class FraudService:
         # 2. [Task 45.F] Async Background Persistence
         if user.last_fingerprint != fp_hash:
             user.last_fingerprint = fp_hash
-            if background_tasks:
-                # Move DB write off the request thread
-                background_tasks.add_task(FraudService._persist_fingerprint, user.id, fp_hash)
-            else:
-                db.commit()
+            if not transient_guest:
+                if background_tasks:
+                    # Move DB write off the request thread
+                    background_tasks.add_task(FraudService._persist_fingerprint, user.id, fp_hash)
+                else:
+                    db.commit()
             
         return 0.0
 

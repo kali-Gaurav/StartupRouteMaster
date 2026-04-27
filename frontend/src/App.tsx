@@ -38,6 +38,7 @@ const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 const IrctcRedirect = lazy(() => import("./pages/IrctcRedirect"));
+const RazorpayCheckout = lazy(() => import("./pages/RazorpayCheckout"));
 const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const AdminOperations = lazy(() => import("./pages/AdminOperations"));
@@ -159,6 +160,7 @@ const AppContent = () => {
             } />
             
             <Route path="/ticket/:bookingId" element={<ErrorBoundary name="Ticket"><Ticket /></ErrorBoundary>} />
+            <Route path="/checkout" element={<ErrorBoundary name="RazorpayCheckout"><RazorpayCheckout /></ErrorBoundary>} />
             <Route path="/responder" element={<Responder />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="/terms" element={<Terms />} />

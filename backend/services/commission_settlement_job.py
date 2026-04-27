@@ -131,14 +131,14 @@ async def run_settlement_cycle():
         # Find all agents with pending commissions
         agents = db.query(CommissionTracking.user_id).filter(
             CommissionTracking.status == "PENDING"
-        ).distinct().all()
+        ).distinct().scalars().all()
         
-        agent_ids = [a.user_id for a in agents]
+        agent_ids = [str(a) for a in agents if a is not None]
         logger.info(f"Found {len(agent_ids)} agents with pending earnings.")
         
         for agent_id in agent_ids:
             try:
-                commission_service.settle_batch(db, agent_id)
+                await commission_service.settle_batch(db, agent_id)
             except Exception as e:
                 logger.error(f"❌ Failed to settle for agent {agent_id}: {e}")
                 db.rollback()

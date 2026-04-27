@@ -10,8 +10,8 @@ This is the main entry point for the complete booking flow.
 """
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime, date
-from dataclasses import dataclass
+from datetime import datetime, date, timedelta
+from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("booking.orchestrator")
 
@@ -44,14 +44,15 @@ class BookingQuote:
     
     # Availability
     seat_availability: str  # "available", "rac", "waitlist"
+    quote_valid_until: datetime
+    route_is_viable: bool = True
     waitlist_position: Optional[int] = None
     
     # Seat assignments (if confirmed)
     seat_assignments: Optional[List[Dict]] = None
-    
-    # Validity
-    quote_valid_until: datetime
-    route_is_viable: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 class BookingIntegrationOrchestrator:

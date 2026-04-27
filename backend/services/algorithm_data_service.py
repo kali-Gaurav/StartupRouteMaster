@@ -5,7 +5,7 @@ Handles data flow between models and algorithm components.
 Optimized for memory efficiency and minimal API calls.
 """
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from datetime import datetime, date, timedelta
 from collections import defaultdict
 from uuid import uuid4
@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 
 from database.config import Config
-from database.session import get_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,17 @@ class AlgorithmDataService:
         self.db = db
         self._cache: Dict[str, tuple[Any, datetime]] = {}
     
+    def _db(self) -> Session:
+        if self.db is None:
+            raise RuntimeError("Database session has not been initialized")
+        # Debug: check connection
+        try:
+            from sqlalchemy import text
+            url = str(self.db.get_bind().url)
+            logger.debug(f"AlgorithmDataService using DB: {url.split('@')[-1] if '@' in url else url}")
+        except: pass
+        return self.db
+
     def _get_cache(self, key: str) -> Optional[Any]:
         """Get cached value if not expired."""
         if key in self._cache:
@@ -65,7 +75,8 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import StationKnowledge
             
-            station = self.db.query(StationKnowledge).filter(
+            db = self._db()
+            station = db.query(StationKnowledge).filter(
                 StationKnowledge.station_code == station_code
             ).first()
             
@@ -100,7 +111,8 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import RouteKnowledge
             
-            route = self.db.query(RouteKnowledge).filter(
+            db = self._db()
+            route = db.query(RouteKnowledge).filter(
                 and_(
                     RouteKnowledge.source_code == source,
                     RouteKnowledge.destination_code == destination
@@ -139,7 +151,8 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import UserTravelPreference
             
-            pref = self.db.query(UserTravelPreference).filter(
+            db = self._db()
+            pref = db.query(UserTravelPreference).filter(
                 UserTravelPreference.user_id == user_id
             ).first()
             
@@ -180,7 +193,7 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import update_user_preference_from_booking
             
-            update_user_preference_from_booking(self.db, user_id, booking_data)
+            update_user_preference_from_booking(self._db(), user_id, booking_data)
             
             # Invalidate cache
             cache_key = f"user_prefs:{user_id}"
@@ -199,8 +212,9 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import RouteKnowledge
             
+            db = self._db()
             # Update or create route knowledge
-            route = self.db.query(RouteKnowledge).filter(
+            route = db.query(RouteKnowledge).filter(
                 and_(
                     RouteKnowledge.source_code == source,
                     RouteKnowledge.destination_code == destination
@@ -208,10 +222,11 @@ class AlgorithmDataService:
             ).first()
             
             if route:
-                route.search_count = (route.search_count or 0) + 1
+                route_any = cast(Any, route)
+                route_any.search_count = (route_any.search_count or 0) + 1
                 # Update conversion rate
-                if route.search_count > 0:
-                    route.conversion_rate = (route.booking_count or 0) / route.search_count
+                if route_any.search_count > 0:
+                    route_any.conversion_rate = (route_any.booking_count or 0) / route_any.search_count
             else:
                 route = RouteKnowledge(
                     source_code=source,
@@ -219,12 +234,14 @@ class AlgorithmDataService:
                     search_count=1,
                     duration_minutes=0  # Will be updated later
                 )
-                self.db.add(route)
+                db.add(route)
             
-            self.db.commit()
+            db.commit()
             
         except Exception as e:
             logger.error(f"Failed to record search event: {e}")
+            try: db.rollback()
+            except: pass
     
     def record_booking_event(self, source: str, destination: str, 
                              travel_date: date, fare: float):
@@ -233,8 +250,9 @@ class AlgorithmDataService:
             from database.algorithm_models import RouteKnowledge, PriceHistory
             from datetime import datetime
             
+            db = self._db()
             # Update route knowledge
-            route = self.db.query(RouteKnowledge).filter(
+            route = db.query(RouteKnowledge).filter(
                 and_(
                     RouteKnowledge.source_code == source,
                     RouteKnowledge.destination_code == destination
@@ -242,15 +260,16 @@ class AlgorithmDataService:
             ).first()
             
             if route:
-                route.booking_count = (route.booking_count or 0) + 1
+                route_any = cast(Any, route)
+                route_any.booking_count = (route_any.booking_count or 0) + 1
                 # Update average fare
-                if route.booking_count == 1:
-                    route.avg_fare = fare
+                if route_any.booking_count == 1:
+                    route_any.avg_fare = fare
                 else:
-                    route.avg_fare = (route.avg_fare * (route.booking_count - 1) + fare) / route.booking_count
+                    route_any.avg_fare = (route_any.avg_fare * (route_any.booking_count - 1) + fare) / route_any.booking_count
                 # Update conversion rate
-                if route.search_count and route.search_count > 0:
-                    route.conversion_rate = route.booking_count / route.search_count
+                if route_any.search_count and route_any.search_count > 0:
+                    route_any.conversion_rate = route_any.booking_count / route_any.search_count
             
             # Record price history
             days_ahead = (travel_date - date.today()).days if travel_date else 0
@@ -265,12 +284,14 @@ class AlgorithmDataService:
                 final_fare=fare,
                 recorded_at=datetime.utcnow()
             )
-            self.db.add(price_record)
+            db.add(price_record)
             
-            self.db.commit()
+            db.commit()
             
         except Exception as e:
             logger.error(f"Failed to record booking event: {e}")
+            try: db.rollback()
+            except: pass
     
     def get_demand_snapshot(self, source: str, destination: str, 
                             travel_date: date) -> Optional[Dict]:
@@ -279,7 +300,8 @@ class AlgorithmDataService:
             from database.algorithm_models import DemandSnapshot
             
             # Get most recent snapshot
-            snapshot = self.db.query(DemandSnapshot).filter(
+            db = self._db()
+            snapshot = db.query(DemandSnapshot).filter(
                 and_(
                     DemandSnapshot.source_code == source,
                     DemandSnapshot.destination_code == destination,
@@ -311,7 +333,8 @@ class AlgorithmDataService:
             
             cutoff_date = date.today() - timedelta(days=days_back)
             
-            snapshots = self.db.query(DemandSnapshot).filter(
+            db = self._db()
+            snapshots = db.query(DemandSnapshot).filter(
                 and_(
                     DemandSnapshot.source_code == source,
                     DemandSnapshot.destination_code == destination,
@@ -344,6 +367,7 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import DelayPrediction
             
+            db = self._db()
             prediction = DelayPrediction(
                 train_number=train_number,
                 travel_date=travel_date,
@@ -351,8 +375,8 @@ class AlgorithmDataService:
                 confidence_score=confidence,
                 delay_category=self._categorize_delay(predicted_delay)
             )
-            self.db.add(prediction)
-            self.db.commit()
+            db.add(prediction)
+            db.commit()
             
         except Exception as e:
             logger.error(f"Failed to record delay prediction: {e}")
@@ -363,7 +387,8 @@ class AlgorithmDataService:
         try:
             from database.algorithm_models import DelayPrediction
             
-            prediction = self.db.query(DelayPrediction).filter(
+            db = self._db()
+            prediction = db.query(DelayPrediction).filter(
                 and_(
                     DelayPrediction.train_number == train_number,
                     DelayPrediction.travel_date == travel_date
@@ -371,9 +396,10 @@ class AlgorithmDataService:
             ).first()
             
             if prediction:
-                prediction.actual_delay_minutes = actual_delay
-                prediction.prediction_error = abs(actual_delay - prediction.predicted_delay_minutes)
-                self.db.commit()
+                prediction_any = cast(Any, prediction)
+                prediction_any.actual_delay_minutes = actual_delay
+                prediction_any.prediction_error = abs(actual_delay - prediction_any.predicted_delay_minutes)
+                db.commit()
                 
         except Exception as e:
             logger.error(f"Failed to update actual delay: {e}")
@@ -409,8 +435,9 @@ class AlgorithmDataService:
                 preference_match_score=preference_match,
                 allocation_method=allocation_method
             )
-            self.db.add(log)
-            self.db.commit()
+            db = self._db()
+            db.add(log)
+            db.commit()
             
         except Exception as e:
             logger.error(f"Failed to log seat allocation: {e}")
@@ -422,7 +449,8 @@ class AlgorithmDataService:
             from database.models import Booking
             
             # Get bookings for this train
-            bookings = self.db.query(Booking).filter(
+            db = self._db()
+            bookings = db.query(Booking).filter(
                 and_(
                     Booking.train_number == train_number,
                     Booking.travel_date == travel_date,
@@ -431,7 +459,7 @@ class AlgorithmDataService:
             ).count()
             
             # Get allocation logs
-            allocations = self.db.query(SeatAllocationLog).filter(
+            allocations = db.query(SeatAllocationLog).filter(
                 SeatAllocationLog.train_number == train_number
             ).all()
             
@@ -468,7 +496,7 @@ class AlgorithmDataService:
                                      execution_time_ms: float,
                                      success: bool,
                                      results_count: int = 0,
-                                     error: str = None):
+                                     error: Optional[str] = None):
         """Record algorithm performance metrics."""
         try:
             from database.algorithm_models import AlgorithmPerformanceMetric
@@ -481,8 +509,9 @@ class AlgorithmDataService:
                 results_count=results_count,
                 error_message=error
             )
-            self.db.add(metric)
-            self.db.commit()
+            db = self._db()
+            db.add(metric)
+            db.commit()
             
         except Exception as e:
             logger.error(f"Failed to record performance: {e}")
@@ -495,7 +524,8 @@ class AlgorithmDataService:
             
             cutoff = datetime.utcnow() - timedelta(hours=hours_back)
             
-            metrics = self.db.query(AlgorithmPerformanceMetric).filter(
+            db = self._db()
+            metrics = db.query(AlgorithmPerformanceMetric).filter(
                 and_(
                     AlgorithmPerformanceMetric.algorithm_name == algorithm_name,
                     AlgorithmPerformanceMetric.recorded_at >= cutoff
@@ -510,7 +540,7 @@ class AlgorithmDataService:
                 }
             
             total = len(metrics)
-            successful = sum(1 for m in metrics if m.success)
+            successful = sum(1 for m in metrics if cast(Any, m).success)
             times = [m.execution_time_ms for m in metrics]
             
             return {
@@ -519,7 +549,7 @@ class AlgorithmDataService:
                 "avg_time_ms": sum(times) / len(times) if times else 0,
                 "min_time_ms": min(times) if times else 0,
                 "max_time_ms": max(times) if times else 0,
-                "cache_hits": sum(1 for m in metrics if m.cache_hit)
+                "cache_hits": sum(1 for m in metrics if cast(Any, m).cache_hit)
             }
             
         except Exception as e:
@@ -532,6 +562,7 @@ class AlgorithmDataService:
     
     def batch_record_searches(self, searches: List[Dict]):
         """Batch record multiple search events efficiently."""
+        db = self._db()
         try:
             from database.algorithm_models import RouteKnowledge
             
@@ -543,7 +574,8 @@ class AlgorithmDataService:
             
             # Update in batch
             for (source, dest), count in route_counts.items():
-                route = self.db.query(RouteKnowledge).filter(
+                db = self._db()
+                route = db.query(RouteKnowledge).filter(
                     and_(
                         RouteKnowledge.source_code == source,
                         RouteKnowledge.destination_code == dest
@@ -551,24 +583,27 @@ class AlgorithmDataService:
                 ).first()
                 
                 if route:
-                    route.search_count = (route.search_count or 0) + count
+                    route_any = cast(Any, route)
+                    route_any.search_count = (route_any.search_count or 0) + count
                 else:
                     route = RouteKnowledge(
                         source_code=source,
                         destination_code=dest,
                         search_count=count
                     )
-                    self.db.add(route)
+                    db.add(route)
             
-            self.db.commit()
+            db.commit()
             logger.info(f"Batch recorded {len(searches)} searches across {len(route_counts)} routes")
             
         except Exception as e:
             logger.error(f"Failed to batch record searches: {e}")
-            self.db.rollback()
+            try: db.rollback()
+            except: pass
     
     def cleanup_old_data(self, days_to_keep: int = 90):
         """Clean up old data to save memory."""
+        db = self._db()
         try:
             from database.algorithm_models import (
                 DemandSnapshot, PriceHistory, DelayPrediction, 
@@ -577,22 +612,23 @@ class AlgorithmDataService:
             
             cutoff = datetime.utcnow() - timedelta(days=days_to_keep)
             
+            db = self._db()
             # Delete old price history
-            self.db.query(PriceHistory).filter(
+            db.query(PriceHistory).filter(
                 PriceHistory.recorded_at < cutoff
             ).delete()
             
             # Delete old performance metrics
-            self.db.query(AlgorithmPerformanceMetric).filter(
+            db.query(AlgorithmPerformanceMetric).filter(
                 AlgorithmPerformanceMetric.recorded_at < cutoff
             ).delete()
             
-            self.db.commit()
+            db.commit()
             logger.info(f"Cleaned up data older than {days_to_keep} days")
             
         except Exception as e:
             logger.error(f"Failed to cleanup old data: {e}")
-            self.db.rollback()
+            db.rollback()
 
 
 # Global instance

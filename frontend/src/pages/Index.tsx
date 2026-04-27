@@ -27,13 +27,22 @@ import { storageService } from "@/services/storageService";
 import { useSystemStatus } from "@/store/useSystemStatus";
 import { useRailwaySearch } from "@/hooks/useRailwaySearch";
 import { VoiceSearch } from "@/components/VoiceSearch";
+import { ShadowGuideHUD } from "@/components/sovereign/ShadowGuideHUD";
+import { NudgeCard } from "@/components/sovereign/NudgeCard";
+import { useSovereignWallet } from "@/hooks/useSovereignWallet";
 
 const Index = () => {
   const isBackendOnline = useBackendHealth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [origin, setOrigin] = useState<Station | null>(null);
   const [destination, setDestination] = useState<Station | null>(null);
-  const [travelDate, setTravelDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [travelDate, setTravelDate] = useState<string>(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   const [isSearching, setIsSearching] = useState(false);
   const [optimalRoutes, setOptimalRoutes] = useState<Route[]>([]);
   const [allRoutes, setAllRoutes] = useState<Route[]>([]);
@@ -61,6 +70,7 @@ const Index = () => {
   const hasRestoredLastSearch = useRef<boolean>(false);
   const [unlockedRouteIds, setUnlockedRouteIds] = useState<Set<string>>(new Set());
   const [suggestions, setSuggestions] = useState<any[]>([]);
+  const { claimIncentive, wallet } = useSovereignWallet();
 
   // [Point 18 & 30] Initialize Intelligent Streaming Hook
   const {
@@ -71,6 +81,7 @@ const Index = () => {
     isComplete,
     cancelSearch,
     error: hookError,
+    metadata,
   } = useRailwaySearch({
     routeSource,
     onProgressiveResults: (routes) => {
@@ -451,12 +462,31 @@ const Index = () => {
     return routes;
   }, [currentRoutes, selectedCategory, filterTransfers, filterDeparture, filterMaxDurationHours, filterMaxCost]);
 
-  // Client-side sort by preset (Fastest / Cheapest / Most Reliable)
+  // Client-side sort by preset (Fastest / Cheapest / Most Reliable / Optimal)
   const sortedRoutes = useMemo(() => {
     const list = [...filteredRoutes];
-    if (sortPreset === "duration") list.sort((a, b) => a.totalTime - b.totalTime);
-    else if (sortPreset === "cost") list.sort((a, b) => (a.totalCost || 0) - (b.totalCost || 0));
-    else list.sort((a, b) => (b.safetyScore ?? 0) - (a.safetyScore ?? 0));
+    if (sortPreset === "duration") {
+      list.sort((a, b) => a.totalTime - b.totalTime);
+    } else if (sortPreset === "cost") {
+      list.sort((a, b) => (a.totalCost || 0) - (b.totalCost || 0));
+    } else if (sortPreset === "reliable") {
+      list.sort((a, b) => (b.safetyScore ?? 0) - (a.safetyScore ?? 0));
+    } else {
+      // "Optimal" - composite score: safety (higher=better), time (lower=better), cost (lower=better)
+      list.sort((a, b) => {
+        const safetyA = (a.safetyScore || 50) / 100; // normalize 0-1
+        const safetyB = (b.safetyScore || 50) / 100;
+        const timeA = Math.min(a.totalTime / 1440, 1); // normalize to 0-1 (max 24h)
+        const timeB = Math.min(b.totalTime / 1440, 1);
+        const maxCost = Math.max(a.totalCost || 1, b.totalCost || 1, 1);
+        const costA = (a.totalCost || 0) / maxCost; // normalize relative to pair
+        const costB = (b.totalCost || 0) / maxCost;
+        // Higher score = better: high safety, low time, low cost
+        const scoreA = safetyA * 0.35 + (1 - timeA) * 0.35 + (1 - costA) * 0.30;
+        const scoreB = safetyB * 0.35 + (1 - timeB) * 0.35 + (1 - costB) * 0.30;
+        return scoreB - scoreA;
+      });
+    }
     return list;
   }, [filteredRoutes, sortPreset]);
 
@@ -769,7 +799,7 @@ const Index = () => {
       </section>
 
       {/* Results Section */}
-      {(optimalRoutes.length > 0 || allRoutes.length > 0 || isSearching || searchError) && (
+      {(optimalRoutes.length > 0 || allRoutes.length > 0 || isSearching || searchError || (origin && destination && isComplete)) && (
         <section id="results" className="py-12 bg-secondary/30">
           <div className="container mx-auto px-4">
             {searchError && (
@@ -787,7 +817,6 @@ const Index = () => {
                 </button>
               </div>
             )}
-            {/* Show skeleton during search */}
             {isSearching ? (
               <>
                 <div className="mb-8">
@@ -796,6 +825,34 @@ const Index = () => {
                 </div>
                 <RouteSkeleton count={3} />
               </>
+            ) : (optimalRoutes.length === 0 && allRoutes.length === 0 && !searchError && isComplete) ? (
+              <div className="text-center py-20 px-6 rounded-3xl bg-card border border-dashed border-border">
+                <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-6">
+                  <Search className="w-8 h-8 text-muted-foreground opacity-20" />
+                </div>
+                <h3 className="text-xl font-bold mb-2">No routes found</h3>
+                <p className="text-muted-foreground max-w-sm mx-auto mb-8">
+                  We couldn't find any direct or transfer routes between {origin?.name} and {destination?.name} on {new Date(travelDate).toLocaleDateString()}.
+                </p>
+                <div className="flex flex-wrap justify-center gap-4">
+                  <button 
+                    onClick={() => handleSearch()}
+                    className="px-6 py-2 rounded-xl bg-primary text-primary-foreground font-bold hover:opacity-90"
+                  >
+                    Refresh Search
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setOrigin(null);
+                      setDestination(null);
+                      document.getElementById("search-form")?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    className="px-6 py-2 rounded-xl bg-secondary text-secondary-foreground font-bold hover:bg-secondary/80"
+                  >
+                    Clear All
+                  </button>
+                </div>
+              </div>
             ) : (
               <>
                     {journeyMessage && (
@@ -909,43 +966,83 @@ const Index = () => {
                       >
                         <Shield className="w-4 h-4" /> Most Reliable
                       </button>
+                      <button
+                        onClick={() => setSortPreset("score" as any)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all",
+                          sortPreset === ("score" as any) ? "bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30" : "bg-secondary text-muted-foreground hover:text-foreground border border-transparent"
+                        )}
+                      >
+                        <Sparkles className="w-4 h-4" /> AI Optimal
+                      </button>
                     </div>
                     <div className="flex flex-col gap-4">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-muted-foreground uppercase tracking-tighter">Categories:</span>
+                        <span className="text-sm font-bold text-muted-foreground uppercase tracking-tighter">Quick Filters:</span>
                         <div className="flex flex-wrap gap-2">
-                          {["OPTIMAL", "DIRECT", "1 TRANSFER", "2 TRANSFERS", "MULTIMODAL"].map((cat) => (
-                            <button
-                              key={cat}
-                              onClick={() => setSelectedCategory(selectedCategory === cat ? null : cat)}
-                              className={cn(
-                                "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
-                                selectedCategory === cat 
-                                  ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
-                                  : "bg-card border-border text-muted-foreground hover:border-primary/40"
-                              )}
-                            >
-                              {cat}
-                            </button>
-                          ))}
+                          <button
+                            onClick={() => {
+                              setSelectedCategory(null);
+                              setFilterTransfers(null);
+                              setSortPreset("score" as any);
+                              setViewMode("optimal");
+                            }}
+                            className={cn(
+                              "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
+                              viewMode === "optimal" && !filterTransfers
+                                ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
+                                : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                            )}
+                          >
+                            OPTIMAL
+                          </button>
+                          <button
+                            onClick={() => {
+                              setFilterTransfers(0);
+                              setViewMode("all");
+                            }}
+                            className={cn(
+                              "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
+                              filterTransfers === 0 
+                                ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
+                                : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                            )}
+                          >
+                            DIRECT
+                          </button>
+                          <button
+                            onClick={() => {
+                              setFilterTransfers(1);
+                              setViewMode("all");
+                            }}
+                            className={cn(
+                              "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
+                              filterTransfers === 1 
+                                ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
+                                : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                            )}
+                          >
+                            1 TRANSFER
+                          </button>
+                          <button
+                            onClick={() => {
+                              setFilterTransfers(2);
+                              setViewMode("all");
+                            }}
+                            className={cn(
+                              "px-4 py-2 rounded-xl text-xs font-black transition-all border-2",
+                              filterTransfers === 2 
+                                ? "bg-primary border-primary text-white shadow-lg shadow-primary/20 scale-105" 
+                                : "bg-card border-border text-muted-foreground hover:border-primary/40"
+                            )}
+                          >
+                            2+ TRANSFERS
+                          </button>
                         </div>
                       </div>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-3 mb-6">
-                    <span className="text-sm font-medium text-muted-foreground">Transfers:</span>
-                    {([null, 0, 1, 2] as const).map((n) => (
-                      <button
-                        key={n ?? "all"}
-                        onClick={() => setFilterTransfers(n)}
-                        className={cn(
-                          "px-3 py-1.5 rounded-lg text-sm font-medium transition-all",
-                          filterTransfers === n ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        {n === null ? "All" : n === 2 ? "2+" : String(n)}
-                      </button>
-                    ))}
                     <span className="text-sm font-medium text-muted-foreground ml-2">Departure:</span>
                     {(["morning", "afternoon", "evening"] as const).map((w) => (
                       <button
@@ -959,10 +1056,17 @@ const Index = () => {
                         {w}
                       </button>
                     ))}
-                    {filterTransfers !== null || filterDeparture !== null ? (
+                    {filterTransfers !== null || filterDeparture !== null || viewMode !== "optimal" ? (
                       <button
                         type="button"
-                        onClick={() => { setFilterTransfers(null); setFilterDeparture(null); setFilterMaxDurationHours(null); setFilterMaxCost(null); }}
+                        onClick={() => { 
+                          setFilterTransfers(null); 
+                          setFilterDeparture(null); 
+                          setFilterMaxDurationHours(null); 
+                          setFilterMaxCost(null); 
+                          setViewMode("optimal");
+                          setSortPreset("duration");
+                        }}
                         className="text-sm text-muted-foreground hover:text-foreground underline"
                       >
                         Reset filters
@@ -972,6 +1076,41 @@ const Index = () => {
                 </div>
 
                 <div className="space-y-4">
+                  {/* [SOVEREIGN] Shadow-Guide HUD */}
+                  <ShadowGuideHUD 
+                    isVisible={!!metadata?.shadow_guide}
+                    message={metadata?.shadow_guide?.message || ""}
+                    pressure={metadata?.corridor_pressure || 0}
+                    level={metadata?.corridor_pressure > 0.8 ? "OVERFLOW" : (metadata?.corridor_pressure > 0.6 ? "HIGH" : "MODERATE")}
+                  />
+
+                  {/* [SOVEREIGN] EDR Nudge Cards */}
+                  {metadata?.edr_nudges?.map((nudge: any) => (
+                    <NudgeCard
+                      key={nudge.id}
+                      type={nudge.type}
+                      headline={nudge.headline}
+                      description={nudge.description}
+                      incentive={nudge.incentive}
+                      onClaim={async () => {
+                        try {
+                          // Extract numeric value from incentive string (e.g. "₹50" -> 50)
+                          const amountMatch = nudge.incentive.match(/\d+/);
+                          const amount = amountMatch ? parseFloat(amountMatch[0]) : 0;
+                          
+                          await claimIncentive(amount, nudge.id, nudge.ab_variant, nudge.description);
+                          
+                          // Find the target route and scroll to it if it exists
+                          if (nudge.target_route) {
+                             document.getElementById(`route-${nudge.target_route}`)?.scrollIntoView({ behavior: "smooth" });
+                          }
+                        } catch (err) {
+                          console.error("Failed to claim through HUD:", err);
+                        }
+                      }}
+                    />
+                  ))}
+
                   {displayedRoutes.length > 0 ? (
                     <>
                       {displayedRoutes.map((route, idx) => (

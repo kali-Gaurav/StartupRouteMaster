@@ -1,6 +1,6 @@
 import httpx
 import logging
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict, Any
 from datetime import datetime, timedelta
 from database.config import Config
 from core.resilience import circuit_breaker_manager
@@ -164,13 +164,16 @@ class TelegramService:
                 if isinstance(outcome, Exception):
                     results["failed"] += 1
                     results["details"].append({"id": None, "error": str(outcome)})
-                else:
+                elif isinstance(outcome, tuple) and len(outcome) == 2:
                     tid, success = outcome
                     if success:
                         results["success"] += 1
                     else:
                         results["failed"] += 1
                     results["details"].append({"id": tid, "success": success})
+                else:
+                    results["failed"] += 1
+                    results["details"].append({"id": None, "error": "Unexpected send result"})
         else:
             # Sequential send
             for tid in telegram_ids:
@@ -201,3 +204,46 @@ class TelegramService:
 
 # Global instance
 telegram_service = TelegramService()
+
+async def send_telegram_message(message: str, chat_id: Optional[Union[str, int]] = None) -> bool:
+    """
+    Send a notification message to the configured admin Telegram chat.
+    """
+    if chat_id is None:
+        chat_id = Config._get_env("TELEGRAM_ADMIN_CHAT_ID", None)
+        if chat_id is None:
+            chat_id = Config._get_env("TELEGRAM_ADMIN_ID", None)
+
+    if chat_id is None:
+        logger.warning("No Telegram admin chat configured. Skipping alert message.")
+        return False
+
+    return await telegram_service.send_message(chat_id, message)
+
+def format_booking_alert(
+    booking_id: str,
+    journey: Dict[str, Any],
+    passengers: List[Dict[str, Any]],
+    phone: str,
+    email: str
+) -> str:
+    """Format a booking alert message for Telegram."""
+    journey_date = journey.get("date") or journey.get("journey_date") or "N/A"
+    source = journey.get("source") or journey.get("source_station") or "Unknown"
+    destination = journey.get("destination") or journey.get("destination_station") or "Unknown"
+    train_number = journey.get("train_number") or journey.get("legs", [{}])[0].get("train_number", "N/A")
+    train_name = journey.get("train_name") or journey.get("legs", [{}])[0].get("train_name", "N/A")
+    total_passengers = len(passengers)
+    passenger_lines = "\n".join([f"- {p.get('name', 'Unknown')} ({p.get('age', 'N/A')})" for p in passengers])
+
+    return (
+        f"🚨 *New Booking Request* 🚨\n"
+        f"*Booking ID:* {booking_id}\n"
+        f"*Route:* {source} → {destination}\n"
+        f"*Date:* {journey_date}\n"
+        f"*Train:* {train_number} {train_name}\n"
+        f"*Passengers:* {total_passengers}\n"
+        f"{passenger_lines}\n"
+        f"*Phone:* {phone or 'N/A'}\n"
+        f"*Email:* {email or 'N/A'}"
+    )

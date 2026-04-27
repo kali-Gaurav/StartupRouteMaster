@@ -18,9 +18,16 @@ class SOSService:
         Subtask 20.1: Immediate SOS Trigger.
         Creates event, logs initial telemetry, and alerts contacts.
         """
-        user = self.db.query(User).filter(User.id == user_id).first()
-        if not user:
+        from sqlalchemy import text
+        user_row = self.db.execute(
+            text("SELECT full_name, phone_number, email FROM users WHERE id = :id"), 
+            {"id": user_id}
+        ).fetchone()
+        
+        if not user_row:
             raise ValueError("User not found")
+            
+        full_name, phone_number, email = user_row
 
         # 1. Create SOSEvent
         event = SOSEvent(
@@ -30,9 +37,9 @@ class SOSService:
             category=category,
             lat=lat,
             lng=lng,
-            name=user.full_name,
-            phone=user.phone_number,
-            email=user.email,
+            name=full_name,
+            phone=phone_number,
+            email=email,
             trip_data=trip_data,
             triggered_at=datetime.utcnow()
         )
@@ -55,6 +62,32 @@ class SOSService:
             # TODO: await notify_service.send_sos_alert(contact, event)
 
         self.db.commit()
+        
+        # [Task 20.4] SOS Vacuuming: Record Hazard in Knowledge Graph
+        try:
+            from core.knowledge.graph_store import knowledge_graph
+            # Mappings for common hub codes if needed, or use station_code if available in trip_data
+            station_code = (trip_data or {}).get("station_code")
+            if station_code:
+                knowledge_graph.record_incident(station_code, f"SOS_{category}", severity=0.95)
+        except Exception as e:
+            logger.warning(f"Failed to record hazard in knowledge graph: {e}")
+            
+        # 4. Telegram Bot Integration (Safety Bridge)
+        try:
+            from services.telegram_dispatcher import telegram_dispatcher
+            from database.models import TelegramAccount
+            account = self.db.query(TelegramAccount).filter(TelegramAccount.user_id == user_id, TelegramAccount.is_active == True).first()
+            if account:
+                asyncio.create_task(telegram_dispatcher.send_message(
+                    account.telegram_id,
+                    f"🚨 <b>SOS DETECTED (Web Portal)</b>\n\nWe noticed you triggered SOS on the RouteMaster website. "
+                    f"Please share your <b>Live Location</b> here for real-time tracking.",
+                    reply_markup={"keyboard": [[{"text": "📍 Share Live Location", "request_location": True}]], "one_time_keyboard": True, "resize_keyboard": True}
+                ))
+        except Exception as te:
+            logger.error(f"Failed to bridge SOS to Telegram: {te}")
+
         return event.id
 
     async def update_heartbeat(self, user_id: str, journey_id: str, 

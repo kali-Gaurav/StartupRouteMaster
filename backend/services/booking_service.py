@@ -9,20 +9,27 @@ import secrets
 import hashlib
 import uuid
 import json
+import threading
 from time import sleep
 from datetime import datetime, date, timedelta
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, cast, TYPE_CHECKING
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
 
-from database.models import Booking, Payment, User, PassengerDetails, BookingAuditLog
+if TYPE_CHECKING:
+    from database.models import Booking
+from database.models import Booking, BookingFraudCheck, BookingIdempotency, Payment, User, PassengerDetails, BookingAuditLog
+from core.data_structures import EscrowStatus
+from core.booking_state_machine import BookingStateMachine
+BookingModel = cast(Any, Booking)
 from schemas import BookingResponseSchema
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import joinedload, Session
 from sqlalchemy import Column, String, Text, DateTime, Float, Integer, JSON, Boolean
 from database.base import Base # Import Base directly from database.base
 from services.event_producer import publish_booking_created
+from services.notification_service import notification_service
 from database.config import Config
 from utils.generators import generate_pnr
 from utils.validation import validate_date_string
@@ -32,45 +39,28 @@ from core.retry import RetryPolicy, RETRY_POLICY_DATABASE, RETRY_POLICY_EXTERNAL
 logger = logging.getLogger(__name__)
 
 
+def _schedule_background_task(coro, label: str) -> None:
+    """Run async side effects from sync service methods without breaking the main transaction."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        def _runner():
+            try:
+                asyncio.run(coro)
+            except Exception as exc:
+                logger.debug("Background task failed: %s: %s", label, exc)
+
+        threading.Thread(target=_runner, name=f"booking-bg-{label}", daemon=True).start()
+    except Exception as exc:
+        logger.debug("Background task scheduling failed: %s: %s", label, exc)
+
+
 # =========================================================================
 # PRODUCTION MODELS
 # =========================================================================
 
 # BookingAuditLog definition is now in database/models.py
-
-class BookingIdempotency(Base):
-    """
-    Idempotency key storage for booking operations.
-    Task: Prevent duplicate bookings.
-    """
-    __tablename__ = 'booking_idempotency'
-    __table_args__ = {'extend_existing': True}
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    idempotency_key = Column(String(64), unique=True, nullable=False, index=True)
-    booking_id = Column(String(50), nullable=False)
-    request_hash = Column(String(64), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-
-
-class BookingFraudCheck(Base):
-    """
-    Fraud detection for booking patterns.
-    Task: Booking abuse prevention.
-    """
-    __tablename__ = 'booking_fraud_checks'
-    __table_args__ = {'extend_existing': True}
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    booking_id = Column(String(50), nullable=False, index=True)
-    user_id = Column(String(100), nullable=False, index=True)
-    check_type = Column(String(50), nullable=False)  # VELOCITY, AMOUNT, PATTERN
-    risk_score = Column(Float, nullable=False)
-    flags = Column(JSON, nullable=True)
-    decision = Column(String(20), nullable=False)  # ALLOW, FLAG, BLOCK
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
 
 # =========================================================================
 # CONFIGURATION
@@ -248,8 +238,8 @@ class BookingService:
     MAX_RETRIES = 3
     LOCK_TIMEOUT_SECONDS = 30
 
-    def __init__(self, db: Session):
-        self.db = db
+    def __init__(self, db: Optional[Session] = None):
+        self.db: Session = cast(Session, db)
         self._lock_manager: Optional[DistributedLock] = None
         self._redis_client = None
 
@@ -322,25 +312,60 @@ class BookingService:
         redis = self._get_redis()
         if not redis:
             try:
-                return self.db.query(Booking).filter(
-                    Booking.idempotency_key == idempotency_key
+                record = self.db.query(BookingIdempotency).filter(
+                    BookingIdempotency.idempotency_key == idempotency_key
                 ).first()
+                if not record:
+                    return None
+                return self.db.query(Booking).filter(BookingModel.id == record.booking_id).first()
             except Exception:
                 return None
         
         cached_id = await redis.get(f"idempotency:{idempotency_key}")
         if cached_id:
             try:
-                return self.db.query(Booking).filter(Booking.id == cached_id.decode()).first()
+                return self.db.query(Booking).filter(BookingModel.id == cached_id.decode()).first()
             except Exception:
                 pass
         return None
+
+    def get_booking_by_idempotency(self, idempotency_key: str) -> Optional[Booking]:
+        """Synchronous idempotency lookup for API handlers."""
+        try:
+            record = self.db.query(BookingIdempotency).filter(
+                BookingIdempotency.idempotency_key == idempotency_key
+            ).first()
+            if not record:
+                return None
+            return self.db.query(Booking).filter(BookingModel.id == record.booking_id).first()
+        except Exception as e:
+            logger.error(f"Failed to fetch booking by idempotency key: {e}")
+            return None
 
     async def _cache_idempotency(self, idempotency_key: str, booking_id: str, ttl: int = 86400) -> None:
         """Cache the idempotency check result."""
         redis = self._get_redis()
         if redis:
             await redis.set(f"idempotency:{idempotency_key}", booking_id, ex=ttl)
+
+    def _persist_idempotency(self, idempotency_key: str, booking_id: str, request_hash: str = "") -> None:
+        """Persist idempotency result in the durable user database."""
+        try:
+            existing = self.db.query(BookingIdempotency).filter(
+                BookingIdempotency.idempotency_key == idempotency_key
+            ).first()
+            if existing:
+                return
+            record = BookingIdempotency(
+                idempotency_key=idempotency_key,
+                booking_id=booking_id,
+                request_hash=request_hash or hashlib.sha256(idempotency_key.encode()).hexdigest(),
+                expires_at=datetime.utcnow() + timedelta(hours=BookingConfig().idempotency_ttl_hours),
+            )
+            self.db.add(record)
+            self.db.flush()
+        except Exception as e:
+            logger.error(f"Failed to persist booking idempotency: {e}")
 
     # =========================================================================
     # TASK: AUDIT TRAIL
@@ -463,8 +488,8 @@ class BookingService:
         # Check 2: Booking velocity (24h)
         since_24h = datetime.utcnow() - timedelta(hours=24)
         bookings_24h = self.db.query(Booking).filter(
-            Booking.user_id == user_id,
-            Booking.created_at >= since_24h
+            BookingModel.user_id == user_id,
+            BookingModel.created_at >= since_24h
         ).count()
         
         if bookings_24h >= self.booking_config.max_bookings_per_user_24h:
@@ -474,8 +499,8 @@ class BookingService:
         # Check 3: Booking velocity (7d)
         since_7d = datetime.utcnow() - timedelta(days=7)
         bookings_7d = self.db.query(Booking).filter(
-            Booking.user_id == user_id,
-            Booking.created_at >= since_7d
+            BookingModel.user_id == user_id,
+            BookingModel.created_at >= since_7d
         ).count()
         
         if bookings_7d >= self.booking_config.max_bookings_per_user_7d:
@@ -571,6 +596,35 @@ class BookingService:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
     ) -> Optional[Booking]:
+        """Synchronous wrapper for scripts and legacy callers outside FastAPI's event loop."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.create_booking_async(
+                user_id=user_id,
+                route_id=route_id,
+                travel_date=travel_date,
+                booking_details=booking_details,
+                amount_paid=amount_paid,
+                passenger_details_list=passenger_details_list,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            ))
+        else:
+            logger.error("create_booking called from a running event loop; use create_booking_async")
+            return None
+
+    async def create_booking_async(
+        self,
+        user_id: str,
+        route_id: str,
+        travel_date: str,
+        booking_details: Dict,
+        amount_paid: float,
+        passenger_details_list: Optional[List[Dict]] = None,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> Optional[Booking]:
         """
         Create a booking with production features:
         - Idempotency
@@ -589,7 +643,7 @@ class BookingService:
         idempotency_key = self._generate_idempotency_key(user_id, travel_date, route_id)
         
         # Check for existing booking (idempotency)
-        existing = asyncio.run(self._check_idempotency(idempotency_key))
+        existing = await self._check_idempotency(idempotency_key)
         if existing:
             logger.info(f"🎯 Idempotent booking found: {existing.pnr_number}")
             self._log_audit(
@@ -648,7 +702,7 @@ class BookingService:
                         user_agent=user_agent,
                         fraud_decision=fraud_decision
                     )
-            return asyncio.run(_do_locked_booking())
+            return await _do_locked_booking()
                 
         except LockAcquisitionError as lock_err:
             logger.error(f"🔴 Lock acquisition failed: {lock_err}")
@@ -683,15 +737,17 @@ class BookingService:
         for attempt in range(self.MAX_RETRIES):
             try:
                 from sqlalchemy import text
-                if self.db.bind.dialect.name not in ("sqlite", "sqlite3"):
-                    self.db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+                assert self.db is not None
+                db = self.db
+                if db.bind is not None and db.bind.dialect.name not in ("sqlite", "sqlite3"):
+                    db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
                 
                 # Generate unique PNR
                 pnr_number = None
                 for retry in range(10):
                     candidate_pnr = generate_pnr()
                     existing = self.db.query(Booking).filter(
-                        Booking.pnr_number == candidate_pnr
+                        BookingModel.pnr_number == candidate_pnr
                     ).first()
                     if not existing:
                         pnr_number = candidate_pnr
@@ -703,9 +759,9 @@ class BookingService:
                 
                 # Check if booking already exists
                 existing_booking = self.db.query(Booking).filter(
-                    Booking.user_id == user_id,
-                    Booking.travel_date == travel_date_obj,
-                    Booking.booking_status.in_(["pending", "confirmed"])
+                    BookingModel.user_id == user_id,
+                    BookingModel.travel_date == travel_date_obj,
+                    BookingModel.booking_status.in_(["pending", "confirmed"])
                 ).first()
                 if existing_booking:
                     logger.warning(f"User {user_id} already has active booking for {travel_date_obj}")
@@ -721,10 +777,22 @@ class BookingService:
                     booking_status="pending",
                     amount_paid=amount_paid,
                     booking_details=booking_details,
-                    idempotency_key=idempotency_key,
                 )
                 self.db.add(booking)
                 self.db.flush()
+                self._persist_idempotency(idempotency_key, str(booking.id))
+
+                route_info = booking_details.get('segments', [{}])[0] if booking_details.get('segments') else booking_details
+                train_number = str(route_info.get('train_number') or route_info.get('trainNumber') or "")
+                class_type = route_info.get('class_type') or route_info.get('class') or 'SL'
+                quota = booking_details.get('quota') or route_info.get('quota') or 'GN'
+                if train_number:
+                    booking.train_number = train_number
+
+                if train_number and not self.reserve_seat_inventory(booking, class_type=class_type, quota=quota):
+                    self.db.rollback()
+                    logger.warning(f"Seat inventory reservation failed for booking {pnr_number}")
+                    return None
                 
                 # Add passenger details
                 if passenger_details_list:
@@ -749,25 +817,34 @@ class BookingService:
                 
                 self.db.commit()
                 self.db.refresh(booking)
-                
+
                 # Cache idempotency result
-                asyncio.run(self1.cache_idempotency(idempotency_key, str(booking.id)))
-                
+                _schedule_background_task(
+                    self._cache_idempotency(idempotency_key, str(booking.id)),
+                    "booking idempotency cache",
+                )
+
+                route_info = {}
+                train_class = 'SL'
+                route_id = ""
+                train_number = ""
+
                 # [ALGORITHM_MVP] Integrate Dynamic Pricing Verification
                 # Verify and update price with dynamic surge calculation
                 try:
                     from services.booking_price_calculator import get_booking_price_calculator
                     price_calc = get_booking_price_calculator(self.db)
-                    
-                    # Get route details from booking
-                    route_info = booking_details.get('segments', [{}])[0] if booking_details.get('segments') else {}
+
+                    if booking_details.get('segments'):
+                        route_info = booking_details.get('segments', [{}])[0]
+
                     source = route_info.get('from', booking_details.get('source', ''))
                     dest = route_info.get('to', booking_details.get('destination', ''))
                     train_class = route_info.get('class', 'SL')
                     passenger_count = len(passenger_details_list) if passenger_details_list else 1
-                    route_id = getattr(booking, 'route_id', None) or booking_details.get('route_id') or booking_details.get('routeId')
-                    
-                    # Calculate dynamic price
+                    route_id = str(getattr(booking, 'route_id', None) or booking_details.get('route_id') or booking_details.get('routeId') or "")
+                    train_number = str(route_info.get('train_number') or "")
+
                     price_breakdown = asyncio.run(price_calc.calculate_booking_price(
                         source=source,
                         destination=dest,
@@ -780,9 +857,10 @@ class BookingService:
                     
                     # Update booking with price breakdown
                     if price_breakdown:
-                        booking.booking_details = booking.booking_details or {}
-                        booking.booking_details['price_breakdown'] = price_breakdown.to_dict()
-                        booking.booking_details['surge_applied'] = price_breakdown.surge_multiplier
+                        details = booking.booking_details or {}
+                        booking.booking_details = details
+                        details['price_breakdown'] = price_breakdown.to_dict()
+                        details['surge_applied'] = price_breakdown.surge_multiplier
                         self.db.commit()
                         logger.info(f"Dynamic pricing applied: {price_breakdown.surge_multiplier}x surge")
                 except Exception as pe:
@@ -794,9 +872,9 @@ class BookingService:
                     from services.booking_seat_allocator import get_booking_seat_allocator
                     seat_allocator = get_booking_seat_allocator(self.db)
                     
-                    if passenger_details_list and route_info.get('train_number'):
+                    if passenger_details_list and train_number:
                         seat_result = asyncio.run(seat_allocator.allocate_seats_for_booking(
-                            train_number=route_info.get('train_number'),
+                            train_number=train_number,
                             travel_date=travel_date_obj,
                             passengers=passenger_details_list,
                             train_class=train_class,
@@ -805,8 +883,9 @@ class BookingService:
                         
                         # Store seat allocation in booking details
                         if seat_result:
-                            booking.booking_details = booking.booking_details or {}
-                            booking.booking_details['seat_allocation'] = seat_result.to_dict()
+                            details = booking.booking_details or {}
+                            booking.booking_details = details
+                            details['seat_allocation'] = seat_result.to_dict()
                             self.db.commit()
                             logger.info(f"Seat allocation completed: {seat_result.message}")
                             
@@ -817,8 +896,8 @@ class BookingService:
                             for pax in passenger_details_list:
                                 data_service.log_seat_allocation(
                                     booking_id=str(booking.id),
-                                    passenger_id=pax.get('id', str(uuid4())),
-                                    train_number=route_info.get('train_number'),
+                                    passenger_id=pax.get('id', str(uuid.uuid4())),
+                                    train_number=train_number,
                                     coach_id=seat_result.coach_assignments.get(pax.get('id', ''), 'UNKNOWN'),
                                     seat_number='TBD',
                                     preference_match=0.8,  # Simplified
@@ -836,16 +915,16 @@ class BookingService:
                     
                     # Record booking event
                     data_service.record_booking_event(
-                        source=route_info.get('from', ''),
-                        destination=route_info.get('to', ''),
+                        source=str(route_info.get('from', '') or ''),
+                        destination=str(route_info.get('to', '') or ''),
                         travel_date=travel_date_obj,
                         fare=amount_paid
                     )
                     
                     # Update user preferences
                     data_service.update_user_preferences(user_id, {
-                        'source_code': route_info.get('from', ''),
-                        'destination_code': route_info.get('to', ''),
+                        'source_code': str(route_info.get('from', '') or ''),
+                        'destination_code': str(route_info.get('to', '') or ''),
                         'travel_date': travel_date_obj,
                         'created_at': datetime.utcnow()
                     })
@@ -869,26 +948,27 @@ class BookingService:
                 logger.info(f"Booking created (pending): {pnr_number} on attempt {attempt + 1}")
                 
                 # Trigger webhooks
-                asyncio.create_task(self.trigger_webhooks("booking.created", {
+                _schedule_background_task(self.trigger_webhooks("booking.created", {
                     "booking_id": str(booking.id),
                     "pnr_number": pnr_number,
                     "user_id": user_id,
                     "amount": amount_paid,
-                    "travel_date": travel_date
-                }))
+                    "travel_date": travel_date_obj
+                }), "booking.created webhook")
 
                 # Fire-and-forget: publish booking event for analytics
                 if Config.KAFKA_ENABLE_EVENTS:
                     try:
                         segments = booking_details.get('segments', [])
-                        asyncio.create_task(
+                        _schedule_background_task(
                             publish_booking_created(
                                 user_id=user_id,
                                 route_id=route_id,
                                 total_cost=amount_paid,
                                 segments=segments,
                                 booking_reference=pnr_number
-                            )
+                            ),
+                            "booking.created event",
                         )
                     except Exception as e:
                         logger.debug(f"Failed to publish booking event: {e}")
@@ -896,7 +976,8 @@ class BookingService:
                 return booking
 
             except DBAPIError as e:
-                if hasattr(e.orig, 'pgcode') and e.orig.pgcode == '40001':
+                orig = getattr(e, 'orig', None)
+                if orig is not None and hasattr(orig, 'pgcode') and getattr(orig, 'pgcode', None) == '40001':
                     logger.warning(f"Serialization failure on attempt {attempt + 1}. Retrying...")
                     self.db.rollback()
                     sleep(0.5 * (2 ** attempt))
@@ -908,6 +989,8 @@ class BookingService:
                 logger.error(f"An unexpected error occurred during booking creation: {e}")
                 self.db.rollback()
                 return None
+            finally:
+                pass
         
         logger.error("Failed to create booking after multiple retries due to serialization failures.")
         return None
@@ -942,20 +1025,33 @@ class BookingService:
         With audit logging and webhook triggers.
         """
         try:
-            booking = self.db.query(Booking).filter(Booking.id == booking_id).first()
+            booking = self.db.query(Booking).filter(BookingModel.id == booking_id).first()
             if not booking:
                 logger.error(f"Booking not found: {booking_id}")
                 return False
             
             previous_state = booking.booking_status
             
-            if not booking.validate_status_transition("confirmed"):
-                logger.error(f"Cannot transition from {booking.booking_status} to confirmed")
-                return False
+            # [REQ-016] Re-verify seat inventory before final confirmation
+            from database.models import SeatInventory
+            inventory = self.db.query(SeatInventory).filter(
+                SeatInventory.locked_by_booking_id == booking_id
+            ).first()
             
+            if not inventory:
+                # If lock was lost, try to re-acquire
+                logger.warning(f"Inventory lock lost for booking {booking_id}. Attempting re-acquisition...")
+                if not self.reserve_seat_inventory(booking):
+                    logger.error(f"Failed to re-acquire seat for booking {booking_id}. Triggering refund.")
+                    self.cancel_booking(booking_id, reason="Seat allocation failed during confirmation.")
+                    return False
+            elif inventory.locked_until and inventory.locked_until < datetime.utcnow():
+                logger.warning(f"Inventory lock expired for booking {booking_id}. Refreshing lock...")
+                inventory.locked_until = datetime.utcnow() + timedelta(minutes=30)
+                self.db.flush()
+
             booking.booking_status = "confirmed"
             self._init_monitoring(self.db, booking)
-            
             self.db.commit()
             
             # Log audit
@@ -971,13 +1067,51 @@ class BookingService:
             )
             
             # Trigger webhooks
-            asyncio.create_task(self.trigger_webhooks("booking.confirmed", {
+            _schedule_background_task(self.trigger_webhooks("booking.confirmed", {
                 "booking_id": booking_id,
                 "pnr_number": booking.pnr_number,
                 "user_id": booking.user_id
-            }))
+            }), "booking.confirmed webhook")
+
+            # Centralized Notification (Task 1.1.5)
+            from services.notification_service import notification_service
+            
+            async def notify_user():
+                try:
+                    # Notify via centralized service for audit trail
+                    await notification_service.send_alert(
+                        db=self.db,
+                        user_id=str(booking.user_id),
+                        title="Booking Confirmed! 🎫",
+                        body=(
+                            f"PNR: {booking.pnr_number}\n"
+                            f"Train: {booking.train_number}\n"
+                            f"Journey: {getattr(booking, 'source_station', 'N/A')} to {getattr(booking, 'destination_station', 'N/A')}\n"
+                            f"Date: {getattr(booking, 'travel_date', 'N/A')}"
+                        ),
+                        alert_type="BOOKING_CONFIRMED",
+                        booking_id=booking_id
+                    )
+                except Exception as ne:
+                    logger.error(f"Notification failed for booking {booking_id}: {ne}")
+
+            _schedule_background_task(notify_user(), "booking.confirmed notification")
             
             logger.info(f"Booking confirmed: {booking.pnr_number}")
+            
+            # PATENT-LEVEL: Record Conversion for ML Training
+            try:
+                from services.telemetry_service import record_conversion
+                # search_id would ideally be in booking_details or state
+                search_id = booking.booking_details.get("search_id") if booking.booking_details else None
+                if search_id:
+                    _schedule_background_task(
+                        record_conversion(self.db, booking_id, search_id, float(booking.amount_paid)),
+                        "booking conversion telemetry",
+                    )
+            except Exception as e:
+                logger.error(f"Failed to record conversion: {e}")
+
             return True
         except Exception as e:
             logger.error(f"Failed to confirm booking: {e}")
@@ -995,18 +1129,23 @@ class BookingService:
         Cancel a booking with audit logging.
         """
         try:
-            booking = self.db.query(Booking).filter(Booking.id == booking_id).first()
+            booking = self.db.query(Booking).filter(BookingModel.id == booking_id).first()
             if not booking:
                 logger.error(f"Booking not found: {booking_id}")
                 return False
             
             previous_state = booking.booking_status
             
-            if not booking.validate_status_transition("cancelled"):
-                logger.error(f"Cannot cancel booking in {booking.booking_status} state")
+            valid_actions = BookingStateMachine.get_valid_next_actions(booking)
+            if "cancel" not in valid_actions:
+                logger.error(f"Invalid transition: cancel is not allowed from current state {booking.booking_status}/{booking.escrow_status}")
                 return False
             
             booking.booking_status = "cancelled"
+            if getattr(booking, "escrow_status", None) != EscrowStatus.FAILED:
+                booking.escrow_status = EscrowStatus.FAILED
+            booking.escrow_message = reason or "Booking cancelled"
+            self.release_seat_reservation(booking, commit=False)
             self.db.commit()
             
             # Log audit
@@ -1023,13 +1162,38 @@ class BookingService:
             )
             
             # Trigger webhooks
-            asyncio.create_task(self.trigger_webhooks("booking.cancelled", {
+            _schedule_background_task(self.trigger_webhooks("booking.cancelled", {
                 "booking_id": booking_id,
                 "pnr_number": booking.pnr_number,
                 "user_id": booking.user_id,
                 "reason": reason
-            }))
-            
+            }), "booking.cancelled webhook")
+
+            # PATENT-LEVEL: SELF-HEALING REFUND
+            # If booking was paid via Razorpay, initiate auto-refund
+            try:
+                from services.payment_service import PaymentService
+                payment_service = PaymentService(self.db)
+                # Find the captured payment for this booking
+                payment = self.db.query(Payment).filter(
+                    Payment.booking_id == booking_id,
+                    Payment.status == "completed"
+                ).first()
+                
+                if payment and payment.razorpay_payment_id:
+                    logger.info(f"💸 Initiating auto-refund for cancelled booking {booking_id}")
+                    _schedule_background_task(
+                        payment_service.refund_payment(
+                            payment_id=payment.razorpay_payment_id,
+                            amount_rupees=booking.amount_paid,
+                            reason=f"Auto-refund: {reason}",
+                            user_id=str(getattr(booking, "user_id", ""))
+                        ),
+                        "booking cancellation refund",
+                    )
+            except Exception as re:
+                logger.error(f"Auto-refund trigger failed for {booking_id}: {re}")
+
             logger.info(f"Booking cancelled: {booking.pnr_number} ({reason})")
             return True
         except Exception as e:
@@ -1046,25 +1210,36 @@ class BookingService:
         amount_paid: float,
     ) -> Optional[Booking]:
         """
-        Creates a pending booking (seat hold) for a user.
-        This is a placeholder for actual seat reservation logic.
+        Creates a pending booking and reserves seat inventory if available.
         """
         try:
             travel_date_obj = validate_date_string(travel_date, allow_past=False)
             if not travel_date_obj:
                 logger.error(f"Invalid travel date for seat hold: {travel_date}")
                 return None
-            
+
             booking = Booking(
-                pnr_number=generate_pnr(),  # NEW: Always generate PNR
+                pnr_number=generate_pnr(),
                 user_id=user_id,
                 route_id=route_id,
                 travel_date=travel_date_obj,
-                booking_status="pending",  # NEW: Use booking_status
+                booking_status="pending",
                 amount_paid=amount_paid,
                 booking_details=booking_details,
             )
             self.db.add(booking)
+            self.db.flush()
+
+            route_info = (booking_details or {}).get("segments", [{}])[0] if isinstance((booking_details or {}).get("segments"), list) else booking_details or {}
+            class_type = route_info.get("class_type") or route_info.get("class") or "SL"
+            quota = (booking_details or {}).get("quota") or route_info.get("quota") or "GN"
+            booking.train_number = route_info.get("train_number") or booking.train_number
+
+            if not self.reserve_seat_inventory(booking, class_type=class_type, quota=quota):
+                self.db.rollback()
+                logger.warning("Seat hold failed because inventory could not be reserved.")
+                return None
+
             self.db.commit()
             self.db.refresh(booking)
             logger.info(f"Seat held. PNR: {booking.pnr_number}")
@@ -1099,26 +1274,85 @@ class BookingService:
         """NEW: Get booking by PNR number."""
         try:
             booking = self.db.query(Booking).filter(
-                Booking.pnr_number == pnr
+                BookingModel.pnr_number == pnr
             ).first()
             return booking
         except Exception as e:
             logger.error(f"Failed to fetch booking by PNR: {e}")
             return None
 
-    def get_user_bookings(self, user_id: str, skip: int = 0, limit: int = 20) -> Tuple[List[Booking], int]:
-        """Get bookings for a user with pagination.
-
-        Returns a tuple of (bookings_list, total_count).
-        """
+    def get_booking_by_id(self, booking_id: str) -> Optional[Booking]:
+        """Get booking by primary key."""
         try:
-            query = self.db.query(Booking).filter(Booking.user_id == user_id)
+            return self.db.query(Booking).filter(BookingModel.id == booking_id).first()
+        except Exception as e:
+            logger.error(f"Failed to fetch booking by ID: {e}")
+            return None
+
+    def get_user_bookings(
+        self, 
+        user_id: Optional[str] = None, 
+        telegram_chat_id: Optional[str] = None,
+        skip: int = 0, 
+        limit: int = 20,
+        status_filter: Optional[str] = None,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+    ) -> Tuple[List[Booking], int]:
+        """Get bookings for a user or telegram chat with pagination."""
+        try:
+            query = self.db.query(Booking)
+            
+            if user_id:
+                query = query.filter(BookingModel.user_id == user_id)
+            elif telegram_chat_id:
+                # Find linked user
+                from services.user_service import UserService
+                user_service = UserService(self.db)
+                # Note: using synchronous version or run_in_executor if needed
+                # For now, let's look up directly
+                user = self.db.query(User).filter(User.telegram_id == telegram_chat_id).first()
+                if not user:
+                    # Try TelegramAccount
+                    from database.models import TelegramAccount
+                    account = self.db.query(TelegramAccount).filter(TelegramAccount.telegram_id == telegram_chat_id).first()
+                    if account:
+                        query = query.filter(BookingModel.user_id == account.user_id)
+                    else:
+                        return [], 0
+                else:
+                    query = query.filter(BookingModel.user_id == user.id)
+            else:
+                return [], 0
+
+            if status_filter:
+                query = query.filter(BookingModel.booking_status == status_filter)
+            if from_date:
+                query = query.filter(BookingModel.travel_date >= from_date)
+            if to_date:
+                query = query.filter(BookingModel.travel_date <= to_date)
+                
             total = query.count()
-            bookings = query.order_by(Booking.created_at.desc()).offset(skip).limit(limit).all()
+            bookings = query.order_by(BookingModel.created_at.desc()).offset(skip).limit(limit).all()
             return bookings, total
         except Exception as e:
             logger.error(f"Failed to fetch user bookings: {e}")
             return [], 0
+
+    def update_booking_status(self, booking_id: str, new_status: str) -> Optional[Booking]:
+        """Update booking status and return the updated row."""
+        try:
+            booking = self.get_booking_by_id(booking_id)
+            if not booking:
+                return None
+            booking.booking_status = new_status
+            self.db.commit()
+            self.db.refresh(booking)
+            return booking
+        except Exception as e:
+            logger.error(f"Failed to update booking status: {e}")
+            self.db.rollback()
+            return None
 
     def confirm_booking_payment(
         self, order_id: str, payment_id: str, payment_status: str
@@ -1128,40 +1362,157 @@ class BookingService:
         This is called by the webhook and is designed to be idempotent.
         """
         try:
-            # Find the payment record first
             payment = self.db.query(Payment).filter(Payment.razorpay_order_id == order_id).first()
             if not payment:
                 logger.warning(f"Payment record not found for order_id: {order_id}")
                 return False
 
-            # IDEMPOTENCY CHECK: If payment is already completed, do nothing.
-            if payment.status == "completed":
+            normalized_status = str(payment_status).strip().lower()
+            if payment.status == "completed" and normalized_status in {"completed", "success"}:
                 logger.warning(f"Payment for order_id: {order_id} has already been completed. Ignoring webhook event.")
                 return True
 
-            # Update the payment record itself
             payment.razorpay_payment_id = payment_id
-            payment.status = payment_status
-            
-            # Now find the associated booking
-            booking = self.db.query(Booking).filter(Booking.id == payment.booking_id).first()
+            payment.status = "completed" if normalized_status in {"completed", "success"} else payment_status
+
+            booking = self.db.query(Booking).filter(BookingModel.id == payment.booking_id).first()
             if not booking:
                 logger.error(f"CRITICAL: Booking not found for payment {payment.id}, but payment was made!")
+                self.db.commit()
                 return False
 
-            booking.payment_status = payment_status
+            booking.payment_status = payment.status
+
+            if normalized_status in {"completed", "success"}:
+                booking.escrow_status = EscrowStatus.COMPLETED
+                booking.escrow_message = "Payment completed through webhook."
+                self.db.commit()
+                if booking.booking_status != "confirmed":
+                    return self.confirm_booking(str(getattr(booking, "id", "")))
+                return True
+
+            if normalized_status in {"failed", "cancelled"}:
+                booking.escrow_status = EscrowStatus.FAILED
+                booking.escrow_message = "Payment failed or was cancelled."
+            elif normalized_status == "refunded":
+                booking.escrow_status = EscrowStatus.REFUNDED
+                booking.escrow_message = "Payment refunded."
+
             self.db.commit()
-            logger.info(f"Booking {booking.id} payment confirmed with status '{payment_status}'")
+            logger.info(f"Booking {booking.id} payment confirmed with status '{payment.status}'")
             return True
         except Exception as e:
             self.db.rollback()
             logger.error(f"Failed to update booking payment status: {e}")
             return False
 
+    def reserve_seat_inventory(
+        self,
+        booking: Booking,
+        class_type: Optional[str] = None,
+        quota: str = "GN",
+        hold_minutes: int = 30
+    ) -> bool:
+        """Reserve a seat from SeatInventory for a pending booking."""
+        try:
+            from database.models import SeatInventory
+
+            class_type = class_type or (booking.booking_details or {}).get("class_type") or (booking.booking_details or {}).get("class") or "SL"
+            from_station = (booking.booking_details or {}).get("from_station_code") or (booking.booking_details or {}).get("from")
+            to_station = (booking.booking_details or {}).get("to_station_code") or (booking.booking_details or {}).get("to")
+            travel_date = booking.travel_date
+
+            if not booking.train_number or not travel_date or not from_station or not to_station:
+                logger.warning("Insufficient route information to reserve seat inventory.")
+                return False
+
+            inventory = self.db.query(SeatInventory).filter(
+                SeatInventory.train_number == booking.train_number,
+                SeatInventory.from_station_code == from_station,
+                SeatInventory.to_station_code == to_station,
+                SeatInventory.travel_date == travel_date,
+                SeatInventory.class_type == class_type,
+                SeatInventory.quota == quota,
+                SeatInventory.available_seats > 0
+            ).first()
+
+            if not inventory:
+                logger.warning(f"No available inventory for train {booking.train_number} on {travel_date}")
+                return False
+
+            inventory.available_seats = max(inventory.available_seats - 1, 0)
+            inventory.locked_until = datetime.utcnow() + timedelta(minutes=hold_minutes)
+            inventory.locked_by_booking_id = booking.id
+            inventory.last_updated = datetime.utcnow()
+            self.db.flush()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to reserve seat inventory: {e}")
+            self.db.rollback()
+            return False
+
+    def release_seat_reservation(self, booking: Booking, commit: bool = True) -> bool:
+        """Release any seat inventory reserved for the canceled booking."""
+        try:
+            from database.models import SeatInventory
+
+            inventory = self.db.query(SeatInventory).filter(
+                SeatInventory.locked_by_booking_id == booking.id
+            ).first()
+            if not inventory:
+                return False
+
+            inventory.available_seats = max(inventory.available_seats + 1, 0)
+            inventory.locked_by_booking_id = None
+            inventory.locked_until = None
+            inventory.last_updated = datetime.utcnow()
+            if commit:
+                self.db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to release seat inventory: {e}")
+            if commit:
+                self.db.rollback()
+            return False
+
+    def cleanup_expired_locks(self) -> int:
+        """
+        Housekeeping: Release seats that were locked but never paid for.
+        Called by background cron or orchestrator.
+        """
+        try:
+            from database.models import SeatInventory
+            now = datetime.utcnow()
+            expired = self.db.query(SeatInventory).filter(
+                SeatInventory.locked_until < now,
+                SeatInventory.locked_by_booking_id.is_not(None)
+            ).all()
+            
+            count = 0
+            for inv in expired:
+                # Double check booking status
+                booking = self.get_booking_by_id(str(inv.locked_by_booking_id))
+                if not booking or booking.booking_status == "pending":
+                    inv.available_seats += 1
+                    inv.locked_by_booking_id = None
+                    inv.locked_until = None
+                    inv.last_updated = now
+                    count += 1
+            
+            if count > 0:
+                self.db.commit()
+                logger.info(f"🧹 Cleaned up {count} expired seat locks.")
+            return count
+        except Exception as e:
+            logger.error(f"Failed to cleanup expired seat locks: {e}")
+            self.db.rollback()
+            return 0
+
+
     def get_booking(self, booking_id: str, user: User) -> Optional[Booking]:
         """Get a single booking for a user."""
         try:
-            booking = self.db.query(Booking).filter(Booking.id == booking_id, Booking.user_id == user.id).first()
+            booking = self.db.query(Booking).filter(BookingModel.id == booking_id, BookingModel.user_id == user.id).first()
             return booking
         except Exception as e:
             logger.error(f"Failed to get booking: {e}")
@@ -1172,9 +1523,9 @@ class BookingService:
         try:
             bookings = (
                 self.db.query(Booking)
-                .options(joinedload(Booking.route))
-                .filter(Booking.user_id == user.id)
-                .order_by(Booking.created_at.desc())
+                .options(joinedload(BookingModel.route))
+                .filter(BookingModel.user_id == user.id)
+                .order_by(BookingModel.created_at.desc())
                 .all()
             )
             return bookings
@@ -1188,9 +1539,9 @@ class BookingService:
         """Retrieve a booking for a specific user, route, and travel date."""
         try:
             return self.db.query(Booking).filter(
-                Booking.user_id == user_id,
-                Booking.route_id == route_id,
-                Booking.travel_date == travel_date
+                BookingModel.user_id == user_id,
+                BookingModel.route_id == route_id,
+                BookingModel.travel_date == travel_date
             ).first()
         except Exception as e:
             logger.error(f"Failed to get booking for user {user_id}, route {route_id}, date {travel_date}: {e}")
@@ -1202,7 +1553,7 @@ class BookingService:
         """Check if a booking's payment status is 'completed' for a user, route, and date."""
         try:
             booking = self.get_user_booking_for_route_date(user_id, route_id, travel_date)
-            return booking is not None and booking.payment_status == "completed"
+            return booking is not None and getattr(booking, "payment_status", None) == "completed"
         except Exception as e:
             logger.error(f"Failed to check booking payment status: {e}")
             return False
@@ -1223,22 +1574,23 @@ class BookingService:
 
         # Fetch bookings with related Route and Segments eagerly loaded
         bookings = self.db.query(Booking).options(
-            joinedload(Booking.route) # Eager load the Route associated with the Booking
-        ).filter(Booking.payment_status == "completed").all() # Only consider completed bookings for revenue
+            joinedload(BookingModel.route) # Eager load the Route associated with the Booking
+        ).filter(BookingModel.payment_status == "completed").all() # Only consider completed bookings for revenue
 
         for booking in bookings:
             stats["total_bookings"] += 1 # This counts all bookings, including non-completed
             stats["completed_bookings"] += 1
             stats["total_revenue"] += booking.amount_paid
 
-            if booking.route and booking.route.segments:
+            booking_route = getattr(booking, "route", None)
+            if booking_route and booking_route.segments:
                 # Assuming route.segments is a list of dicts from the JSON column
                 # and each dict has a 'mode' key.
                 # For simplicity, if a route is multi-modal, we attribute the full revenue
                 # to the mode of its first segment for "Revenue per Mode" report.
                 # A more accurate model would distribute revenue per segment.
-                if booking.route.segments:
-                    first_segment_mode = booking.route.segments[0].get("mode", "unknown")
+                if booking_route.segments:
+                    first_segment_mode = booking_route.segments[0].get("mode", "unknown")
                     stats["revenue_by_mode"].setdefault(first_segment_mode, 0.0)
                     stats["revenue_by_mode"][first_segment_mode] += booking.amount_paid
             
@@ -1248,7 +1600,7 @@ class BookingService:
 
         # For pending bookings, fetch separately or adjust initial query
         stats["pending_bookings"] = self.db.query(Booking).filter(
-            Booking.payment_status == "pending"
+            BookingModel.payment_status == "pending"
         ).count()
         stats["total_bookings"] = self.db.query(Booking).count()
 
@@ -1261,8 +1613,8 @@ class BookingService:
         """
         since = datetime.utcnow() - timedelta(hours=hours)
         count = self.db.query(Booking).filter(
-            Booking.train_number == train_number,
-            Booking.created_at >= since
+            BookingModel.train_number == train_number,
+            BookingModel.created_at >= since
         ).count()
         return count / hours if hours > 0 else 0.0
 
@@ -1310,26 +1662,29 @@ class BookingService:
         Submit UTR for a booking and transition to UTR_SUBMITTED.
         """
         from database.models import EscrowStatus
-        booking = self.db.query(Booking).filter(Booking.id == booking_id).first()
+        booking = self.db.query(Booking).filter(BookingModel.id == booking_id).first()
         if not booking:
             return None
             
-        if not booking.validate_escrow_transition(EscrowStatus.UTR_SUBMITTED):
-            logger.error(f"Invalid transition to UTR_SUBMITTED from {booking.escrow_status}")
+        if not (hasattr(booking, "validate_escrow_transition") and cast(Any, booking).validate_escrow_transition(EscrowStatus.UTR_SUBMITTED)):
+            logger.error(f"Invalid transition to UTR_SUBMITTED from {getattr(booking, 'escrow_status', 'unknown')}")
             return booking
 
         # Check if UTR already exists
-        existing = self.db.query(Booking).filter(Booking.utr_number == utr_number).first()
+        existing = self.db.query(Booking).filter(BookingModel.utr_number == utr_number).first()
         if existing:
             raise ValueError("UTR already submitted for another booking")
 
-        booking.utr_number = utr_number
+        setattr(booking, "utr_number", utr_number)
         booking.escrow_status = EscrowStatus.UTR_SUBMITTED
         self.db.commit()
         self.db.refresh(booking)
         
         # Trigger background verification (Mock for now)
-        asyncio.create_task(self._mock_escrow_verification(booking.id))
+        _schedule_background_task(
+            self._mock_escrow_verification(str(getattr(booking, 'id'))),
+            "escrow verification",
+        )
         
         return booking
 
@@ -1346,7 +1701,7 @@ class BookingService:
         db = SessionLocal()
         try:
             await asyncio.sleep(5) # Wait 5 seconds
-            booking = db.query(Booking).filter(Booking.id == booking_id).first()
+            booking = db.query(Booking).filter(BookingModel.id == booking_id).first()
             if booking and booking.escrow_status == EscrowStatus.UTR_SUBMITTED:
                 booking.escrow_status = EscrowStatus.VERIFIED
                 db.commit()
@@ -1451,9 +1806,9 @@ class BookingService:
         return {
             "status": "healthy",
             "circuit_breakers": {
-                "redis": self._redis_breaker.get_metrics().to_dict(),
-                "database": self._db_breaker.get_metrics().to_dict(),
-                "kafka": self._kafka_breaker.get_metrics().to_dict()
+                "redis": self._redis_breaker.get_metrics(),
+                "database": self._db_breaker.get_metrics(),
+                "kafka": self._kafka_breaker.get_metrics()
             },
             "metrics": self._metrics.get_metrics()
         }
@@ -1464,3 +1819,5 @@ class BookingService:
         self._db_breaker.reset()
         self._kafka_breaker.reset()
         logger.info("All circuit breakers reset for booking_service")
+
+booking_service = BookingService()

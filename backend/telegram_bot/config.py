@@ -23,7 +23,8 @@ class TelegramBotConfig:
     """Main bot configuration."""
     
     # Core settings
-    bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_TOKEN", ""))
+    bot_token: str = field(default_factory=lambda: os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", ""))
+    enabled: bool = field(default_factory=lambda: os.getenv("TELEGRAM_BOT_ENABLED", "true").lower() in ("1", "true", "yes"))
     bot_mode: BotMode = BotMode.POLLING
     webhook_url: Optional[str] = None
     webhook_path: str = "/webhooks/telegram"
@@ -59,9 +60,11 @@ class TelegramBotConfig:
     @classmethod
     def from_env(cls) -> "TelegramBotConfig":
         """Create config from environment variables."""
+        bot_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "")
         return cls(
-            bot_token=os.getenv("TELEGRAM_TOKEN", ""),
-            bot_mode=BotMode(os.getenv("TELEGRAM_BOT_MODE", "polling")),
+            bot_token=bot_token,
+            enabled=os.getenv("TELEGRAM_BOT_ENABLED", "true").lower() in ("1", "true", "yes"),
+            bot_mode=BotMode(os.getenv("TELEGRAM_BOT_MODE", "polling").lower()),
             webhook_url=os.getenv("TELEGRAM_WEBHOOK_URL", None),
             max_concurrent_updates=int(os.getenv("TELEGRAM_MAX_CONCURRENT", "10")),
             session_ttl_hours=int(os.getenv("TELEGRAM_SESSION_TTL", "24")),
@@ -73,6 +76,10 @@ class TelegramBotConfig:
             log_level=os.getenv("TELEGRAM_LOG_LEVEL", "INFO"),
         )
     
+    @property
+    def mode(self) -> str:
+        return self.bot_mode.name
+
     def validate(self) -> Dict[str, Any]:
         """Validate configuration."""
         errors = []

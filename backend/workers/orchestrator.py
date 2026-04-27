@@ -9,6 +9,7 @@ import asyncio # Import asyncio
 
 from database.session import SessionLocal
 from services.payment_service import PaymentService
+from services.booking_service import BookingService
 from database.models import Booking, Payment, SeatInventory, Segment, EscrowStatus
 from tasks.inventory_reconciliation_task import run_inventory_reconciliation_task
 from tasks.partner_health_check_task import run_partner_health_check_task
@@ -25,8 +26,8 @@ def expire_old_escrow_bookings():
     logger.info(f"Checking for expired escrow bookings at {datetime.now()}")
     db = SessionLocal()
     try:
-        # 15 minute timeout
-        time_threshold = datetime.utcnow() - timedelta(minutes=15)
+        # 30 minute timeout for pending escrow bookings
+        time_threshold = datetime.utcnow() - timedelta(minutes=30)
         
         expired_bookings = db.query(Booking).filter(
             Booking.escrow_status == EscrowStatus.CREATED,
@@ -37,14 +38,20 @@ def expire_old_escrow_bookings():
             logger.info("No expired escrow bookings found.")
             return
             
+        booking_service = BookingService(db)
+        expired_count = 0
         for booking in expired_bookings:
             logger.info(f"Expiring booking {booking.id} due to payment timeout.")
-            booking.escrow_status = EscrowStatus.FAILED
-            booking.escrow_message = "Payment Timed Out. Please try again."
-            # Optionally log to audit trail (Task 17)
-            
-        db.commit()
-        logger.info(f"Expired {len(expired_bookings)} bookings.")
+            cancelled = booking_service.cancel_booking(
+                str(booking.id),
+                reason="Payment timed out after 30 minutes.",
+                user_id=str(booking.user_id) if booking.user_id else None,
+            )
+            if cancelled:
+                expired_count += 1
+            else:
+                logger.warning(f"Failed to cancel expired booking {booking.id}.")
+        logger.info(f"Expired {expired_count} escrow bookings.")
         
     except Exception as e:
         logger.error(f"Error expiring escrow bookings: {e}", exc_info=True)

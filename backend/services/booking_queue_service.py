@@ -77,15 +77,14 @@ class BookingQueueService:
 
         # 2. Add Passengers
         for p in passengers:
-            pax = BookingRequestPassenger(
-                booking_request_id=new_request.id,
-                name=p.get("name"),
-                age=p.get("age"),
-                gender=p.get("gender"),
-                berth_preference=p.get("preference")
-            )
-            self.db.add(pax)
-
+                pax = BookingRequestPassenger(
+                    booking_request_id=new_request.id,
+                    name=str(p.get("name") or ""),
+                    age=int(p.get("age") or 0),
+                    gender=str(p.get("gender") or "M"),
+                    berth_preference=str(p.get("preference") or "")
+                )
+                self.db.add(pax)
         # 3. Add to Queue
         queue_entry = BookingQueue(
             booking_request_id=new_request.id,

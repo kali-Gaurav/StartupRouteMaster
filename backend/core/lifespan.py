@@ -18,6 +18,8 @@ from core.nexus.node import NexusNode
 from services.finance.ingestion_worker import ingestion_worker
 from services.cache_warming_service import schedule_cache_warming
 from guardian_ai.monitoring_loop import guardian_loop
+from core.sovereign.network_pressure import network_pressure
+from services.sovereign_cache_warmer import sovereign_cache_warmer
 
 logger = logging.getLogger("nexus.lifespan")
 
@@ -121,6 +123,17 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(search_prewarmer.start_background_loop())
         logger.info("🌤️ [NEXUS:DASHBOARD] Smart Search Pre-Warmer online (Background).")
 
+        # [Task 152] Start Reconciliation Worker for booking/payment expiry
+        try:
+            from workers.orchestrator import start_reconciliation_worker
+            if getattr(app.state, "settings", None) and getattr(app.state.settings, "enable_worker_swarm", True):
+                start_reconciliation_worker()
+                logger.info("🛠️ Reconciliation worker started.")
+            else:
+                logger.info("🛠️ Reconciliation worker startup skipped by settings.")
+        except Exception as e:
+            logger.warning(f"Failed to start reconciliation worker: {e}")
+
         # [Group 3 & 4] Start FinOps Ingestion & Cache Warming
         from services.emergency.db_sentinel import db_sentinel_agent
         from core.nexus.financial.parity import financial_parity_agent
@@ -186,6 +199,36 @@ async def lifespan(app: FastAPI):
             logger.info(f"🤖 [AGENT SWARM] {len(swarm.get_all_agents())} agents online.")
         except Exception as e:
             logger.warning(f"⚠️ [AGENT SWARM] Boot warning (non-critical): {e}")
+
+        # [TELEGRAM] Boot Bot (Polling or Webhook)
+        try:
+            from telegram_bot.config import bot_config
+            from telegram_bot.polling import polling_manager
+            
+            if bot_config.enabled:
+                if bot_config.mode == "POLLING":
+                    asyncio.create_task(polling_manager.start())
+                    logger.info("🤖 [TELEGRAM] Bot started in POLLING mode.")
+                else:
+                    logger.info("🤖 [TELEGRAM] Bot in WEBHOOK mode (handled by FastAPI routes).")
+            else:
+                logger.info("🤖 [TELEGRAM] Bot is disabled in config.")
+        except Exception as e:
+            logger.error(f"⚠️ [TELEGRAM] Failed to boot bot: {e}")
+
+        # [SOVEREIGN] Start Network Pressure Heartbeat
+        try:
+            await network_pressure.refresh()
+            app.state.npc_task = asyncio.create_task(npc_heartbeat_loop())
+            logger.info("⚡ [SOVEREIGN] Network Pressure Calculator (NPC) Heartbeat online.")
+        except Exception as e:
+            logger.error(f"⚠️ [SOVEREIGN] Failed to start NPC Heartbeat: {e}")
+
+        # [SOVEREIGN] Start Proactive Cache Warmer
+        try:
+            await sovereign_cache_warmer.start()
+        except Exception as e:
+            logger.error(f"⚠️ [SOVEREIGN] Failed to start Cache Warmer: {e}")
         
     yield
     
@@ -214,6 +257,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"⚠️ [ROUTE_ENGINE] Shutdown warning: {e}")
 
+        # [SOVEREIGN] Stop NPC Heartbeat
+        if hasattr(app.state, "npc_task"):
+            app.state.npc_task.cancel()
+            logger.info("⚡ [SOVEREIGN] NPC Heartbeat shut down.")
+
+        # [SOVEREIGN] Stop Cache Warmer
+        await sovereign_cache_warmer.stop()
+
+        try:
+            from workers.orchestrator import stop_reconciliation_worker
+            stop_reconciliation_worker()
+            logger.info("🛠️ Reconciliation worker stopped.")
+        except Exception as e:
+            logger.warning(f"Failed to stop reconciliation worker: {e}")
+
         # [Guardian AI] Stop monitoring loop
         await guardian_loop.stop()
         
@@ -233,3 +291,15 @@ async def lifespan(app: FastAPI):
     for handler in logging.getLogger().handlers:
         handler.flush()
     logger.info("🛑 [NEXUS] System-Wide Shutdown complete. Fiber Dismantled.")
+
+async def npc_heartbeat_loop():
+    """Periodic refresh of the Network Pressure Calculator (Sovereign Layer)."""
+    while True:
+        try:
+            await asyncio.sleep(300) # Every 5 minutes
+            await network_pressure.refresh()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[NPC:HEARTBEAT] Refresh failed: {e}")
+            await asyncio.sleep(30)

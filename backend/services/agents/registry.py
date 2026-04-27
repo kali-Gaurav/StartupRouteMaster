@@ -26,7 +26,9 @@ def register_all_agents():
 
     # --- Safety & Guardian Agents ---
     from services.agents.guardian_agent import GuardianAgent
+    from services.agents.shadow_guide_agent import shadow_guide
     swarm.register(GuardianAgent())
+    swarm.register(shadow_guide)
 
     # --- Operations Agents ---
     from services.agents.operations_agents import (
@@ -52,6 +54,7 @@ def register_all_agents():
         SystemHealthAgent, DatabaseAgent, CacheAgent, DeploymentAgent, SecurityAgent
     )
     from services.agents.security_agent import SecurityGuardianAgent
+    from services.agents.system_guardian_agent import SystemGuardianAgent
     from services.agents.compliance_agents import ComplianceAgent, TaxEngineAgent
     from services.emergency.db_sentinel import db_sentinel_agent
     from core.nexus.financial.parity import financial_parity_agent
@@ -59,6 +62,8 @@ def register_all_agents():
     from services.agents.inventory_gc_agent import inventory_gc_agent
     from services.agents.bailiff_agent import bailiff_agent
     from services.agents.narrator_agent import narrator_agent
+    from services.agents.monitoring_agent import MonitoringAgent
+    from services.agents.compliance_agents import ComplianceAgent
     from services.agents.gateway_agent import gateway_switcher_agent
     from services.agents.arbitrage_agent import arbitrage_agent
     from services.agents.pnr_importer_agent import pnr_importer_agent
@@ -70,6 +75,11 @@ def register_all_agents():
     from services.agents.social_ingestor_agent import social_ingestor_agent
     from services.agents.last_mile_agent import last_mile_agent
     from services.agents.fx_agent import fx_agent
+    from services.agents.women_safety_agent import WomenSafetyAgent
+    from services.agents.family_safety_agent import FamilySafetyAgent
+    from services.agents.chaos_agent import chaos_agent
+    from services.agents.shadow_deploy_agent import shadow_deploy_agent
+    from services.agents.chargeback_shield_agent import chargeback_shield_agent
     # nexus_explorer is now handled by MultiModalAgent in operations_agents
     
     swarm.register(SystemHealthAgent())
@@ -78,6 +88,7 @@ def register_all_agents():
     swarm.register(DeploymentAgent())
     swarm.register(SecurityAgent())
     swarm.register(SecurityGuardianAgent())
+    swarm.register(SystemGuardianAgent())
     swarm.register(db_sentinel_agent)
     swarm.register(financial_parity_agent)
     swarm.register(growth_agent_swarm)
@@ -91,6 +102,17 @@ def register_all_agents():
     swarm.register(social_ingestor_agent)
     swarm.register(last_mile_agent)
     swarm.register(fx_agent)
+    swarm.register(bailiff_agent)
+    swarm.register(narrator_agent)
+    swarm.register(MonitoringAgent())
+    swarm.register(ComplianceAgent())
+    swarm.register(gateway_switcher_agent)
+    swarm.register(arbitrage_agent)
+    swarm.register(WomenSafetyAgent())
+    swarm.register(FamilySafetyAgent())
+    swarm.register(chaos_agent)
+    swarm.register(shadow_deploy_agent)
+    swarm.register(chargeback_shield_agent)
 
     # --- Support Agents ---
     from services.agents.support_agents import (
@@ -149,14 +171,13 @@ def register_all_agents():
     swarm.register(LiveHydrationAgent(kg=get_knowledge_graph()))
 
     # --- [Generation 10] Titan Hardening ---
-    from services.agents.chaos_agent import chaos_agent
-    from services.agents.shadow_deploy_agent import shadow_deploy_agent
-    from services.agents.chargeback_shield_agent import chargeback_shield_agent
     from services.agents.admin_intel_agent import admin_intel_agent
+    from services.agents.system_guardian_agent import system_guardian
     swarm.register(chaos_agent)
     swarm.register(shadow_deploy_agent)
     swarm.register(chargeback_shield_agent)
     swarm.register(admin_intel_agent)
+    swarm.register(system_guardian)
 
     total = len(swarm.get_all_agents())
     logger.info(f"[Registry] OK: {total} agents registered across {len(swarm.get_categories())} categories")

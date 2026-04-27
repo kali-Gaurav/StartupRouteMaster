@@ -1,3 +1,4 @@
+from core.nexus.middleware import NexusIOGate
 from .cors import get_cors_config
 
 __all__ = [
@@ -10,13 +11,17 @@ def setup_middleware(app):
     Consolidates 5+ legacy middlewares into a single high-speed Nexus I/O Gate.
     Replaces: Observability, DB Lifecycle, Rate-Limit, and Smart Engine layers.
     """
-    from core.nexus.middleware import NexusIOGate
+    from .guardian import ScraperGuardianMiddleware
+    from .localization import GeoAdaptiveLocalizationMiddleware
+    from core.waf import SovereignWAFMiddleware
+    
+    # 0. Sovereign WAF (Outer Perimeter)
+    app.add_middleware(SovereignWAFMiddleware)
+    
     # 1. Master I/O Gate
     app.add_middleware(NexusIOGate)
     
     # 2. Guardian Shield & Geo-Adaptive Localization
-    from .guardian import ScraperGuardianMiddleware
-    from .localization import GeoAdaptiveLocalizationMiddleware
     app.add_middleware(ScraperGuardianMiddleware)
     app.add_middleware(GeoAdaptiveLocalizationMiddleware)
     

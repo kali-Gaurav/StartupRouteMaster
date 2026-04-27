@@ -29,17 +29,40 @@ def sanitize_redis_url(url: str) -> str:
         url = url.replace("redis://", "rediss://", 1)
     
     parsed = urlparse(url)
-    new_url = url
-    if is_cloud and not parsed.username and parsed.password:
-        new_url = url.replace("://:", "://default:", 1)
-    elif is_cloud and parsed.username and not parsed.password:
-        scheme = parsed.scheme or "rediss"
-        netloc = f"default:{parsed.username}@{parsed.hostname}"
-        if parsed.port: netloc += f":{parsed.port}"
-        new_url = urlunparse((scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
+    scheme = parsed.scheme or ("rediss" if is_cloud else "redis")
+    path = parsed.path
+    query = parsed.query
+    fragment = parsed.fragment
+    
+    new_username = parsed.username
+    new_password = parsed.password
+    
+    if is_cloud:
+        # Case 1: redis://:password@host -> parsed.username="", parsed.password="password"
+        if not parsed.username and parsed.password:
+            new_username = "default"
+        # Case 2: redis://password@host -> parsed.username="password", parsed.password=None
+        elif parsed.username and not parsed.password and parsed.username != "default":
+            new_password = parsed.username
+            new_username = "default"
+            
+    netloc = ""
+    if new_username or new_password:
+        netloc += f"{new_username or 'default'}:{new_password or ''}@"
+    
+    netloc += parsed.hostname or "localhost"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+        
+    new_url = urlunparse((scheme, netloc, path, parsed.params, query, fragment))
+    
     final_parsed = urlparse(new_url)
     masked = f"{final_parsed.scheme}://{final_parsed.username or '***'}:***@{final_parsed.hostname}:{final_parsed.port or 6379}{final_parsed.path}"
+    
+    # [Diagnostic] Verify if password was correctly parsed
+    if not final_parsed.password and ":" in netloc:
+        logger.warning("🚨 [REDIS:CRITICAL] Password parsing failed. Check for special characters in REDIS_URL.")
+    
     logger.info(f"[REDIS:URL_VERIFY] Verified connection string: {masked}")
     
     return new_url
@@ -207,6 +230,13 @@ class ResilientAsyncRedis:
         try:
             client = await self.get_client()
             return await self._maybe_await(client.hgetall(*args, **kwargs))
+        except Exception as e:
+            await self._handle_error(e)
+
+    async def xadd(self, *args, **kwargs):
+        try:
+            client = await self.get_client()
+            return await self._maybe_await(client.xadd(*args, **kwargs))
         except Exception as e:
             await self._handle_error(e)
 

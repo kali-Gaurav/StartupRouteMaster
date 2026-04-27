@@ -33,6 +33,9 @@ class BookingResponseSchema(BaseModel):
     route_id: Optional[str] = None
     trip_id: Optional[int] = None
     created_at: datetime
+    current_state: Optional[Dict[str, Any]] = None
+    valid_next_actions: Optional[List[str]] = None
+    audit_trail: Optional[List[Dict[str, Any]]] = None
 
 class SubmitUtrSchema(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)

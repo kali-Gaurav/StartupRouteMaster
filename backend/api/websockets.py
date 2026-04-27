@@ -31,21 +31,21 @@ class ConnectionManager:
         
         # Redis Pub/Sub components
         self.redis: Optional[aioredis.Redis] = None
-        self.pubsub: Optional[aioredis.client.PubSub] = None
+        self.pubsub = None
         self._pubsub_task: Optional[asyncio.Task] = None
 
     async def initialize(self):
         """Initialize Redis Pub/Sub listener."""
         if self.redis:
             try:
-                await self.redis.ping()
+                self.redis.ping()
                 return
             except Exception:
                 logger.warning("Redis ping failed, re-initializing...")
                 self.redis = None
             
         try:
-            self.redis = aioredis.from_url(
+            self.redis = aioredis.Redis.from_url(
                 Config.REDIS_URL, 
                 decode_responses=True,
                 socket_timeout=5,
@@ -53,15 +53,13 @@ class ConnectionManager:
                 ssl_cert_reqs=None
             )
             self.pubsub = self.redis.pubsub()
-            
             # Subscribe to global channels
-            await self.pubsub.subscribe("sos_alerts")
-            # We will dynamically subscribe to train channels as needed or listen to a pattern
-            await self.pubsub.psubscribe("train_position:*")
-            await self.pubsub.psubscribe("admin_chat:*") # Added for Task 36
+            if self.pubsub:
+                await self.pubsub.subscribe("sos_alerts")
+                await self.pubsub.psubscribe("train_position:*")
+                await self.pubsub.psubscribe("admin_chat:*")
             if not self._pubsub_task or self._pubsub_task.done():
                 self._pubsub_task = asyncio.create_task(self._redis_listener())
-            
             from core.monitoring import SYSTEM_DEGRADED_MODE
             SYSTEM_DEGRADED_MODE.labels(reason="redis_failure").set(0)
             logger.info("✅ Distributed WebSocket Manager (Redis Pub/Sub) Initialized")
@@ -82,7 +80,7 @@ class ConnectionManager:
                     continue
                     
                 message = await self.pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if message and message['type'] in ['message', 'pmessage']:
+                if message and message.get('type') in ['message', 'pmessage']:
                     channel = message.get('channel')
                     data = message.get('data')
                     
@@ -122,10 +120,9 @@ class ConnectionManager:
             if user_id not in self.user_connections:
                 self.user_connections[user_id] = []
             self.user_connections[user_id].append(websocket)
-            
         WS_CONNECTIONS.inc()
         # Ensure Redis is initialized
-        if not self.redis:
+        if self.redis is None:
             await self.initialize()
 
     def disconnect(self, websocket: WebSocket):
@@ -320,10 +317,9 @@ async def get_ws_user(token: str):
         token_data = decode_access_token(token)
         if not token_data or not token_data.email:
             return None
-        
         db = SessionLocal()
-        user_service = UserService(db)
-        user = user_service.get_user_by_email(token_data.email) or user_service.get_user_by_phone(token_data.email)
+        user_service = UserService(db, knowledge_graph=None, redistribution_service=None)
+        user = user_service.get_user_by_email(token_data.email)
         db.close()
         return user
     except (JWTError, Exception) as e:

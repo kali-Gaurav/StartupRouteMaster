@@ -53,6 +53,7 @@ export interface BookingRedirectRequest {
 export interface InitiateBookingRequest {
   journey_id: string;
   service_type?: 'UNLOCK' | 'AGENT_BOOKING';
+  applied_sovereign_credits?: number;
 }
 
 export interface BookingResponse {
@@ -68,6 +69,27 @@ export interface BookingResponse {
   escrow_message?: string; // Optional message returned when escrow processing fails
 }
 
+interface ApiEnvelope<T> {
+  success?: boolean;
+  status?: string;
+  message?: string;
+  data?: T;
+}
+
+async function readBookingResponse(response: Response): Promise<BookingResponse> {
+  const json = (await response.json()) as BookingResponse | ApiEnvelope<BookingResponse>;
+  if (json && typeof json === "object" && "data" in json) {
+    if (json.success === false) {
+      throw new Error(json.message || "Booking request failed");
+    }
+    if (!json.data) {
+      throw new Error(json.message || "Booking response did not include booking data");
+    }
+    return json.data;
+  }
+  return json as BookingResponse;
+}
+
 export const initiateEscrowBooking = async (data: InitiateBookingRequest, idempotencyKey: string): Promise<BookingResponse> => {
   const response = await fetchWithAuth('/v2/booking/initiate', {
     method: 'POST',
@@ -77,7 +99,7 @@ export const initiateEscrowBooking = async (data: InitiateBookingRequest, idempo
     },
     body: JSON.stringify(data),
   });
-  return await response.json();
+  return readBookingResponse(response);
 };
 
 export const submitEscrowUtr = async (bookingId: string, utrNumber: string): Promise<BookingResponse> => {
@@ -86,12 +108,12 @@ export const submitEscrowUtr = async (bookingId: string, utrNumber: string): Pro
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ utr_number: utrNumber }),
   });
-  return await response.json();
+  return readBookingResponse(response);
 };
 
 export const getEscrowBookingStatus = async (bookingId: string): Promise<BookingResponse> => {
   const response = await fetchWithAuth(`/v2/booking/${bookingId}`);
-  return await response.json();
+  return readBookingResponse(response);
 };
 
 /** Uses token from apiClient config. */
@@ -140,6 +162,42 @@ export const consumeRedirectToken = async (token: string): Promise<{ success: bo
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
+  });
+  return await response.json();
+};
+
+/**
+ * Initiates a Standard Razorpay Checkout Flow.
+ */
+export const initiateStandardRazorpay = async (params: {
+  amountPaise: number,
+  receipt: string,
+  description?: string
+}): Promise<PaymentOrder> => {
+  const response = await fetchWithAuth('/razorpay/create-order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      amount: params.amountPaise,
+      currency: 'INR',
+      receipt: params.receipt,
+      notes: { description: params.description || 'RouteMaster Payment' }
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || 'Failed to create Razorpay order');
+  return data;
+};
+
+export const verifyStandardRazorpay = async (payload: {
+  razorpay_payment_id: string;
+  razorpay_order_id: string;
+  razorpay_signature: string;
+}): Promise<{ success: boolean; message: string }> => {
+  const response = await fetchWithAuth('/razorpay/verify-payment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
   return await response.json();
 };

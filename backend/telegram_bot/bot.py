@@ -115,16 +115,17 @@ class TelegramBot:
         intent_result
     ):
         from telegram_bot.keyboards import keyboard_builder
-        return type('Result', (), {
-            'status': type('Status', (), {'SUCCESS: 'success'})(),
-            'response': BotResponse(
+        from telegram_bot.command_router import HandlerResult, HandlerResultStatus
+        return HandlerResult(
+            status=HandlerResultStatus.SUCCESS,
+            response=BotResponse(
                 chat_id=message.chat.id,
                 text="🏠 <b>Main Menu</b>\n\nHow can I help you today?",
                 keyboard=keyboard_builder.main_menu()
             ),
-            'next_state': 'idle',
-            'data': {}
-        })()
+            next_state='idle',
+            data={}
+        )
     
     async def _handle_search(
         self,
@@ -237,16 +238,17 @@ class TelegramBot:
         intent_result
     ):
         from telegram_bot.keyboards import keyboard_builder
-        return type('Result', (), {
-            'status': type('Status', (), {'SUCCESS: 'success'})(),
-            'response': BotResponse(
+        from telegram_bot.command_router import HandlerResult, HandlerResultStatus
+        return HandlerResult(
+            status=HandlerResultStatus.SUCCESS,
+            response=BotResponse(
                 chat_id=message.chat.id,
                 text="🔙 <b>Back</b>\n\nWhat would you like to do?",
                 keyboard=keyboard_builder.main_menu()
             ),
-            'next_state': 'idle',
-            'data': {}
-        })()
+            next_state='idle',
+            data={}
+        )
     
     async def _handle_unknown(
         self,
@@ -255,16 +257,17 @@ class TelegramBot:
         intent_result
     ):
         from telegram_bot.keyboards import keyboard_builder
-        return type('Result', (), {
-            'status': type('Status', (), {'FAILED: 'failed'})(),
-            'response': BotResponse(
+        from telegram_bot.command_router import HandlerResult, HandlerResultStatus
+        return HandlerResult(
+            status=HandlerResultStatus.FAILED,
+            response=BotResponse(
                 chat_id=message.chat.id,
                 text=intent_result.suggested_response or "I didn't understand that. Please try again or use the menu below.",
                 keyboard=keyboard_builder.main_menu()
             ),
-            'next_state': 'idle',
-            'data': {}
-        })()
+            next_state='idle',
+            data={}
+        )
     
     # Main processing methods
     async def process_update(self, update: Dict[str, Any]) -> Optional[BotResponse]:
@@ -297,65 +300,62 @@ class TelegramBot:
     
     def _parse_update(self, update: Dict[str, Any]) -> Optional[TelegramUpdate]:
         """Parse raw update into TelegramUpdate."""
+        from telegram_bot.schemas import UpdateType
         try:
             update_id = update.get("update_id", 0)
-            
             if "message" in update:
                 message = self._parse_message(update["message"])
                 return TelegramUpdate(
                     update_id=update_id,
-                    update_type="message",
+                    update_type=UpdateType.MESSAGE,
                     message=message
                 )
             elif "callback_query" in update:
                 callback = self._parse_callback(update["callback_query"])
                 return TelegramUpdate(
                     update_id=update_id,
-                    update_type="callback_query",
+                    update_type=UpdateType.CALLBACK_QUERY,
                     callback_query=callback
                 )
-            
             return None
-            
         except Exception as e:
             logger.error(f"Error parsing update: {e}")
             return None
     
     def _parse_message(self, msg: Dict[str, Any]) -> TelegramMessage:
         """Parse message data."""
+        from telegram_bot.schemas import TelegramUser, TelegramChat, MessageType, TelegramMessage
         from_user = None
         if "from" in msg:
-            from_user = type('User', (), {
-                'id': msg["from"].get("id", 0),
-                'is_bot': msg["from"].get("is_bot", False),
-                'first_name': msg["from"].get("first_name", ""),
-                'last_name': msg["from"].get("last_name"),
-                'username': msg["from"].get("username"),
-                'language_code': msg["from"].get("language_code")
-            })()
-        
-        chat = type('Chat', (), {
-            'id': msg["chat"].get("id", 0),
-            'type': msg["chat"].get("type", "private"),
-            'title': msg["chat"].get("title"),
-            'username': msg["chat"].get("username"),
-            'first_name': msg["chat"].get("first_name"),
-            'last_name': msg["chat"].get("last_name")
-        })()
-        
+            from_user = TelegramUser(
+                id=msg["from"].get("id", 0),
+                is_bot=msg["from"].get("is_bot", False),
+                first_name=msg["from"].get("first_name", ""),
+                last_name=msg["from"].get("last_name"),
+                username=msg["from"].get("username"),
+                language_code=msg["from"].get("language_code")
+            )
+        chat = TelegramChat(
+            id=msg["chat"].get("id", 0),
+            type=msg["chat"].get("type", "private"),
+            title=msg["chat"].get("title"),
+            username=msg["chat"].get("username"),
+            first_name=msg["chat"].get("first_name"),
+            last_name=msg["chat"].get("last_name")
+        )
         # Determine message type
-        message_type = "text"
         if "text" in msg:
-            message_type = "text"
+            message_type = MessageType.TEXT
         elif "photo" in msg:
-            message_type = "photo"
+            message_type = MessageType.PHOTO
         elif "document" in msg:
-            message_type = "document"
+            message_type = MessageType.DOCUMENT
         elif "location" in msg:
-            message_type = "location"
+            message_type = MessageType.LOCATION
         elif "contact" in msg:
-            message_type = "contact"
-        
+            message_type = MessageType.CONTACT
+        else:
+            message_type = MessageType.TEXT
         return TelegramMessage(
             message_id=msg.get("message_id", 0),
             from_user=from_user,
@@ -370,19 +370,18 @@ class TelegramBot:
     
     def _parse_callback(self, callback: Dict[str, Any]) -> CallbackQuery:
         """Parse callback query."""
-        from_user = type('User', (), {
-            'id': callback["from"].get("id", 0),
-            'is_bot': callback["from"].get("is_bot", False),
-            'first_name': callback["from"].get("first_name", ""),
-            'last_name': callback["from"].get("last_name"),
-            'username': callback["from"].get("username"),
-            'language_code': callback["from"].get("language_code")
-        })()
-        
+        from telegram_bot.schemas import TelegramUser, CallbackQuery
+        from_user = TelegramUser(
+            id=callback["from"].get("id", 0),
+            is_bot=callback["from"].get("is_bot", False),
+            first_name=callback["from"].get("first_name", ""),
+            last_name=callback["from"].get("last_name"),
+            username=callback["from"].get("username"),
+            language_code=callback["from"].get("language_code")
+        )
         message = None
         if callback.get("message"):
             message = self._parse_message(callback["message"])
-        
         return CallbackQuery(
             id=callback.get("id", ""),
             from_user=from_user,
@@ -395,23 +394,19 @@ class TelegramBot:
         try:
             chat_id = message.chat.id
             user_id = message.from_user.id if message.from_user else 0
-            
-            # Log message
-            logger.debug(f"Processing message from {user_id} in chat {chat_id}: {message.text[:50]}...")
-            
+            # Log message (avoid subscriptable None bug)
+            text_preview = (message.text[:50] + "...") if message.text else "<no text>"
+            logger.debug(f"Processing message from {user_id} in chat {chat_id}: {text_preview}")
             # Route message
             response = await self.router.route(
                 message=message,
                 chat_id=chat_id,
                 user_id=user_id
             )
-            
             # Send response if exists
             if response:
                 await self.dispatcher.send_response(response)
-            
             return response
-            
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             return None
@@ -441,6 +436,7 @@ class TelegramBot:
                 "wallet": self.profile_handler,
                 "sos": self.sos_handler,
                 "help": self.help_handler,
+                "train": self.search_handler,
             }
             
             handler = handlers.get(action)

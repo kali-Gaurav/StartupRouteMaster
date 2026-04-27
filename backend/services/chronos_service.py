@@ -164,13 +164,18 @@ class ChronosAuditorAgent:
         """
         # Find the original search log to get the user
         log = self.db.query(RouteSearchLog).filter_by(id=outcome.search_id).first()
-        if not log or not log.user_id: return
+        if not log:
+            return
+        user_id = getattr(log, "user_id", None)
+        if not user_id:
+            return
         
         try:
-            credit_svc = CreditService(self.db)
+            credit_svc = CreditService()
             amount = 25 # 25 Credits (Standard recovery)
             await credit_svc.award_credits(
-                log.user_id,
+                self.db,
+                user_id,
                 amount,
                 reason="INTELLIGENCE_DRIFT_RECOVERY",
                 ref_id=outcome.id

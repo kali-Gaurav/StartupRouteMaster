@@ -19,12 +19,17 @@ class User(BaseModel):
 
 
 
+class Location(BaseModel):
+    latitude: float
+    longitude: float
+
 class Message(BaseModel):
     message_id: int
     from_user: Optional[User] = Field(alias="from")
     chat: Chat
     date: int
     text: Optional[str] = None
+    location: Optional[Location] = None  # Telegram location object
     # Add other fields as needed, e.g., entities, photo, document, etc.
 
 class CallbackQuery(BaseModel):

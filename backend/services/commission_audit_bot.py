@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from sqlalchemy import func
 from database.session import SessionLocal
@@ -23,8 +24,8 @@ def audit_commission_health():
         booking_ids = [b.id for b in completed_bookings]
         
         # 2. Count Commission Records
-        comm_bookings = db.query(CommissionTracking.booking_id).all()
-        comm_ids = {c.booking_id for c in comm_bookings}
+        comm_bookings = db.query(CommissionTracking.booking_id).scalars().all()
+        comm_ids = {str(c) for c in comm_bookings if c is not None}
         
         # 3. Find Mismatches
         leaked_bookings = [bid for bid in booking_ids if bid not in comm_ids]
@@ -36,9 +37,9 @@ def audit_commission_health():
                 booking = db.query(Booking).filter(Booking.id == bid).first()
                 if booking and booking.agent_id:
                    from services.commission_service import commission_service
-                   agent_id = str(booking.agent_id)  # type: ignore
+                   agent_id = str(booking.agent_id)
                    logger.warning(f"🛠 Auto-Patching commission for booking {bid}")
-                   commission_service.record_commission(db, bid, agent_id)
+                   asyncio.run(commission_service.record_commission(db, bid, agent_id))
         else:
             logger.info("✅ Commission Integrity Audit: Healthy (Zero Leakage).")
             

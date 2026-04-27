@@ -148,13 +148,19 @@ class HydrationPipeline:
                         except Exception: continue
                 
                 if not fare_found:
-                    # HEURISTIC FALLBACK: Free Tier or API Skip
-                    t_no = str(s.train_number)
-                    base = 350.0 if t_no.startswith(("12", "22")) else 200.0
-                    s.metadata["fare"] = base + (s.duration_minutes * 0.4)
-                    s.metadata["class"] = "SL"
+                    # HEURISTIC FALLBACK: Use distance-based fare calculator when available
+                    if s.distance_km and s.distance_km > 0:
+                        fare_result = calculate_fare(s.distance_km, constraints.preferred_class or "SL")
+                        s.metadata["fare"] = float(fare_result.get("total_fare", 0.0)) or (s.distance_km * 0.5)
+                    else:
+                        # Absolute fallback: duration-based estimate
+                        t_no = str(s.train_number)
+                        base = 350.0 if t_no.startswith(("12", "22")) else 200.0
+                        s.metadata["fare"] = base + (s.duration_minutes * 0.4)
+                    s.metadata["class"] = constraints.preferred_class or "SL"
                     s.metadata["fare_note"] = "Heuristic Estimate"
                     total_cost += s.metadata["fare"]
+
 
             r.total_cost = total_cost
 
@@ -232,7 +238,15 @@ class HydrationPipeline:
     def _step_integrity_check(self, routes: List[Route], constraints: RouteConstraints, graph, db):
         """[Task 28.10] Final data validation & optimized synchronous scoring."""
         for r in routes:
-            if not r.total_cost or r.total_cost < 1: r.total_cost = 500.0
+            if not r.total_cost or r.total_cost < 1:
+                # Use distance-based heuristic instead of blind ₹500
+                if r.total_distance and r.total_distance > 0:
+                    fare_result = calculate_fare(r.total_distance, constraints.preferred_class or "SL")
+                    r.total_cost = float(fare_result.get("total_fare", 0.0)) or (r.total_distance * 0.5)
+                else:
+                    # Last resort: estimate from duration
+                    r.total_cost = max(150.0, (r.total_duration or 0) * 1.5)
+                r.metadata["fare_source"] = "INTEGRITY_ESTIMATE"
             if not r.total_duration or r.total_duration < 1:
                 if r.segments:
                     first_dep = ensure_datetime(r.segments[0].departure_time)
@@ -241,7 +255,8 @@ class HydrationPipeline:
                     r.total_duration = int((arrival - departure).total_seconds() / 60)
             
             # [Task 28.1] Use synchronous scoring to avoid massive event loop overhead
-            r.score = RouteScorer.score_route_sync(r, constraints)
+            r.score = RouteScorer.score_route_sync(r, constraints, passengers=constraints.passengers)
+
 
     # --- HELPERS ---
 

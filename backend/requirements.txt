@@ -55,6 +55,7 @@ botocore
 # Other utilities
 python-dotenv==1.0.1
 requests==2.31.0
+razorpay==2.0.0
 httpx==0.25.2
 reportlab==4.0.9
 python-telegram-bot==20.7

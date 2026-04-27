@@ -35,7 +35,13 @@ def _load_flow(correlation_id: str) -> Dict[str, Any]:
     if _redis:
         try:
             raw = _redis.get(_flow_key(correlation_id))
-            if raw:
+            import inspect
+            if inspect.isawaitable(raw):
+                import asyncio
+                raw = asyncio.get_event_loop().run_until_complete(raw)
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode('utf-8')
+            if isinstance(raw, str) and raw:
                 return json.loads(raw)
         except Exception:
             pass
@@ -84,6 +90,9 @@ async def get_flow_status(limit: int = Query(1000, le=10000)):
     if _redis:
         try:
             raw_ids = _redis.smembers(FLOW_INDEX_KEY) or []
+            import inspect
+            if inspect.isawaitable(raw_ids):
+                raw_ids = await raw_ids
             ids = [rid.decode('utf-8') if isinstance(rid, bytes) else rid for rid in raw_ids]
         except Exception:
             ids = list(_local_flow.keys())

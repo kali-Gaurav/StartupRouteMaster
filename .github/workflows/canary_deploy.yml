@@ -1,0 +1,67 @@
+name: 🚀 Sovereign Canary Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pytest
+      - name: Run Tests
+        run: |
+          cd backend && pytest
+
+  deploy-canary:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🚢 Deploy to Canary (5% Traffic)
+        run: |
+          echo "Deploying to canary namespace..."
+          # In a real environment, this would be:
+          # kubectl apply -f k8s/canary-deployment.yaml
+          # helm upgrade --install route-service-canary ./charts/route-service --set canary.enabled=true
+
+  sovereign-gate:
+    needs: deploy-canary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: 🕵️ Evaluate Canary Stability
+        run: |
+          python backend/scripts/canary_gate.py
+        env:
+          PROMETHEUS_URL: "http://prometheus-service:9090"
+
+  promote-to-production:
+    needs: sovereign-gate
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🚀 Full Production Rollout (100% Traffic)
+        run: |
+          echo "Promoting canary to production..."
+          # kubectl apply -f k8s/deployment.yaml
+          # helm upgrade --install route-service ./charts/route-service --set canary.enabled=false
+
+  auto-rollback:
+    needs: sovereign-gate
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛑 Emergency Rollback
+        run: |
+          echo "Rollback initiated: Restoring previous stable version."
+          # kubectl rollout undo deployment/route-service
+          # helm rollback route-service

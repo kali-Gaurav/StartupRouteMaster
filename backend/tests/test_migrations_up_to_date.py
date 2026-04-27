@@ -13,7 +13,7 @@ def test_models_and_migrations_are_in_sync():
     2. Use Alembic's `compare_metadata` to compare the live DB schema vs SQLAlchemy `Base.metadata`.
     3. Fail when `compare_metadata` returns any diffs (i.e. model changes without migrations).
     """
-    cfg = Config("backend/alembic.ini")
+    cfg = Config("alembic.ini")
 
     # Ensure the DB schema is at the repository head
     command.upgrade(cfg, "head")

@@ -45,15 +45,20 @@ export async function fetchWithAuth(
   }
 
   const { data: { session } } = await supabase.auth.getSession();
-  
+  let accessToken = session?.access_token || null;
+  const legacyToken = localStorage.getItem("supabase.auth.token") || localStorage.getItem("sb-vclitvpgmqzntscvshje-auth-token");
+  if (!accessToken && legacyToken) {
+    accessToken = legacyToken;
+  }
+
   const headers = new Headers(init?.headers);
   const adminToken = localStorage.getItem("admin_token");
 
   // Subtask 1.6: Prioritize specialized admin terminal token for /admin paths
   if (url.includes("/admin") && adminToken) {
     headers.set("Authorization", `Bearer ${adminToken}`);
-  } else if (session?.access_token) {
-    headers.set("Authorization", `Bearer ${session.access_token}`);
+  } else if (accessToken) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
   
   // Suggestion #10: Explicitly request compressed payloads for mobile efficiency

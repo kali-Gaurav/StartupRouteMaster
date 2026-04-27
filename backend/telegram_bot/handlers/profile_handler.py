@@ -6,15 +6,21 @@ Handles user profile and account management.
 
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType, HandlerResult, HandlerResultStatus
+    IntentType
 )
+from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 from ..user_session_manager import user_session_manager
+from database.session import get_db
+from services.user_service import UserService
+from services.booking_service import BookingService
+from services.credit_service import UnlockCreditService
+from database.models import User, CreditTransaction, Booking as BookingModel
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +78,7 @@ class ProfileHandler:
         """Get user profile from database."""
         try:
             from services.user_service import UserService
-            from database.config import get_db
+            from database.session import get_db
             
             async with get_db() as db:
                 user_service = UserService(db)
@@ -212,6 +218,8 @@ To use all features, please link your account.
                 "wallet": self._show_wallet,
                 "settings": self._show_settings,
                 "edit": self._edit_profile,
+                "add": self._add_funds,
+                "gift": self._redeem_code,
             }
             
             handler = handlers.get(action)
@@ -238,132 +246,189 @@ To use all features, please link your account.
         chat_id: int,
         context: UserContext
     ) -> HandlerResult:
-        """Show user statistics."""
-        text = """📊 <b>My Statistics</b>
+        """Show real user statistics."""
+        try:
+            async with get_db() as db:
+                user_service = UserService(db)
+                user = await user_service.get_user_by_telegram_id(str(chat_id))
+                
+                if not user:
+                    return await self._handle_registration(chat_id, None)
+
+                # Fetch real stats
+                patterns = await user_service.analyze_travel_patterns(user.id)
+                booking_service = BookingService(db)
+                bookings, total_bookings = booking_service.get_user_bookings(user_id=user.id, limit=100)
+                
+                completed = sum(1 for b in bookings if b.booking_status == "confirmed")
+                cancelled = sum(1 for b in bookings if b.booking_status == "cancelled")
+                
+                credit_service = UnlockCreditService()
+                balance = credit_service.get_user_balance(db, user.id)
+
+                text = f"""📊 <b>My Statistics</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-🎫 <b>Total Bookings:</b> 12
-✅ <b>Completed:</b> 10
-❌ <b>Cancelled:</b> 2
+🎫 <b>Total Bookings:</b> {total_bookings}
+✅ <b>Completed:</b> {completed}
+❌ <b>Cancelled:</b> {cancelled}
 
-🚂 <b>Total Distance:</b> 5,420 km
-⏱️ <b>Total Travel Time:</b> 82 hours
+🚂 <b>Total Distance:</b> {patterns.total_distance_km:,} km
+⏱️ <b>Favorite Class:</b> {patterns.preferred_class or "N/A"}
 
-💰 <b>Total Spent:</b> ₹45,680
-💳 <b>Wallet Balance:</b> ₹1,250
+💰 <b>Karma Score:</b> {user.karma_score or 0}
+💳 <b>Wallet Balance:</b> ₹{balance['total']:.2f}
 
 🏆 <b>Badges Earned:</b>
-• First Journey (Jan 2025)
-• 10 Trips (Mar 2025)
-• Frequent Traveler (Apr 2025)
+{self._get_badges_text(user)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━"""
-        
-        return HandlerResult(
-            status=HandlerResultStatus.SUCCESS,
-            response=BotResponse(
-                chat_id=chat_id,
-                text=text,
-                inline_keyboards=[[{"text": "🔙 Back", "callback_data": "profile_back"}]]
-            )
-        )
+                
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=text,
+                        inline_keyboards=[[{"text": "🔙 Back", "callback_data": "profile_back"}]]
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error showing stats: {e}")
+            return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
+
+    def _get_badges_text(self, user: User) -> str:
+        """Generate badges text based on user data."""
+        badges = []
+        if user.karma_score > 1000:
+            badges.append("• Elite Traveler")
+        if user.total_lifetime_credits > 50:
+            badges.append("• Frequent Voyager")
+        if not badges:
+            badges.append("• Explorer (New)")
+        return "\n".join(badges)
     
     async def _show_history(
         self,
         chat_id: int,
         context: UserContext
     ) -> HandlerResult:
-        """Show booking history."""
-        text = """🎫 <b>Booking History</b>
+        """Show real booking history."""
+        try:
+            async with get_db() as db:
+                user_service = UserService(db)
+                user = await user_service.get_user_by_telegram_id(str(chat_id))
+                
+                if not user:
+                    return await self._handle_registration(chat_id, None)
+
+                booking_service = BookingService(db)
+                bookings, total = booking_service.get_user_bookings(user_id=user.id, limit=5)
+
+                if not bookings:
+                    text = "🎫 <b>Booking History</b>\n\nNo bookings found yet. Start your journey today!"
+                else:
+                    history_lines = []
+                    for i, b in enumerate(bookings, 1):
+                        date_str = b.travel_date.strftime("%d %b %Y") if b.travel_date else "N/A"
+                        status_emoji = "✅" if b.booking_status == "confirmed" else "❌" if b.booking_status == "cancelled" else "⏳"
+                        history_lines.append(f"{i}. {date_str} - {b.pnr_number}\n   {status_emoji} {b.booking_status.upper()}")
+                    
+                    text = f"""🎫 <b>Booking History</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>Last 5 Journeys:</b>
+<b>Last {len(bookings)} Journeys:</b>
 
-1. 20 Apr 2026 - Mumbai → Delhi
-   12951 Mumbai Rajdhani | CNF
-
-2. 15 Apr 2026 - Delhi → Jaipur
-   12982 Udyog Express | CNF
-
-3. 10 Apr 2026 - Bangalore → Chennai
-   12608 Lalbagh Express | CNF
-
-4. 05 Apr 2026 - Chennai → Hyderabad
-   12759 Charminar Exp | Cancelled
-
-5. 28 Mar 2026 - Hyderabad → Bangalore
-   12737 Gowthami Exp | CNF
+{chr(10).join(history_lines)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 
 <i>Tap a booking for details</i>"""
-        
-        return HandlerResult(
-            status=HandlerResultStatus.SUCCESS,
-            response=BotResponse(
-                chat_id=chat_id,
-                text=text,
-                inline_keyboards=[
-                    [
-                        {"text": "📜 View All", "callback_data": "history_all"},
-                        {"text": "🔙 Back", "callback_data": "profile_back"}
-                    ]
-                ]
-            )
-        )
+                
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=text,
+                        inline_keyboards=[
+                            [
+                                {"text": "📜 View All on Web", "url": f"https://routemaster.io/profile/bookings"},
+                                {"text": "🔙 Back", "callback_data": "profile_back"}
+                            ]
+                        ]
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error showing history: {e}")
+            return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
     
     async def _show_wallet(
         self,
         chat_id: int,
         context: UserContext
     ) -> HandlerResult:
-        """Show wallet information."""
-        text = """💳 <b>My Wallet</b>
+        """Show real wallet and credit information."""
+        try:
+            async with get_db() as db:
+                user_service = UserService(db)
+                user = await user_service.get_user_by_telegram_id(str(chat_id))
+                
+                if not user:
+                    return await self._handle_registration(chat_id, None)
+
+                credit_service = UnlockCreditService()
+                balance = credit_service.get_user_balance(db, user.id)
+                
+                # Fetch recent credit transactions
+                transactions = db.query(CreditTransaction).filter(
+                    CreditTransaction.user_id == user.id
+                ).order_by(CreditTransaction.timestamp.desc()).limit(4).all()
+
+                tx_lines = []
+                for tx in transactions:
+                    icon = "✅" if tx.amount > 0 else "❌"
+                    date_str = tx.timestamp.strftime("%b %d")
+                    tx_lines.append(f"{icon} {tx.amount:+} ({date_str})\n   {tx.transaction_type}")
+
+                text = f"""💳 <b>My Wallet</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-<b>Balance:</b> ₹1,250.00
+<b>Balance:</b> {balance['total']} Credits
+<i>({balance['paid']} Paid, {balance['bonus']} Bonus)</i>
 
-<b>Recent Transactions:</b>
+<b>Recent Activity:</b>
 
-✅ +₹2,000 (Apr 15)
-   Wallet Top-up
-
-✅ +₹500 (Apr 10)
-   Refund - Booking #12345
-
-❌ -₹1,250 (Apr 05)
-   Booking #12340
-
-✅ +₹800 (Apr 01)
-   Refund - Booking #12335
+{chr(10).join(tx_lines) if tx_lines else "No recent transactions."}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
 <b>Quick Actions:</b>
 
-• 💰 Add Money
-• 🎁 Gift Voucher
-• 📜 Transaction History
+• 💰 Buy Credits
+• 🎁 Redeem Code
+• 📜 View Full Ledger on Web
 
-<i>Minimum top-up: ₹100</i>"""
-        
-        return HandlerResult(
-            status=HandlerResultStatus.SUCCESS,
-            response=BotResponse(
-                chat_id=chat_id,
-                text=text,
-                inline_keyboards=[
-                    [
-                        {"text": "💰 Add Money", "callback_data": "wallet_add"},
-                        {"text": "📜 History", "callback_data": "wallet_history"}
-                    ],
-                    [
-                        {"text": "🎁 Gift Voucher", "callback_data": "wallet_gift"},
-                        {"text": "🔙 Back", "callback_data": "profile_back"}
-                    ]
-                ]
-            )
-        )
+<i>1 Credit = 1 Route Unlock</i>"""
+                
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=text,
+                        inline_keyboards=[
+                            [
+                                {"text": "💰 Buy Credits", "callback_data": "wallet_add"},
+                                {"text": "📜 History", "callback_data": "wallet_history"}
+                            ],
+                            [
+                                {"text": "🎁 Redeem", "callback_data": "wallet_gift"},
+                                {"text": "🔙 Back", "callback_data": "profile_back"}
+                            ]
+                        ]
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error showing wallet: {e}")
+            return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
     
     async def _show_settings(
         self,
@@ -417,30 +482,59 @@ To use all features, please link your account.
         chat_id: int,
         context: UserContext
     ) -> HandlerResult:
-        """Edit profile details."""
-        text = """✏️ <b>Edit Profile</b>
+        """Edit profile details using the FlowHandler."""
+        from ..flow_handler import flow_handler
+        
+        # Reset flow state
+        context.data["flow_step_idx"] = 0
+        context.data["flow_waiting_input"] = False
+        
+        # Start the flow
+        return await flow_handler.handle_flow("", context, chat_id)
+
+    async def _add_funds(self, chat_id: int, context: UserContext) -> HandlerResult:
+        """Handle 'Buy Credits' flow."""
+        text = """💰 <b>Buy RouteMaster Credits</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━
-What would you like to update?
+Credits allow you to unlock <b>Pareto-Optimal</b> routes with deep safety analysis.
 
-• 👤 Name
-• 📧 Email
-• 📱 Phone
-• 🔑 Password
+<b>Choose a Package:</b>
 
-<i>Enter the field name to update</i>
+• <b>Starter:</b> 5 Credits @ ₹199
+• <b>Pro:</b> 15 Credits @ ₹499 (Best Value)
+• <b>Elite:</b> 50 Credits @ ₹999
 
-Example: <i>"Update email to new@email.com"</i>"""
+<i>Click below to pay via UPI or Card:</i>"""
         
         return HandlerResult(
-            status=HandlerResultStatus.NEEDS_INPUT,
+            status=HandlerResultStatus.SUCCESS,
             response=BotResponse(
                 chat_id=chat_id,
                 text=text,
-                keyboard=keyboard_builder.back_only()
-            ),
-            next_state="profile_editing",
-            data={"profile_step": "edit"}
+                inline_keyboards=[
+                    [{"text": "💳 Pay via Razorpay", "url": "https://routemaster.io/pay?credits=15"}],
+                    [{"text": "🔙 Back to Wallet", "callback_data": "profile_wallet"}]
+                ]
+            )
+        )
+
+    async def _redeem_code(self, chat_id: int, context: UserContext) -> HandlerResult:
+        """Handle 'Redeem Code' flow."""
+        text = """🎁 <b>Redeem Gift Code</b>
+
+━━━━━━━━━━━━━━━━━━━━━━━━
+Please enter your 12-digit redemption code below.
+
+<i>Example: RM-XXXX-XXXX-XXXX</i>"""
+        
+        return HandlerResult(
+            status=HandlerResultStatus.SUCCESS,
+            response=BotResponse(
+                chat_id=chat_id,
+                text=text,
+                inline_keyboards=[[{"text": "🔙 Back", "callback_data": "profile_wallet"}]]
+            )
         )
 
 

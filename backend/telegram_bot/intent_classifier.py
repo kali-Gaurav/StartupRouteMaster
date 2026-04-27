@@ -152,7 +152,7 @@ class IntentClassifier:
             "keywords": ["start", "begin", "hi", "hello", "hey"],
             "patterns": [
                 r"^(?:start|begin|hi|hello|hey|namaste)",
-                r"/start|/help",
+                r"^start|^help",
             ],
             "priority": 1
         },

@@ -13,6 +13,7 @@ Date: 2026-02-17
 """
 
 import asyncio
+import inspect
 import logging
 import json
 from datetime import datetime, timedelta, date
@@ -120,7 +121,10 @@ class AlertQueueService:
             
             async def _do_queue():
                 """Internal queue logic."""
-                await self.redis.rpush(self.queue_name, payload)
+                client = await self.redis.get_client()
+                result = client.rpush(self.queue_name, payload)
+                if inspect.isawaitable(result):
+                    await result
             
             await self._redis_breaker.execute(
                 self._retry_policy.execute,
@@ -161,7 +165,11 @@ class AlertQueueService:
     async def get_queue_length(self) -> int:
         """Get current queue length."""
         try:
-            return await self.redis.llen(self.queue_name)
+            client = await self.redis.get_client()
+            result = client.llen(self.queue_name)
+            if inspect.isawaitable(result):
+                return await result
+            return result
         except Exception:
             return len(self._local_queue)
 
@@ -426,21 +434,27 @@ class BookingMonitorService:
             logger.debug(f"🔍 Monitoring check for {booking.booking_id}...")
             
             # Fetch from Gateway with circuit breaker protection
-            async def _fetch_live():
-                return await provider_gateway.get_live_status(
-                    booking.train_number,
-                    booking.travel_date.isoformat()
+            if booking.train_number and booking.travel_date:
+                train_number = booking.train_number
+                travel_date = booking.travel_date
+                async def _fetch_live():
+                    return await provider_gateway.get_live_status(
+                        train_number,
+                        travel_date.isoformat()
+                    )
+
+                live_task = self._gateway_breaker.execute(
+                    self._retry_policy.execute,
+                    _fetch_live
                 )
-            
-            live_task = self._gateway_breaker.execute(
-                self._retry_policy.execute,
-                _fetch_live
-            )
+            else:
+                live_task = asyncio.sleep(0, result=None)
             
             # PNR can be fetched if number is present
             if booking.pnr_number:
+                pnr_number = booking.pnr_number
                 async def _fetch_pnr():
-                    return await provider_gateway.get_pnr_status(booking.pnr_number)
+                    return await provider_gateway.get_pnr_status(pnr_number)
                 
                 pnr_task = self._gateway_breaker.execute(
                     self._retry_policy.execute,

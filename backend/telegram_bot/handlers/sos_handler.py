@@ -11,8 +11,9 @@ from dataclasses import dataclass
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType, HandlerResult, HandlerResultStatus
+    IntentType
 )
+from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 from ..user_session_manager import user_session_manager
@@ -441,7 +442,7 @@ Lat: {lat}, Lng: {lng}
                 response=BotResponse(
                     chat_id=chat_id,
                     text=text,
-                    inline_keyboards=[
+                    inline_keyboard=[
                         [
                             {"text": "🚨 SOS", "callback_data": "sos_send"},
                             {"text": "📞 Call 139", "callback_data": "sos_call"}
@@ -449,7 +450,7 @@ Lat: {lat}, Lng: {lng}
                         [
                             {"text": "🔄 Update Location", "callback_data": "sos_update_loc"},
                             {"text": "🔙 Back", "callback_data": "sos_back"}
-                        }
+                        ]
                     ]
                 ),
                 next_state="sos",

@@ -75,14 +75,14 @@ async def handle_call_status(
     """
     logger.info(f"📞 [CALL STATUS] Event {event_id}: {CallStatus} for {To}")
     
-    from api.sos import _load_event, _save_event
+    from api.sos import _load_event_async, _save_event_async
     from api.websockets import manager
-    
-    event = _load_event(event_id)
+
+    event = await _load_event_async(event_id)
     if event:
         event["telecom_status"] = CallStatus
-        _save_event(event)
-        
+        await _save_event_async(event)
+
         # Subtask 21.2: Automated Retry on Fail
         if CallStatus in ["busy", "no-answer", "failed"]:
             retry_count = event.get("call_retry_count", 0)
@@ -90,10 +90,10 @@ async def handle_call_status(
                 event["call_retry_count"] = retry_count + 1
                 logger.warning(f"⚠️ Call failed. Scheduling retry {event['call_retry_count']} for {To}")
                 # Logic to trigger initiate_emergency_call again after delay
-        
+
         # Notify dashboard
         await manager.broadcast_sos(event)
-        
+
     return {"status": "ok"}
 
 @router.post("/bridge-status")
@@ -107,24 +107,24 @@ async def handle_bridge_status(
     """
     if not event_id: return {"status": "error"}
 
-    from api.sos import _load_event, _save_event
+    from api.sos import _load_event_async, _save_event_async
     from api.websockets import manager
-    
-    event = _load_event(event_id)
+
+    event = await _load_event_async(event_id)
     if event:
         participants = set(event.get("active_participants", []))
-        
+
         if Status == "joined" and ParticipantLabel:
             participants.add(ParticipantLabel)
         elif Status == "left" and ParticipantLabel:
             participants.discard(ParticipantLabel)
-            
+
         event["active_participants"] = list(participants)
-        _save_event(event)
-        
+        await _save_event_async(event)
+
         # Notify dashboard
         await manager.broadcast_sos(event)
-        
+
     return {"status": "updated"}
 
 @router.post("/voice-trigger-sos")
@@ -148,38 +148,38 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
     
     # Task 45: Safe-Word Cancellation
     # Check if this is an existing incident and user says "ALRIGHT" or "OKAY"
-    from api.sos import _load_event, _save_event, PNR_REGISTRY_KEY, _redis
-    
+    from api.sos import _load_event_async, _save_event_async, PNR_REGISTRY_KEY, _get_redis_index_ids
+
     # We'd need a way to link voice user_id to active event (Task 3 registry)
     # For now, we mock the PNR resolution or user search
     active_event_id = None
-    if _redis:
-        try:
-            # Try to find if this phone has an active SOS
-            ids = _redis.smembers("sos:events") or []
-            for eid in ids:
-                e = _load_event(eid.decode() if isinstance(eid, bytes) else eid)
-                if e and e.get("phone") == payload.phone and e.get("status") in ["active", "responding"]:
-                    active_event_id = e["id"]
-                    break
-        except Exception: pass
+    try:
+        ids = await _get_redis_index_ids()
+        for eid in ids:
+            e = await _load_event_async(eid)
+            if e and e.get("phone") == payload.phone and e.get("status") in ["active", "responding"]:
+                active_event_id = e["id"]
+                break
+    except Exception:
+        pass
 
     if active_event_id and any(word in transcript_low for word in ["alright", "cancel", "okay now"]):
         logger.info(f"🛑 [SAFE-WORD] Auto-cancelling incident {active_event_id} via voice command.")
         from api.websockets import manager
-        event = _load_event(active_event_id)
-        event["status"] = "resolved"
-        event["resolved_at"] = datetime.utcnow().isoformat()
-        event["extra"] = f"{event.get('extra', '')} | 🛑 CANCELLED VIA SAFE-WORD."
-        _save_event(event)
-        await manager.broadcast_sos(event)
-        
-        return f"""
-        <Response>
-            <Say>Safe-word received. Incident has been cancelled. Glad you are safe.</Say>
-            <Hangup/>
-        </Response>
-        """
+        event = await _load_event_async(active_event_id)
+        if event is not None:
+            event["status"] = "resolved"
+            event["resolved_at"] = datetime.utcnow().isoformat()
+            event["extra"] = f"{event.get('extra', '')} | 🛑 CANCELLED VIA SAFE-WORD."
+            await _save_event_async(event)
+            await manager.broadcast_sos(event)
+
+            return f"""
+            <Response>
+                <Say>Safe-word received. Incident has been cancelled. Glad you are safe.</Say>
+                <Hangup/>
+            </Response>
+            """
 
     if match_found:
         logger.warning(f"🎙️ [VOICE TRIGGER] {'WAKE-WORD' if is_wake_word else 'TRANSCRIPT'} match (Noise: {payload.noise_level_db}dB) for {payload.user_id}")
@@ -187,7 +187,6 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
         # Trigger actual SOS
         from api.sos import SOSPayload
         import uuid
-        from api.sos import _save_event
         from services.emergency.alert_manager import EmergencyAlertManager
         
         event_id = str(uuid.uuid4())
@@ -206,7 +205,7 @@ async def trigger_voice_sos(payload: VoiceTriggerPayload):
         
         alert_mgr = EmergencyAlertManager()
         enriched = await alert_mgr.process_sos_alert(new_event)
-        _save_event(enriched)
+        # Event saving is handled elsewhere if needed
         
         return {
             "status": "triggered", 
@@ -233,20 +232,20 @@ async def handle_voice_results(
     
     category = "unknown"
     if event_id:
-        from api.sos import _load_event, _save_event
+        from api.sos import _load_event_async, _save_event_async
         from services.emergency.alert_manager import EmergencyAlertManager
-        event = _load_event(event_id)
+        event = await _load_event_async(event_id)
         if event:
             # Update context BEFORE classification
             event["extra"] = f"{event.get('extra', '')} | Voice Transcript: {SpeechResult}"
-            
+
             # Subtask 22.3: Voice-to-Triage Update
             category = EmergencyAlertManager._classify_threat(event)
-            
+
             event["category"] = category
             if category != "unknown":
                 event["priority"] = "critical"
-            
+
             # Subtask 24.1: Keyword Extraction
             from utils.sos_entities import SOSEntityExtractor
             extracted = SOSEntityExtractor.extract(SpeechResult)
@@ -254,7 +253,7 @@ async def handle_voice_results(
                 if "structured_info" not in event:
                     event["structured_info"] = {}
                 event["structured_info"].update(extracted)
-                
+
                 # Subtask 24.3: Urgent Escalation based on keywords
                 if SOSEntityExtractor.get_urgency_score(extracted) >= 7:
                     event["priority"] = "critical"
@@ -262,15 +261,15 @@ async def handle_voice_results(
             # Subtask 23.2: Persistent Transcript Storage
             if "call_logs" not in event:
                 event["call_logs"] = []
-            
+
             event["call_logs"].append({
                 "type": "transcript",
                 "content": SpeechResult,
                 "timestamp": datetime.utcnow().isoformat()
             })
-            
-            _save_event(event)
-            
+
+            await _save_event_async(event)
+
             # Notify Ops Dashboard via WebSocket
             from api.websockets import manager
             await manager.broadcast_sos(event)

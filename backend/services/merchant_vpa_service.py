@@ -24,7 +24,7 @@ class MerchantVPAService:
         
         logger.info("MerchantVPAService initialized with metrics tracking")
     
-    def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for VPA operations."""
         with self._metrics_lock:
             self._metrics.append({
@@ -64,6 +64,10 @@ class MerchantVPAService:
             "metrics": self.get_metrics()
         }
 
+    def get_dashboard_stats(self) -> dict:
+        """Expose dashboard-friendly merchant VPA statistics."""
+        return self.get_metrics()
+
     def get_next_vpa(self) -> Dict[str, Any]:
         """
         Rotates between active VPAs that haven't hit their daily limit.
@@ -86,12 +90,13 @@ class MerchantVPAService:
                 first = db.query(MerchantVPA).first()
                 return {"vpa": first.vpa, "name": first.name}
 
-            # Weighted choice based on remaining quota
-            # Higher remaining quota = higher chance of being selected
+            # Weighted choice based on remaining quota AND health score
             weights = []
             for v in available_vpas:
                 remaining = v.daily_limit - v.current_daily_volume
-                weights.append(max(1.0, remaining)) # Ensure at least 1.0 weight
+                # PATENT-LEVEL: Balanced Score (Quota + Reliability)
+                score = max(1.0, remaining) * (v.health_score or 1.0)
+                weights.append(score)
 
             selected = random.choices(available_vpas, weights=weights, k=1)[0]
             

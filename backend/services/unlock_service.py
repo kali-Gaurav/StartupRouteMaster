@@ -145,6 +145,13 @@ class UnlockService:
             if "trip_id" in seg:
                 seg["trip_id"] = "hidden"
             
+        # [Task 22.4] Add descriptive CTA for UI
+        masked["unlock_fee"] = self.config.unlock_fee
+        masked["unlock_currency"] = "INR"
+        masked["cta_text"] = f"Unlock for ₹{self.config.unlock_fee:,.0f}"
+        masked["cta_message"] = "Get full train numbers, platform info and real-time safety status."
+        masked["cta_action"] = "UNLOCK_JOURNEY"
+        
         # Also mask 'legs' if present
         for leg in masked.get("legs", []):
             leg["train_number"] = "XXXXX"

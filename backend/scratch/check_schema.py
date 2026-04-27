@@ -1,12 +1,23 @@
+
 import sqlite3
-try:
-    conn = sqlite3.connect('database/transit_graph.db')
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(cancelled_trains)")
-    columns = cursor.fetchall()
-    print("Columns in cancelled_trains:")
-    for col in columns:
-        print(col)
-    conn.close()
-except Exception as e:
-    print(f"Error: {e}")
+import os
+
+db_path = "backend/database/transit_graph.db"
+if not os.path.exists(db_path):
+    print(f"File not found: {db_path}")
+    exit(1)
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+print("Schema for stop_times:")
+cursor.execute("PRAGMA table_info(stop_times)")
+for row in cursor.fetchall():
+    print(row)
+
+print("\nSchema for stops:")
+cursor.execute("PRAGMA table_info(stops)")
+for row in cursor.fetchall():
+    print(row)
+
+conn.close()

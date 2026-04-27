@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, validator
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, date
 from uuid import UUID
 
 
@@ -184,6 +184,7 @@ class BookingResponseSchema(BaseModel):
     travel_date: Optional[datetime]
     booking_status: str
     escrow_status: str
+    payment_status: Optional[str] = None
     escrow_message: Optional[str] = None
     amount_paid: float
     upi_tx_id: Optional[str] = None
@@ -191,6 +192,9 @@ class BookingResponseSchema(BaseModel):
     train_number: Optional[str] = None
     booking_details: Dict[str, Any]
     passenger_details: Optional[List[PassengerDetailsSchema]] = None
+    current_state: Optional[Dict[str, Any]] = None
+    valid_next_actions: Optional[List[str]] = None
+    state_transition_history: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
     upi_url: Optional[str] = None # Transient field for payment initiation
 
@@ -216,7 +220,7 @@ class BookingListSchema(BaseModel):
     limit: int
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "bookings": [],
                 "total": 0,
@@ -589,3 +593,180 @@ class RefundResponseSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==============================================================================
+# BOOKING ROUTES SCHEMAS (REQ-028)
+# ==============================================================================
+
+class PassengerSchema(BaseModel):
+    """Schema for passenger details in booking request."""
+    full_name: str = Field(..., min_length=1, max_length=255)
+    age: int = Field(..., ge=0, le=150)
+    gender: str = Field(..., pattern="^(M|F|O|U)$")
+    phone_number: Optional[str] = None
+    email: Optional[str] = None
+    berth_preference: Optional[str] = Field(None, pattern="^(LOWER|MIDDLE|UPPER|SIDE_LOWER|SIDE_UPPER)$")
+    meal_preference: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BookingRequestSchema(BaseModel):
+    """
+    Schema for creating a new booking request.
+    
+    Contains all information needed to create a booking including
+    journey details, passenger information, and preferences.
+    """
+    journey_id: str = Field(..., description="Unique journey identifier from search results")
+    travel_date: date = Field(..., description="Date of travel in YYYY-MM-DD format")
+    passengers: List[PassengerSchema] = Field(..., min_length=1, max_length=6)
+    class_type: str = Field(..., pattern="^(SL|3A|2A|1A|CC|EC)$", description="Coach class type")
+    berth_preference: Optional[str] = Field(None, pattern="^(LOWER|MIDDLE|UPPER|SIDE_LOWER|SIDE_UPPER)$")
+    meal_preference: Optional[str] = None
+    payment_method: str = Field(..., pattern="^(UPI|CARD|NET_BANKING)$")
+    webhook_url: Optional[str] = Field(None, description="URL to receive payment webhook")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "journey_id": "journey_123",
+                "travel_date": "2025-12-25",
+                "passengers": [
+                    {
+                        "full_name": "John Doe",
+                        "age": 35,
+                        "gender": "M",
+                        "phone_number": "+919876543210"
+                    }
+                ],
+                "class_type": "3A",
+                "berth_preference": "LOWER",
+                "payment_method": "UPI"
+            }
+        }
+
+
+class TrainInfoSchema(BaseModel):
+    """Schema for train information in booking response."""
+    train_number: str
+    train_name: str
+    from_station: str
+    to_station: str
+    departure_time: str
+    arrival_time: str
+    duration_minutes: int
+
+    class Config:
+        from_attributes = True
+
+
+class BookingResponseSchema(BaseModel):
+    """
+    Schema for booking response.
+    
+    Contains all information about a created booking including
+    PNR number, status, and payment details.
+    """
+    id: str
+    pnr_number: str
+    user_id: str
+    travel_date: date
+    booking_status: str
+    train_details: Optional[TrainInfoSchema] = None
+    passengers: List[PassengerSchema]
+    total_amount: float
+    amount_paid: float = 0.0
+    payment_url: Optional[str] = None
+    payment_status: Optional[str] = None
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+    current_state: Optional[Dict[str, Any]] = None
+    valid_next_actions: Optional[List[str]] = None
+    state_transition_history: Optional[List[Dict[str, Any]]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BookingListResponseSchema(BaseModel):
+    """Schema for paginated list of bookings."""
+    bookings: List[BookingResponseSchema]
+    total: int
+    skip: int
+    limit: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "bookings": [],
+                "total": 0,
+                "skip": 0,
+                "limit": 20
+            }
+        }
+
+
+class PNRLookupResponseSchema(BaseModel):
+    """
+    Schema for PNR lookup response.
+    
+    Public endpoint response with limited booking information
+    suitable for public display.
+    """
+    pnr_number: str
+    train_number: Optional[str] = None
+    train_name: Optional[str] = None
+    travel_date: date
+    from_station: Optional[str] = None
+    to_station: Optional[str] = None
+    booking_status: str
+    passenger_count: int
+    class_type: Optional[str] = None
+    current_state: Optional[Dict[str, Any]] = None
+    valid_next_actions: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class BookingCancellationSchema(BaseModel):
+    """Schema for booking cancellation request."""
+    reason: Optional[str] = Field(None, max_length=500)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "reason": "Changed travel plans"
+            }
+        }
+
+
+class BookingCancellationResponseSchema(BaseModel):
+    """Schema for booking cancellation response."""
+    booking_id: str
+    pnr_number: str
+    status: str
+    refund_amount: float
+    refund_status: str
+    cancelled_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ErrorResponseSchema(BaseModel):
+    """Schema for error responses."""
+    detail: str
+    error_code: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "detail": "Booking not found",
+                "error_code": "ERR005"
+            }
+        }

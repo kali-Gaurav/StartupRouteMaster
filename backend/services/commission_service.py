@@ -14,7 +14,7 @@ Author: RouteMaster Intelligence System
 Date: 2026-02-17
 """
 
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import logging
 import uuid
 from datetime import datetime, timedelta
@@ -196,14 +196,13 @@ class CommissionService:
         ledger_entry = None
         try:
             from services.ledger_service import ledger_service
-            ledger_entry = await ledger_service.record_transaction(
+            ledger_entry = await ledger_service(db).record_transaction(
                 db,
-                debit_acc="CASH_ESCROW",
-                credit_acc=f"AGENT_PENDING_{agent_id}",
-                amount=float(rate),
-                transaction_type="COMMISSION_RECORD",
-                user_id=agent_id,
-                metadata={"booking_id": booking_id}
+                "CASH_ESCROW",
+                f"AGENT_PENDING_{agent_id}",
+                float(rate),
+                booking_id,
+                agent_id
             )
         except Exception as e:
             logger.error(f"❌ Ledger recording failed: {e}")
@@ -335,15 +334,13 @@ class CommissionService:
         ledger_entry = None
         try:
             from services.ledger_service import ledger_service
-            ledger_entry = await ledger_service.record_transaction(
+            ledger_entry = await ledger_service(db).record_transaction(
                 db,
-                source_account=f"AGENT_PENDING_{agent_id}",
-                destination_account=f"AGENT_SETTLED_{agent_id}",
-                amount=float(total_to_settle),
-                transaction_type="COMMISSION_SETTLE",
-                user_id=agent_id,
-                reference_id=batch_uuid,
-                description=f"Batch Settlement for Agent {agent_id} (Ref: {batch_uuid})"
+                f"AGENT_PENDING_{agent_id}",
+                f"AGENT_SETTLED_{agent_id}",
+                float(total_to_settle),
+                batch_uuid,
+                agent_id
             )
         except Exception as e:
             logger.error(f"❌ Ledger settlement failed: {e}")

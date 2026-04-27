@@ -10,8 +10,8 @@ Provides complete website functionality through Telegram with:
 """
 
 from telegram_bot.bot import TelegramBot
-from telegram_bot.dispatcher import TelegramBotDispatcher
-from telegram_bot.webhook import TelegramWebhookHandler
+from telegram_bot.dispatcher import TelegramDispatcher as TelegramBotDispatcher
+from telegram_bot.webhook import webhook_router as TelegramWebhookHandler
 
 __all__ = [
     "TelegramBot",

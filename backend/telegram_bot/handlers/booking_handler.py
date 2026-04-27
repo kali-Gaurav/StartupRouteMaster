@@ -5,17 +5,24 @@ Handles ticket booking and management.
 """
 
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType, HandlerResult, HandlerResultStatus
+    IntentType
 )
+from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 from ..user_session_manager import user_session_manager
 from ..config import feature_config
+from database.session import get_db
+from services.user_service import UserService
+from services.booking_service import BookingService
+from services.fare_service import FareService
+from services.credit_service import UnlockCreditService
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +345,7 @@ Example:
         entities: Dict[str, Any]
     ) -> HandlerResult:
         """Handle booking review and confirmation."""
-        if "confirm" in text.lower():
+        if "confirm" in text.lower() or "confirm" in context.data.get("callback_data", ""):
             # Proceed to payment
             return await self._handle_payment(chat_id, text, context, entities)
         elif "cancel" in text.lower():
@@ -370,52 +377,89 @@ Example:
         context: UserContext,
         entities: Dict[str, Any]
     ) -> HandlerResult:
-        """Handle payment processing."""
+        """Handle real payment processing."""
         booking_data = context.data.get("booking_data", {})
+        train_data = context.data.get("selected_train", {})
         
-        # Calculate fare (mock)
-        fare = self._calculate_fare(booking_data)
-        
-        text = f"""💳 <b>Payment</b>
+        try:
+            async with get_db() as db:
+                user_service = UserService(db)
+                user = await user_service.get_user_by_telegram_id(str(chat_id))
+                
+                if not user:
+                    return await self._handle_registration(chat_id, None)
 
-<b>Booking Summary:</b>
-• Passengers: {booking_data.get('passenger_count', 1)}
-• Class: {booking_data.get('class', 'N/A')}
-• Quota: {booking_data.get('quota', 'General')}
+                # Get real fare
+                fare_service = FareService(db_session=db)
+                fare_result = await fare_service.get_fare_with_fallback(
+                    train_no=train_data.get('train_no'),
+                    from_station=train_data.get('from_code', train_data.get('from')),
+                    to_station=train_data.get('to_code', train_data.get('to')),
+                    class_code=booking_data.get('class_code', 'SL'),
+                    quota=booking_data.get('quota_code', 'GN')
+                )
+                
+                base_fare = fare_result.get("data", {}).get("total_fare", 500)
+                passenger_count = len(booking_data.get("passengers", []))
+                total_fare = base_fare * passenger_count
 
-<b>Total Fare: ₹{fare}</b>
+                # Create pending booking in DB
+                booking_service = BookingService(db)
+                booking = booking_service.create_seat_hold(
+                    user_id=user.id,
+                    route_id=train_data.get("id", str(uuid.uuid4())),
+                    travel_date=train_data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    amount_paid=total_fare,
+                    booking_details={
+                        "train_no": train_data.get("train_no"),
+                        "passengers": booking_data.get("passengers"),
+                        "class": booking_data.get("class"),
+                        "quota": booking_data.get("quota")
+                    }
+                )
 
-━━━━━━━━━━━━━━━━━━━━━━━━
-<b>Select Payment Method:</b>
-━━━━━━━━━━━━━━━━━━━━━━━━
+                if not booking:
+                    return HandlerResult(
+                        status=HandlerResultStatus.FAILED,
+                        response=BotResponse(
+                            chat_id=chat_id,
+                            text="❌ <b>Seat Unavailable</b>\n\nSorry, seats are no longer available for this selection."
+                        )
+                    )
 
-• 💰 Wallet Balance
-• 💳 Card/UPI
-• 📱 Net Banking
+                # Check wallet balance
+                credit_service = UnlockCreditService()
+                balance = credit_service.get_user_balance(db, user.id)
 
-<i>Payment timeout: {feature_config.booking_payment_timeout_minutes} minutes</i>"""
-        
-        return HandlerResult(
-            status=HandlerResultStatus.NEEDS_INPUT,
-            response=BotResponse(
-                chat_id=chat_id,
-                text=text,
-                inline_keyboards=[
-                    [
-                        {"text": "💰 Pay with Wallet", "callback_data": "pay_wallet"},
-                        {"text": "💳 Card/UPI", "callback_data": "pay_card"}
-                    ],
-                    [
-                        {"text": "🔙 Back", "callback_data": "pay_back"}
-                    ]
-                ]
-            ),
-            next_state="payment",
-            data={
-                "booking_step": "payment",
-                "fare": fare
-            }
-        )
+                text = f"💳 <b>Payment Required</b>\n\n<b>PNR: {booking.pnr_number}</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n<b>Booking Summary:</b>\n• Passengers: {passenger_count}\n• Class: {booking_data.get('class', 'N/A')}\n• Total Amount: ₹{total_fare}\n━━━━━━━━━━━━━━━━━━━━━━━━\nPlease select a payment method:"
+
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=text,
+                        keyboard=[
+                            [
+                                {"text": "💳 Pay Now", "callback_data": f"pay_{booking.id}"},
+                                {"text": "💳 Card/UPI", "callback_data": "pay_card"}
+                            ],
+                            [
+                                {"text": "🔙 Back", "callback_data": "pay_back"}
+                            ]
+                        ]
+                    ),
+                    next_state="payment",
+                    data={
+                        "booking_step": "payment",
+                        "fare": total_fare
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error in handle_payment: {e}")
+            return HandlerResult(
+                status=HandlerResultStatus.FAILED,
+                error=str(e)
+            )
     
     def _create_booking_summary(
         self, 

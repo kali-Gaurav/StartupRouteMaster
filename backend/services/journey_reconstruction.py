@@ -1,6 +1,6 @@
 # Consolidated wrapper - actual implementation is in backend.core.route_engine
 # This file maintained for backwards compatibility
-from core.route_engine import RouteEngine
+from core.route_engine import RailwayRouteEngine
 
 # Provide a thin wrapper around RouteEngine so that older callers
 # (such as SearchService) can continue to pass a database parameter even
@@ -17,7 +17,7 @@ class JourneyReconstructionEngine:
 
     def __init__(self, db=None, *args, **kwargs):
         # db is intentionally unused
-        self._inner = RouteEngine(*args, **kwargs)
+        self._inner = RailwayRouteEngine(*args, **kwargs)
 
     def __getattr__(self, name):
         # delegate attribute access to the inner engine

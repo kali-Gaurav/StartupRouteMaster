@@ -31,25 +31,25 @@ class KimiSwarmManager:
         self.orchestrator = orchestrator
         self.squad_mapping = {
             KimiSquad.ARCHITECT: [
-                "Vanguard", "Ariadne", "Engineering Intelligence", "Infrastructure Sentinel"
+                "Vanguard", "Ariadne", "SystemGuardianAgent", "SystemVitals"
             ],
             KimiSquad.FRONTEND: [
-                "Narrator", "Engagement Engine", "Notification Agent", "User Growth", "FOMO Agent"
+                "NarratorAgent", "EngagementPulse", "NotificationHub", "GrowthEngine", "FOMOAgent"
             ],
             KimiSquad.BACKEND: [
-                "Revenue Agent", "Settlement Agent", "Booking Ops", "Inventory Agent", 
-                "Database Agent", "PNR Importer", "FX Agent", "MultiModal Agent"
+                "RevenueIntelligence", "SettlementSentry", "BookingOrchestrator", "InventoryWatcher", 
+                "DatabaseGuardian", "PNRImporterAgent", "FXAgent", "NexusExplorer"
             ],
             KimiSquad.QA: [
-                "Chaos Agent", "Security Guardian", "Monitoring Agent", "Compliance Agent", 
-                "Quality Assurance", "Bailiff Agent"
+                "ChaosMonkeyAgent", "SecurityGuardian", "MonitoringAgent", "ComplianceGuard", 
+                "QualityGuard", "BailiffAgent"
             ],
             KimiSquad.REVIEWERS: [
-                "Arbitrage Agent", "Reconciliation Agent", "Aegis", "Admin Intel"
+                "ArbitrageAgent", "LedgerReconciler", "Aegis", "AdminIntelAgent"
             ],
-            KimiSquad.VIBE_TRANSPILLER: ["Narrator", "Vanguard"],
-            KimiSquad.LEGACY_REFACTOR: ["Engineering Intelligence", "Database Agent"],
-            KimiSquad.SAFE_EXECUTION: ["Security Guardian", "Compliance Agent"]
+            KimiSquad.VIBE_TRANSPILLER: ["NarratorAgent", "Vanguard"],
+            KimiSquad.LEGACY_REFACTOR: ["Vanguard", "DatabaseGuardian"],
+            KimiSquad.SAFE_EXECUTION: ["SecurityGuardian", "ComplianceGuard"]
         }
         # Simulation weights to reach the "300 agent" vibe
         self.squad_counts = {
@@ -74,13 +74,17 @@ class KimiSwarmManager:
             real_agents = [a for a in real_agents if a]
             
             # Aggregate status from real agents
-            active_real = sum(1 for a in real_agents if a['status'] == 'RUNNING')
+            active_real = sum(1 for a in real_agents if a.get('status') == 'RUNNING')
             
             status[squad] = {
                 "total_capacity": count,
                 "active_threads": active_real * (count // (len(real_agents) or 1)),
                 "health": "Optimal" if active_real > 0 else "Idle",
-                "current_tasks": [a['metrics']['last_execution_summary'] for a in real_agents if a['metrics']['last_execution_summary']] or ["Scanning infrastructure..."],
+                "current_tasks": [
+                    a.get('metrics', {}).get('last_execution_summary') 
+                    for a in real_agents 
+                    if a.get('metrics', {}).get('last_execution_summary')
+                ] or ["Scanning infrastructure..."],
                 "mapped_agents": mapped_agents
             }
         

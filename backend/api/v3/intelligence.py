@@ -1,11 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from database.session import get_db
+from database.models import User
+from api.dependencies import get_current_user
 from services.ml.reliability_engine import ReliabilityEngine
 from services.intelligence.ghost_search import get_ghost_search_service
+from services.sovereign_ledger_service import SovereignLedgerService
+from core.sovereign.ab_engine import ab_engine
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/intelligence", tags=["Intelligence"])
+
+class IncentiveClaimRequest(BaseModel):
+    amount: float
+    nudge_id: str
+    description: Optional[str] = None
+    type: str = "redistribution"
 
 @router.get("/reliability/heatmap")
 async def get_reliability_heatmap(db: Session = Depends(get_db)):
@@ -57,4 +68,66 @@ async def simulate_disruption(pnr: str, db: Session = Depends(get_db)):
     # Simulate a break at the first connection
     await ghost_svc._perform_ghost_search(booking, 0)
     
+    
     return {"status": "success", "message": f"Ghost search triggered for {pnr}"}
+
+# --- SOVEREIGN WALLET ENDPOINTS ---
+
+@router.post("/sovereign/claim")
+async def claim_sovereign_incentive(
+    request: IncentiveClaimRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    [Phase 6] Claims a Sovereign Intelligence incentive.
+    Updates the user's bonus credit balance and records the ledger entry.
+    """
+    try:
+        result = SovereignLedgerService.claim_incentive(
+            db=db,
+            user_id=user.id,
+            amount=request.amount,
+            credit_type=request.type,
+            description=request.description or "Sovereign Intelligence Redistribution Incentive",
+            nudge_id=request.nudge_id
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error while claiming incentive")
+
+@router.get("/sovereign/wallet")
+async def get_sovereign_wallet(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    [Phase 6] Retrieves the user's Sovereign Wallet summary and active credits.
+    """
+    try:
+        summary = SovereignLedgerService.get_wallet_summary(db, user.id)
+        if "error" in summary:
+            raise HTTPException(status_code=404, detail=summary["error"])
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error while fetching wallet")
+
+@router.post("/ab/convert")
+async def record_ab_conversion(
+    payload: Dict[str, Any],
+    user: User = Depends(get_current_user)
+):
+    """
+    [SOVEREIGN] Record A/B Testing Conversion.
+    """
+    experiment_id = payload.get("experiment_id", "nudge_tone_optimization")
+    variant = payload.get("variant")
+    goal = payload.get("goal", "conversion")
+    
+    if not variant:
+        raise HTTPException(status_code=400, detail="Variant is required")
+        
+    await ab_engine.record_conversion(user.id, experiment_id, variant, goal)
+    return {"status": "recorded"}

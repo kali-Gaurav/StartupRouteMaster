@@ -13,7 +13,9 @@ class MockFlightProvider(BaseProvider):
             "flight_num": f"RM-{random.randint(100,999)}",
             "airline": "SkyMaster",
             "total_cost": 4500.0,
-            "pnr_status": "AVAILABLE"
+            "pnr_status": "AVAILABLE",
+            "departure_code": src,
+            "arrival_code": dst
         }]
 
     async def verify(self, candidate_id: str) -> Dict[str, Any]: return {"status": "available", "price": 4500.0}

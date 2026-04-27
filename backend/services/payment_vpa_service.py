@@ -5,7 +5,7 @@ Handles load balancing between multiple UPI handles and daily volume resets.
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional, cast
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database.models import MerchantVPA, AuditLog
@@ -31,7 +31,7 @@ class PaymentVPAService:
             return None
             
         selected = merchants[0]
-        return selected.vpa
+        return cast(str, getattr(selected, "vpa", ""))
 
     @staticmethod
     def increment_volume(db: Session, vpa: str, amount: float):
@@ -50,10 +50,12 @@ class PaymentVPAService:
         """
         from database.models import Booking, EscrowStatus
         booking = db.query(Booking).filter(Booking.id == booking_id).first()
-        if not booking: return False
+        if not booking:
+            return False
         
         # 1. Update History
-        history = list(booking.transaction_history or [])
+        transaction_history = getattr(booking, "transaction_history", None) or []
+        history = list(transaction_history)
         history.append({
             "utr": utr,
             "amount": amount,

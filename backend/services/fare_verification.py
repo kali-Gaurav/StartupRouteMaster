@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from collections import deque
 import asyncio
@@ -60,7 +60,7 @@ class FareVerificationService:
     # METRICS TRACKING
     # =========================================================================
 
-    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for verification operations."""
         async with self._metrics_lock:
             self._metrics.append({

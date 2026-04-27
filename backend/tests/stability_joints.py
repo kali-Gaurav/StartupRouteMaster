@@ -67,24 +67,58 @@ async def test_joint_logic_masking_and_signing():
         )
         
         # 4. Verification
-        assert response["status"] == "SUCCESS"
-        payload = response["data"]
-        signature = response["integrity_sig"]
-        nonce = response["metadata"]["nonce"]
-        fingerprint_hash = response["metadata"]["fingerprint"]
-        
+        # Use dict-style access now supported by SafeJSONResponse
+        import orjson
+        # Always decode to dict for uniform access
+        if isinstance(response, dict):
+            resp_dict = response
+        elif hasattr(response, "body"):
+            resp_dict = orjson.loads(response.body)
+        else:
+            raise TypeError("Unexpected response type")
+        assert resp_dict.get("status") == "SUCCESS"
+        payload = resp_dict.get("data")
+        if not isinstance(payload, dict):
+            payload = {}
+        signature = resp_dict.get("integrity_sig", "")
+        metadata = resp_dict.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        nonce = metadata.get("nonce", "")
+        fingerprint_hash = metadata.get("fingerprint", "")
+
         # Check Masking
-        for journey in payload["journeys"]:
+        journeys = payload.get("journeys", [])
+        for journey in journeys:
             assert "guardian_score" not in journey, "FAIL: Premium field 'guardian_score' leaked to BASIC tier"
             assert "comfort_rank" not in journey, "FAIL: Premium field 'comfort_rank' leaked to BASIC tier"
-            
+
         # Check Integrity Signing (Contextual Integrity 2.0)
         # Note: user_id fallback is fingerprint_hash in our code
-        ts = response["metadata"]["ts"]
+        ts = metadata.get("ts", 0)
+        # Ensure correct type for ts
+        if isinstance(ts, str):
+            try:
+                ts = int(ts)
+            except Exception:
+                ts = 0
+        if not isinstance(ts, int):
+            ts = 0
+        # Ensure all required fields are str and not None
+        if not isinstance(signature, str):
+            signature = ""
+        if not isinstance(fingerprint_hash, str):
+            fingerprint_hash = ""
+        if not isinstance(nonce, str):
+            nonce = ""
+        # Defensive: verify_result_integrity expects payload to be dict
+        if not isinstance(payload, dict):
+            payload = {}
         is_valid = verify_result_integrity(payload, signature, user_id=fingerprint_hash, nonce=nonce, ts=ts)
         assert is_valid, "FAIL: Signature invalid! Likely signed before masking or with wrong context."
         print("\n✅ [STABILITY] Joint 1 (Mask->Sign) Verified.")
 
 if __name__ == "__main__":
     import pytest
-    asyncio.run(pytest.main([__file__]))
+    import sys
+    sys.exit(pytest.main([__file__]))

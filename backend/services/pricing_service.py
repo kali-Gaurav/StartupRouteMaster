@@ -54,13 +54,14 @@ class PricingService:
     BASE_FEE = 39.0
     MAX_FEE = 149.0  # Ethical Cap to maintain trust
     
-    # Class-level cache and metrics
+    # Class-level config
+    config = PricingConfig()
     _cache: Dict[str, tuple[PricingResult, datetime]] = {}
-    _cache_lock = None  # Will be initialized lazily
+    _cache_lock = None
     _metrics: deque = deque(maxlen=1000)
     
     def __init__(self, config: Optional[PricingConfig] = None):
-        self.config = config or PricingConfig()
+        self.config = config or self.__class__.config
         self._breaker = circuit_breaker_manager.get_breaker("pricing")
         
     @classmethod
@@ -74,7 +75,7 @@ class PricingService:
         cache_key = cls._get_cache_key(source, destination)
         if cache_key in cls._cache:
             result, timestamp = cls._cache[cache_key]
-            if datetime.utcnow() - timestamp < timedelta(seconds=PricingConfig().cache_ttl_seconds):
+            if datetime.utcnow() - timestamp < timedelta(seconds=cls.config.cache_ttl_seconds):
                 result.cached = True
                 return result
             del cls._cache[cache_key]
@@ -86,6 +87,7 @@ class PricingService:
         cache_key = cls._get_cache_key(source, destination)
         cls._cache[cache_key] = (result, datetime.utcnow())
     
+    @classmethod
     @retry_sync
     def _calculate_demand_score(
         cls, 
@@ -97,14 +99,20 @@ class PricingService:
         from database.models import RouteSearchLog
         one_hour_ago = datetime.utcnow() - timedelta(hours=cls.config.demand_window_hours)
         
-        search_count = db.query(RouteSearchLog).filter(
-            RouteSearchLog.src == source,
-            RouteSearchLog.dst == destination,
-            RouteSearchLog.created_at >= one_hour_ago
-        ).count()
-        
-        return min(2.0, (search_count / 10.0))
+        try:
+            search_count = db.query(RouteSearchLog).filter(
+                RouteSearchLog.src == source,
+                RouteSearchLog.dst == destination,
+                RouteSearchLog.created_at >= one_hour_ago
+            ).count()
+            return min(2.0, (search_count / 10.0))
+        except Exception as e:
+            logger.warning(f"Error calculating demand score: {e}")
+            try: db.rollback()
+            except: pass
+            return 0.0
     
+    @classmethod
     @retry_sync
     def _calculate_intent_score(
         cls, 
@@ -115,15 +123,21 @@ class PricingService:
     ) -> float:
         """Calculate user intent score with retry logic."""
         from database.models import RouteSearchLog
-        recent = db.query(RouteSearchLog).filter(
-            RouteSearchLog.user_id == user_id,
-            RouteSearchLog.src == source,
-            RouteSearchLog.dst == destination,
-            RouteSearchLog.created_at >= datetime.utcnow() - timedelta(minutes=cls.config.intent_window_minutes)
-        ).count()
-        
-        return min(1.0, recent / 5.0)
+        try:
+            recent = db.query(RouteSearchLog).filter(
+                RouteSearchLog.user_id == user_id,
+                RouteSearchLog.src == source,
+                RouteSearchLog.dst == destination,
+                RouteSearchLog.created_at >= datetime.utcnow() - timedelta(minutes=cls.config.intent_window_minutes)
+            ).count()
+            return min(1.0, recent / 5.0)
+        except Exception as e:
+            logger.warning(f"Error calculating intent score: {e}")
+            try: db.rollback()
+            except: pass
+            return 0.0
 
+    @classmethod
     @circuit_breaker_manager.get_breaker("pricing").decorate
     async def get_dynamic_unlock_fee(
         cls, 

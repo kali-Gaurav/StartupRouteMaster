@@ -111,7 +111,16 @@ class ParetoOptimizer:
         
         # 4. Smart Choice (Weighted blend)
         # Often a route that isn't the best in any one thing but great overall.
-        pass
+        if frontier:
+            smart_choice = min(frontier, key=lambda r: self._calculate_composite_score(r))
+            if "persona_tags" not in smart_choice.metadata: smart_choice.metadata["persona_tags"] = []
+            smart_choice.metadata["persona_tags"].append("SMART_CHOICE")
+
+    def _calculate_composite_score(self, r: Route) -> float:
+        """Calculates a normalized composite score (lower is better)."""
+        o = self._get_objective_vector(r)
+        # Weights: Time=0.4, Cost=0.3, Comfort=0.2, Reliability=0.1
+        return (o[0] * 0.4) + (o[1] * 0.3) + (o[2] * 0.2) + (o[3] * 0.1)
 
 # Singleton
 pareto_optimizer = ParetoOptimizer()

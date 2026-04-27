@@ -1,10 +1,11 @@
 import asyncio
 import redis
 from redis.lock import Lock
+from redis.exceptions import RedisError
 import json
 import logging
 import fnmatch
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List, Union, cast
 import time # New: Import time for duration calculation
 from collections import OrderedDict, deque
 from datetime import datetime
@@ -81,12 +82,11 @@ class InstrumentedLock:
             LOCK_ACQUISITION_ATTEMPTS_TOTAL.labels(lock_name=self._name, outcome="failed").inc()
         return acquired
 
-    def release(self) -> bool:
+    def release(self) -> None:
         if self._acquire_time:
             LOCK_HOLD_DURATION_SECONDS.labels(lock_name=self._name).observe(time.time() - self._acquire_time)
             self._acquire_time = None
-        released = self._lock.release()
-        return released
+        self._lock.release()
 
     def __enter__(self):
         self.acquire()
@@ -187,7 +187,7 @@ class CacheService:
         """Check if the Redis connection is available."""
         return self.redis is not None
 
-    def get_lock(self, name: str, timeout: int = 10, blocking_timeout: int = 0) -> InstrumentedLock: # Changed return type to InstrumentedLock
+    def get_lock(self, name: str, timeout: int = 10, blocking_timeout: int = 0) -> Union[InstrumentedLock, _DummyLock]:
         """
         Get a Redis distributed lock.
 
@@ -199,7 +199,9 @@ class CacheService:
         """
         if self.is_available():
             # Locks are not versioned as they are not for caching
-            redis_lock = self.redis.lock(name, timeout=timeout, blocking_timeout=blocking_timeout)
+            redis_client = self.redis
+            assert redis_client is not None
+            redis_lock = redis_client.lock(name, timeout=timeout, blocking_timeout=blocking_timeout)
             return InstrumentedLock(redis_lock, name) # Wrap with InstrumentedLock
         
         # Fallback to DummyLock with instrumentation if Redis is not available
@@ -219,16 +221,18 @@ class CacheService:
         # 2. Try L1 (Redis)
         if self.is_available():
             try:
-                value = self.redis.get(versioned_key)
+                redis_client = self.redis
+                assert redis_client is not None
+                value = redis_client.get(versioned_key)
                 if value:
                     logger.debug(f"CACHE HIT for key: {versioned_key}")
-                    data = json.loads(value)
+                    data = json.loads(cast(str, value))
                     self._lru.put(versioned_key, data) # Promote to L0
                     return data
                 else:
                     logger.debug(f"CACHE MISS for key: {versioned_key}")
                     return None
-            except (redis.exceptions.RedisError, json.JSONDecodeError) as e:
+            except (RedisError, json.JSONDecodeError) as e:
                 logger.error(f"Failed to get value from cache for key {versioned_key}: {e}")
                 return None
 
@@ -249,10 +253,12 @@ class CacheService:
 
         if self.is_available():
             try:
+                redis_client = self.redis
+                assert redis_client is not None
                 serialized_value = json.dumps(value)
-                self.redis.set(versioned_key, serialized_value, ex=ttl_seconds)
+                redis_client.set(versioned_key, serialized_value, ex=ttl_seconds)
                 logger.debug(f"CACHE SET for key: {versioned_key} with TTL: {ttl_seconds}s")
-            except (redis.exceptions.RedisError, TypeError) as e:
+            except (RedisError, TypeError) as e:
                 logger.error(f"Failed to set value in cache for key {versioned_key}: {e}")
             return
 
@@ -267,9 +273,11 @@ class CacheService:
 
         if self.is_available():
             try:
-                self.redis.delete(versioned_key)
+                redis_client = self.redis
+                assert redis_client is not None
+                redis_client.delete(versioned_key)
                 logger.debug(f"CACHE DELETE for key: {versioned_key}")
-            except redis.exceptions.RedisError as e:
+            except RedisError as e:
                 logger.error(f"Failed to delete key {versioned_key} from cache: {e}")
             return
 
@@ -283,17 +291,19 @@ class CacheService:
 
         if self.is_available():
             try:
-                keys = self.redis.keys(versioned_pattern)
+                redis_client = self.redis
+                assert redis_client is not None
+                keys = cast(List[str], redis_client.keys(versioned_pattern))
                 for key in keys or []:
-                    value = self.redis.get(key)
+                    value = redis_client.get(key)
                     if value is None:
                         continue
                     try:
-                        results[key[len(self.version_prefix) + 1:]] = json.loads(value)
+                        results[key[len(self.version_prefix) + 1:]] = json.loads(cast(str, value))
                     except json.JSONDecodeError:
                         results[key[len(self.version_prefix) + 1:]] = value
                 return results
-            except redis.exceptions.RedisError as e:
+            except RedisError as e:
                 logger.error(f"Failed to fetch pattern {versioned_pattern} from cache: {e}")
                 return {}
 
@@ -307,8 +317,10 @@ class CacheService:
         versioned_key = self._get_versioned_key(key)
         if self.is_available():
             try:
-                return int(self.redis.incr(versioned_key, amount))
-            except redis.exceptions.RedisError as e:
+                redis_client = self.redis
+                assert redis_client is not None
+                return int(cast(Union[int, str], redis_client.incr(versioned_key, amount)))
+            except RedisError as e:
                 logger.error(f"Failed to increment cache key {versioned_key}: {e}")
                 return 0
 
@@ -322,8 +334,10 @@ class CacheService:
         versioned_key = self._get_versioned_key(key)
         if self.is_available():
             try:
-                return bool(self.redis.expire(versioned_key, ttl_seconds))
-            except redis.exceptions.RedisError as e:
+                redis_client = self.redis
+                assert redis_client is not None
+                return bool(cast(Any, redis_client.expire(versioned_key, ttl_seconds)))
+            except RedisError as e:
                 logger.error(f"Failed to set expiry for cache key {versioned_key}: {e}")
                 return False
         return False
@@ -332,49 +346,45 @@ class CacheService:
     def record_failed_login(self, ip: str):
         """Increments failure count for an IP. Sets 5-min TTL."""
         if not self.is_available(): return
+        redis_client = self.redis
+        assert redis_client is not None
         key = f"login_fails:{ip}"
         try:
-            count = self.redis.incr(key)
-            if count == 1:
-                self.redis.expire(key, 300) # 5 minutes
-            return count
-        except: return 0
+            count = cast(Union[int, str], redis_client.incr(key))
+            if int(count) == 1:
+                redis_client.expire(key, 300) # 5 minutes
+            return int(count)
+        except RedisError:
+            return 0
 
     def is_ip_blocked(self, ip: str) -> bool:
         """Checks if an IP has exceeded 10 failures."""
         if not self.is_available(): return False
+        redis_client = self.redis
+        assert redis_client is not None
         key = f"login_fails:{ip}"
         try:
-            count = int(self.redis.get(key) or 0)
+            count = int(cast(Union[int, str], redis_client.get(key) or 0))
             return count >= 10
         except: return False
 
+    async def get_metrics(self) -> dict:
+        """Get service metrics."""
+        return self._metrics.get_metrics()
+
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy" if self.is_available() else "degraded",
+            "redis_available": self.is_available(),
+            "circuit_breaker": self._redis_breaker.get_metrics(),
+            "metrics": self._metrics.get_metrics()
+        }
+
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers."""
+        self._redis_breaker.reset()
+        logger.info("All circuit breakers reset for cache_service")
+
 # Global instance to be used across the application
 cache_service = CacheService()
-
-# =========================================================================
-# RESILIENCE PATTERNS
-# =========================================================================
-
-def get_metrics(self) -> dict:
-    """Get service metrics."""
-    return self._metrics.get_metrics()
-
-def health_check(self) -> dict:
-    """Check service health."""
-    return {
-        "status": "healthy" if self.is_available() else "degraded",
-        "redis_available": self.is_available(),
-        "circuit_breaker": self._redis_breaker.get_metrics().to_dict(),
-        "metrics": self._metrics.get_metrics()
-    }
-
-def reset_circuit_breakers(self):
-    """Reset all circuit breakers."""
-    self._redis_breaker.reset()
-    logger.info("All circuit breakers reset for cache_service")
-
-# Bind methods to class
-CacheService.get_metrics = get_metrics
-CacheService.health_check = health_check
-CacheService.reset_circuit_breakers = reset_circuit_breakers

@@ -4,8 +4,8 @@ import uuid
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
-from sqlalchemy.orm import Session
-from sqlalchemy import Column, String, Text, DateTime, Float, Integer, JSON, Enum as SQLEnum
+from sqlalchemy.orm import Session, Mapped, mapped_column
+from sqlalchemy import Column, String, Text, DateTime, Float, Integer, JSON, Enum as SQLEnum, func
 from sqlalchemy.dialects.postgresql import JSONB
 from dataclasses import dataclass
 from enum import Enum
@@ -58,12 +58,12 @@ class ExperimentAssignment(Base):
     """
     __tablename__ = 'experiment_assignments'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    experiment_id = Column(String(50), nullable=False, index=True)
-    user_id = Column(String(100), nullable=False, index=True)
-    variant = Column(String(20), nullable=False)
-    assigned_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    assignment_metadata = Column(JSON, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    variant: Mapped[str] = mapped_column(String(20), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    assignment_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
 
 class UserSegmentProfile(Base):
@@ -73,16 +73,16 @@ class UserSegmentProfile(Base):
     """
     __tablename__ = 'user_segment_profiles'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(100), unique=True, nullable=False, index=True)
-    segment = Column(String(20), nullable=False)
-    search_count_30d = Column(Integer, default=0)
-    avg_fare = Column(Float, default=0)
-    conversion_rate = Column(Float, default=0)
-    preferred_departure_hour = Column(Integer, nullable=True)
-    preferred_days = Column(JSON, nullable=True)  # List of preferred travel days
-    last_updated = Column(DateTime, default=datetime.utcnow, nullable=False)
-    confidence = Column(Float, default=0.5)  # Confidence in segment assignment
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    segment: Mapped[str] = mapped_column(String(20), nullable=False)
+    search_count_30d: Mapped[int] = mapped_column(Integer, default=0)
+    avg_fare: Mapped[float] = mapped_column(Float, default=0)
+    conversion_rate: Mapped[float] = mapped_column(Float, default=0)
+    preferred_departure_hour: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    preferred_days: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)  # List of preferred travel days
+    last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)  # Confidence in segment assignment
 
 
 class DemandForecast(Base):
@@ -92,14 +92,14 @@ class DemandForecast(Base):
     """
     __tablename__ = 'demand_forecasts'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    route_key = Column(String(50), nullable=False, index=True)  # SRC:DST
-    forecast_date = Column(DateTime, nullable=False, index=True)
-    predicted_searches = Column(Integer, nullable=False)
-    predicted_bookings = Column(Integer, nullable=False)
-    confidence_score = Column(Float, default=0.0)
-    model_version = Column(String(20), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    route_key: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # SRC:DST
+    forecast_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    predicted_searches: Mapped[int] = mapped_column(Integer, nullable=False)
+    predicted_bookings: Mapped[int] = mapped_column(Integer, nullable=False)
+    confidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    model_version: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class AnomalyEvent(Base):
@@ -109,19 +109,19 @@ class AnomalyEvent(Base):
     """
     __tablename__ = 'anomaly_events'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    anomaly_type = Column(String(50), nullable=False, index=True)  # FRAUD, TRAFFIC, PRICING
-    severity = Column(String(20), nullable=False)  # LOW, MEDIUM, HIGH, CRITICAL
-    entity_type = Column(String(30), nullable=True)  # USER, ROUTE, BOOKING
-    entity_id = Column(String(100), nullable=True)
-    description = Column(Text, nullable=False)
-    metric_name = Column(String(50), nullable=True)
-    metric_value = Column(Float, nullable=True)
-    expected_value = Column(Float, nullable=True)
-    deviation = Column(Float, nullable=True)
-    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    resolved_at = Column(DateTime, nullable=True)
-    status = Column(String(20), default="open")  # open, investigating, resolved, false_positive
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anomaly_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # FRAUD, TRAFFIC, PRICING
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)  # LOW, MEDIUM, HIGH, CRITICAL
+    entity_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # USER, ROUTE, BOOKING
+    entity_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    metric_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expected_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    deviation: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open")  # open, investigating, resolved, false_positive
 
 
 class FeatureStoreEntry(Base):
@@ -131,16 +131,16 @@ class FeatureStoreEntry(Base):
     """
     __tablename__ = 'feature_store'
     
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    feature_name = Column(String(100), unique=True, nullable=False, index=True)
-    feature_type = Column(String(30), nullable=False)  # route, user, temporal
-    description = Column(Text, nullable=True)
-    computation_logic = Column(Text, nullable=False)  # How to compute
-    default_value = Column(Float, nullable=True)
-    min_value = Column(Float, nullable=True)
-    max_value = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feature_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    feature_type: Mapped[str] = mapped_column(String(30), nullable=False)  # route, user, temporal
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    computation_logic: Mapped[str] = mapped_column(Text, nullable=False)  # How to compute
+    default_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    min_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    max_value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class IntelligenceService:
@@ -251,6 +251,8 @@ class IntelligenceService:
             
         except Exception as e:
             logger.error(f"Failed to log search served: {e}")
+            try: self.db.rollback()
+            except: pass
 
     async def record_conversion(self, route_id: str, action: str, revenue: float = 0.0):
         """
@@ -541,6 +543,8 @@ class IntelligenceService:
             }
         except Exception as e:
             logger.error(f"Failed to get current weights: {e}")
+            try: db.rollback()
+            except: pass
             return {"availability": 0.4, "speed": 0.3, "comfort": 0.2, "safety": 0.1}
 
     def clear_cache(self) -> None:
@@ -567,7 +571,7 @@ class IntelligenceService:
         self,
         user_id: str,
         experiment_name: str,
-        variants: List[str] = None
+        variants: Optional[List[str]] = None
     ) -> str:
         """
         Assign user to A/B test variant.

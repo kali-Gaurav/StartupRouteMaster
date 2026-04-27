@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, cast
 from sqlalchemy.orm import Session
 import time
 from datetime import datetime
@@ -217,7 +217,7 @@ class HybridSearchService:
         """Resolve station name to stop ID."""
         from database.models import Stop
         stop = self.db.query(Stop).filter(Stop.name.ilike(f"%{station_name}%")).first()
-        return stop.id if stop else None
+        return cast(int, stop.id) if stop else None
 
     def _convert_journey_to_route(self, journey: Dict) -> Dict:
         """Convert multi-modal journey to route format."""
@@ -246,7 +246,7 @@ class HybridSearchService:
     # RESILIENCE PATTERNS
     # =========================================================================
 
-    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record operation metrics."""
         async with self._metrics_lock:
             self._metrics.append({

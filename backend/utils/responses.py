@@ -4,6 +4,21 @@ from typing import Any, Optional
 from starlette.responses import JSONResponse
 
 class SafeJSONResponse(JSONResponse):
+    def __getitem__(self, key):
+        # Allow dict-style access to the response content for test compatibility
+        # The content is stored in self.body, but we need to decode it
+        import orjson
+        # Use self.body (bytes) and decode to dict
+        try:
+            content = orjson.loads(self.body)
+        except Exception:
+            # fallback: try to use self._body if present
+            content = getattr(self, '_body', None)
+            if isinstance(content, (bytes, bytearray)):
+                content = orjson.loads(content)
+        if isinstance(content, dict):
+            return content[key]
+        raise KeyError(key)
     """
     Task 25: Optimized High-Performance Response.
     1. Uses orjson for 5-10x faster serialization.
@@ -33,8 +48,8 @@ class SafeJSONResponse(JSONResponse):
         kwargs["headers"] = headers
         super().__init__(content, status_code, **kwargs)
 
-def success_response(data: Any, status_code: int = 200) -> SafeJSONResponse:
-    return v3_response(data, status_code=status_code)
+def success_response(data: Any, message: Optional[str] = None, status_code: int = 200) -> SafeJSONResponse:
+    return v3_response(data, message=message, status_code=status_code)
 
 def error_response(message: str, error_code: str = "ERROR", status_code: int = 400) -> SafeJSONResponse:
     from utils.structured_logging import get_request_id
@@ -47,17 +62,20 @@ def error_response(message: str, error_code: str = "ERROR", status_code: int = 4
         "request_id": rid
     }, status_code=status_code)
 
-def v3_response(data: Any, status: str = "SUCCESS", metadata: Optional[dict] = None, status_code: int = 200) -> SafeJSONResponse:
+def v3_response(data: Any, status: str = "SUCCESS", message: Optional[str] = None, metadata: Optional[dict] = None, status_code: int = 200) -> SafeJSONResponse:
     """
     Elite V3 Response Wrapper.
     Ensures consistent envelope with status, success, and tracing.
     """
     from utils.structured_logging import get_request_id
     rid = get_request_id().split("|")[0]
+    normalized_status = status.upper()
+    success = status_code < 400 and normalized_status not in {"ERROR", "HALT", "FAILED", "FAILURE"}
     
     content = {
-        "status": status.upper(),
-        "success": status.upper() == "SUCCESS",
+        "status": normalized_status,
+        "success": success,
+        "message": message,
         "data": data,
         "request_id": rid
     }

@@ -1,7 +1,7 @@
 import time
 import asyncio
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from collections import deque
 from datetime import datetime, timedelta
 

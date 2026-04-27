@@ -486,6 +486,9 @@ class OptimizedRAPTOR(BaseRoutingEngine):
                                 start_found = True
                             else: continue
 
+                        # Accumulate distance from start of trip segment
+                        dist_m = int(row.get('dist_m', 0))
+                        total_dist_m += dist_m
                         total_dist = total_dist_m / 1000.0
                         fare = self._estimate_fare(total_dist, constraints)
                         train_num = snapshot.trip_to_train.get(trip_id, "")
@@ -752,7 +755,13 @@ class OptimizedRAPTOR(BaseRoutingEngine):
                 if s_arr_sid == node.to_stop_id: break
         
         rt = Route(segments=full_segments, transfers=transfers)
-        rt.total_distance = sr.total_dist; rt.metadata["engine"] = "raptor_v2_window"
+        # Ensure total_distance is set from search result if available, otherwise fallback to sum
+        if sr.total_dist > 0:
+            rt.total_distance = sr.total_dist
+        else:
+            rt.total_distance = sum(s.distance_km for s in full_segments)
+            
+        rt.metadata["engine"] = "raptor_v2_window"
         rt.metadata["reliability"] = round(sr.reliability, 2)
         return rt
 

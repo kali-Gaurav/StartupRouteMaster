@@ -9,8 +9,9 @@ from typing import Dict, Any
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType, HandlerResult, HandlerResultStatus
+    IntentType
 )
+from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 

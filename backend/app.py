@@ -4,9 +4,15 @@ import importlib
 import logging
 import os
 import sys
+from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+
+# Ensure backend package root is importable when running from repo root
+backend_root = Path(__file__).resolve().parent
+if str(backend_root) not in sys.path:
+    sys.path.insert(0, str(backend_root))
 
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
@@ -140,6 +146,17 @@ def _register_routers(app: FastAPI, settings: BootstrapSettings) -> None:
         logger.exception("Router registration failed; application will run in degraded bootstrap mode.")
         _record_bootstrap_warning(app, f"router_registration_failed: {exc}")
         _update_component_state(app, "routers", "degraded", str(exc))
+    
+    # Register Telegram webhook routes
+    try:
+        from telegram_bot.integration import register_with_app
+        register_with_app(app)
+        _update_component_state(app, "telegram_webhook", "loaded")
+        logger.info("Telegram webhook routes registered")
+    except Exception as exc:
+        logger.warning(f"Telegram webhook registration failed: {exc}")
+        _record_bootstrap_warning(app, f"telegram_webhook_unavailable: {exc}")
+        _update_component_state(app, "telegram_webhook", "degraded", str(exc))
 
 
 def _mount_static_files(app: FastAPI, settings: BootstrapSettings) -> None:

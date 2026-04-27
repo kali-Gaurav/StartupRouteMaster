@@ -2,9 +2,13 @@
 """Quick smoke test for ML reliability and frequency-aware Range-RAPTOR"""
 
 import asyncio
+import os
+import sys
 from datetime import datetime, date
-from ml_reliability_model import MLReliabilityModel
-from frequency_aware_range import FrequencyAwareWindowSizer
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from services.ml.reliability_model import MLReliabilityModel
+from core.routing.frequency_aware_range import FrequencyAwareWindowSizer
 
 
 async def test_ml_reliability():
@@ -47,7 +51,10 @@ async def test_frequency_aware():
     # Mock the frequency computation to test window sizing
     # Test high frequency
     async def get_window(freq):
-        sizer._compute_corridor_frequency = lambda *args: asyncio.coroutine(lambda: freq)()
+        async def fake_compute_corridor_frequency(*args, **kwargs):
+            return freq
+
+        sizer._compute_corridor_frequency = fake_compute_corridor_frequency
         return await sizer.get_range_window_minutes(
             origin_stop_id=1,
             destination_stop_id=2,

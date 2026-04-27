@@ -749,11 +749,11 @@ class TravelKnowledgeGraph:
             
             # Calculate cosine similarity
             try:
-                similarity = cosine_similarity([vec1], [vec2])[0][0]
+                similarity = cosine_similarity(np.array([vec1]), np.array([vec2]))[0][0]
                 similarities.append((other_id, similarity, other_vec))
-            except:
+            except Exception:
                 continue
-        
+
         # Sort by similarity
         similarities.sort(key=lambda x: x[1], reverse=True)
         
@@ -996,7 +996,8 @@ class TravelKnowledgeGraph:
         
         try:
             # Import models
-            from database.models import KnowledgeGraphNode, KnowledgeGraphEdge, UserPreferenceModel, RoutePatternModel
+            from database.models_redistribution import KnowledgeGraphNode, KnowledgeGraphEdge
+            from database.models import UserPreferenceModel, RoutePatternModel
             
             # Save user preferences
             for user_id, pref in self.user_preferences.items():
@@ -1198,7 +1199,7 @@ class TravelKnowledgeGraph:
     # METRICS & HEALTH
     # =========================================================================
     
-    async def _record_metrics(self, operation: str, success: bool, details: Dict = None):
+    async def _record_metrics(self, operation: str, success: bool, details: Optional[Dict[str, Any]] = None):
         """Record service metrics."""
         async with self._metrics_lock:
             self._metrics.append({

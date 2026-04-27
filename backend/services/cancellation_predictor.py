@@ -181,7 +181,7 @@ class CancellationPredictor:
         Protected by circuit breaker and retry logic.
         """
         # Build feature vector
-        features = self._build_features(
+        features: np.ndarray = self._build_features(
             train_id=train_id,
             travel_date=travel_date,
             quota_type=quota_type,
@@ -196,7 +196,7 @@ class CancellationPredictor:
             # Make prediction
             if self.is_trained and self.model:
                 try:
-                    feature_vector = np.asarray([features], dtype=float)
+                    feature_vector = features.reshape(1, -1)
                     predicted_rate = float(self.model.predict(feature_vector)[0])
                     predicted_rate = np.clip(predicted_rate, 0, 0.3)  # Reasonable bounds
                     confidence = self._calculate_confidence(features)

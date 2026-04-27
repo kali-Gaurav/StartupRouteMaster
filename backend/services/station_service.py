@@ -4,7 +4,7 @@ Removed all PG-specific functions and replaced with platform-agnostic ones.
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text, or_
-from typing import List, Dict
+from typing import List, Dict, Optional
 import math
 import json
 import logging
@@ -17,6 +17,26 @@ logger = logging.getLogger(__name__)
 class StationService:
     def __init__(self, db: Session):
         self.db = db
+
+    def get_station(self, code: str) -> Optional[Dict]:
+        """Retrieve a station by its code or stop_id."""
+        try:
+            station = self.db.query(Stop).filter(or_(Stop.code == code, Stop.stop_id == code)).first()
+            if not station:
+                return None
+            return {
+                "name": station.name,
+                "code": station.code,
+                "city": station.city,
+                "state": station.state,
+                "latitude": station.latitude,
+                "longitude": station.longitude
+            }
+        except Exception as e:
+            logger.warning(f"Error querying station {code}: {e}")
+            try: self.db.rollback()
+            except: pass
+            return None
 
     def search_stations_by_name(self, query: str, limit: int = 10) -> List[Dict]:
         """
@@ -48,32 +68,39 @@ class StationService:
         # Approx 111km * cos(lat) per degree longitude
         lon_range = radius_km / (111.0 * math.cos(math.radians(latitude)))
 
-        stations = self.db.query(Stop).filter(
-            Stop.latitude.between(latitude - lat_range, latitude + lat_range),
-            Stop.longitude.between(longitude - lon_range, longitude + lon_range)
-        ).limit(limit * 2).all()
+        try:
+            stations = self.db.query(Stop).filter(
+                Stop.latitude.between(latitude - lat_range, latitude + lat_range),
+                Stop.longitude.between(longitude - lon_range, longitude + lon_range)
+            ).limit(limit * 2).all()
 
-        results = []
-        for station in stations:
-            # Haversine calculation
-            dlat = math.radians(station.latitude - latitude)
-            dlon = math.radians(station.longitude - longitude)
-            a = math.sin(dlat/2)**2 + math.cos(math.radians(latitude)) * math.cos(math.radians(station.latitude)) * math.sin(dlon/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            dist = 6371 * c # Distance in km
+            results = []
+            for station in stations:
+                # Haversine calculation
+                dlat = math.radians(station.latitude - latitude)
+                dlon = math.radians(station.longitude - longitude)
+                a = math.sin(dlat/2)**2 + math.cos(math.radians(latitude)) * math.cos(math.radians(station.latitude)) * math.sin(dlon/2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                dist = 6371 * c # Distance in km
 
-            if dist <= radius_km:
-                results.append({
-                    "id": station.id,
-                    "name": station.name,
-                    "code": station.stop_id,
-                    "city": station.city,
-                    "latitude": station.latitude,
-                    "longitude": station.longitude,
-                    "distance_km": round(dist, 2)
-                })
-        
-        return sorted(results, key=lambda x: x["distance_km"])[:limit]
+                if dist <= radius_km:
+                    results.append({
+                        "id": station.id,
+                        "name": station.name,
+                        "code": station.stop_id,
+                        "city": station.city,
+                        "latitude": station.latitude,
+                        "longitude": station.longitude,
+                        "distance_km": round(dist, 2)
+                    })
+            
+            results.sort(key=lambda x: x["distance_km"])
+            return results[:limit]
+        except Exception as e:
+            logger.warning(f"Error finding stations near me: {e}")
+            try: self.db.rollback()
+            except: pass
+            return []
 
     def get_total_stations_count(self) -> int:
         """Return total number of configured stops."""

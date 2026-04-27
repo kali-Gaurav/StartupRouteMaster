@@ -10,10 +10,12 @@ import { configureApiClient } from '@/lib/apiClient';
 
 export interface User {
   user_id: string | number;
+  id?: string | number; // Alias for compatibility
   phone?: string;
   email?: string;
   first_name?: string;
   last_name?: string;
+  full_name?: string; // Alias for compatibility
   profile_photo_url?: string;
   created_at?: string;
   role?: string;
@@ -101,7 +103,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const login = (newToken: string, newUser: User, refreshToken?: string) => {
     // legacy login placeholder
     console.warn("Legacy login() called. Auth is now handled by Supabase.");
-    setUser(newUser);
+    // Patch for compatibility: set id and full_name
+    setUser({
+      ...newUser,
+      id: newUser.user_id,
+      full_name: newUser.first_name && newUser.last_name ? `${newUser.first_name} ${newUser.last_name}` : (newUser.first_name || newUser.last_name || "")
+    });
     // Persist tokens for legacy services if needed
     if (newToken) localStorage.setItem('supabase.auth.token', newToken);
     if (refreshToken) localStorage.setItem('supabase.auth.refreshToken', refreshToken);

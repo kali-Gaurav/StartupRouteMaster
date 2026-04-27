@@ -42,13 +42,14 @@ class CoachClass(enum.Enum):
 
 class BankTransaction(UserBase):
     __tablename__ = "bank_transactions"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    utr_number = Column(String(50), unique=True, index=True)
-    amount = Column(Float, nullable=False)
-    status = Column(String(20), default="UNCLAIMED") # UNCLAIMED, MATCHED, PROCESSING, VOIDED_BY_BAILIFF
-    sender_phone = Column(String(20), nullable=True)
-    received_at = Column(DateTime, default=datetime.utcnow)
-    raw_payload = Column(Text, nullable=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    utr_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="UNCLAIMED") # UNCLAIMED, MATCHED, PROCESSING, VOIDED_BY_BAILIFF
+    sender_phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    raw_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_reconciled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class UserAlert(UserBase):
     __tablename__ = "user_alerts"
@@ -69,10 +70,12 @@ class User(UserBase, TimestampMixin, AuditMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
     full_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     supabase_id: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
     phone_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     role: Mapped[str] = mapped_column(String(50), default="user")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -108,11 +111,13 @@ class User(UserBase, TimestampMixin, AuditMixin):
     subscription = relationship("Subscription", back_populates="user", uselist=False)
     route_search_logs = relationship("RouteSearchLog", back_populates="user")
     ai_preferences = relationship("UserAIPreference", back_populates="user", uselist=False)
+    ai_intents = relationship("AIIntentLog", back_populates="user")
     chat_history = relationship("PersistentChatMessage", back_populates="user")
     sessions = relationship("UserSession", back_populates="user")
     emergency_contacts = relationship("EmergencyContact", back_populates="user", cascade="all, delete-orphan")
     heartbeats = relationship("UserHeartbeat", back_populates="user", cascade="all, delete-orphan")
     live_locations = relationship("LiveLocation", back_populates="user", cascade="all, delete-orphan")
+    segment_pnrs = relationship("SegmentPNR", back_populates="user", cascade="all, delete-orphan")
 
 class UserSession(UserBase):
     __tablename__ = "user_sessions"
@@ -139,6 +144,19 @@ class PersistentChatMessage(UserBase):
     actions = Column(JSON, nullable=True) # Store as JSON list
     timestamp = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="chat_history")
+
+class AIIntentLog(UserBase):
+    __tablename__ = "ai_intent_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    query = Column(Text, nullable=False)
+    matched_intent = Column(String(100), nullable=False)
+    confidence = Column(Float, default=0.0)
+    intent_latency_ms = Column(Integer, default=0)
+    llm_latency_ms = Column(Integer, default=0)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", back_populates="ai_intents")
 
 class Profile(UserBase):
     __tablename__ = "profiles"
@@ -174,19 +192,23 @@ class LiveLocation(UserBase):
 
 class Booking(UserBase):
     __tablename__ = "bookings"
+    __table_args__ = (
+        Index('idx_booking_user_date', 'user_id', 'travel_date'),
+    )
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     pnr_number: Mapped[Optional[str]] = mapped_column(String(10), unique=True, index=True)
     user_id = Column(String(36), ForeignKey("users.id"))
     travel_date: Mapped[Optional[date]] = mapped_column(Date, index=True, nullable=True)
-    booking_status: Mapped[str] = mapped_column(String(50), default="pending") # Confirmed, Waitlist, etc.
+    booking_status: Mapped[str] = mapped_column(String(50), default="pending", index=True) # Confirmed, Waitlist, etc.
     status = synonym("booking_status")
+    payment_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     escrow_status: Mapped[EscrowStatus] = mapped_column(SQLEnum(EscrowStatus), default=EscrowStatus.CREATED)
     escrow_message: Mapped[Optional[str]] = mapped_column(String(255), nullable=True) # Pipeline sub-status message
 
     amount_paid: Mapped[float] = mapped_column(Float, default=0.0)
-    upi_tx_id = Column(String(100), unique=True, index=True)
-    upi_utr_hash = Column(String(64), unique=True, nullable=True, index=True) # [45.7]
-    utr_number = Column(String(12), unique=True, nullable=True, index=True)
+    upi_tx_id: Mapped[Optional[str]] = mapped_column(String(100), unique=True, index=True)
+    upi_utr_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True) # [45.7]
+    utr_number: Mapped[Optional[str]] = mapped_column(String(12), unique=True, nullable=True, index=True)
     merchant_vpa: Mapped[Optional[str]] = mapped_column(String(100), nullable=True) # The rotated VPA used for this booking
     
     # Task 24: Support for multiple transactions (Split/Partial payments)
@@ -216,6 +238,24 @@ class Booking(UserBase):
 
     user = relationship("User", back_populates="bookings", foreign_keys=[user_id])
     passenger_details = relationship("PassengerDetails", back_populates="booking")
+
+class BookingIdempotency(UserBase):
+    """
+    [REQ-005] Prevents duplicate booking charges by tracking idempotency keys.
+    Stores the idempotency_key, booking_id, request_hash, created_at, and expires_at.
+    """
+    __tablename__ = "booking_idempotency"
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    booking_id: Mapped[str] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA-256 hash of the request
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    booking = relationship("Booking")
+
+    __table_args__ = (
+        Index('ix_booking_idempotency_idempotency_key', 'idempotency_key', unique=True),
+    )
 
 class DailyReconciliation(UserBase):
     __tablename__ = "daily_reconciliations"
@@ -304,6 +344,55 @@ class PassengerDetails(UserBase):
     berth_preference = Column(String(20), nullable=True)
     booking = relationship("Booking", back_populates="passenger_details")
 
+class BookingRequest(UserBase, TimestampMixin, AuditMixin):
+    __tablename__ = "booking_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    source_station: Mapped[str] = mapped_column(String(20), nullable=False)
+    destination_station: Mapped[str] = mapped_column(String(20), nullable=False)
+    journey_date: Mapped[date] = mapped_column(Date, nullable=False)
+    train_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    train_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    class_type: Mapped[str] = mapped_column(String(10), nullable=False, default="AC_THREE_TIER")
+    quota: Mapped[str] = mapped_column(String(10), nullable=False, default="GENERAL")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
+    verification_status: Mapped[str] = mapped_column(String(20), nullable=False, default="NOT_VERIFIED")
+    payment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("payments.id"), nullable=True)
+    route_details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    verification_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    passengers = relationship("BookingRequestPassenger", back_populates="booking_request", cascade="all, delete-orphan")
+    queue_entry = relationship("BookingQueue", back_populates="booking_request", uselist=False)
+
+class BookingRequestPassenger(UserBase, TimestampMixin, AuditMixin):
+    __tablename__ = "booking_request_passengers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id: Mapped[str] = mapped_column(String(36), ForeignKey("booking_requests.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    age: Mapped[int] = mapped_column(Integer, nullable=False)
+    gender: Mapped[str] = mapped_column(String(10), nullable=False)
+    berth_preference: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    id_proof_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    id_proof_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    booking_request = relationship("BookingRequest", back_populates="passengers")
+
+class BookingQueue(UserBase, TimestampMixin, AuditMixin):
+    __tablename__ = "booking_queue"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_request_id: Mapped[str] = mapped_column(String(36), ForeignKey("booking_requests.id"), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    execution_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="MANUAL")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="WAITING")
+    scheduled_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    executed_by: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    execution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    booking_request = relationship("BookingRequest", back_populates="queue_entry")
+
 class SeatInventory(UserBase):
     """
     [Core Inventory] High-performance seat inventory tracking.
@@ -323,6 +412,7 @@ class SeatInventory(UserBase):
     locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     locked_by_booking_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     last_updated: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    travel_date = synonym("journey_date")
 
 SeatAvailability = SeatInventory # Alias for backward compatibility
 
@@ -356,10 +446,15 @@ class Trip(TransitBase):
     __tablename__ = "trips"
     id = Column(Integer, primary_key=True)
     trip_id = Column(String(50), unique=True, index=True)
-    train_number = Column(String(20), index=True)
+    train_number: Mapped[Optional[str]] = mapped_column("train_no", String(20), index=True)
+    train_no = synonym("train_number")
     route_id = Column(String(50), index=True)
     service_id = Column(String(50), index=True)
     direction_id = Column(Integer, default=0)
+    route_type = Column(Integer, nullable=True)
+    delay_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    is_cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class Segment(TransitBase):
     """[GTFS] A segment of a trip between two stops."""
@@ -379,11 +474,14 @@ class StopTime(TransitBase):
     id = Column(Integer, primary_key=True)
     trip_id = Column(Integer, ForeignKey("trips.id"), index=True)
     stop_id = Column(Integer, ForeignKey("stops.id"), index=True)
-    arrival_time = Column(Time)
-    departure_time = Column(Time)
+    arrival_time = Column(Text) # Stored as TEXT in SQLite
+    departure_time = Column(Text)
     stop_sequence = Column(Integer)
-    pickup_type = Column(Integer, default=0)
-    drop_off_type = Column(Integer, default=0)
+    pickup_type = Column(Integer, default=0, nullable=True)
+    drop_off_type = Column(Integer, default=0, nullable=True)
+    platform_code = Column(String(20), nullable=True)
+    arrival_timestamp = Column(Integer, nullable=True)
+    departure_timestamp = Column(Integer, nullable=True)
 
 class TrainAvailabilityCache(UserBase):
     __tablename__ = "train_availability_cache"
@@ -626,6 +724,9 @@ class Stop(TransitBase):
     latitude = Column(Float)
     longitude = Column(Float)
     is_major_junction = Column(Boolean, default=False)
+    hub_type = Column(String(50), nullable=True)
+    zone = Column(String(10), nullable=True)
+    connectivity_score = Column(Float, default=0.0)
     
     def __repr__(self):
         return f"<Stop(name='{self.name}', code='{self.code}')>"
@@ -634,22 +735,22 @@ class Calendar(TransitBase):
     """GTFS Service Calendar."""
     __tablename__ = "calendar"
     service_id = Column(String(100), primary_key=True)
-    monday = Column(Boolean)
-    tuesday = Column(Boolean)
-    wednesday = Column(Boolean)
-    thursday = Column(Boolean)
-    friday = Column(Boolean)
-    saturday = Column(Boolean)
-    sunday = Column(Boolean)
-    start_date = Column(Date)
-    end_date = Column(Date)
+    monday = Column(Integer)
+    tuesday = Column(Integer)
+    wednesday = Column(Integer)
+    thursday = Column(Integer)
+    friday = Column(Integer)
+    saturday = Column(Integer)
+    sunday = Column(Integer)
+    start_date = Column(String(10)) # YYYYMMDD
+    end_date = Column(String(10))
 
 class CalendarDate(TransitBase):
     """GTFS Service Calendar Exceptions."""
     __tablename__ = "calendar_dates"
     id = Column(Integer, primary_key=True)
     service_id = Column(String(100), ForeignKey("calendar.service_id"), index=True)
-    date = Column(Date, index=True)
+    date = Column(String(10), index=True) # YYYYMMDD
     exception_type = Column(Integer) # 1 = add, 2 = remove
 
 class StationDeparture(TransitBase):
@@ -801,43 +902,98 @@ class UserHeartbeat(UserBase):
 
 class SearchOutcome(UserBase):
     __tablename__ = "search_outcomes"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    search_id = Column(String(36), index=True) # Correlates to RouteSearchLog
-    journey_id = Column(String(100), index=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    search_id: Mapped[str] = mapped_column(String(36), index=True) # Correlates to RouteSearchLog
+    journey_id: Mapped[str] = mapped_column(String(100), index=True)
     
     # Prediction Snapshots
-    predicted_value_score = Column(Float)
-    predicted_confirm_chance = Column(Float)
-    metadata_snapshot = Column(JSON)
+    predicted_value_score: Mapped[float] = mapped_column(Float, default=0.0)
+    predicted_confirm_chance: Mapped[float] = mapped_column(Float, default=0.0)
+    metadata_snapshot: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON)
     
     # Actual Outcomes
-    is_clicked = Column(Boolean, default=False)
-    is_booked = Column(Boolean, default=False)
-    final_status = Column(String(20), nullable=True) # e.g. CNF, WL_CANCELLED
+    is_clicked: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_booked: Mapped[bool] = mapped_column(Boolean, default=False)
+    final_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True) # e.g. CNF, WL_CANCELLED
     
     # Safety Truth
-    had_sos_event = Column(Boolean, default=False)
-    actual_delay_mins = Column(Integer, nullable=True)
+    had_sos_event: Mapped[bool] = mapped_column(Boolean, default=False)
+    actual_delay_mins: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     
     # Feedback for ML
-    discrepancy_score = Column(Float, default=0.0) # (Actual - Predicted)
+    discrepancy_score: Mapped[float] = mapped_column(Float, default=0.0) # (Actual - Predicted)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class SegmentPNR(UserBase):
+    __tablename__ = "segment_pnrs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    journey_id: Mapped[str] = mapped_column(String(36), index=True)
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    train_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    pnr: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", back_populates="segment_pnrs")
 
 class Payment(UserBase):
     """Payment transaction details."""
     __tablename__ = "payments"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    booking_id = Column(String(36), ForeignKey("bookings.id"), index=True)
-    razorpay_order_id = Column(String(100), index=True)
-    razorpay_payment_id = Column(String(100), nullable=True)
-    razorpay_signature = Column(String(200), nullable=True)
-    amount = Column(Float, nullable=False)
-    status = Column(String(50), default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("bookings.id"), index=True)
+    razorpay_order_id: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    razorpay_payment_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    razorpay_signature: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    route_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("precalculated_routes.id"), nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="pending")
+    payment_method: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    payment_channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    merchant_vpa: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    refund_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    refund_status: Mapped[str] = mapped_column(String(50), default="NOT_APPLICABLE")
+    refund_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking", backref="payments")
+    user = relationship("User", backref="payments", foreign_keys=[user_id])
+    route = relationship("PrecalculatedRoute", foreign_keys=[route_id])
+    unlocked_route = relationship("UnlockedRoute", back_populates="payment")
+
+class PaymentTransaction(UserBase):
+    """
+    [REQ-011] Payment Reconciliation
+    Stores all payment transactions for reconciliation purposes.
+    Tracks payment_id, booking_id, amount, method, status, provider_reference, and utr_number.
+    """
+    __tablename__ = "payment_transactions"
+    
+    payment_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=True, index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    method: Mapped[str] = mapped_column(String(50), nullable=False)  # UPI, CARD, NET_BANKING, etc.
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")  # pending, success, failed, refunded
+    provider_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Payment provider's transaction ID
+    utr_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)  # UPI Transaction Reference Number
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    booking = relationship("Booking", backref="payment_transactions")
+
+    __table_args__ = (
+        Index('ix_payment_transactions_payment_id', 'payment_id'),
+        Index('ix_payment_transactions_booking_id', 'booking_id'),
+        Index('ix_payment_transactions_utr_number', 'utr_number'),
+        Index('ix_payment_transactions_status', 'status'),
+        Index('ix_payment_transactions_created_at', 'created_at'),
+    )
+
+    def __repr__(self):
+        return f"<PaymentTransaction(payment_id='{self.payment_id}', amount={self.amount}, method='{self.method}', status='{self.status}')>"
 
 class Wallet(UserBase):
     """
@@ -845,11 +1001,13 @@ class Wallet(UserBase):
     Stores agent commissions and user credits (Karma).
     """
     __tablename__ = "wallets"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"), unique=True)
-    balance = Column(Float, default=0.0)
-    total_earned = Column(Float, default=0.0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), unique=True)
+    balance: Mapped[float] = mapped_column(Float, default=0.0)
+    pending_commission: Mapped[float] = mapped_column(Float, default=0.0)
+    total_earned: Mapped[float] = mapped_column(Float, default=0.0)
+    last_payout_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     user = relationship("User", backref=backref("wallet", uselist=False))
 
@@ -908,49 +1066,95 @@ class FinancialLedger(UserBase):
 class UnlockedRoute(UserBase):
     """[Task 41] Records routes unlocked by users."""
     __tablename__ = "unlocked_routes"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
-    route_id = Column(String(100), index=True)
-    booking_id = Column(String(36), ForeignKey("bookings.id"))
-    unlocked_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    route_id: Mapped[str] = mapped_column(String(100), index=True)
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=True)
+    payment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("payments.id"), nullable=True, index=True)
+    cached_route_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    unlocked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="unlocked_routes")
+    payment = relationship("Payment", back_populates="unlocked_route")
 
 class PaymentSession(UserBase):
     """[Task 41.4] Tracks payment sessions for unlocks/bookings."""
     __tablename__ = "payment_sessions"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
-    route_id = Column(String(100), nullable=True)
-    booking_id = Column(String(36), ForeignKey("bookings.id"), nullable=True)
-    amount = Column(Float)
-    session_code = Column(String(50), unique=True)
-    status = Column(String(20), default="PENDING") # PENDING, SUCCESS, FAILED
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    route_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=True)
+    amount: Mapped[float] = mapped_column(Float)
+    session_code: Mapped[str] = mapped_column(String(50), unique=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING") # PENDING, SUCCESS, FAILED
+    verification_details: Mapped[Dict[str, Any]] = mapped_column(JSON, default={})
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 # Placeholder models for missing User relationships
 class Review(UserBase):
     __tablename__ = "reviews"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"))
+    booking_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="reviews")
+
+class RLFeedbackLog(UserBase):
+    __tablename__ = "rl_feedback_logs"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    prompt = Column(Text, nullable=False)
+    response = Column(Text, nullable=True)
+    rating = Column(Integer, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    user = relationship("User")
 
 class CommissionTracking(UserBase):
     __tablename__ = "commission_tracking"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    booking_id: Mapped[str] = mapped_column(String(36), ForeignKey("bookings.id"), index=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    payout_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     user = relationship("User", back_populates="commission_tracks")
+
+class WebhookEvent(UserBase):
+    """Tracks webhook events to avoid duplicate processing."""
+    __tablename__ = "webhook_events"
+    id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    event_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    payload: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class Refund(UserBase):
+    """Records refund events from payment providers."""
+    __tablename__ = "refunds"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    payment_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("payments.id"), nullable=True, index=True)
+    razorpay_refund_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(50), default="PENDING")
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class IdentityFingerprint(UserBase):
     __tablename__ = "identity_fingerprints"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
-    ip_address = Column(String(45), index=True)
-    user_agent = Column(Text, nullable=True)
-    fingerprint_hash = Column(String(128), index=True)
-    is_trusted = Column(Boolean, default=True)
-    risk_score = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    ip_address: Mapped[str] = mapped_column(String(45), index=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    fingerprint_hash: Mapped[str] = mapped_column(String(128), index=True)
+    is_trusted: Mapped[bool] = mapped_column(Boolean, default=True)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User")
 
@@ -966,10 +1170,36 @@ class FraudAlert(UserBase):
 
     user = relationship("User")
 
+class BookingFraudCheck(UserBase):
+    """
+    [REQ-008] Stores fraud detection results for each booking.
+    Tracks check_type, risk_score, flags, and decision for audit and analysis.
+    """
+    __tablename__ = "booking_fraud_checks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id: Mapped[str] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    check_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    risk_score: Mapped[float] = mapped_column(Float, nullable=False)
+    flags: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)  # ALLOWED, BLOCKED, REVIEW
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    booking = relationship("Booking", foreign_keys=[booking_id])
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        Index('ix_booking_fraud_checks_booking_id', 'booking_id'),
+        Index('ix_booking_fraud_checks_user_id', 'user_id'),
+        Index('ix_booking_fraud_checks_check_type', 'check_type'),
+    )
+
 class Subscription(UserBase):
     __tablename__ = "subscriptions"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    plan_tier: Mapped[str] = mapped_column(String(20), default="FREE")
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     user = relationship("User", back_populates="subscription")
 
 class PlatformConfig(UserBase):
@@ -983,9 +1213,17 @@ class PlatformConfig(UserBase):
 
 class RouteSearchLog(UserBase):
     __tablename__ = "route_search_logs"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String(36), ForeignKey("users.id"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     user = relationship("User", back_populates="route_search_logs")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    src: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    dst: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    
+    # Synonyms for backward compatibility
+    timestamp = synonym("created_at")
+    origin_city = synonym("src")
+    destination_city = synonym("dst")
 
 class UserAIPreference(UserBase):
     __tablename__ = "user_ai_preferences"
@@ -1362,35 +1600,35 @@ class KnowledgeGraphSnapshot(UserBase):
 class IntelligenceSearchEvent(UserBase):
     """Captures raw search intent."""
     __tablename__ = "intelligence_search_events"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(100), index=True)
-    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
-    src = Column(String(20), nullable=False)
-    dst = Column(String(20), nullable=False)
-    persona = Column(String(50), nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(100), index=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    src: Mapped[str] = mapped_column(String(20), nullable=False)
+    dst: Mapped[str] = mapped_column(String(20), nullable=False)
+    persona: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 class IntelligenceRecommendationEvent(UserBase):
     """Captures system recommendations."""
     __tablename__ = "intelligence_recommendation_events"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    search_event_id = Column(Integer, ForeignKey("intelligence_search_events.id"), index=True)
-    route_id = Column(String(100), index=True)
-    engine = Column(String(50))
-    rank = Column(Integer)
-    value_score = Column(Float, default=0.0)
-    risk_score = Column(Float, default=1.0)
-    availability_prob = Column(Float, default=0.5)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    search_event_id: Mapped[int] = mapped_column(Integer, ForeignKey("intelligence_search_events.id"), index=True)
+    route_id: Mapped[str] = mapped_column(String(100), index=True)
+    engine: Mapped[str] = mapped_column(String(50))
+    rank: Mapped[Optional[int]] = mapped_column(Integer)
+    value_score: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_score: Mapped[float] = mapped_column(Float, default=1.0)
+    availability_prob: Mapped[float] = mapped_column(Float, default=0.5)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class ConversionEvent(UserBase):
     """Captures user conversions (Unlock, Book)."""
     __tablename__ = "intelligence_conversion_events"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    recommendation_event_id = Column(Integer, ForeignKey("intelligence_recommendation_events.id"), index=True)
-    user_action = Column(String(50)) # CLICK, UNLOCK, BOOK
-    revenue = Column(Float, default=0.0)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_event_id: Mapped[int] = mapped_column(Integer, ForeignKey("intelligence_recommendation_events.id"), index=True)
+    user_action: Mapped[str] = mapped_column(String(50)) # CLICK, UNLOCK, BOOK
+    revenue: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class SafetyEvent(UserBase):
     """Validates risk predictions vs reality."""
@@ -1405,23 +1643,23 @@ class SafetyEvent(UserBase):
 class IntelligenceMetric(UserBase):
     """Stores granular intelligence metrics."""
     __tablename__ = "intelligence_metrics"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    metric_key = Column(String(100), index=True)
-    entity_id = Column(String(100), index=True)
-    value = Column(Float)
-    sample_size = Column(Integer, default=0)
-    last_updated_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    metric_key: Mapped[str] = mapped_column(String(100), index=True)
+    entity_id: Mapped[str] = mapped_column(String(100), index=True)
+    value: Mapped[float] = mapped_column(Float)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    last_updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class GlobalIntelligenceState(UserBase):
     """Stores auto-tuned global scoring weights."""
     __tablename__ = "intelligence_global_state"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    w_availability = Column(Float, default=0.4)
-    w_speed = Column(Float, default=0.3)
-    w_comfort = Column(Float, default=0.2)
-    w_safety = Column(Float, default=0.1)
-    version = Column(Integer, default=1)
-    last_tuned_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    w_availability: Mapped[float] = mapped_column(Float, default=0.4)
+    w_speed: Mapped[float] = mapped_column(Float, default=0.3)
+    w_comfort: Mapped[float] = mapped_column(Float, default=0.2)
+    w_safety: Mapped[float] = mapped_column(Float, default=0.1)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    last_tuned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class IntelligenceRouteSearchLog(UserBase):
     """Lightweight log for search volume analysis."""
@@ -1441,7 +1679,6 @@ class IntelligenceRouteSearchLog(UserBase):
 # Aliases for common imports that tests expect
 Station = TrainStation
 Route = Route  # Route is a dataclass in core.data_structures
-Trip = Trip
 Stop = Stop
 StopTime = StopTime
 Segment = Segment
@@ -1453,12 +1690,18 @@ OptimizedRAPTOR = None  # Import from core.route_engine.raptor
 class MerchantVPA(Base):
     __tablename__ = "merchant_vpas"
     id = Column(Integer, primary_key=True, index=True)
-    vpa = Column(String, unique=True, index=True)
-    name = Column(String)
+    vpa = Column(String(100), unique=True, index=True, nullable=False)
+    name = Column(String(100), nullable=False)
     daily_limit = Column(Float, default=100000.0)
     current_daily_volume = Column(Float, default=0.0)
     is_active = Column(Boolean, default=True)
     last_reset_at = Column(DateTime, default=datetime.utcnow)
+
+    # PATENT-LEVEL: Health Intelligence
+    health_score = Column(Float, default=1.0) # 0.0 to 1.0
+    failure_count = Column(Integer, default=0)
+    last_failure_at = Column(DateTime, nullable=True)
+
 
 class MerchantVPAVolumeSnapshot(Base):
     __tablename__ = "merchant_vpa_volume_snapshots"
@@ -1495,9 +1738,16 @@ class RefundQueue(Base):
     status = Column(String, default="PENDING")
     created_at = Column(DateTime, default=datetime.utcnow)
 
-class AIIntentLog(Base):
-    __tablename__ = "ai_intent_logs"
+class DemandTrainingData(Base):
+    __tablename__ = "ml_demand_training_data"
     id = Column(Integer, primary_key=True, index=True)
+    origin = Column(String(50), index=True)
+    destination = Column(String(50), index=True)
+    hour = Column(Integer)
+    day_of_week = Column(Integer) # 0-6
+    demand_score = Column(Float) # The 'ground truth' observed demand
+    conversion_rate = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
     user_id = Column(String, index=True)
     intent = Column(String)
     confidence = Column(Float)
@@ -1509,12 +1759,36 @@ class NotificationToken(Base):
     user_id = Column(String, index=True)
     channel = Column(String)
     token = Column(String)
+    is_active = Column(Boolean, default=True)
+
 
 class NotificationPreference(Base):
     __tablename__ = "notification_preferences"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, index=True)
     channel = Column(String)
+
+class GroupTrip(Base):
+    __tablename__ = "user_trips"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trip_id = Column(String(50), unique=True, index=True, nullable=False)
+    group_id = Column(String(100), index=True, nullable=True) # Telegram Group ID
+    origin = Column(String(50), nullable=False)
+    destination = Column(String(50), nullable=False)
+    travel_date = Column(DateTime, nullable=False)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+class TripParticipant(Base):
+    __tablename__ = "trip_participants"
+    id = Column(Integer, primary_key=True, index=True)
+    trip_id = Column(String(36), ForeignKey("user_trips.id"), index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), index=True)
+    joined_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Store individual context
+    telegram_id = Column(String(100), index=True)
     is_enabled = Column(Boolean, default=True)
 
 class UnclaimedFund(Base):
@@ -1534,3 +1808,67 @@ class StationRank(Base):
     daily_footfall = Column(Integer, default=0)
     zone = Column(String)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+class TelegramSession(UserBase):
+    """
+    Manages conversational state for Telegram users.
+    Supports multi-step flows like search -> select -> book.
+    """
+    __tablename__ = "telegram_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    telegram_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    current_intent: Mapped[Optional[str]] = mapped_column(String(50), nullable=True) # e.g. 'search', 'booking'
+    current_step: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)   # e.g. 'awaiting_route', 'awaiting_selection'
+    context_data: Mapped[Dict[str, Any]] = mapped_column(JSON, default={}, nullable=False) # Stores search params, selected train, etc.
+    last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+class TelegramAccount(UserBase):
+    """
+    Maps Telegram users to RouteMaster users.
+    Supports multiple Telegram accounts per user.
+    """
+    __tablename__ = "telegram_accounts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    telegram_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    user: Mapped["User"] = relationship("User", backref="telegram_accounts")
+
+# ==============================================================================
+# NOTIFICATION LOG MODEL (Task 1.1.5)
+# ==============================================================================
+
+class NotificationLog(UserBase):
+    """
+    [REQ-015] Tracks notification delivery for retry logic.
+    Stores notification_id, booking_id, channel (SMS/email/push), status, retry_count, and error_message.
+    Indexes on booking_id and status for efficient querying and retry processing.
+    """
+    __tablename__ = "notification_logs"
+    
+    notification_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("bookings.id"), nullable=True, index=True)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)  # SMS, EMAIL, PUSH
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending", index=True)  # pending, sent, delivered, failed
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    booking = relationship("Booking", foreign_keys=[booking_id])
+    
+    __table_args__ = (
+        Index('ix_notification_logs_booking_id', 'booking_id'),
+        Index('ix_notification_logs_status', 'status'),
+        Index('ix_notification_logs_channel', 'channel'),
+        Index('ix_notification_logs_created_at', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<NotificationLog(notification_id='{self.notification_id}', channel='{self.channel}', status='{self.status}')>"

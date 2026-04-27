@@ -7,13 +7,16 @@ Provides REST API for:
 - Managing incentive credits
 """
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pydantic import BaseModel
 
 from database.session import get_db
 from services.redistribution_booking_integrator import get_redistribution_integrator, RedistributionResult
+
+logger = logging.getLogger("api.redistribution_execution")
 
 router = APIRouter(prefix="/api/redistribution", tags=["Redistribution"])
 
@@ -33,22 +36,22 @@ class RedistributionStatusRequest(BaseModel):
 class RedistributionResponse(BaseModel):
     """Redistribution execution response"""
     success: bool
-    original_booking_id: str = None
-    new_booking_id: str = None
-    new_pnr: str = None
+    original_booking_id: Optional[str] = None
+    new_booking_id: Optional[str] = None
+    new_pnr: Optional[str] = None
     incentive_amount: float = 0.0
     message: str = ""
-    error: str = None
+    error: Optional[str] = None
 
 
 class RedistributionStatusResponse(BaseModel):
     """Redistribution status response"""
     status: str  # not_offered, pending, accepted, rejected
-    offer_id: str = None
-    alternative_route: str = None
+    offer_id: Optional[str] = None
+    alternative_route: Optional[str] = None
     incentive_amount: float = 0.0
-    created_at: str = None
-    expires_at: str = None
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
 
 
 @router.post("/execute", response_model=RedistributionResponse)
@@ -110,15 +113,15 @@ async def get_redistribution_status(
     """
     try:
         integrator = get_redistribution_integrator(db)
-        status = integrator.get_redistribution_status(booking_id)
+        redistribution_status = integrator.get_redistribution_status(booking_id)
         
         return RedistributionStatusResponse(
-            status=status.get("status", "unknown"),
-            offer_id=status.get("offer_id"),
-            alternative_route=status.get("alternative_route"),
-            incentive_amount=status.get("incentive_amount", 0.0),
-            created_at=status.get("created_at"),
-            expires_at=status.get("expires_at")
+            status=redistribution_status.get("status", "unknown"),
+            offer_id=redistribution_status.get("offer_id"),
+            alternative_route=redistribution_status.get("alternative_route"),
+            incentive_amount=redistribution_status.get("incentive_amount", 0.0),
+            created_at=redistribution_status.get("created_at"),
+            expires_at=redistribution_status.get("expires_at")
         )
         
     except Exception as e:
@@ -141,7 +144,7 @@ async def get_user_redistribution_history(
     Returns list of past redistributions with details.
     """
     try:
-        from database.models import RedistributionOffer
+        from database.models_redistribution import RedistributionOffer
         
         offers = db.query(RedistributionOffer).filter(
             RedistributionOffer.passenger_id == user_id
@@ -186,7 +189,7 @@ async def get_user_incentives(
     Returns available credits and usage history.
     """
     try:
-        from database.models import IncentiveCredit
+        from database.models_redistribution import IncentiveCredit
         
         credits = db.query(IncentiveCredit).filter(
             IncentiveCredit.user_id == user_id,

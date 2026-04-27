@@ -125,10 +125,21 @@ class RouteRankingPredictor:
     def load_model(self):
         """Load trained model from disk."""
         try:
-            self.model = joblib.load(self.model_path)
-            self.is_trained = True
-            logger.info(f"Model loaded from {self.model_path}")
-            return True
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                if loop and loop.is_running():
+                    logger.warning("Cannot sync-load RouteRanking model while event loop is running.")
+                    return False
+            except RuntimeError:
+                pass # No loop running, safe to sync-load
+
+            if os.path.exists(self.model_path):
+                self.model = joblib.load(self.model_path)
+                self.is_trained = True
+                logger.info(f"Model loaded from {self.model_path}")
+                return True
+            return False
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             return False

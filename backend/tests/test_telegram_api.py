@@ -5,11 +5,11 @@ from fastapi import FastAPI
 from unittest.mock import AsyncMock, patch, MagicMock
 
 # Import the router where telegram_webhook is defined
-from backend.api.telegram_bot import router as telegram_router
+from api.telegram_bot import router as telegram_router
 from backend.schemas.telegram_bot_schemas import Update, Message, Chat, User
 from backend.services.command_handlers.command_handler import CommandHandler
 from backend.services.telegram_dispatcher import TelegramDispatcher
-import backend.api.telegram_bot as telegram_module
+import api.telegram_bot as telegram_module
 
 # Create a test FastAPI app
 app = FastAPI()
@@ -18,23 +18,33 @@ app.include_router(telegram_router)
 # Mock external dependencies
 @pytest.fixture(autouse=True)
 def mock_dependencies():
+    mock_get_db = MagicMock()
+    mock_get_current_user = MagicMock()
+
+    def fake_get_db():
+        yield mock_get_db()
+
+    def fake_get_current_user():
+        return mock_get_current_user()
+
     with (\
-        patch('backend.api.telegram_bot.SessionTransit') as mock_session_transit,\
-        patch('backend.api.telegram_bot.command_handler', spec=CommandHandler) as mock_command_handler,\
-        patch('backend.api.telegram_bot.telegram_dispatcher', spec=TelegramDispatcher) as mock_telegram_dispatcher,\
-        patch('backend.api.telegram_bot.get_db') as mock_get_db,\
-        patch('backend.api.telegram_bot.get_current_user') as mock_get_current_user\
+        patch('api.telegram_bot.SessionTransit') as mock_session_transit,\
+        patch('backend.api.telegram_bot.SessionTransit', mock_session_transit),\
+        patch('api.telegram_bot.command_handler', spec=CommandHandler) as mock_command_handler,\
+        patch('backend.api.telegram_bot.command_handler', mock_command_handler),\
+        patch('api.telegram_bot.telegram_dispatcher', spec=TelegramDispatcher) as mock_telegram_dispatcher,\
+        patch('backend.api.telegram_bot.telegram_dispatcher', mock_telegram_dispatcher)\
     ):
         
-        mock_session_transit.return_value.__enter__.return_value = MagicMock()
-        mock_session_transit.return_value.close = AsyncMock()
+        mock_session_transit.return_value = MagicMock()
+        mock_session_transit.return_value.close = MagicMock()
 
         mock_telegram_dispatcher._api_request = AsyncMock()
         mock_telegram_dispatcher.send_welcome = AsyncMock()
         mock_telegram_dispatcher.get_keyboard = MagicMock(return_value={})
 
-        app.dependency_overrides[telegram_module.get_db] = mock_get_db
-        app.dependency_overrides[telegram_module.get_current_user] = mock_get_current_user
+        app.dependency_overrides[telegram_module.get_db] = fake_get_db
+        app.dependency_overrides[telegram_module.get_current_user] = fake_get_current_user
 
         yield {
             "session_transit": mock_session_transit,
@@ -101,7 +111,7 @@ async def test_telegram_webhook_invalid_message():
         response = await client.post("/telegram/webhook", json=invalid_update_payload)
 
     assert response.status_code == 422
-    assert "validation error" in response.json()["detail"][0]["msg"]
+    assert "valid integer" in response.json()["detail"][0]["msg"]
 
 
 @pytest.mark.asyncio

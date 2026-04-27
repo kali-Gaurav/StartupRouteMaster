@@ -102,7 +102,7 @@ class TravelKnowledgeGraph:
         return jumps
 
     def record_incident(self, entity_id: str, incident_type: str, severity: float):
-        """Learns from real-time events (delays, cancellations)."""
+        """Learns from real-time events (delays, cancellations, SOS)."""
         node = self.nodes.get(entity_id)
         if not node: return
         
@@ -111,7 +111,26 @@ class TravelKnowledgeGraph:
         new_val = current * 0.9 + (1.0 - severity) * 0.1
         node.properties["reliability"] = round(new_val, 3)
         node.properties["last_incident"] = incident_type
+        
+        # Hazard Tracking
+        if severity > 0.7:
+            node.properties["hazard_level"] = severity
+            node.properties["hazard_type"] = incident_type
+            node.properties["hazardous_until"] = time.time() + 3600 # 1 hour default
+            logger.warning(f"⚠️ [KNOWLEDGE] {entity_id} marked as HAZARDOUS (Level: {severity}) due to {incident_type}")
+            
         node.last_updated = time.time()
+
+    def get_hazard_level(self, entity_id: str) -> float:
+        """Returns the current hazard level (0-1) for an entity."""
+        node = self.nodes.get(entity_id)
+        if not node: return 0.0
+        
+        until = node.properties.get("hazardous_until", 0)
+        if time.time() > until:
+            return 0.0
+            
+        return node.properties.get("hazard_level", 0.0)
 
     async def hydrate_from_db(self, db):
         """Initializes knowledge from historical performance data."""

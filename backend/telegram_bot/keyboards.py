@@ -18,14 +18,16 @@ class KeyboardBuilder:
         return {
             "keyboard": [
                 [
-                    {"text": "🔍 Search Trains", "callback_data": "search_trains"},
+                    {"text": "🔍 Search Trains"},
                     {"text": "🎫 Book Ticket"}
                 ],
                 [
-                    {"text": "📜 My Bookings", "text": "💳 My Wallet"},
+                    {"text": "📜 My Bookings"},
+                    {"text": "💳 My Wallet"}
                 ],
                 [
-                    {"text": "🚨 SOS Emergency", "text": "❓ Help"}
+                    {"text": "🚨 SOS Emergency"},
+                    {"text": "❓ Help"}
                 ]
             ],
             "resize_keyboard": True,

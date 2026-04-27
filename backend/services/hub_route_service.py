@@ -45,8 +45,8 @@ class HubRouteService:
             
         constraints = RouteConstraints(max_results=5)
         
-        # Call the newly added method in RailwayRouteEngine
-        routes = await route_engine.search_hub_routes(source_code, destination_code, dt, constraints, self.db)
+        # Call the unified search entrypoint on RailwayRouteEngine
+        routes = await route_engine.search(source_code, destination_code, dt, constraints, self.db)
         
         from database.models import Stop
         from database.session import SessionTransit

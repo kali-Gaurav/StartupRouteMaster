@@ -5,7 +5,7 @@ Routes commands and intents to appropriate handlers.
 """
 
 import logging
-from typing import Optional, Dict, Any, Callable, Awaitable
+from typing import Optional, Dict, Any, Callable, Awaitable, Union
 from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
@@ -13,7 +13,7 @@ from collections import deque
 import asyncio
 
 from .schemas import (
-    IntentType, UserContext, BotResponse, 
+    IntentType, UserContext, UserState, BotResponse, 
     TelegramMessage, CallbackQuery
 )
 from .intent_classifier import IntentClassifier, IntentResult
@@ -55,7 +55,7 @@ class CommandRouter:
         self.session_manager = UserSessionManager()
         
         # Handler registry
-        self._handlers: Dict[IntentType, Callable] = {}
+        self._handlers: Dict[Union[IntentType, str], Callable] = {}
         self._fallback_handler: Optional[Callable] = None
         
         # Middleware
@@ -69,12 +69,12 @@ class CommandRouter:
     
     def register_handler(
         self, 
-        intent: IntentType, 
+        intent: Union[IntentType, str], 
         handler: Callable[[TelegramMessage, UserContext, IntentResult], Awaitable[HandlerResult]]
     ) -> None:
-        """Register a handler for an intent."""
+        """Register a handler for an intent or callback action."""
         self._handlers[intent] = handler
-        logger.debug(f"Registered handler for intent: {intent.value}")
+        logger.debug(f"Registered handler for intent: {intent if isinstance(intent, str) else intent.value}")
     
     def register_fallback(
         self, 
@@ -110,12 +110,22 @@ class CommandRouter:
             # Get or create user session
             session = await self.session_manager.get_session(chat_id, user_id)
             
-            # Run middleware
+            # 1. Check for Active Flow (Higher Priority than Intent)
+            if session.context.state != UserState.IDLE and session.context.data.get("flow_waiting_input"):
+                from .flow_handler import flow_handler
+                result = await flow_handler.handle_flow(message.text or "", session.context, chat_id)
+                if result.status != HandlerResultStatus.FAILED:
+                    if result.next_state:
+                        session.context.state = result.next_state
+                    await self.session_manager.save_session(session)
+                    return result.response
+
+            # 2. Run middleware
             for mw in self._middleware:
                 await mw(message, session)
             
             # Classify intent
-            intent_result = await self.intent_classifier(
+            intent_result = await self.intent_classifier.classify(
                 text=message.text or "",
                 context=session.context,
                 user_id=user_id
@@ -127,7 +137,7 @@ class CommandRouter:
             
             # Get appropriate handler
             handler = self._handlers.get(
-                intent_result.intent, 
+                intent_result.intent if isinstance(intent_result.intent, IntentType) else IntentType(intent_result.intent),
                 self._fallback_handler
             )
             
@@ -187,7 +197,12 @@ class CommandRouter:
             session = await self.session_manager.get_session(chat_id, user_id)
             
             # Route based on action
-            handler = self._handlers.get(f"callback_{action}")
+            # Try to use IntentType for callback handler lookup if possible
+            handler = None
+            if action in IntentType.__members__:
+                handler = self._handlers.get(IntentType[action])
+            if handler is None:
+                handler = self._handlers.get(f"callback_{action}")
             if handler:
                 result = await handler(callback, session.context, value)
                 await self.session_manager.save_session(session)

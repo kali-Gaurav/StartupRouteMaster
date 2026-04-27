@@ -4,7 +4,7 @@
  * [Point 18 & 30] Now attempts Zero-Block SSE streaming first in live mode.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { searchRoutesApi, loadMoreRoutesApi, mapBackendRoutesToRoutes, isBackendAvailable } from "@/services/railwayBackApi";
 import { getCachedRoutes, normalizeDate } from "@/data/cachedRoutes";
 import type { Route } from "@/data/routes";
@@ -38,6 +38,7 @@ interface UseRailwaySearchResult {
   error: Error | null;
   lastSearchSource: RouteSource | null;
   sessionId: string | null;
+  metadata: any | null;
   cancelSearch: () => void;
   loadMore: (category: string) => Promise<Route[]>;
 }
@@ -53,6 +54,7 @@ export function useRailwaySearch({
   const [lastSearchSource, setLastSearchSource] = useState<RouteSource | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentParams, setCurrentParams] = useState<{src: string, dst: string, date: string} | null>(null);
+  const [metadata, setMetadata] = useState<any | null>(null);
 
   const {
     startSearch: startStream,
@@ -60,7 +62,15 @@ export function useRailwaySearch({
     isStreaming,
     isComplete,
     routes: streamRoutes,
+    metadata: streamMetadata,
   } = useStreamingSearch(onProgressiveResults);
+
+  // Sync stream metadata
+  useEffect(() => {
+    if (streamMetadata) {
+      setMetadata(streamMetadata);
+    }
+  }, [streamMetadata]);
 
   const search = useCallback(
     async (
@@ -77,9 +87,13 @@ export function useRailwaySearch({
     ): Promise<Route[]> => {
       setIsSearching(true);
       setError(null);
+      setMetadata(null);
       const sourceCode = source.toUpperCase().trim();
       const destCode = destination.toUpperCase().trim();
-      const normalizedDate = normalizeDate(date || new Date().toISOString().slice(0, 10));
+      const normalizedDate = date || (() => {
+        const now = new Date();
+        return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+      })();
       setCurrentParams({ src: sourceCode, dst: destCode, date: normalizedDate });
 
       try {
@@ -118,13 +132,31 @@ export function useRailwaySearch({
 
           const sid = (data as any).session_id || (data as any).data?.pagination?.session_id;
           setSessionId(sid);
+          if (data.metadata) setMetadata(data.metadata);
 
           const routes = mapBackendRoutesToRoutes(data, sourceCode, destCode);
           setLastSearchSource("live");
           onSuccess?.(routes, (data as any).data?.suggestions || (data as any).suggestions);
           return routes;
         } catch (liveError) {
-          // Strategy 4: Auto-retry with cached if live fails
+          const message = liveError instanceof Error ? liveError.message : String(liveError);
+          const isHarvestingBlock = /HARVESTING_BLOCKED|automated data harvesting/i.test(message);
+
+          if (isHarvestingBlock) {
+            const cached = getCachedRoutes(sourceCode, destCode, normalizedDate);
+            if (cached) {
+              const routes = mapBackendRoutesToRoutes(cached, sourceCode, destCode);
+              setLastSearchSource("cached");
+              setSessionId(null);
+              onSuccess?.(routes);
+              return routes;
+            }
+            throw new Error(
+              "Search has been temporarily blocked due to rate limits. Please wait a few minutes and try again, or switch to cached search if available."
+            );
+          }
+
+          // Strategy 4: Auto-retry with cached if live fails for backend unavailability
           const backendAvailable = await isBackendAvailable();
           if (!backendAvailable) {
             const cached = getCachedRoutes(sourceCode, destCode, normalizedDate);
@@ -180,6 +212,7 @@ export function useRailwaySearch({
     error,
     lastSearchSource,
     sessionId,
+    metadata,
     cancelSearch,
   };
 }

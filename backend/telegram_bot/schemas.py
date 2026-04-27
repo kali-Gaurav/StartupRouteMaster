@@ -83,6 +83,10 @@ class IntentType(str, Enum):
     BACK = "back"
     MAIN_MENU = "main_menu"
     
+    # Flow related
+    FLOW_CANCEL = "flow_cancel"
+    FLOW_NEXT = "flow_next"
+    
     # Unknown
     UNKNOWN = "unknown"
 

@@ -96,7 +96,7 @@ class FraudDetectionService:
 
     def _notify_slack(self, message: str):
         """Task 3.7: Slack notification for suspected fraud clusters with circuit breaker."""
-        async def _send_notification():
+        def _send_notification():
             try:
                 # httpx.post(self.SLACK_WEBHOOK_URL, json={"text": message})
                 logger.warning(f"SLACK ALERT: {message}")
@@ -273,11 +273,6 @@ class FraudDetectionService:
 
         return True, ""
 
-fraud_service = FraudDetectionService()
-# =========================================================================
-    # RESILIENCE PATTERNS
-    # =========================================================================
-
     def get_metrics(self) -> dict:
         """Get service metrics."""
         return self._metrics.get_metrics()
@@ -287,8 +282,8 @@ fraud_service = FraudDetectionService()
         return {
             "status": "healthy",
             "circuit_breakers": {
-                "slack": self._slack_breaker.get_metrics().to_dict(),
-                "cache": self._cache_breaker.get_metrics().to_dict()
+                "slack": self._slack_breaker.get_metrics(),
+                "cache": self._cache_breaker.get_metrics()
             },
             "metrics": self._metrics.get_metrics()
         }
@@ -297,4 +292,10 @@ fraud_service = FraudDetectionService()
         """Reset all circuit breakers."""
         self._slack_breaker.reset()
         self._cache_breaker.reset()
+        logger.info("Circuit breakers reset")
+        self._cache_breaker.reset()
         logger.info("All circuit breakers reset for fraud_detection_service")
+
+
+# Singleton fraud detection service instance used by API and webhook handlers.
+fraud_service = FraudDetectionService()

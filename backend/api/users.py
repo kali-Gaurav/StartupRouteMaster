@@ -25,12 +25,13 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
     """
     Get current logged in user details.
     """
+    # Use phone_number instead of phone
     return success_response(
         message="User profile retrieved",
         data={
             "id": str(current_user.id),
             "email": current_user.email,
-            "phone": current_user.phone,
+            "phone": getattr(current_user, "phone_number", None),
             "full_name": current_user.full_name,
             "role": current_user.role,
             "is_verified": current_user.is_verified
@@ -52,22 +53,23 @@ async def update_profile(
         if not profile:
             profile = Profile(user_id=current_user.id, id=current_user.supabase_id)
             db.add(profile)
-            
         update_data = payload.dict(exclude_unset=True)
+        # Only update fields that exist on the Profile model
         for key, value in update_data.items():
-            setattr(profile, key, value)
-            
+            if hasattr(profile, key):
+                setattr(profile, key, value)
         db.commit()
         return profile
-    
+
     updated_profile = await asyncio.to_thread(_update)
+    # Use robust fallback for missing fields
     return success_response(
         message="Profile updated successfully",
         data={
-            "name": updated_profile.name,
-            "phone": updated_profile.phone,
-            "gender": updated_profile.gender,
-            "emergency_contact": updated_profile.emergency_contact
+            "name": getattr(updated_profile, "name", None),
+            "phone": getattr(updated_profile, "phone", None),
+            "gender": getattr(updated_profile, "gender", None),
+            "emergency_contact": None  # Not present in Profile, could be fetched from EmergencyContact if needed
         }
     )
 

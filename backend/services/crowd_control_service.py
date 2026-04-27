@@ -297,7 +297,7 @@ class CrowdControlService:
         Uses cached data with periodic refresh.
         """
         # Check cache
-        if station_code in self._station_data:
+        if station_code in self._station_data and self._last_update is not None:
             cache_age = (datetime.utcnow() - self._last_update).total_seconds()
             if cache_age < 300:  # 5 minutes cache
                 return self._station_data[station_code]

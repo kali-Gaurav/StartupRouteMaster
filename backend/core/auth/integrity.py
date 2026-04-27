@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 # In production, this must be fetched from a secure Secret Manager (e.g., Vault or AWS Secrets Manager).
 INTEGRITY_SECRET = os.getenv("GATEWAY_INTEGRITY_SECRET", "industrial_default_secret_99")
 
-def sign_result_payload(data: Dict, user_id: str, nonce: str, ts: Optional[int] = None) -> str:
+def sign_result_payload(data: Any, user_id: str, nonce: str, ts: Optional[int] = None) -> str:
     """
     [SENTINEL S2] Cryptographic integrity signing.
     Ensures the response payload wasn't tampered with and belongs to the original requester.

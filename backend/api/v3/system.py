@@ -11,6 +11,8 @@ from core.container import container
 from core.nexus.audit.dashboard import nexus_audit
 from core.nexus.audit.chaos import nexus_chaos
 from services.cache_service import cache_service
+from services.sovereign_waf_service import sovereign_waf
+from core.sovereign.ab_engine import ab_engine
 
 logger = logging.getLogger("nexus.system")
 
@@ -86,3 +88,24 @@ async def arm_chaos(name: str, base: float = 0.1, jitter: float = 0.1, error_rat
 async def disarm_chaos(name: str):
     nexus_chaos.disarm(name)
     return {"status": "disarmed", "trap": name}
+
+# --- SOVEREIGN TELEMETRY ---
+@router.get("/sovereign")
+async def get_sovereign_metrics():
+    """
+    [Phase 7] Sovereign Command Center Metrics.
+    Exposes WAF stats and A/B variant performance.
+    """
+    return {
+        "waf": {
+            "requests_inspected": sovereign_waf.metrics.requests_inspected,
+            "requests_blocked": sovereign_waf.metrics.requests_blocked,
+            "anomaly_detections": sovereign_waf.metrics.anomaly_detections,
+            "block_rate": (sovereign_waf.metrics.requests_blocked / max(1, sovereign_waf.metrics.requests_inspected)) * 100
+        },
+        "ab_testing": {
+            "active_variants": ab_engine.variants,
+            "weights": ab_engine.weights,
+            "stats": ab_engine.stats
+        }
+    }

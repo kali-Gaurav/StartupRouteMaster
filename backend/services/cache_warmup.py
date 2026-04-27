@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import List, Set
+from typing import List, Set, Optional
 from datetime import datetime
 from collections import deque
 from database.session import AsyncSessionUser, init_db
@@ -80,6 +80,8 @@ class CacheWarmupService:
                 # We'll warm the most common 20 hubs first
                 count = 0
                 for hub_code in target_hubs[:20]:
+                    if hub_code is None:
+                        continue
                     try:
                         # Build logic usually requires finding the Stop ID for the code
                         from database.models import Stop
@@ -109,7 +111,7 @@ class CacheWarmupService:
         finally:
             self._is_running = False
 
-async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for cache warmup operations."""
         async with self._metrics_lock:
             self._metrics.append({

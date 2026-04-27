@@ -10,8 +10,9 @@ from typing import Optional
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType, HandlerResult, HandlerResultStatus
+    IntentType
 )
+from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 from ..user_session_manager import user_session_manager
@@ -77,22 +78,25 @@ Great to see you again. How can I help you today?
     ) -> HandlerResult:
         """
         Handle /start command.
-        
-        Args:
-            message: Incoming message
-            context: User context
-            intent_result: Intent classification result
-            
-        Returns:
-            HandlerResult with response
         """
         chat_id = message.chat.id
         user_id = message.from_user.id
         first_name = message.from_user.first_name or "Traveler"
+        text_content = message.text or ""
         
         try:
-            # Check if returning user
-            is_returning = context.message_count > 0
+            # Handle deep linking /start <token>
+            token = None
+            if " " in text_content:
+                token = text_content.split(" ", 1)[1].strip()
+            elif text_content.startswith("start "):
+                token = text_content[6:].strip()
+            
+            if token:
+                return await self._handle_token_linking(chat_id, message.from_user, token)
+
+            # Check if returning user (using history length as proxy)
+            is_returning = len(context.history) > 0
             
             # Update session
             await user_session_manager.update_context(
@@ -134,6 +138,42 @@ Great to see you again. How can I help you today?
                     chat_id=chat_id,
                     text=f"❌ Error: {str(e)}"
                 ),
+                error=str(e)
+            )
+
+    async def _handle_token_linking(self, chat_id: int, telegram_user, token: str) -> HandlerResult:
+        """Handle account linking via token."""
+        try:
+            from services.user_service import UserService
+            from database.session import get_db
+            
+            async with get_db() as db:
+                user_service = UserService(db)
+                user = await user_service.link_telegram_account(token, str(chat_id), telegram_user)
+                
+                if user:
+                    text = f"✅ <b>Connection Established!</b>\n\nWelcome {user.full_name or 'Traveler'}. Your RouteMaster account is now linked to this Telegram profile."
+                    return HandlerResult(
+                        status=HandlerResultStatus.SUCCESS,
+                        response=BotResponse(
+                            chat_id=chat_id,
+                            text=text,
+                            keyboard=keyboard_builder.main_menu()
+                        ),
+                        next_state="idle"
+                    )
+                else:
+                    return HandlerResult(
+                        status=HandlerResultStatus.FAILED,
+                        response=BotResponse(
+                            chat_id=chat_id,
+                            text="❌ <b>Invalid or Expired Token</b>\n\nPlease generate a new link from the website."
+                        )
+                    )
+        except Exception as e:
+            logger.error(f"Error linking token: {e}")
+            return HandlerResult(
+                status=HandlerResultStatus.FAILED,
                 error=str(e)
             )
 

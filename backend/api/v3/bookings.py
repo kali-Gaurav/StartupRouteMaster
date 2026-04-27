@@ -101,19 +101,45 @@ async def create_booking(
         
         # Step 2: Reserve seats
         reservation_ids = []
+        try:
+            travel_date_obj = datetime.strptime(request.travel_date, "%Y-%m-%d").date()
+        except Exception:
+            travel_date_obj = None
+
+        try:
+            trip_id = int(request.route_id)
+        except Exception:
+            trip_id = request.route_id
+
         for segment_idx in request.segment_indices:
-            for _ in request.passengers:
-                res_id = await inventory_service.reserve_seat_temporary(
-                    route_id=request.route_id,
-                    segment_index=segment_idx,
-                    ttl_minutes=15  # 15 min to complete payment
+            for passenger_idx in range(len(request.passengers)):
+                reservation = inventory_service.reserve_seat_temporary(
+                    db=db,
+                    trip_id=trip_id,
+                    travel_date=travel_date_obj,
+                    coach_type="GN",
+                    booking_id=f"{request.route_id}_{segment_idx}_{passenger_idx}",
+                    lock_minutes=15
                 )
-                reservation_ids.append(res_id)
-        
+                if isinstance(reservation, dict):
+                    success = reservation.get("success", False)
+                else:
+                    success = getattr(reservation, "success", False)
+                if success:
+                    reservation_ids.append(str(reservation.trip_id if hasattr(reservation, 'trip_id') else request.route_id))
+                else:
+                    logger.warning(f"Seat reservation failed for route {request.route_id}, segment {segment_idx}: {getattr(reservation, 'error', 'unknown')}")
+
         logger.info(f"✅ Reserved {len(reservation_ids)} seats")
-        
+
         # Step 3: Calculate fare
         total_amount = 2000.0  # ₹2000 default (would be calculated from route)
+        try:
+            route_details = await get_route_engine().get_route_details(request.route_id)
+            if route_details and isinstance(route_details, dict):
+                total_amount = float(route_details.get("total_fare", total_amount) or total_amount)
+        except Exception as e:
+            logger.warning(f"Unable to hydrate fare for route {request.route_id}: {e}")
         
         # Step 4: Create booking record
         booking = Booking(
@@ -170,7 +196,8 @@ async def create_booking(
             "status": "PENDING_PAYMENT",
             "amount": total_amount,
             "payment_order_id": payment_order.get("order_id"),
-            "payment_url": payment_order.get("payment_url"),
+            "payment_key_id": payment_order.get("key_id"),
+            "payment_url": payment_order.get("payment_url") or "",
             "expires_at": (datetime.utcnow() + timedelta(minutes=15)).isoformat()
         })
         

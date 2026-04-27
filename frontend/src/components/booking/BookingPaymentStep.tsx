@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Loader2, IndianRupee, CheckCircle2, ShieldCheck, QrCode, CreditCard, XCircle, TicketCheck, RefreshCw, Shield, ExternalLink, Copy, Clock, ArrowRight } from "lucide-react";
+import { Loader2, IndianRupee, CheckCircle2, ShieldCheck, QrCode, CreditCard, XCircle, TicketCheck, RefreshCw, Shield, ExternalLink, Copy, Clock, ArrowRight, Sparkles } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import Confetti from "react-confetti";
 import { useAuth } from "@/context/AuthContext";
@@ -15,8 +15,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Stepper, Step } from "@/components/ui/stepper";
 import { Card, CardContent } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
+import { CardHeader, CardTitle } from "@/components/ui/card";
+import { cn, getRailwayWsUrl } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { useSovereignWallet } from "@/hooks/useSovereignWallet";
+import { fetchWithAuth } from "@/lib/apiClient";
+import { Switch } from "@/components/ui/switch";
 
 const ESCROW_STEPS: Step[] = [
   { id: 'CREATED', label: 'Payment Pending', description: 'Scan QR or enter UTR manually' },
@@ -140,8 +144,109 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
   const [captchaImage, setCaptchaImage] = useState<string | null>(null);
   const [captchaInput, setCaptchaInput] = useState("");
   const [captchaSubmitting, setCaptchaSubmitting] = useState(false);
-  
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const { wallet, refreshWallet } = useSovereignWallet();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'RAZORPAY' | 'UPI'>('RAZORPAY');
+  const [isRazorpayLoading, setIsRazorpayLoading] = useState(false);
+  const [applySovereignCredits, setApplySovereignCredits] = useState(true);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
+  const sovereignCreditBalance = wallet?.bonus_credit_balance ?? wallet?.bonus_balance ?? 0;
+
+
+  // Task: Razorpay Script Loader
+  const loadRazorpay = useCallback((): Promise<void> => {
+    return new Promise((resolve) => {
+      if ((window as any).Razorpay) {
+        resolve();
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = () => resolve();
+      document.body.appendChild(script);
+    });
+  }, []);
+
+  const handleRazorpayPayment = async () => {
+    if (!user || !route || !booking?.id) return;
+    setIsRazorpayLoading(true);
+    try {
+      await loadRazorpay();
+      const amount = Math.max(100, Math.round(Number(booking.amount_paid || 0) * 100));
+      
+      const response = await fetchWithAuth("/razorpay/create-order", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          amount,
+          currency: "INR",
+          receipt: `booking_${booking.id.slice(0,8)}_${Date.now()}`,
+          notes: {
+            description: `${serviceType}: ${originName} to ${destName}`,
+            user_id: user.id,
+            booking_id: booking.id
+          },
+        }),
+      });
+
+      if (!response.ok) throw new Error("Failed to create Razorpay order");
+      const order = await response.json();
+
+      const options = {
+        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+        amount: order.amount,
+        currency: order.currency,
+        name: "RouteMaster Travel",
+        description: "Secure Route Unlock",
+        order_id: order.razorpay_order_id,
+        theme: { color: "#3b82f6" },
+        prefill: {
+          name: user.full_name,
+          email: user.email,
+        },
+        handler: async (res: any) => {
+          try {
+            const verifyRes = await fetchWithAuth("/razorpay/verify-payment", {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                razorpay_order_id: res.razorpay_order_id,
+                razorpay_payment_id: res.razorpay_payment_id,
+                razorpay_signature: res.razorpay_signature,
+                booking_id: booking.id,
+              }),
+            });
+            if (verifyRes.ok) {
+              const refreshed = await getEscrowBookingStatus(booking.id);
+              setInitialBooking(refreshed);
+              handleComplete(refreshed);
+              toast({ title: "Payment Successful", description: "Your booking status has been updated." });
+            } else {
+              throw new Error("Signature verification failed");
+            }
+          } catch (err: any) {
+            toast({ title: "Verification Failed", description: err.message, variant: "destructive" });
+          }
+        },
+        modal: {
+          ondismiss: () => setIsRazorpayLoading(false)
+        }
+      };
+
+      const rzp = new (window as any).Razorpay(options);
+      rzp.open();
+    } catch (err: any) {
+      toast({ title: "Payment Error", description: err.message, variant: "destructive" });
+    } finally {
+      setIsRazorpayLoading(false);
+    }
+  };
 
   // Auto-scroll logs
   useEffect(() => {
@@ -240,7 +345,8 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
       const idemKey = `idem_${route.id}_${travelDate}_${Date.now()}`;
       const res = await initiateEscrowBooking({ 
         journey_id: route.id,
-        service_type: serviceType
+        service_type: serviceType,
+        applied_sovereign_credits: applySovereignCredits ? (wallet?.bonus_credit_balance || 0) : 0
       }, idemKey);
       setInitialBooking(res);
     } catch (err: any) {
@@ -340,10 +446,31 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
                 <p className="text-sm text-muted-foreground mb-1">Total to Pay</p>
                 <div className="flex items-baseline gap-1 justify-end">
                   <IndianRupee className="h-6 w-6 text-primary" />
-                  <span className="text-4xl font-black text-primary">{route?.totalCost || 0}</span>
+                  <span className="text-4xl font-black text-primary">
+                    {Math.max(0, (route?.totalCost || 0) - (applySovereignCredits ? sovereignCreditBalance : 0)).toFixed(2)}
+                  </span>
                 </div>
               </div>
             </div>
+
+            {/* [SOVEREIGN] Apply Credits Section */}
+            {wallet && sovereignCreditBalance > 0 && (
+              <div className="mb-6 p-4 rounded-2xl bg-primary/5 border border-primary/20 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Sparkles className="w-5 h-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold">Apply Sovereign Credits</p>
+                    <p className="text-xs text-muted-foreground">You have ₹{sovereignCreditBalance.toFixed(2)} in rewards</p>
+                  </div>
+                </div>
+                <Switch 
+                  checked={applySovereignCredits} 
+                  onCheckedChange={setApplySovereignCredits}
+                />
+              </div>
+            )}
 
             <div className="space-y-4 border-t border-border/50 pt-6">
                <div className="flex gap-3">
@@ -424,7 +551,7 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
                     <span className="text-emerald-600 font-bold">₹0.00 (Zero)</span>
                   </div>
                   <div className="pt-2 border-t border-border/20">
-                    <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Total Amount to Pay</p>
+                    <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-wider mb-1">Total Amount Paid</p>
                     <p className="text-3xl font-black text-foreground">₹{Number(booking.amount_paid).toFixed(2)}</p>
                   </div>
                 </div>
@@ -497,30 +624,57 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
                         />
                       </div>
 
-                      <div className="w-12 h-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-4">
-                        <QrCode className="w-6 h-6" />
-                      </div>
-                      <h3 className="text-xl font-black mb-2 tracking-tight">Scan & Pay via UPI</h3>
+                      <h3 className="text-xl font-black mb-2 tracking-tight">Select Payment Method</h3>
                       <p className="text-sm text-muted-foreground leading-relaxed mb-6">
-                        Open GPay, PhonePe, or Paytm and scan this QR code to transfer exactly <strong>₹{Number(booking.amount_paid).toFixed(2)}</strong>.
+                        Choose how you want to pay. Razorpay supports Cards, Netbanking, and UPI.
                       </p>
-                      
-                      {isMobile ? (
-                        <div className="flex flex-col gap-3 w-full">
-                          <Button onClick={openUpiApp} className="w-full h-12 rounded-xl font-bold bg-[#0f172a] hover:bg-[#1e293b] shadow-lg shadow-slate-200">
-                            <ExternalLink className="w-4 h-4 mr-2" />
-                            Open UPI App
-                          </Button>
-                          <Button onClick={shareOnWhatsApp} variant="outline" className="w-full h-12 rounded-xl font-bold border-green-200 text-green-700 hover:bg-green-50">
-                            <svg className="w-4 h-4 mr-2 fill-current" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.353-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.506-.174-.007-.373-.008-.573-.008-.2 0-.523.074-.797.373-.273.3-.1.747.1 1.147.2.4 1.48 2.54 3.585 4.416 2.013 1.792 3.528 2.31 4.199 2.388.671.079 1.282.042 1.765-.03.539-.079 1.658-.677 1.89-1.333.232-.656.232-1.218.162-1.33-.07-.113-.258-.177-.555-.326zm-5.472 7.618c-2.067 0-4.087-.556-5.862-1.608l-.42-.25-4.355 1.143 1.163-4.247-.274-.436c-1.153-1.832-1.762-3.96-1.762-6.147 0-6.342 5.158-11.5 11.515-11.5 3.073 0 5.961 1.198 8.129 3.37 2.168 2.172 3.36 5.061 3.36 8.13 0 6.345-5.159 11.502-11.515 11.502zm0-24c-6.904 0-12.515 5.611-12.515 12.515 0 2.213 5.78 4.301 1.587 6.22l-1.685 6.152 6.291-1.651c1.847.1.007 3.732 1.426 5.864 1.917 1.397 4.213 2.133 6.526 2.133 6.905 0 12.515-5.61 12.515-12.515 0-6.904-5.61-12.515-12.515-12.515z"/></svg>
-                            Request via WhatsApp
-                          </Button>
-                        </div>
-                      ) : (
-                        <Button onClick={shareOnWhatsApp} variant="outline" className="w-full h-12 rounded-xl font-bold border-green-200 text-green-700 hover:bg-green-50">
-                          <ExternalLink className="w-4 h-4 mr-2" />
-                          Request Payment from Friend
+
+                      <div className="flex gap-2 p-1 bg-muted rounded-xl mb-6">
+                        <Button 
+                          variant={paymentMethod === 'RAZORPAY' ? 'default' : 'ghost'} 
+                          className="flex-1 rounded-lg font-bold h-10"
+                          onClick={() => setPaymentMethod('RAZORPAY')}
+                        >
+                          <CreditCard className="w-4 h-4 mr-2" />
+                          Razorpay
                         </Button>
+                        <Button 
+                          variant={paymentMethod === 'UPI' ? 'default' : 'ghost'} 
+                          className="flex-1 rounded-lg font-bold h-10"
+                          onClick={() => setPaymentMethod('UPI')}
+                        >
+                          <QrCode className="w-4 h-4 mr-2" />
+                          Direct UPI
+                        </Button>
+                      </div>
+                      
+                      {paymentMethod === 'RAZORPAY' ? (
+                        <Button 
+                          onClick={handleRazorpayPayment} 
+                          disabled={isRazorpayLoading}
+                          className="w-full h-14 rounded-xl font-black text-lg bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-200"
+                        >
+                          {isRazorpayLoading ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : <ShieldCheck className="w-5 h-5 mr-2" />}
+                          {isRazorpayLoading ? "Starting Checkout..." : `Pay ₹${Number(booking.amount_paid).toFixed(2)}`}
+                        </Button>
+                      ) : (
+                        isMobile ? (
+                          <div className="flex flex-col gap-3 w-full">
+                            <Button onClick={openUpiApp} className="w-full h-12 rounded-xl font-bold bg-[#0f172a] hover:bg-[#1e293b] shadow-lg shadow-slate-200">
+                              <ExternalLink className="w-4 h-4 mr-2" />
+                              Open UPI App
+                            </Button>
+                            <Button onClick={shareOnWhatsApp} variant="outline" className="w-full h-12 rounded-xl font-bold border-green-200 text-green-700 hover:bg-green-50">
+                              <svg className="w-4 h-4 mr-2 fill-current" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.353-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.506-.174-.007-.373-.008-.573-.008-.2 0-.523.074-.797.373-.273.3-.1.747.1 1.147.2.4 1.48 2.54 3.585 4.416 2.013 1.792 3.528 2.31 4.199 2.388.671.079 1.282.042 1.765-.03.539-.079 1.658-.677 1.89-1.333.232-.656.232-1.218.162-1.33-.07-.113-.258-.177-.555-.326zm-5.472 7.618c-2.067 0-4.087-.556-5.862-1.608l-.42-.25-4.355 1.143 1.163-4.247-.274-.436c-1.153-1.832-1.762-3.96-1.762-6.147 0-6.342 5.158-11.5 11.515-11.5 3.073 0 5.961 1.198 8.129 3.37 2.168 2.172 3.36 5.061 3.36 8.13 0 6.345-5.159 11.502-11.515 11.502zm0-24c-6.904 0-12.515 5.611-12.515 12.515 0 2.213 5.78 4.301 1.587 6.22l-1.685 6.152 6.291-1.651c1.847.1.007 3.732 1.426 5.864 1.917 1.397 4.213 2.133 6.526 2.133 6.905 0 12.515-5.61 12.515-12.515 0-6.904-5.61-12.515-12.515-12.515z"/></svg>
+                              Request via WhatsApp
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button onClick={shareOnWhatsApp} variant="outline" className="w-full h-12 rounded-xl font-bold border-green-200 text-green-700 hover:bg-green-50">
+                            <ExternalLink className="w-4 h-4 mr-2" />
+                            Request Payment from Friend
+                          </Button>
+                        )
                       )}
                     </div>
                   </CardContent>
@@ -672,3 +826,5 @@ export function BookingPaymentStep({ serviceType = "UNLOCK" }: { serviceType?: '
     </div>
   );
 }
+
+export default BookingPaymentStep;

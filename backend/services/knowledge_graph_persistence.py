@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from database.models import KnowledgeGraphSnapshot, UserPreferenceModel, RoutePatternModel
+from database.models_redistribution import KnowledgeGraphNode as KnowledgeGraphNodeModel, KnowledgeGraphEdge as KnowledgeGraphEdgeModel
 from services.knowledge_graph_service import TravelKnowledgeGraph, StationNode, RoutePattern
 
 logger = logging.getLogger("knowledge_graph.persistence")
@@ -114,7 +115,7 @@ class KnowledgeGraphPersistence:
         try:
             if snapshot_id:
                 snapshot = self.db.query(KnowledgeGraphSnapshot).filter(
-                    KnowledgeGraphSnapshot.snapshot_id == snapshot_id
+                    KnowledgeGraphSnapshot.snapshot_name.like(f"%{snapshot_id[:8]}%")
                 ).first()
             else:
                 snapshot = self.db.query(KnowledgeGraphSnapshot).order_by(
@@ -131,7 +132,7 @@ class KnowledgeGraphPersistence:
             # Deserialize data
             self._deserialize_graph(graph, snapshot)
             
-            logger.info(f"Graph loaded: snapshot_id={snapshot.snapshot_id}")
+            logger.info(f"Graph loaded: snapshot_name={snapshot.snapshot_name}")
             
             return graph
             
@@ -184,10 +185,10 @@ class KnowledgeGraphPersistence:
         
         return [
             {
-                "snapshot_id": s.snapshot_id,
+                "snapshot_id": s.snapshot_name,
                 "created_at": s.created_at.isoformat(),
-                "node_count": s.node_count,
-                "edge_count": s.edge_count,
+                "node_count": s.total_stations,
+                "edge_count": s.total_routes,
                 "description": s.description
             }
             for s in snapshots
@@ -197,7 +198,7 @@ class KnowledgeGraphPersistence:
         """Delete a specific snapshot"""
         try:
             result = self.db.query(KnowledgeGraphSnapshot).filter(
-                KnowledgeGraphSnapshot.snapshot_id == snapshot_id
+                KnowledgeGraphSnapshot.snapshot_name.like(f"%{snapshot_id[:8]}%")
             ).delete()
             
             self.db.commit()
@@ -255,31 +256,34 @@ class KnowledgeGraphPersistence:
         """Serialize route patterns to JSON"""
         patterns = {}
         for key, pattern in graph.route_patterns.items():
-            if hasattr(pattern, '__dict__'):
+            if isinstance(pattern, dict):
+                patterns[key] = pattern
+            else:
                 patterns[key] = {
-                    "source": pattern.source,
-                    "destination": pattern.destination,
+                    "source": getattr(pattern, 'source', ''),
+                    "destination": getattr(pattern, 'destination', ''),
                     "avg_duration": getattr(pattern, 'avg_duration', 0),
                     "frequency": getattr(pattern, 'frequency', 0),
                     "reliability": getattr(pattern, 'reliability', 0.9),
                     "searches": getattr(pattern, 'searches', 0),
                     "bookings": getattr(pattern, 'bookings', 0)
                 }
-            else:
-                patterns[key] = pattern
         return json.dumps(patterns)
     
     def _serialize_user_preferences(self, graph: TravelKnowledgeGraph) -> str:
         """Serialize user preferences to JSON"""
         prefs = {}
         for user_id, pref in graph.user_preferences.items():
-            prefs[user_id] = {
-                "user_id": pref.user_id,
-                "preferred_class": pref.preferred_class,
-                "preferred_time_morning": pref.preferred_time_morning,
-                "flexibility_score": pref.flexibility_score,
-                "price_sensitivity": pref.price_sensitivity
-            }
+            if isinstance(pref, dict):
+                prefs[user_id] = pref
+            else:
+                prefs[user_id] = {
+                    "user_id": getattr(pref, 'user_id', user_id),
+                    "preferred_class": getattr(pref, 'preferred_class', 'SL'),
+                    "preferred_time_morning": getattr(pref, 'preferred_time_morning', False),
+                    "flexibility_score": getattr(pref, 'flexibility_score', 0.5),
+                    "price_sensitivity": getattr(pref, 'price_sensitivity', 0.5)
+                }
         return json.dumps(prefs)
     
     def _deserialize_graph(
@@ -291,7 +295,7 @@ class KnowledgeGraphPersistence:
         import networkx as nx
         
         # Deserialize nodes
-        nodes = json.loads(snapshot.nodes_data)
+        nodes = json.loads(snapshot.graph_data or "[]")
         for node in nodes:
             graph.graph.add_node(
                 node["id"],
@@ -299,29 +303,30 @@ class KnowledgeGraphPersistence:
                 **node.get("attributes", {})
             )
         
-        # Deserialize edges
-        edges = json.loads(snapshot.edges_data)
-        for edge in edges:
+        # Deserialize edges from incremental edge storage, if present
+        saved_edges = self.db.query(KnowledgeGraphEdgeModel).all()
+        for edge in saved_edges:
             graph.graph.add_edge(
-                edge["source"],
-                edge["target"],
-                type=edge["type"],
-                **edge.get("attributes", {})
+                edge.source_id,
+                edge.target_id,
+                type=edge.edge_type,
+                **(edge.attributes or {})
             )
         
-        # Deserialize station patterns
-        station_patterns = json.loads(snapshot.station_patterns or "{}")
+        # Deserialize station patterns if present in patterns_data
+        patterns_data = json.loads(snapshot.patterns_data or "{}")
+        station_patterns = patterns_data.get("stations", {}) if isinstance(patterns_data, dict) else {}
         for code, data in station_patterns.items():
             graph.station_patterns[code] = StationNode(
-                code=data["code"],
-                name=data["name"],
-                region=data["region"],
-                zone=data["zone"],
+                code=data.get("code", code),
+                name=data.get("name", ""),
+                region=data.get("region", ""),
+                zone=data.get("zone", ""),
                 connectivity_score=data.get("connectivity_score", 0.5)
             )
         
         # Deserialize route patterns
-        route_patterns = json.loads(snapshot.route_patterns or "{}")
+        route_patterns = patterns_data.get("routes", patterns_data) if isinstance(patterns_data, dict) else {}
         for key, data in route_patterns.items():
             if isinstance(data, dict) and "source" in data:
                 graph.route_patterns[key] = RoutePattern(
@@ -330,7 +335,7 @@ class KnowledgeGraphPersistence:
                 )
         
         # Deserialize user preferences
-        user_prefs = json.loads(snapshot.user_preferences or "{}")
+        user_prefs = json.loads(snapshot.preferences_data or "{}")
         for user_id, data in user_prefs.items():
             from services.knowledge_graph_service import UserPreference
             graph.user_preferences[user_id] = UserPreference(
@@ -417,7 +422,7 @@ class KnowledgeGraphPersistence:
 # Global instance factory
 _persistence_instance = None
 
-def get_knowledge_graph_persistence(db: Session = None) -> KnowledgeGraphPersistence:
+def get_knowledge_graph_persistence(db: Optional[Session] = None) -> KnowledgeGraphPersistence:
     """Get or create persistence instance"""
     global _persistence_instance
     if _persistence_instance is None:

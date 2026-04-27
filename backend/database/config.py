@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parent.parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
+# Also load repository root .env so frontend env variables and backend secrets can be defined together.
+root_env_path = Path(__file__).resolve().parent.parent.parent / '.env'
+load_dotenv(dotenv_path=root_env_path)
+
 logger = logging.getLogger("routemaster.config")
 
 class ConfigMeta(type):

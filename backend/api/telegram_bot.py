@@ -10,14 +10,16 @@ from database.config import Config
 from api.dependencies import get_current_user
 from services.telegram_dispatcher import telegram_dispatcher
 from services.search_service import SearchService
-from database.models import User, Booking
-from schemas.telegram_bot_schemas import Update # Import the Update schema
+from database.models import User, Booking, TelegramAccount
+from schemas.telegram_bot_schemas import Update, Message # Import the Update and Message schemas
 from utils.nlp_router import get_local_intent
 
 from datetime import datetime, timedelta
 import secrets
 
 from services.command_handlers.command_handler import command_handler
+from services.telegram_conversation_engine import ConversationEngine
+from services.telegram_session_manager import session_manager
 
 # Helper to wrap async handlers for CommandHandler
 def async_handler_wrapper(async_func):
@@ -131,6 +133,20 @@ async def start_command_handler(chat_id: int, args: str, db_session: Session):
             User.telegram_link_expiry > datetime.utcnow()
         ).first()
         if user:
+            # Create or update TelegramAccount
+            account = db_session.query(TelegramAccount).filter(TelegramAccount.telegram_id == str(chat_id)).first()
+            if not account:
+                account = TelegramAccount(
+                    user_id=user.id,
+                    telegram_id=str(chat_id),
+                    linked_at=datetime.utcnow()
+                )
+                db_session.add(account)
+            else:
+                setattr(account, "user_id", user.id)
+                setattr(account, "is_active", True)
+
+            # Legacy fallback
             user.telegram_id = str(chat_id)
             user.telegram_link_token = None
             user.telegram_link_expiry = None
@@ -296,10 +312,22 @@ async def sos_command_handler(chat_id: int, args: str, db_session: Session):
         )
 
 
+from services.telegram_intelligence_service import telegram_intelligence
+
 async def dashboard_command_handler(chat_id: int, args: str, db_session: Session):
+    """Handles /dashboard with a secure Magic Link if account is linked."""
+    account = db_session.query(TelegramAccount).filter(TelegramAccount.telegram_id == str(chat_id)).first()
+    if account:
+        magic_link = await telegram_intelligence.generate_magic_link(db_session, account.user_id)
+        return await telegram_dispatcher.send_message(
+            chat_id,
+            f"📊 <b>Your Secure Dashboard</b>\n\nAccess your profile, bookings, and settings instantly without password:\n\n<a href='{magic_link}'>🚀 Open Dashboard</a>",
+            reply_markup=telegram_dispatcher.get_keyboard("default")
+        )
+
     return await telegram_dispatcher.send_message(
         chat_id,
-        f"📊 Open your RouteMaster dashboard here: {FRONTEND_URL}/dashboard",
+        f"📊 Open your RouteMaster dashboard here: {FRONTEND_URL}/dashboard\n\n(Hint: Link your account for a 1-click secure login!)",
         reply_markup=telegram_dispatcher.get_keyboard("default")
     )
 
@@ -410,30 +438,50 @@ async def process_telegram_message(update: Update):
     Main processor for incoming Telegram updates.
     Handles both message updates and callback queries.
     """
-    if update.callback_query:
-        db = SessionTransit()
-        try:
-            await process_callback_query(update.callback_query, db_session=db)
-        except Exception as e:
-            logger.error(f"Telegram callback processing error: {e}")
-        finally:
-            db.close()
-        return
-
-    if not update.message:
-        logger.warning("Received Telegram update with no message field.")
-        return
-
-    message = update.message
-    text = message.text
-    chat_id = message.chat.id
-
-    if not text or not chat_id:
-        return
-
     db = SessionTransit()
+    engine = ConversationEngine(db)
+    
     try:
-        await command_handler.handle_message(chat_id, text, db_session=db)
+        if update.callback_query:
+            chat_id = update.callback_query.message.chat.id if update.callback_query.message else None
+            user_id = str(update.callback_query.from_user.id) if update.callback_query.from_user else str(chat_id)
+            if chat_id and update.callback_query.data and user_id is not None:
+                await engine.handle_callback(
+                    chat_id,
+                    user_id,
+                    update.callback_query.data,
+                    update.callback_query.id
+                )
+            return
+
+        if not update.message:
+            return
+
+        message: Message = update.message
+        text = message.text
+        chat_id = message.chat.id
+        location = message.location
+
+        if not chat_id:
+            return
+
+        # 1. Handle Location updates
+        if location:
+            await engine.handle_location(chat_id, location.latitude, location.longitude)
+            return
+
+        if not text:
+            return
+
+        user_id = str(message.from_user.id) if message.from_user else str(chat_id)
+
+        # 2. Try command handler first
+        if text.startswith("/"):
+            await command_handler.handle_message(chat_id, text, db_session=db)
+        else:
+            # 2. Use ConversationEngine for stateful/NLP flow
+            await engine.handle_message(chat_id, user_id, text)
+            
     except Exception as e:
         logger.error(f"Telegram processing error: {e}")
     finally:

@@ -332,12 +332,14 @@ class WomenSafetyAgent(BaseAgent):
             
             db = next(get_db())
             
+            from sqlalchemy.dialects.postgresql import JSONB
+            
             # Query for female Sathis
             sathis = db.query(Sathi).filter(
                 Sathi.is_available == True,
                 Sathi.verification_status == "active",
                 Sathi.gender == "female",
-                func.json_contains(Sathi.service_stations, f'"{station_code}"')
+                Sathi.service_stations.cast(JSONB).contains([station_code])
             ).limit(10).all()
             
             result = []

@@ -63,6 +63,7 @@ class RapidApiProvider(ServiceProvider):
                 timeout_seconds=60.0
             )
         )
+        self.breaker = self._api_circuit_breaker
         
         # Reuse existing retry policy or create one
         from core.retry import RETRY_POLICY_EXTERNAL_API
@@ -126,10 +127,14 @@ class RapidApiProvider(ServiceProvider):
         except: pass
 
         # 3. Request Execution through Circuit Breaker and Retry Policy
+        if self.http_session is None:
+            raise RuntimeError("RapidAPI HTTP session is not initialized")
+        session = self.http_session
+
         async def make_call():
             self._metrics.incr("api_requests_total")
             timeout = aiohttp.ClientTimeout(total=30)
-            async with self.http_session.request(method, url, params=params, timeout=timeout) as response:
+            async with session.request(method, url, params=params, timeout=timeout) as response:
                 if response.status == 429:
                     raise Exception("Rate limit reached (429)")
                 if response.status != 200:
@@ -450,12 +455,20 @@ class RapidApiProvider(ServiceProvider):
             "quota_latch_active": self.quota_latch_active,
         }
 
-    def health_check(self) -> Dict[str, Any]:
-        """Health check endpoint data."""
+    async def health_check(self) -> ServiceStatus:
+        """Override base health check with service-specific status."""
+        if self.status == ServiceStatus.FAILED:
+            return ServiceStatus.FAILED
+        if self._api_circuit_breaker.state == CircuitState.CLOSED and not self.quota_latch_active and self.is_healthy:
+            return ServiceStatus.HEALTHY
+        return ServiceStatus.DEGRADED
+
+    def health_report(self) -> Dict[str, Any]:
+        """Return health metadata for monitoring and dashboards."""
         return {
             "status": "healthy" if (self._api_circuit_breaker.state == CircuitState.CLOSED and 
-                                   not self.quota_latch_active and 
-                                   self.is_healthy) else "degraded",
+                                       not self.quota_latch_active and 
+                                       self.is_healthy) else "degraded",
             "service": "rapidapi_provider",
             "circuit_breaker": self._api_circuit_breaker.state.name,
             "is_healthy": self.is_healthy,

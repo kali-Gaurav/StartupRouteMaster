@@ -172,12 +172,12 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
           <div className="flex items-center gap-3 flex-wrap">
             <div
               className={cn(
-                "px-3 py-1.5 rounded-full text-white text-sm font-semibold",
+                "px-3 py-1.5 rounded-full text-white text-[10px] font-black uppercase tracking-widest",
                 "bg-gradient-to-r",
                 getCategoryStyle(route.category)
               )}
             >
-              {route.category}
+              {route.category.replace(/undefined/i, '').trim() || "Optimal Route"}
             </div>
             {isHighSafety && (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-bold border border-blue-500/20 shadow-sm animate-in zoom-in duration-300">
@@ -255,13 +255,18 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
             )}
           </div>
           <div className="text-right shrink-0">
-            <div className="text-2xl font-bold text-foreground">
-              {route.totalCost > 0 ? formatCost(route.totalCost) : "N/A" }
+            <div className="text-2xl font-black text-foreground tracking-tighter">
+              {route.totalCost > 0 ? formatCost(route.totalCost) : <span className="text-sm text-muted-foreground italic">Pricing Pending</span> }
             </div>
             <div className="flex items-center justify-end gap-1.5 mt-1">
-              <span className={cn("text-xs font-black uppercase tracking-tighter", safetyColor)}>
-                Safety {route.safetyScore}/100
-              </span>
+              <div className="group relative cursor-help">
+                <span className={cn("text-[10px] font-black uppercase tracking-widest border-b border-dotted", safetyColor)}>
+                  Safety {route.safetyScore}/100
+                </span>
+                <div className="absolute bottom-full right-0 mb-2 w-48 p-2 bg-popover text-popover-foreground text-[10px] rounded-lg shadow-xl border border-border opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                  Score based on cancellation rates, delay history, and real-time crowd density.
+                </div>
+              </div>
               {isHighSafety ? <BadgeCheck className="w-3.5 h-3.5 text-emerald-500" /> : <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />}
             </div>
           </div>
@@ -270,14 +275,30 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
         {/* Main Content */}
         <div className="px-5 pb-4">
           <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-foreground">
-                {firstSegment.fromName || getStationByCode(firstSegment.from)?.name || firstSegment.from}
-              </span>
-              <span className="text-muted-foreground">→</span>
-              <span className="text-sm font-semibold text-foreground">
-                {lastSegment.toName || getStationByCode(lastSegment.to)?.name || lastSegment.to}
-              </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-secondary rounded-lg">
+                <Train className="w-3.5 h-3.5 text-primary" />
+                <span className="text-xs font-bold text-foreground">
+                  {firstSegment.fromName || getStationByCode(firstSegment.from)?.name || firstSegment.from}
+                </span>
+              </div>
+              
+              {route.segments.length > 1 && route.segments.slice(0, -1).map((seg, i) => (
+                <React.Fragment key={i}>
+                  <span className="text-muted-foreground text-xs">→</span>
+                  <div className="flex items-center gap-1 text-[10px] font-bold text-muted-foreground italic">
+                     via {seg.toName || getStationByCode(seg.to)?.name || seg.to}
+                  </div>
+                </React.Fragment>
+              ))}
+
+              <span className="text-muted-foreground text-xs">→</span>
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-secondary rounded-lg">
+                <MapPin className="w-3.5 h-3.5 text-accent" />
+                <span className="text-xs font-bold text-foreground">
+                  {lastSegment.toName || getStationByCode(lastSegment.to)?.name || lastSegment.to}
+                </span>
+              </div>
             </div>
             {route.metadata?.pulse_status && (
               <span className="text-[10px] font-black uppercase text-rose-500 bg-rose-500/10 px-1.5 py-0.5 rounded leading-none">
@@ -296,16 +317,26 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
             <span className="font-semibold">{formatDuration(route.totalTime)}</span>
           </div>
 
-          <div className="flex items-center justify-between text-sm mb-3 text-muted-foreground">
-            <span>Distance: {route.totalDistance} km</span>
-            <span className="text-foreground font-semibold">
-              Total: {formatCost(route.totalCost)}
-            </span>
-          </div>
-
-            <div className="text-xs text-muted-foreground mb-3">
-              {route.totalTransfers} transfer{route.totalTransfers > 1 ? 's' : ''}
+          <div className="flex items-center justify-between text-sm mb-4 text-muted-foreground">
+            <div className="flex items-center gap-3">
+              {route.totalDistance > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="font-bold text-foreground">{route.totalDistance}</span>
+                  <span>km</span>
+                </div>
+              )}
+              <div className="flex items-center gap-1 border-l pl-3 border-border">
+                <span className="font-bold text-foreground">{route.totalTransfers}</span>
+                <span>transfer{route.totalTransfers !== 1 ? 's' : ''}</span>
+              </div>
             </div>
+            <div className="flex items-center gap-1">
+              <DollarSign className="w-3.5 h-3.5 text-emerald-500" />
+              <span className="text-foreground font-black tracking-tight">
+                {route.totalCost > 0 ? formatCost(route.totalCost) : "Pending"}
+              </span>
+            </div>
+          </div>
 
           {/* AI Reasoning [Task 10] */}
           {route.metadata?.ui_reasons?.length > 0 && (
@@ -324,9 +355,10 @@ function RouteCardComponent({ route, index, isRecommended, badges, onBook, isUnl
               <button
                 type="button"
                 onClick={() => onUnlock(route)}
-                className="flex-1 min-w-[120px] py-3 px-4 rounded-lg font-bold text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-opacity flex items-center justify-center gap-2"
+                className="flex-1 min-w-[200px] py-4 px-6 rounded-xl font-black text-xs uppercase tracking-widest bg-primary text-primary-foreground hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-3 shadow-lg shadow-primary/20 group"
               >
-                <Lock size={16} /> Unlock Details - {route.metadata?.unlock_fee ? formatCost(route.metadata.unlock_fee) : "₹39"}
+                <Lock size={16} className="group-hover:animate-bounce" /> 
+                🚀 Get Full Itinerary + Live Booking Options — {route.metadata?.unlock_fee ? formatCost(route.metadata.unlock_fee) : "₹39"}
               </button>
             ) : (
               <>

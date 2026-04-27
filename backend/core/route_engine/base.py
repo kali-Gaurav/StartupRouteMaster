@@ -30,6 +30,9 @@ class RoutingRequest(BaseModel):
     
     # [Task 41.22] Unified telemetry and cross-engine coordination
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    # [Safety Engine] Passenger context
+    passengers: List[Any] = Field(default_factory=list)
 
 class RoutingResponse(BaseModel):
     """

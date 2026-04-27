@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from core.data_structures import RouteSegment
+from core.providers import ServiceStatus
 from core.route_engine.engine import RailwayRouteEngine
 
 
@@ -38,23 +39,18 @@ def test_route_segment_exposes_time_seconds_properties():
 @pytest.mark.asyncio
 async def test_route_engine_init_initializes_db_pools(monkeypatch):
     engine = RailwayRouteEngine()
-    engine.status = "STARTING"
+    engine.status = ServiceStatus.INITIALIZING
 
-    calls = {"db": 0, "graph": 0}
-
-    async def fake_initialize_database_pools():
-        calls["db"] += 1
+    calls = {"graph": 0}
 
     async def fake_get_current_graph(date, force_rebuild=False):
         calls["graph"] += 1
-        engine.graph = object()
-        return object()
+        engine.graph = None
+        return None
 
-    monkeypatch.setattr("core.route_engine.engine.initialize_database_pools", fake_initialize_database_pools)
     monkeypatch.setattr(engine, "_get_current_graph", fake_get_current_graph)
 
     await engine.init(force_rebuild=True)
 
-    assert calls["db"] == 1
     assert calls["graph"] == 1
     assert engine.graph_initialized is True

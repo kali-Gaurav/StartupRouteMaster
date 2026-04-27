@@ -7,18 +7,26 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: route-service
-  minReplicas: 2
-  maxReplicas: 10
+  minReplicas: 3
+  maxReplicas: 50
   metrics:
   - type: Resource
     resource:
       name: cpu
       target:
         type: Utilization
-        averageUtilization: 70
+        averageUtilization: 60
   - type: Resource
     resource:
       name: memory
       target:
         type: Utilization
-        averageUtilization: 80
+        averageUtilization: 75
+  # [SOVEREIGN] Scale on active demand pressure via Prometheus Adapter
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: routemaster_sovereign_corridor_pressure_avg
+  #     target:
+  #       type: AverageValue
+  #       averageValue: 0.75

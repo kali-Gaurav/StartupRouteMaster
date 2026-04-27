@@ -1,6 +1,11 @@
 {
   "include": ["backend", "."],
-  "exclude": ["**/node_modules", "**/__pycache__", "backend/.venv"],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "backend/.venv"
+  ],
   "executionEnvironments": [
     {
       "root": "backend",

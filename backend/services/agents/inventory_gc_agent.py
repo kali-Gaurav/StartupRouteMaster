@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime
+from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 from database.session import SessionLocal
 from database.models import SeatInventory
@@ -23,13 +24,22 @@ class InventoryGCAgent(BaseAgent):
     priority = AgentPriority.NORMAL
     auto_schedule_interval = 60.0  # Run every minute
 
-    async def execute(self, context: dict = None) -> dict:
+    async def execute(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Main execution logic for the reaper."""
         count = await self.reclaim_expired_locks()
         return {
             "status": "success",
             "summary": f"Reclaimed {count} zombie seats from expired locks."
         }
+
+    async def pulse(self):
+        """Active pulse loop for the inventory garbage collection agent."""
+        while True:
+            try:
+                await self.reclaim_expired_locks()
+            except Exception as e:
+                logger.error(f"🚨 [INVENTORY_GC] Pulse failure: {e}")
+            await asyncio.sleep(self.auto_schedule_interval or 60.0)
 
     async def reclaim_expired_locks(self) -> int:
         """

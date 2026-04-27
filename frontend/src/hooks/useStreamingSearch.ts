@@ -17,10 +17,11 @@ const STREAM_ENDPOINT = `${BASE_URL}/api/v3/search/stream`;
 type StreamChunkType = "HEARTBEAT" | "FAST_PATH" | "ENRICHED" | "end";
 
 interface StreamChunk {
-  chunk: StreamChunkType;
+  chunk: string;
   journeys?: unknown[];
   latency_ms?: number;
   status?: string;
+  metadata?: any;
 }
 
 interface UseStreamingSearchResult {
@@ -29,6 +30,7 @@ interface UseStreamingSearchResult {
   isComplete: boolean;
   error: string | null;
   latencyMs: number | null;
+  metadata: any | null;
   startSearch: (source: string, destination: string, date: string, persona?: string) => Promise<void>;
   cancelSearch: () => void;
 }
@@ -41,6 +43,7 @@ export function useStreamingSearch(
   const [isComplete, setIsComplete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [metadata, setMetadata] = useState<any | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const hasFirstResults = useRef(false);
@@ -63,6 +66,7 @@ export function useStreamingSearch(
       setIsComplete(false);
       setError(null);
       setLatencyMs(null);
+      setMetadata(null);
       hasFirstResults.current = false;
 
       const url = new URL(STREAM_ENDPOINT);
@@ -131,6 +135,7 @@ export function useStreamingSearch(
                 const chunk: StreamChunk = JSON.parse(data);
 
                 if (chunk.latency_ms) setLatencyMs(chunk.latency_ms);
+                if (chunk.metadata) setMetadata(chunk.metadata);
 
                 if (chunk.chunk === "HEARTBEAT") {
                   continue;
@@ -138,7 +143,7 @@ export function useStreamingSearch(
 
                 if (chunk.journeys && chunk.journeys.length > 0) {
                   const mapped = mapBackendRoutesToRoutes(
-                    { journeys: chunk.journeys } as never,
+                    { data: { journeys: chunk.journeys } } as any,
                     source,
                     destination
                   );
@@ -173,5 +178,5 @@ export function useStreamingSearch(
     [onFirstResults]
   );
 
-  return { routes, isStreaming, isComplete, error, latencyMs, startSearch, cancelSearch };
+  return { routes, isStreaming, isComplete, error, latencyMs, metadata, startSearch, cancelSearch };
 }

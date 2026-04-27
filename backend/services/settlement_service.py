@@ -28,6 +28,9 @@ import asyncio
 
 logger = logging.getLogger("routemaster.settlement")
 
+def safe_fromisoformat(val):
+    from datetime import datetime
+    return datetime.fromisoformat(val) if isinstance(val, str) and val else None
 
 class SettlementStatus(Enum):
     """Status of settlement process."""
@@ -134,7 +137,9 @@ class SettlementService:
         
         # 1. Safety Latch
         from services.cache_service import cache_service
-        financial_lock = await cache_service.get("PLATFORM_FINANCIAL_LOCK")
+        financial_lock = cache_service.get("PLATFORM_FINANCIAL_LOCK")
+        if asyncio.iscoroutine(financial_lock):
+            financial_lock = await financial_lock
         if financial_lock:
             logger.critical(
                 f"🛑 [SETTLEMENT] BLOCKED: System in Emergency Lock. Booking: {booking_id}"
@@ -197,7 +202,7 @@ class SettlementService:
                 status=SettlementStatus.FAILED,
                 payout_reference=booking.booking_details.get("payout_ref"),
                 ledger_transaction=booking.booking_details.get("ledger_tx"),
-                settled_at=datetime.fromisoformat(booking.booking_details.get("settled_at", "")) if booking.booking_details.get("settled_at") else None,
+                settled_at=safe_fromisoformat(booking.booking_details.get("settled_at")),
                 error="ALREADY_SETTLED"
             )
         
@@ -214,15 +219,16 @@ class SettlementService:
         ledger_entry = None
         try:
             from services.ledger_service import ledger_service
-            ledger_entry = await ledger_service.record_transaction(
-                db,
-                debit_acc=f"AGENT_SETTLED_{agent_id}",
-                credit_acc="EXTERNAL_BANK_LIQUIDITY",
-                amount=float(commission_amount),
-                transaction_type="AGENT_PAYOUT_RAZORPAY",
-                user_id=agent_id,
-                metadata={"booking_id": booking_id}
-            )
+            ledger = ledger_service(db)
+            if hasattr(ledger, "record_transaction"):
+                ledger_entry = await ledger.record_transaction(
+                    db,
+                    debit_acc=f"AGENT_SETTLED_{agent_id}",
+                    credit_acc="EXTERNAL_BANK_LIQUIDITY",
+                    amount=commission_amount,
+                    booking_id=booking_id,
+                    agent_id=agent_id
+                )
         except Exception as e:
             logger.error(f"❌ Ledger recording failed: {e}")
             # Continue without ledger if it fails, but log the issue
@@ -251,15 +257,16 @@ class SettlementService:
                 db.add(wallet)
             
             # Since this is a payout, we reduce the settled balance
-            wallet.total_earned = float(wallet.total_earned or 0) + commission_amount
+            setattr(wallet, "total_earned", float(getattr(wallet, "total_earned", 0) or 0) + commission_amount)
             
             # Update booking metadata
             if not booking.booking_details:
                 booking.booking_details = {}
             booking.booking_details["settled"] = True
             booking.booking_details["payout_ref"] = payout_ref
-            booking.booking_details["ledger_tx"] = ledger_entry.transaction_uuid if ledger_entry else None
-            booking.booking_details["settled_at"] = datetime.utcnow().isoformat()
+            booking.booking_details["ledger_tx"] = ledger_entry.transaction_uuid if ledger_entry and hasattr(ledger_entry, "transaction_uuid") else None
+            settled_at_str = booking.booking_details.get("settled_at")
+            settled_at = safe_fromisoformat(settled_at_str)
             
             db.commit()
             
@@ -269,8 +276,8 @@ class SettlementService:
                 amount=commission_amount,
                 status=SettlementStatus.COMPLETED,
                 payout_reference=payout_ref,
-                ledger_transaction=ledger_entry.transaction_uuid if ledger_entry else None,
-                settled_at=datetime.utcnow(),
+                ledger_transaction=ledger_entry.transaction_uuid if ledger_entry and hasattr(ledger_entry, "transaction_uuid") else None,
+                settled_at=settled_at,
                 error=None
             )
             
@@ -283,7 +290,7 @@ class SettlementService:
             
             logger.info(
                 f"✅ [SETTLEMENT] Success: {agent_id} | "
-                f"Ledger: {ledger_entry.transaction_uuid[:8] if ledger_entry else 'N/A'}"
+                f"Ledger: {ledger_entry.transaction_uuid[:8] if ledger_entry and hasattr(ledger_entry, 'transaction_uuid') else 'N/A'}"
             )
             
             return result
@@ -428,7 +435,7 @@ class SettlementService:
             status=SettlementStatus.COMPLETED,
             payout_reference=booking.booking_details.get("payout_ref"),
             ledger_transaction=booking.booking_details.get("ledger_tx"),
-            settled_at=datetime.fromisoformat(booking.booking_details.get("settled_at")) if booking.booking_details.get("settled_at") else None,
+            settled_at=safe_fromisoformat(booking.booking_details.get("settled_at")),
             error=None
         )
 

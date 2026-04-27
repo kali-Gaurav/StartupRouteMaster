@@ -34,7 +34,7 @@ def register_routers(app: FastAPI):
         booking as booking_v2, booking_ws, debug, admin, 
         admin_auth, agent, agents, unlock, webhooks, sessions, external_api,
         notifications, realtime, credits as credits_v2, karma,
-        admin_commissions, admin_fraud
+        admin_commissions, admin_fraud, ledger as ledger_v2, trips as trips_v2
     )
     V2_PREFIX = "/api/v2"
     app.include_router(search_v2.router, prefix=V2_PREFIX)
@@ -58,6 +58,8 @@ def register_routers(app: FastAPI):
     app.include_router(karma.router, prefix=V2_PREFIX)
     app.include_router(admin_commissions.router, prefix=V2_PREFIX)
     app.include_router(admin_fraud.router, prefix=V2_PREFIX)
+    app.include_router(ledger_v2.router, prefix=V2_PREFIX)
+    app.include_router(trips_v2.router, prefix=V2_PREFIX)
 
     # --- AGENT SWARM API ---
     from api.v2.agents import router as agents_router
@@ -85,7 +87,7 @@ def register_routers(app: FastAPI):
         payments, auth, users, flow, bank_webhooks,
         admin_refunds, admin_reconciliation, tatkal,
         telegram_bot, vault, status, admin as admin_v1,
-        integrated_search
+        integrated_search, razorpay_standard, booking_routes, payment_webhook
     )
     V1_PREFIX = "/api"
     app.include_router(status.router, prefix=V1_PREFIX)
@@ -96,6 +98,8 @@ def register_routers(app: FastAPI):
     app.include_router(bookings.router, prefix=V1_PREFIX)
     app.include_router(stations.router, prefix=V1_PREFIX)
     app.include_router(payments.router, prefix=V1_PREFIX)
+    app.include_router(payments.router, prefix="/payments", include_in_schema=False)
+    app.include_router(razorpay_standard.router, prefix=V1_PREFIX)
     app.include_router(auth.router, prefix=V1_PREFIX)
     app.include_router(users.router, prefix=V1_PREFIX)
     app.include_router(flow.router, prefix=V1_PREFIX)
@@ -107,6 +111,8 @@ def register_routers(app: FastAPI):
     app.include_router(vault.router, prefix=V1_PREFIX)
     app.include_router(integrated_search.router, prefix=V1_PREFIX)
     app.include_router(admin_v1.router, prefix="/api/v1")
+    app.include_router(booking_routes.router)
+    app.include_router(payment_webhook.router)
     
     # [P16] High-Value Voice & Analytics Gateway Integration
     from api import voice_v1, analytics_v1

@@ -479,12 +479,24 @@ class SeatAvailabilityService:
             "ttl_seconds": self._cache_ttl_seconds
         }
 
-    def get_health_status(self) -> Dict:
+    def get_health_status(self) -> Dict[str, Any]:
         """Get health status including circuit breaker state."""
         breaker = circuit_manager.get("seat_availability")
         metrics = breaker.get_metrics() if breaker else None
+
+        if metrics is None:
+            circuit_breaker = None
+        else:
+            to_dict = getattr(metrics, "to_dict", None)
+            if callable(to_dict):
+                circuit_breaker = to_dict()
+            elif isinstance(metrics, dict):
+                circuit_breaker = metrics
+            else:
+                circuit_breaker = str(metrics)
+
         return {
-            "circuit_breaker": metrics.to_dict() if hasattr(metrics, "to_dict") else metrics,
+            "circuit_breaker": circuit_breaker,
             "cache_stats": self.get_cache_stats(),
             "rate_limit": self.get_rate_limit_status()
         }

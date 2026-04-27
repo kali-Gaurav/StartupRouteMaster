@@ -148,26 +148,7 @@ class IncentiveCredit(Base):
     used_amount = Column(Float, default=0.0)
 
 
-class KnowledgeGraphSnapshot(Base):
-    """
-    Snapshot of knowledge graph for backup/recovery.
-    
-    Stores complete graph state at point in time.
-    """
-    __tablename__ = "knowledge_graph_snapshots"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    snapshot_id = Column(String(36), unique=True, nullable=False, index=True)
-    created_at = Column(DateTime, nullable=False)
-    
-    # Graph statistics
-    node_count = Column(Integer, nullable=False)
-    edge_count = Column(Integer, nullable=False)
-    
-    # Serialized data
-    nodes_data = Column(Text, nullable=False)
-    edges_data = Column(Text, nullable=False)
-    station_patterns = Column(Text, nullable=True)
+# KnowledgeGraphSnapshot is already defined in models.py or models/knowledge_graph.py
     route_patterns = Column(Text, nullable=True)
     user_preferences = Column(Text, nullable=True)
     

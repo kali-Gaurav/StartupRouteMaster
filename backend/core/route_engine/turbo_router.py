@@ -263,11 +263,13 @@ class TurboRouter(BaseRoutingEngine):
                                 departure_code=leg.get('from'), arrival_code=leg.get('to'),
                                 departure_time=dep_dt, arrival_time=arr_dt,
                                 duration_minutes=int((arr_dt - dep_dt).total_seconds() // 60),
-                                distance_km=0.0, train_number=str(leg.get('train'))
+                                distance_km=float(leg.get('dist', 0.0)),
+                                train_number=str(leg.get('train'))
                             )
                             segs.append(seg)
                             prev_arr = arr_dt
                         route = Route(segments=segs)
+                        route.total_distance = float(r.get('distance', 0.0))
                         route.metadata["engine"] = self.engine_id
                         route.metadata["hubs"] = r.get("hubs", "")
                         routes.append(route)
@@ -280,7 +282,8 @@ class TurboRouter(BaseRoutingEngine):
                                            departure_code=legs[0].get('from'), arrival_code=legs[0].get('to'),
                                            departure_time=s1_dep, arrival_time=s1_arr,
                                            duration_minutes=int((s1_arr - s1_dep).total_seconds() // 60),
-                                           distance_km=0.0, train_number=str(legs[0].get('train')))
+                                           distance_km=float(legs[0].get('dist', 0.0)),
+                                           train_number=str(legs[0].get('train')))
 
                         s2_dep = self._parse_turbo_time(legs[1].get('dep'), s1_arr)
                         if s2_dep < s1_arr: s2_dep += timedelta(days=1)
@@ -290,9 +293,11 @@ class TurboRouter(BaseRoutingEngine):
                                            departure_code=legs[1].get('from'), arrival_code=legs[1].get('to'),
                                            departure_time=s2_dep, arrival_time=s2_arr,
                                            duration_minutes=int((s2_arr - s2_dep).total_seconds() // 60),
-                                           distance_km=0.0, train_number=str(legs[1].get('train')))
+                                           distance_km=float(legs[1].get('dist', 0.0)),
+                                           train_number=str(legs[1].get('train')))
 
                         route = Route(segments=[seg1, seg2])
+                        route.total_distance = float(r.get('distance', 0.0))
                         route.metadata["engine"] = self.engine_id
                         routes.append(route)
                     else:
@@ -352,8 +357,8 @@ class TurboRouter(BaseRoutingEngine):
         start_ts = time.perf_counter()
         gc.disable() 
         
-        # Use provided session or create a thread-local one
-        db = session if session else self.db_factory()
+        # Always use the transit factory (SQLite) for GTFS queries in TurboRouter
+        db = self.db_factory()
         self.frontier_manager.reset() 
         try:
             # If IDs are codes (str), resolve. If IDs are ints, use directly.
@@ -471,8 +476,7 @@ class TurboRouter(BaseRoutingEngine):
             logger.debug(f"[TURBO] _find_routes_sync returning {len(all_routes)} routes.")
             return all_routes[:limit]
         finally:
-            if not session: # Only close if we created it locally
-                db.close()
+            db.close()
             gc.enable() 
 
     def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int]) -> List[Dict[str, Any]]:
@@ -734,8 +738,8 @@ class TurboRouter(BaseRoutingEngine):
                                             "hub": h if h == h_dep else f"{h}->{h_dep}",
                                             "score": 80 - (layover / 15.0) - (20 if h != h_dep else 0),
                                             "legs": [
-                                                {"train": str(tid1), "from": s, "to": h, "dep": self._min_to_time(s_data['dep']), "arr": self._min_to_time(h1_data['arr'])},
-                                                {"train": str(tid2), "from": h_dep, "to": d, "dep": self._min_to_time(h2_data['dep']), "arr": self._min_to_time(d_data['arr'])}
+                                                {"train": str(tid1), "from": s, "to": h, "dep": self._min_to_time(s_data['dep']), "arr": self._min_to_time(h1_data['arr']), "dist": float(h1_data['dist'] - s_data['dist'])},
+                                                {"train": str(tid2), "from": h_dep, "to": d, "dep": self._min_to_time(h2_data['dep']), "arr": self._min_to_time(d_data['arr']), "dist": float(d_data['dist'] - h2_data['dist'])}
                                             ],
                                             "duration": total_duration,
                                             "distance": total_dist
@@ -913,13 +917,16 @@ class TurboRouter(BaseRoutingEngine):
                                                 "legs": [
                                                     {"train": str(tid1), "from": s, "to": h1,
                                                      "dep": self._min_to_time(sd1['dep']),
-                                                     "arr": self._min_to_time(hd1['arr'])},
+                                                     "arr": self._min_to_time(hd1['arr']),
+                                                     "dist": float(hd1['dist'] - sd1['dist'])},
                                                     {"train": str(tid2), "from": h1, "to": h2,
                                                      "dep": self._min_to_time(hd1_l2['dep']),
-                                                     "arr": self._min_to_time(hd2['arr'])},
+                                                     "arr": self._min_to_time(hd2['arr']),
+                                                     "dist": float(hd2['dist'] - hd1_l2['dist'])},
                                                     {"train": str(tid3), "from": h2, "to": d,
                                                      "dep": self._min_to_time(hd2_l3['dep']),
-                                                     "arr": self._min_to_time(dd3['arr'])}
+                                                     "arr": self._min_to_time(dd3['arr']),
+                                                     "dist": float(dd3['dist'] - hd2_l3['dist'])}
                                                 ],
                                                 "duration": total_duration,
                                                 "distance": total_dist

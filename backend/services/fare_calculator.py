@@ -74,7 +74,7 @@ class FareCalculator:
 
         logger.info("FareCalculator initialized with metrics tracking and resilience patterns")
     
-    def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for fare calculation operations."""
         with self._metrics_lock:
             self._metrics.append({
@@ -83,36 +83,6 @@ class FareCalculator:
                 "success": success,
                 "error": error
             })
-    
-    def get_metrics(self) -> dict:
-        """Get service metrics."""
-        if not self._metrics:
-            return {"total_operations": 0, "success_rate": 0.0}
-        
-        total = len(self._metrics)
-        successful = sum(1 for m in self._metrics if m["success"])
-        by_type = {}
-        for m in self._metrics:
-            op_type = m.get("operation_type", "unknown")
-            if op_type not in by_type:
-                by_type[op_type] = {"total": 0, "success": 0}
-            by_type[op_type]["total"] += 1
-            if m["success"]:
-                by_type[op_type]["success"] += 1
-        
-        return {
-            "total_operations": total,
-            "successful_operations": successful,
-            "success_rate": successful / total if total > 0 else 0.0,
-            "operation_breakdown": by_type
-        }
-    
-    def health_check(self) -> dict:
-        """Health check endpoint."""
-        return {
-            "status": "healthy",
-            "metrics": self.get_metrics()
-        }
 
     @classmethod
     def calculate_fare(
@@ -181,7 +151,7 @@ class FareCalculator:
                 "failed_operations": total - successful,
                 "success_rate": successful / total if total > 0 else 0.0,
                 "operation_breakdown": by_type,
-                "circuit_breaker": self._db_breaker.get_metrics().to_dict()
+                "circuit_breaker": self._db_breaker.get_metrics()
             }
 
     def health_check(self) -> dict:

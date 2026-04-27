@@ -69,7 +69,7 @@ class LedgerReconciliationJob:
         
         logger.info("LedgerReconciliationJob initialized with resilience patterns")
     
-    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for reconciliation operations."""
         try:
             async with self._metrics_lock:
@@ -145,12 +145,13 @@ class LedgerReconciliationJob:
         Compares Wallet Balance vs Ledger Parity.
         """
         logger.info("🕵️ Starting Platform-Wide Financial Reconciliation...")
+        ledger = ledger_service(db)
         
         # 1. Integrity Check [49.9]
-        if not ledger_service.verify_ledger_integrity(db):
+        if not ledger.verify_ledger_integrity():
             logger.critical("🛑 LEDGER INTEGRITY FAILURE! Halting and Alerting Admins.")
             # Trigger Global System Fraud Alert
-            fraud_service.create_alert(db, None, "LEDGER_TAMPER_DETECTED", "CRITICAL", {"reason": "Hash Chain Break"})
+            fraud_service.create_alert(db, "system", "LEDGER_TAMPER_DETECTED", "CRITICAL", {"reason": "Hash Chain Break"})
             return
             
         # 2. Per-User Parity [49.4]
@@ -160,8 +161,8 @@ class LedgerReconciliationJob:
         for u in users:
             # Note: Credits to INR conversion logic needed for production parity
             # Assume 1 Credit = ₹39.9
-            ledger_balance_inr = ledger_service.get_account_balance(db, "USER_WALLET", user_id=u.id)
-            wallet_credits = u.credits or 0
+            ledger_balance_inr = ledger.get_account_balance("USER_WALLET", user_id=u.id)
+            wallet_credits = (u.credit_balance or 0) + (u.bonus_credit_balance or 0)
             wallet_value_inr = wallet_credits * 39.9
             
             variance = abs(ledger_balance_inr - wallet_value_inr)

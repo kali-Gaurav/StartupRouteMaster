@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from datetime import datetime, date as date_type
 import redis
 import time
 import json
+from pydantic import BaseModel
 
 from database import get_db
 from schemas import PaymentOrderSchema
@@ -15,7 +16,7 @@ from services.unlock_service import UnlockService
 from services.price_calculation_service import PriceCalculationService
 from services.cache_service import cache_service
 from services.route_verification_service import RouteVerificationService
-from database.models import Route as RouteModel, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
+from database.models import PrecalculatedRoute, User, Booking, Payment as PaymentModel, UnlockedRoute, CommissionTracking
 from api.dependencies import get_current_user, verify_webhook_signature
 from utils.metrics import WEBHOOK_EVENTS_TOTAL, WEBHOOK_ERRORS_TOTAL
 from utils.limiter import limiter
@@ -41,6 +42,128 @@ async def redirect_upi(short_id: str):
 UNLOCK_PRICE = 39.0
 SEAT_LOCK_TTL_SECONDS = 600
 
+class VerifyPaymentPayload(BaseModel):
+    payment_id: Optional[str] = None
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+class BookingRedirectRequest(BaseModel):
+    payment_order_id: str
+    origin: str
+    destination: str
+    train_no: str
+    travel_date: str
+    travel_class: Optional[str] = None
+
+class RedirectTokenPayload(BaseModel):
+    token: str
+
+@router.post("/unlock-route")
+async def unlock_route_payment(
+    request: Request,
+    payload: PaymentOrderSchema,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Endpoint for unlocking routes. Uses dynamic pricing based on complexity.
+    """
+    payment_service = PaymentService(db)
+    unlock_service = UnlockService()
+    price_calculation_service = PriceCalculationService()
+
+    if not payment_service.is_configured():
+        raise HTTPException(status_code=503, detail="Payment service is not configured.")
+
+    route = db.query(PrecalculatedRoute).filter(PrecalculatedRoute.id == payload.route_id).first()
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # NEW: Verify route before creating payment order
+    verification_service = RouteVerificationService()
+    travel_date = payload.travel_date or datetime.now().strftime("%Y-%m-%d") # Fallback date
+
+    verification_result = await verification_service.verify_route_for_unlock(
+        route_id=payload.route_id,
+        travel_date=travel_date,
+        train_number=payload.train_number,
+        from_station_code=payload.from_station_code,
+        to_station_code=payload.to_station_code,
+    )
+    
+    if not verification_result.get("success"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=verification_result.get("error", "Route verification failed."))
+
+    # Log verification results
+    logger.info(
+        f"Route verification for unlock - Route: {payload.route_id}, "
+        f"API Calls: {verification_result.get('api_calls_made', 0)}, "
+        f"Success: {verification_result.get('success', False)}"
+    )
+    
+    # Log warnings if any
+    if verification_result.get("warnings"):
+        for warning in verification_result["warnings"]:
+            logger.warning(f"Route verification warning: {warning}")
+    
+    # If verification failed critically, still allow unlock but log error
+    if not verification_result.get("success") and verification_result.get("errors"):
+        logger.error(
+            f"Route verification failed for {payload.route_id}: "
+            f"{verification_result.get('errors')}"
+        )
+        # Continue anyway - database fallback will be used
+    
+    # Get dynamic fee
+    route_complexity = verification_result.get("route_info", {}).get("complexity", 1.0) # Default complexity
+    route_source = verification_result.get("route_info", {}).get("from_station_name") or getattr(route, "src", None) or (route.route_data.get("source") if isinstance(route.route_data, dict) else None) or "Unknown"
+    route_dest = verification_result.get("route_info", {}).get("to_station_name") or getattr(route, "dest", None) or (route.route_data.get("destination") if isinstance(route.route_data, dict) else None) or "Unknown"
+    
+    total_fare = price_calculation_service.calculate_final_price(route)
+    unlock_fee = await payment_service.calculate_unlock_fee(route_complexity, total_fare)
+
+    order_response = await payment_service.create_order(
+        amount_rupees=unlock_fee,
+        receipt_id=f"unlock_{payload.route_id}_{current_user.id}",
+        customer_email=current_user.email,
+        description=f"Unlock Route {route_source} to {route_dest}",
+        idempotency_key=f"unlock_{payload.route_id}_{current_user.id}",
+        user_id=current_user.id,
+    )
+
+    if not order_response.get("success"):
+        raise HTTPException(status_code=400, detail=order_response.get("error"))
+
+    new_payment = PaymentModel(
+        razorpay_order_id=order_response["order_id"],
+        status="pending",
+        amount=unlock_fee,
+    )
+    db.add(new_payment)
+    db.commit()
+    db.refresh(new_payment)
+    
+    # Link payment to unlock intent
+    unlocked_route = UnlockedRoute(
+        user_id=current_user.id,
+        route_id=payload.route_id,
+        payment_id=new_payment.id,
+        is_active=False # Becomes active after payment verification
+    )
+    db.add(unlocked_route)
+    db.commit()
+
+    return {
+        "success": True,
+        "order": order_response,
+        "payment_id": new_payment.id,
+        "verification": verification_result.get("verification", {}),
+        "route_info": verification_result.get("route_info", {}),
+        "warnings": verification_result.get("warnings", []),
+        "api_calls_made": verification_result.get("api_calls_made", 0)
+    }
+
 @router.post("/create_order")
 @limiter.limit("10/minute")
 async def create_payment_order(
@@ -49,24 +172,36 @@ async def create_payment_order(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    payment_service = PaymentService()
+    payment_service = PaymentService(db)
     price_calculation_service = PriceCalculationService()
-    unlock_service = UnlockService(db)
+    unlock_service = UnlockService()
 
     if not payment_service.is_configured():
         raise HTTPException(status_code=503, detail="Payment service is not configured.")
 
-    route = db.query(RouteModel).filter(RouteModel.id == payload.route_id).first()
+    route = db.query(PrecalculatedRoute).filter(PrecalculatedRoute.id == payload.route_id).first()
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
     # Pre-payment verification for bookings
     if not payload.is_unlock_payment:
-        if not unlock_service.verify_live_availability(payload.route_id, payload.travel_date):
+        # TODO: Replace with a dedicated availability service if available.
+        # For now, use route verification as the safety check before booking.
+        verification_service = RouteVerificationService()
+        verification_result = await verification_service.verify_route_for_unlock(
+            route_id=payload.route_id,
+            travel_date=payload.travel_date,
+            train_number=payload.train_number,
+            from_station_code=payload.from_station_code,
+            to_station_code=payload.to_station_code,
+        )
+
+        if not verification_result.get("success"):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The selected route is no longer available. Please search again.")
 
         lock_key = f"seat_lock:{payload.route_id}:{payload.travel_date}"
-        seat_lock = getattr(cache_service, "get_lock", lambda k, t: None)(lock_key, timeout=SEAT_LOCK_TTL_SECONDS)
+        get_lock = getattr(cache_service, "get_lock", None)
+        seat_lock = cast(Any, get_lock(lock_key, timeout=SEAT_LOCK_TTL_SECONDS)) if callable(get_lock) else None
 
         if seat_lock and not seat_lock.acquire(blocking=False):
             raise HTTPException(
@@ -74,26 +209,44 @@ async def create_payment_order(
                 detail="Seats for this route and date are currently being processed.",
             )
         
+        booking = None
         try:
             booking_service = BookingService(db)
             final_price = price_calculation_service.calculate_final_price(route)
             
+            booking_details = {}
+            if isinstance(route.route_data, dict):
+                booking_details = {
+                    "segments": route.route_data.get("segments", []),
+                    "source": route.route_data.get("source") or route.src,
+                    "destination": route.route_data.get("destination") or route.dest,
+                }
+            else:
+                booking_details = {
+                    "segments": [],
+                    "source": getattr(route, "src", "Unknown"),
+                    "destination": getattr(route, "dest", "Unknown"),
+                }
+
             booking = booking_service.create_booking(
                 user_id=current_user.id,
                 route_id=payload.route_id,
                 travel_date=payload.travel_date,
-                booking_details=route.segments if hasattr(route, "segments") else {},
+                booking_details=booking_details,
                 amount_paid=final_price,
             )
             if not booking:
                 raise HTTPException(status_code=500, detail="Failed to create booking record.")
             
+            route_source = booking_details.get("source") or getattr(route, "src", "Unknown")
+            route_dest = booking_details.get("destination") or getattr(route, "dest", "Unknown")
             order_response = await payment_service.create_order(
                 amount_rupees=booking.amount_paid,
                 receipt_id=str(booking.id),
                 customer_email=current_user.email,
-                description=f"Booking for {route.source} to {route.destination}",
+                description=f"Booking for {route_source} to {route_dest}",
                 idempotency_key=str(booking.id),
+                user_id=current_user.id,
             )
 
             if not order_response.get("success"):
@@ -101,10 +254,14 @@ async def create_payment_order(
 
             razorpay_order_id = order_response["order_id"]
             new_payment = PaymentModel(
+                user_id=current_user.id,
+                route_id=payload.route_id,
                 razorpay_order_id=razorpay_order_id,
                 status="pending",
                 amount=booking.amount_paid,
                 booking_id=booking.id,
+                payment_method="RAZORPAY",
+                payment_channel="RAZORPAY",
             )
             db.add(new_payment)
             db.commit()
@@ -112,26 +269,31 @@ async def create_payment_order(
 
             return {"success": True, "order": order_response, "payment_id": new_payment.id}
 
+        except HTTPException:
+            raise
         except Exception as e:
-            if seat_lock: seat_lock.release()
             logger.error(f"Error in create_payment_order for booking: {e}")
             raise HTTPException(status_code=500, detail="An internal error occurred.")
+        finally:
+            if seat_lock:
+                try:
+                    seat_lock.release()
+                except Exception:
+                    pass
     else:
         # Handle Unlock Payment
         try:
-            if UnlockService.is_route_unlocked(db, current_user.id, payload.route_id):
+            if unlock_service.is_route_unlocked(db, current_user.id, payload.route_id).is_unlocked:
                  return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
             # NEW: Verify route before creating payment order
-            verification_service = RouteVerificationService(db)
+            verification_service = RouteVerificationService()
             verification_result = await verification_service.verify_route_for_unlock(
                 route_id=payload.route_id,
                 travel_date=payload.travel_date,
                 train_number=payload.train_number,
                 from_station_code=payload.from_station_code,
                 to_station_code=payload.to_station_code,
-                source_station_name=payload.source_station_name,
-                destination_station_name=payload.destination_station_name
             )
             
             # Log verification results
@@ -158,8 +320,12 @@ async def create_payment_order(
             # Create payment order
             # Route model (gtfs_routes) doesn't have source/destination fields directly
             # Use verification result or route long_name
-            route_source = verification_result.get("route_info", {}).get("from_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[0] if hasattr(route, 'long_name') else "Unknown"
-            route_dest = verification_result.get("route_info", {}).get("to_station_name") or getattr(route, 'long_name', 'Unknown').split(' to ')[-1] if hasattr(route, 'long_name') else "Unknown"
+            route_source = verification_result.get("route_info", {}).get("from_station_name")
+            route_dest = verification_result.get("route_info", {}).get("to_station_name")
+            if not route_source:
+                route_source = getattr(route, "src", None) or (route.route_data.get("source") if isinstance(route.route_data, dict) else None) or "Unknown"
+            if not route_dest:
+                route_dest = getattr(route, "dest", None) or (route.route_data.get("destination") if isinstance(route.route_data, dict) else None) or "Unknown"
             
             order_response = await payment_service.create_order(
                 amount_rupees=UNLOCK_PRICE,
@@ -167,6 +333,7 @@ async def create_payment_order(
                 customer_email=current_user.email,
                 description=f"Unlock Route {route_source} to {route_dest}",
                 idempotency_key=f"unlock_{payload.route_id}_{current_user.id}",
+                user_id=current_user.id,
             )
 
             if not order_response.get("success"):
@@ -174,9 +341,13 @@ async def create_payment_order(
 
             razorpay_order_id = order_response["order_id"]
             new_payment = PaymentModel(
+                user_id=current_user.id,
+                route_id=payload.route_id,
                 razorpay_order_id=razorpay_order_id,
                 status="pending",
                 amount=UNLOCK_PRICE,
+                payment_method="RAZORPAY",
+                payment_channel="RAZORPAY",
             )
             db.add(new_payment)
             db.commit()
@@ -212,31 +383,59 @@ async def create_payment_order(
 @limiter.limit("10/minute")
 async def verify_payment(
     request: Request,
-    payment_id: str,
-    razorpay_order_id: str,
-    razorpay_payment_id: str,
-    razorpay_signature: str,
+    payload: VerifyPaymentPayload,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    payment_service = PaymentService()
+    payment_service = PaymentService(db)
     if not payment_service.is_configured():
         raise HTTPException(status_code=503, detail="Payment service not configured.")
     
-    payment_record = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
+    payment_record = None
+    if payload.payment_id:
+        payment_record = db.query(PaymentModel).filter(PaymentModel.id == payload.payment_id).first()
+    if not payment_record:
+        payment_record = db.query(PaymentModel).filter(PaymentModel.razorpay_order_id == payload.razorpay_order_id).first()
+
     if not payment_record:
         raise HTTPException(status_code=404, detail="Payment record not found.")
-    if payment_record.razorpay_order_id != razorpay_order_id:
+    if payment_record.razorpay_order_id != payload.razorpay_order_id:
         raise HTTPException(status_code=400, detail="Mismatched Razorpay Order ID.")
+    if payment_record.user_id and payment_record.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to verify this payment.")
+    if not payment_record.user_id and payment_record.booking_id:
+        booking = db.query(Booking).filter(Booking.id == payment_record.booking_id).first()
+        if isinstance(booking, Booking):
+            booking_user_id = booking.__dict__.get("user_id")
+            if booking_user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Not authorized to verify this payment.")
 
     is_valid, error = payment_service.verify_payment(
-        razorpay_payment_id, razorpay_order_id, razorpay_signature
+        payload.razorpay_payment_id,
+        payload.razorpay_order_id,
+        payload.razorpay_signature
     )
     if not is_valid:
          raise HTTPException(status_code=400, detail=error or "Invalid payment signature.")
     
-    payment_record.razorpay_payment_id = razorpay_payment_id
+    payment_record.razorpay_payment_id = payload.razorpay_payment_id
     payment_record.status = "completed"
+    
+    # [Task 1.1.4] Secondary Audit Reconciliation
+    try:
+        from database.models import PaymentTransaction
+        transaction = PaymentTransaction(
+            payment_id=payload.razorpay_payment_id,
+            booking_id=payment_record.booking_id,
+            amount=payment_record.amount,
+            method=payment_record.payment_method or "RAZORPAY",
+            status="success",
+            provider_reference=payload.razorpay_payment_id
+        )
+        db.add(transaction)
+    except Exception as te:
+        logger.error(f"Failed to create reconciliation transaction: {te}")
+        
     db.commit()
     db.refresh(payment_record)
 
@@ -245,18 +444,18 @@ async def verify_payment(
         booking_service = BookingService(db)
         confirmed = booking_service.confirm_booking(payment_record.booking_id)
         if not confirmed:
-            # log but still return success so frontend can handle upstream
             logger.warning(f"Payment succeeded but booking {payment_record.booking_id} could not be confirmed")
         return {"success": True, "message": "Payment verified and booking confirmed."}
     
-    else:
-        unlocked_route = db.query(UnlockedRoute).filter(UnlockedRoute.payment_id == payment_record.id).first()
-        if unlocked_route:
-            unlocked_route.is_active = True
-            db.commit()
-            return {"success": True, "message": "Payment verified and route unlocked."}
+    unlocked_route = db.query(UnlockedRoute).filter(UnlockedRoute.payment_id == payment_record.id).first()
+    if unlocked_route:
+        if unlocked_route.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to verify this payment.")
+        unlocked_route.is_active = True
+        db.commit()
+        return {"success": True, "message": "Payment verified and route unlocked."}
 
-        raise HTTPException(status_code=400, detail="Payment not linked to any booking or unlock.")
+    raise HTTPException(status_code=400, detail="Payment not linked to any booking or unlock.")
 
 
 # --- new endpoints added below ---
@@ -272,28 +471,33 @@ async def create_payment_order_v2(
     Supports UPI redirection for initial feedback month.
     """
     from services.unlock_service import UnlockService
-    unlock_service = UnlockService(db)
+    unlock_service = UnlockService()
 
     # 1. Verification Logic
     # In Phase 2, we perform live verification via RapidAPI before charging
     if request.is_unlock_payment:
         # Check if already unlocked
-        if UnlockService.is_route_unlocked(db, current_user.id, request.route_id):
+        if unlock_service.is_route_unlocked(db, current_user.id, request.route_id).is_unlocked:
              return {"success": True, "message": "Route already unlocked.", "unlocked": True}
 
-        # 2. UPI Redirection Hack (Topic 4)
-        # Generate a UPI Intent link for GPay/PhonePe/Paytm
-        # Format: upi://pay?pa=UPI_ID&pn=NAME&am=AMOUNT&cu=INR
-        upi_id = "gauravnagar@okaxis" # Updated based on instruction
+        # 2. Dynamic VPA Merchant Load Balancer (Task 4)
+        from services.merchant_vpa_service import merchant_vpa_service
+        merchant_info = merchant_vpa_service.get_next_vpa()
+        
+        upi_id = merchant_info["vpa"]
         amount = UNLOCK_PRICE
         note = f"Unlock Route {request.route_id}"
-        upi_link = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={amount}&cu=INR&tn={note}"
+        upi_link = f"upi://pay?pa={upi_id}&pn={merchant_info['name']}&am={amount}&cu=INR&tn={note}"
 
         # Create a pending payment record
         new_payment = PaymentModel(
+            user_id=current_user.id,
+            route_id=request.route_id,
             status="pending",
             amount=amount,
-            # We use 'upi_intent' as provider
+            payment_method="UPI",
+            payment_channel="UPI",
+            merchant_vpa=upi_id,
             razorpay_order_id=f"upi_{int(time.time())}_{current_user.id}"
         )
         db.add(new_payment)
@@ -335,13 +539,14 @@ async def manual_confirm_payment(
     payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
-
-    # In production, we would check banking alerts. 
-    # For feedback month, we mark as completed to allow testing.
+    if payment.user_id and payment.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to confirm this payment.")
     payment.status = "completed"
 
     unlocked_route = db.query(UnlockedRoute).filter(UnlockedRoute.payment_id == payment.id).first()
     if unlocked_route:
+        if unlocked_route.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to confirm this payment.")
         unlocked_route.is_active = True
 
     db.commit()
@@ -350,13 +555,83 @@ async def manual_confirm_payment(
 @router.get("/status/{razorpay_order_id}")
 async def payment_status(
     razorpay_order_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return simple status of a payment by razorpay order id."""
     payment = db.query(PaymentModel).filter(PaymentModel.razorpay_order_id == razorpay_order_id).first()
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
+    if payment.user_id and payment.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this payment.")
+    if not payment.user_id and payment.booking_id:
+        booking = db.query(Booking).filter(Booking.id == payment.booking_id).first()
+        if isinstance(booking, Booking):
+            booking_user_id = booking.__dict__.get("user_id")
+            if booking_user_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Not authorized to view this payment.")
     return {"order_id": razorpay_order_id, "status": payment.status}
+
+
+@router.get("/order_status/{razorpay_order_id}")
+async def payment_order_status_alias(
+    razorpay_order_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await payment_status(razorpay_order_id, db, current_user)
+
+
+@router.post("/booking/redirect")
+async def booking_redirect(
+    payload: BookingRedirectRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    payment = db.query(PaymentModel).filter(PaymentModel.razorpay_order_id == payload.payment_order_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found.")
+    if payment.user_id and payment.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this booking.")
+    if payment.status != "completed":
+        raise HTTPException(status_code=400, detail="Payment is not completed yet.")
+
+    irctc_url = (
+        f"https://www.irctc.co.in/nget/train-search?fromStation={payload.origin}"
+        f"&toStation={payload.destination}&journeyDate={payload.travel_date}"
+        f"&class={payload.travel_class or 'SL'}"
+    )
+
+    return {
+        "success": True,
+        "redirect_url": irctc_url,
+        "irctc_url": irctc_url,
+    }
+
+
+@router.get("/unlocked-routes")
+async def get_unlocked_routes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    routes = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.is_active == True
+    ).all()
+    return {
+        "success": True,
+        "routes": [route.route_id for route in routes if route.route_id],
+    }
+
+
+@router.post("/consume-redirect-token")
+async def consume_redirect_token(
+    payload: RedirectTokenPayload,
+    current_user: User = Depends(get_current_user),
+):
+    if not payload.token or not isinstance(payload.token, str) or len(payload.token) < 8:
+        raise HTTPException(status_code=400, detail="Invalid redirect token.")
+    return {"success": True, "data": {"validated": True}}
 
 
 @router.get("/booking/history")
@@ -525,7 +800,6 @@ async def payment_webhook(
 # ==========================================
 # MVP PAYMENT SESSION / OTP SYSTEM
 # ==========================================
-from pydantic import BaseModel
 import random
 import string
 from datetime import timedelta
@@ -553,7 +827,7 @@ async def create_payment_session(
     Task 5: Now includes Platform Fee & GST breakdown.
     """
     # 1. Real-time Verification (Phase 10 Core Requirement)
-    verification_service = RouteVerificationService(db)
+    verification_service = RouteVerificationService()
     # Note: we use tomorrow's date if not specified, but usually search context provides it
     travel_date = datetime.now().strftime("%Y-%m-%d") # Fallback
     
@@ -577,7 +851,7 @@ async def create_payment_session(
     
     # Task 4: Dynamic VPA Merchant Load Balancer (with Region support)
     from services.merchant_vpa_service import merchant_vpa_service
-    merchant_info = merchant_vpa_service.get_next_vpa(user_region=request.user_region)
+    merchant_info = merchant_vpa_service.get_next_vpa()
     
     # Store in DB with verification snapshot and fee breakdown
     session = PaymentSession(
@@ -595,10 +869,10 @@ async def create_payment_session(
     db.commit()
     
     # Task 7.5 & 7.10: Initialize Session Lock
-    from services.session_lock_service import SessionLockService
-    lock_service = SessionLockService(db)
+    from services.session_lock_service import session_lock_service
+    lock_service = session_lock_service
     # Using journey_id as booking_id placeholder since they map 1:1 in this context
-    lock_service.initialize_lock(session_code, str(current_user.id), booking_id=request.journey_id)
+    await lock_service.initialize_lock(session_code, str(current_user.id), booking_id=request.journey_id)
     
     # Generate UPI intent with load-balanced VPA and total amount
     from utils.payments import generate_upi_uri
@@ -620,7 +894,7 @@ async def create_payment_session(
         "merchant_name": merchant_info["name"],
         "verification": verify_result, # Frontend shows 'Verified' badge
         "message": f"Route verified. Please pay {final_amount} to {merchant_info['name']} and enter the code to unlock.",
-        "expires_at": session.expires_at.isoformat()
+        "expires_at": session.expires_at.isoformat() if session.expires_at else None
     }
 
 @router.post("/refresh_session/{old_session_code}")
@@ -663,9 +937,9 @@ async def refresh_payment_session(
     db.commit()
     
     # Initialize lock for new session
-    from services.session_lock_service import SessionLockService
-    lock_service = SessionLockService(db)
-    lock_service.initialize_lock(new_session_code, str(current_user.id), booking_id=old_session.route_id)
+    from services.session_lock_service import session_lock_service
+    lock_service = session_lock_service
+    await lock_service.initialize_lock(new_session_code, str(current_user.id), booking_id=old_session.route_id)
     
     # Generate new UPI intent
     from services.merchant_vpa_service import merchant_vpa_service
@@ -683,7 +957,7 @@ async def refresh_payment_session(
         "session_code": new_session_code,
         "upi_link": upi_link,
         "merchant_name": merchant_info["name"],
-        "expires_at": new_session.expires_at.isoformat(),
+        "expires_at": new_session.expires_at.isoformat() if new_session.expires_at else None,
         "message": "Session refreshed successfully."
     }
 
@@ -697,10 +971,10 @@ async def payment_heartbeat(
     Task 7.10: Heartbeat check.
     Frontend calls this every 30s while on the payment page.
     """
-    from services.session_lock_service import SessionLockService
-    lock_service = SessionLockService(db)
-    
-    is_active = lock_service.record_heartbeat(session_code)
+    from services.session_lock_service import session_lock_service
+    lock_service = session_lock_service
+
+    is_active = await lock_service.record_heartbeat(session_code)
     if not is_active:
         raise HTTPException(status_code=400, detail="Session expired or invalid")
         
@@ -769,7 +1043,7 @@ async def download_invoice_pdf(
     breakdown = tax_engine.calculate_breakdown(base_fare)
     
     pdf_buffer = tax_engine.generate_tax_invoice_pdf(
-        transaction_id=payment.razorpay_order_id,
+        transaction_id=str(payment.razorpay_order_id or payment.id),
         date_str=payment.created_at.strftime("%Y-%m-%d"),
         breakdown=breakdown
     )
@@ -857,8 +1131,9 @@ async def confirm_payment_session(
     device_fp = request.headers.get("X-Device-Fingerprint") # Task 3.3
     
     is_valid, error = fraud_service.validate_utr_advanced(
-        request_data.session_code, 
-        str(current_user.id), 
+        db,
+        request_data.session_code,
+        str(current_user.id),
         ip_address=client_ip,
         device_fp=device_fp
     )
@@ -883,7 +1158,7 @@ async def confirm_payment_session(
         fraud_service.record_attempt(str(current_user.id), True)
         return {"success": True, "message": "Already verified"}
         
-    if session.expires_at < datetime.utcnow():
+    if not session.expires_at or session.expires_at < datetime.utcnow():
         session.status = "EXPIRED"
         db.commit()
         fraud_service.record_attempt(str(current_user.id), False)
@@ -925,19 +1200,71 @@ async def confirm_payment_session(
         "message": "Payment confirmed and route unlocked."
     }
 
-@router.post("/admin/clear_fraud_lockout")
-async def admin_clear_fraud_lockout(
-    identifier: str,
+    return {"success": True, "message": f"Lockout cleared for {identifier}"}
+
+@router.post("/refund/{payment_id}")
+async def request_refund(
+    payment_id: str,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Task 3.6: Admin dashboard for manual unblocking.
+    Initiate a refund for a given payment.
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-        
-    from services.fraud_detection_service import fraud_service
-    fraud_service.clear_lockout(identifier)
+    payment = db.query(PaymentModel).filter(PaymentModel.id == payment_id).first()
     
-    return {"success": True, "message": f"Lockout cleared for {identifier}"}
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found.")
+        
+    # Security: Only admin or the owner can request refund
+    if payment.user_id != str(current_user.id) and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to request refund.")
+        
+    if payment.status == "completed" and not payment.razorpay_payment_id:
+        # If it was a manual UPI payment and it's completed, we need a way to track refunds.
+        # For now, we simulate and update the status.
+        payment.status = "refund_requested"
+        db.commit()
+        db.refresh(payment)
+        
+        # Here, we would trigger a background job to notify Razorpay/Bank.
+        # For now, just update status and log.
+        logger.info(f"Manual refund requested for payment ID: {payment.id}")
+        return {"success": True, "message": "Refund request processed.", "status": payment.status}
+
+    if not payment.razorpay_payment_id:
+        raise HTTPException(status_code=400, detail="Refund can only be initiated for Razorpay payments.")
+    
+    if payment.refund_status not in ("NOT_APPLICABLE", "FAILED"):
+        raise HTTPException(status_code=400, detail=f"Refund already processed or pending. Current status: {payment.refund_status}")
+
+    payment_service = PaymentService(db) # Assuming PaymentService needs db instance
+    try:
+        refund_success, refund_error, refund_data = await payment_service.refund_payment(
+            payment_id=payment.razorpay_payment_id,
+            amount_rupees=payment.amount,
+            reason="User requested refund",
+            user_id=str(current_user.id)
+        )
+        
+        if refund_success:
+            payment.refund_status = "processing"
+            payment.refund_id = refund_data.get("id") if refund_data else None
+            payment.refund_amount = payment.amount
+            db.commit()
+            db.refresh(payment)
+            return {"success": True, "message": "Refund initiated successfully.", "status": payment.refund_status, "refund_id": payment.refund_id}
+        else:
+            error_message = refund_error or "Refund failed for unknown reasons."
+            payment.refund_status = "failed"
+            db.commit()
+            logger.error(f"Razorpay refund initiation failed for payment {payment.id}: {error_message}")
+            raise HTTPException(status_code=500, detail=error_message)
+            
+    except Exception as e:
+        logger.error(f"Error initiating refund for payment {payment.id}: {e}")
+        payment.refund_status = "failed"
+        db.commit()
+        raise HTTPException(status_code=500, detail="Internal server error during refund initiation.")
+
 

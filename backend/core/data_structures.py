@@ -247,12 +247,18 @@ class RouteSegment:
             "trip_id": self.trip_id,
             "train_number": self.train_number,
             "train_name": self.train_name,
+            # Primary keys (backend convention)
             "from_station": self.departure_code,
             "to_station": self.arrival_code,
+            # Aliases for frontend compatibility (BackendJourneyLeg interface)
+            "from_station_code": self.departure_code,
+            "to_station_code": self.arrival_code,
             "departure_time": dep.isoformat() if isinstance(dep, datetime) else dep,
             "arrival_time": arr.isoformat() if isinstance(arr, datetime) else arr,
             "duration": self.duration_minutes,
+            "duration_minutes": self.duration_minutes,  # frontend alias
             "distance": self.distance_km,
+            "distance_km": self.distance_km,  # explicit alias
             "fare": self.fare,
             "has_pantry": self.has_pantry,
             "departure_platform": self.departure_platform,
@@ -466,21 +472,28 @@ class Route:
     def to_dict(self) -> Dict[str, Any]:
         """Master serialization matching SearchService expectations."""
         jid = self.journey_id
+        num_transfers = max(0, len(self.segments) - 1)
         return {
             "route_id": jid,
             "journey_id": jid,
             "segments": [s.to_dict() for s in self.segments],
             "legs": [s.to_dict() for s in self.segments], 
             "transfers": [t.to_dict() for t in self.transfers],
+            "num_transfers": num_transfers,
             "total_duration": self.total_duration,
+            # Both keys for compatibility (backend uses total_fare, frontend reads total_cost)
             "total_fare": self.total_cost,
+            "total_cost": self.total_cost,
             "total_distance": self.total_distance,
             "reliability": self.reliability,
+            "reliability_score": self.reliability,
             "score": self.score,
             "is_locked": self.is_locked,
             "is_featured": self.is_featured,
             "highlight_label": self.highlight_label,
             "availability_prob": self.availability_probability,
+            "availability_status": self.metadata.get("live_availability", "AVAILABLE"),
+            "safety_score": getattr(self, 'safety_score', 1.0),
             "metadata": self.metadata
         }
 

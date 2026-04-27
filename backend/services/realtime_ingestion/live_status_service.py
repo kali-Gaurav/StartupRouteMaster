@@ -165,27 +165,35 @@ class LiveStatusService:
         try:
             session = await self.get_session()
             async with session.get(url, params=params) as response:
+                if response.status == 503:
+                    logger.warning(f"⚠️ Rappid.in API is UNAVAILABLE (503) for {train_number}. Attempting stale fallback.")
+                    try:
+                        stale_data = await async_redis_client.get(f"stale:{cache_key}")
+                        if stale_data: return json.loads(stale_data)
+                    except: pass
+                    return None
+
                 if response.status != 200:
                     logger.error(f"Live status API error {response.status} for {train_number}")
                     return None
                 
                 data = await response.json()
-                
-                if not data.get("success"):
-                    return None
+                if not data.get("success"): return None
                     
                 normalized_data = self._normalize_response(data, train_number)
                 
-                # 3. Save to Cache
                 try:
                     await async_redis_client.setex(cache_key, self.cache_ttl, json.dumps(normalized_data))
-                except Exception as e:
-                    pass
-                    
+                    await async_redis_client.setex(f"stale:{cache_key}", 3600, json.dumps(normalized_data))
+                except: pass
                 return normalized_data
 
         except Exception as e:
             logger.error(f"Exception during live status fetch for {train_number}: {e}")
+            try:
+                stale_data = await async_redis_client.get(f"stale:{cache_key}")
+                if stale_data: return json.loads(stale_data)
+            except: pass
             return None
 
     def _normalize_response(self, data: Dict[str, Any], train_number: str) -> Dict[str, Any]:

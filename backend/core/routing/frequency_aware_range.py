@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, Tuple
 from functools import lru_cache
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 logger = logging.getLogger("frequency-sizer")
 
@@ -140,3 +140,25 @@ def get_adaptive_timeout(source_stop_id: int, dest_stop_id: int, graph: Any,
     except Exception as e:
         logger.warning(f"[Task 3] Error computing adaptive timeout: {e}")
         return base_timeout_ms
+
+
+class FrequencyAwareWindowSizer:
+    """Legacy compatibility wrapper for frequency-aware window sizing."""
+
+    async def get_range_window_minutes(
+        self,
+        origin_stop_id: int,
+        destination_stop_id: int,
+        search_date: date,
+        base_range_minutes: int = 60,
+        distance_km: float = 0.0,
+    ) -> int:
+        """Return a synthetic range window based on stop frequency and distance."""
+        base_value = get_frequency_aware_sizer(origin_stop_id, None)
+        if distance_km <= 150:
+            return max(base_value, base_range_minutes)
+        if distance_km <= 500:
+            return max(base_value + 5, base_range_minutes)
+        if distance_km <= 1000:
+            return max(base_value + 10, base_range_minutes)
+        return max(base_value + 15, base_range_minutes)

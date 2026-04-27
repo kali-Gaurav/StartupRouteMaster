@@ -108,20 +108,26 @@ class PNRStatusService:
         if result.get("success") and user_id and db:
             try:
                 from services.vault_service import pnr_vault
-                from database.models import VaultedRecord
+                try:
+                    from database.models import VaultedRecord
+                except ImportError:
+                    VaultedRecord = None
                 
                 hardened = pnr_vault.pack_pnr_for_storage(user_id, pnr, result)
                 
-                vault_entry = VaultedRecord(
-                    user_id=user_id,
-                    pnr_blind_index=hardened["pnr_blind_index"],
-                    encrypted_blob=hardened["encrypted_data"],
-                    record_type="PNR_EXTRACTED",
-                    expires_at=datetime.utcnow() + timedelta(days=2)  # Auto-scrub in 48h
-                )
-                db.add(vault_entry)
-                db.commit()
-                logger.info(f"🔒 [VAULT] Sensitive PNR {pnr[:3]}... cryptographically secured for user {user_id}")
+                if VaultedRecord is not None:
+                    vault_entry = VaultedRecord(
+                        user_id=user_id,
+                        pnr_blind_index=hardened["pnr_blind_index"],
+                        encrypted_blob=hardened["encrypted_data"],
+                        record_type="PNR_EXTRACTED",
+                        expires_at=datetime.utcnow() + timedelta(days=2)  # Auto-scrub in 48h
+                    )
+                    db.add(vault_entry)
+                    db.commit()
+                    logger.info(f"🔒 [VAULT] Sensitive PNR {pnr[:3]}... cryptographically secured for user {user_id}")
+                else:
+                    logger.warning("Vault schema is unavailable; skipping sensitive PNR persistence.")
             except Exception as ve:
                 logger.error(f"Vault storage failed: {ve}")
 
@@ -196,9 +202,14 @@ class PNRStatusService:
         metrics = breaker.get_metrics() if breaker else None
         return {
             "configured": bool(self.api_key),
-            "circuit_breaker": metrics.to_dict() if metrics else None,
+            "circuit_breaker": metrics if isinstance(metrics, dict) else getattr(metrics, "to_dict", lambda: metrics)() if metrics else None,
             "cache_stats": self.get_cache_stats()
         }
 
+    async def get_pnr_status(self, pnr: str, **kwargs) -> Dict[str, Any]:
+        """Alias for get_status to match bot expectations."""
+        return await self.get_status(pnr, **kwargs)
+
 
 pnr_status_service = PNRStatusService()
+pnr_service = pnr_status_service

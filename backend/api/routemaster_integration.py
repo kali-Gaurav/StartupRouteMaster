@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from database.models import (
-    Trip, Stop, Route, StopTime, TrainState, 
+    Trip, Stop, StopTime, TrainState, 
     Disruption, RLFeedbackLog
 )
 
@@ -315,11 +315,11 @@ async def update_train_state(
                 # Handle cancellation
                 if request.status == "cancelled":
                     trip.is_cancelled = True
-                    cancelled_routes = db.query(Route).filter(
-                        Route.trip_id == trip.id
+                    cancelled_routes = db.query(StopTime).filter(
+                        StopTime.trip_id == trip.id
                     ).count()
                     routes_affected += cancelled_routes
-                
+
                 db.add(trip)
                 status_updated = True
             

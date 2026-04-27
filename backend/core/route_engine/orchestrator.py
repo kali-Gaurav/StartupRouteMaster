@@ -106,11 +106,18 @@ class UnifiedRoutingOrchestrator:
         
         from services.providers.multimodal_mocks import flight_p
 
-        # We only look for jumps from the Source Hub or any Major Hub reachable in Round 0
-        source_hubs = [code for code in MEGA_HUBS | MAJOR_HUBS if code == request.source_code]
+        # [Task 11.2] Multi-Hub Bridge Discovery
+        # If the source is not a hub, we look for nearby hubs to jump from
+        from core.hubs import get_hubs_near
+        source_stop = request.db_session.query(Stop).filter(Stop.code == request.source_code).first()
         
-        # [Task 11.2] Rapid Bridge Expansion
-        for hub_code in source_hubs:
+        hub_codes = [request.source_code] if request.source_code in (MEGA_HUBS | MAJOR_HUBS) else []
+        if not hub_codes and source_stop:
+            # Source is not a hub: Find top 2 nearest mega/major hubs
+            hub_codes = get_hubs_near(source_stop.latitude, source_stop.longitude, limit=2)
+            logger.info(f"🌐 [ORCHESTRATOR] Source {request.source_code} is not a hub. Scanning jumps from nearby hubs: {hub_codes}")
+
+        for hub_code in hub_codes:
             jumps = []
             
             # 1. Search Buses
@@ -283,6 +290,35 @@ class UnifiedRoutingOrchestrator:
             for seg in route.segments
         )
 
+    def _filter_hazardous_routes(self, routes: List[Route]) -> List[Route]:
+        """
+        [P20.4] SOS Vacuuming.
+        Removes routes passing through high-hazard stations.
+        """
+        if not routes: return []
+        
+        safe_routes = []
+        for r in routes:
+            max_hazard = 0.0
+            for seg in r.segments:
+                # Check from_station
+                dep_code = str(getattr(seg, "from_station_code", getattr(seg, "departure_code", ""))).upper()
+                max_hazard = max(max_hazard, knowledge_graph.get_hazard_level(dep_code))
+                
+                # Check to_station
+                arr_code = str(getattr(seg, "to_station_code", getattr(seg, "arrival_code", ""))).upper()
+                max_hazard = max(max_hazard, knowledge_graph.get_hazard_level(arr_code))
+            
+            if max_hazard < 0.8: # Tolerance threshold
+                if max_hazard > 0.0:
+                    r.score = (r.score or 50.0) * (1.0 - max_hazard)
+                    r.metadata["safety_warning"] = "Path near active incident"
+                safe_routes.append(r)
+            else:
+                logger.info(f"🛡️ [SOS:VACUUM] Rerouted away from hazardous corridor (Hazard: {max_hazard})")
+                
+        return safe_routes
+
     async def _filter_cancelled_trains(self, routes: List[Route], departure_date: datetime, db) -> List[Route]:
         if not routes:
             return []
@@ -341,6 +377,10 @@ class UnifiedRoutingOrchestrator:
             cached_res = await multi_layer_cache.get(cache_key)
             if cached_res:
                 logger.info(f"⚡ [CACHE:HIT] Serving {len(cached_res)} routes from L2 Cache.")
+                # [SOS] Dynamically filter hazardous corridors from cache
+                cached_res = self._filter_hazardous_routes(cached_res)
+                # [Realtime] Inject latest pulses into cached items
+                await self._inject_realtime_heartbeat(cached_res, db)
                 return cached_res
         # [Task 122 Refined] Nexus Governor Integration
         from core.nexus.audit.governor import nexus_governor
@@ -404,6 +444,9 @@ class UnifiedRoutingOrchestrator:
              constraints.metadata["verification_mode"] = "ELITE_VERIFY"
              logger.info("🧠 [ORCHESTRATOR] Tier 3: ELITE / OMNISCIENT (Premium + 5-Transfer DEEP).")
              
+        # [Safety Engine] Propagate passengers to constraints for scoring
+        constraints.passengers = getattr(request, "passengers", [])
+        
         # Constraints override
         if constraints.permitted_engines:
             active_engines = [e for e in active_engines if any(pe.lower() in e.lower() for pe in constraints.permitted_engines)]
@@ -632,6 +675,9 @@ class UnifiedRoutingOrchestrator:
                         logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched_bus)} Rail-Bus 'Jump' routes.")
             
             merged_routes.extend(interlined_results)
+
+            # --- Phase 3: Safety & SOS Vacuuming ---
+            merged_routes = self._filter_hazardous_routes(merged_routes)
 
             # [Phase 3: Patent Optimization]
             # 1. Apply Pareto Frontier to ensure diverse, optimal choices

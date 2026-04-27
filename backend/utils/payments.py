@@ -4,7 +4,9 @@ import time
 import logging
 import re
 import io
+from typing import Optional, cast
 import qrcode
+from qrcode.constants import ERROR_CORRECT_H
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -13,13 +15,13 @@ def generate_upi_uri(
     merchant_vpa: str,
     merchant_name: str,
     amount: float,
-    transaction_id: str = None,
-    transaction_note: str = None,
+    transaction_id: Optional[str] = None,
+    transaction_note: Optional[str] = None,
     currency: str = "INR",
     merchant_code: str = "4112", # MCC 4112 is Passenger Railways
-    min_amount: float = None,
-    org_id: str = None,
-    sign: str = None
+    min_amount: Optional[float] = None,
+    org_id: Optional[str] = None,
+    sign: Optional[str] = None
 ) -> tuple[str, str]:
     """
     Task 1: Generates an Advanced NPCI UPI URI 2.0.
@@ -68,21 +70,22 @@ def generate_upi_uri(
     logger.info(f"Generated UPI URI: {upi_uri}")
     return upi_uri, transaction_id
 
-def generate_upi_qr(upi_uri: str, logo_path: str = None) -> io.BytesIO:
+def generate_upi_qr(upi_uri: str, logo_path: Optional[str] = None) -> io.BytesIO:
     """
     Task 1.5: QR Code logo embedding (RouteMaster branding).
     Generates a QR code for the UPI URI with an optional logo.
     """
     qr = qrcode.QRCode(
         version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        error_correction=ERROR_CORRECT_H,
         box_size=10,
         border=4,
     )
     qr.add_data(upi_uri)
     qr.make(fit=True)
 
-    img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
+    img = cast(Image.Image, qr.make_image(fill_color="black", back_color="white"))
+    img = img.convert('RGB')
 
     if logo_path:
         try:
@@ -107,7 +110,7 @@ def create_short_payment_url(upi_uri: str, base_url: str = "http://localhost:800
     short_id = str(uuid.uuid4().hex[:8])
     # Store for 30 minutes
     cache_service.set(f"upi_short:{short_id}", upi_uri, ttl_seconds=1800)
-    return f"{base_url}/api/payment/u/{short_id}"
+    return f"{base_url}/api/payments/u/{short_id}"
 
 def validate_utr(utr: str) -> bool:
     """Task 16: Validates if a string is a valid 12-digit UPI UTR."""

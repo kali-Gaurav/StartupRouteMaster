@@ -6,7 +6,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from collections import deque
 
-from database.models import User, NotificationToken, UserAlert, NotificationPreference
+from database.models import User, NotificationToken, UserAlert, NotificationPreference, NotificationLog
 from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
 from core.retry import RetryPolicy
 
@@ -64,6 +64,7 @@ class NotificationJob:
     alert_type: str = "SYSTEM"
     priority: int = 10
     payload: Optional[Dict[str, Any]] = None
+    booking_id: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     retry_count: int = 0
     max_retries: int = 3
@@ -149,7 +150,8 @@ class NotificationService:
         # Metrics tracking
         self._metrics = NotificationServiceMetrics()
         
-        self._start_worker()
+        # Worker task (started on first use)
+        self._worker_task = None
         logger.info("NotificationService initialized with resilience patterns")
     
     def _start_worker(self):
@@ -185,6 +187,8 @@ class NotificationService:
         from database.session import SessionLocal
         
         db = SessionLocal()
+        success_count: int = 0
+        failure_count: int = 0
         try:
             # 1. Store in DB (In-App History)
             alert = UserAlert(
@@ -208,25 +212,39 @@ class NotificationService:
                 NotificationPreference.user_id == job.user_id
             ).first()
             
-            success_count = 0
-            failure_count = 0
+            db.commit()
             
+            # 4. [Task 1.1.5] Notification Delivery Logging
             for t in tokens:
                 try:
                     # Priority & Preference Routing
                     if job.alert_type == "PROMOTION" and prefs and not prefs.enable_promotions:
                         continue
                     
-                    if t.channel == "WEB_PUSH":
-                        await self._send_fcm(str(t.token), job.title, job.body, job.payload)
-                    elif t.channel == "TELEGRAM":
-                        await self._send_telegram(str(t.token), job.title, job.body)
+                    log_entry = NotificationLog(
+                        booking_id=job.booking_id,
+                        channel=t.channel,
+                        status="pending"
+                    )
+                    db.add(log_entry)
+                    db.flush() # Get notification_id
                     
-                    success_count += 1
-                    
-                except Exception as e:
-                    logger.error(f"Failed to deliver to {t.channel} for {job.user_id}: {e}")
-                    failure_count += 1
+                    try:
+                        if t.channel == "WEB_PUSH":
+                            await self._send_fcm(str(t.token), job.title, job.body, job.payload)
+                        elif t.channel == "TELEGRAM":
+                            from services.telegram_dispatcher import telegram_dispatcher
+                            await telegram_dispatcher.send_message(str(t.token), f"<b>{job.title}</b>\n\n{job.body}")
+                        
+                        log_entry.status = "sent"
+                        success_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to deliver to {t.channel} for {job.user_id}: {e}")
+                        log_entry.status = "failed"
+                        log_entry.error_message = str(e)
+                        failure_count += 1
+                except Exception as inner_e:
+                    logger.error(f"Error logging notification delivery: {inner_e}")
             
             db.commit()
             logger.info(f"📲 Notification sent to {job.user_id}: {success_count} success, {failure_count} failures")
@@ -252,6 +270,7 @@ class NotificationService:
         alert_type: str = "SYSTEM", 
         priority: int = 10, 
         payload: Optional[Dict[str, Any]] = None,
+        booking_id: Optional[str] = None,
         immediate: bool = False
     ):
         """
@@ -265,15 +284,20 @@ class NotificationService:
             alert_type: Type of alert (SYSTEM, PROMOTION, etc.)
             priority: Priority level (1-10, lower is higher priority)
             payload: Additional data
+            booking_id: Optional booking reference (Task 1.1.5)
             immediate: If True, send immediately; otherwise queue
         """
+        # Ensure worker is running
+        self._start_worker()
+        
         job = NotificationJob(
             user_id=user_id,
             title=title,
             body=body,
             alert_type=alert_type,
             priority=priority,
-            payload=payload
+            payload=payload,
+            booking_id=booking_id
         )
         
         if immediate:
@@ -323,7 +347,8 @@ class NotificationService:
                 UserAlert.user_id == user_id
             ).first()
             if alert:
-                alert.is_read = True
+                # Fix for SQLAlchemy Column assignment
+                setattr(alert, "is_read", True)
                 db.commit()
                 return True
             return False
@@ -346,30 +371,6 @@ class NotificationService:
 
 
 notification_service = NotificationService()
-# =========================================================================
-    # RESILIENCE PATTERNS
-    # =========================================================================
 
-    def get_metrics(self) -> dict:
-        """Get service metrics."""
-        return self._metrics.get_metrics()
 
-    def health_check(self) -> dict:
-        """Check service health."""
-        return {
-            "status": "healthy",
-            "circuit_breakers": {
-                "fcm": self._fcm_breaker.get_metrics().to_dict(),
-                "telegram": self._telegram_breaker.get_metrics().to_dict(),
-                "db": self._db_breaker.get_metrics().to_dict()
-            },
-            "metrics": self._metrics.get_metrics(),
-            "queue_stats": self.get_queue_stats()
-        }
-
-    def reset_circuit_breakers(self):
-        """Reset all circuit breakers."""
-        self._fcm_breaker.reset()
-        self._telegram_breaker.reset()
-        self._db_breaker.reset()
-        logger.info("All circuit breakers reset for notification_service")
+

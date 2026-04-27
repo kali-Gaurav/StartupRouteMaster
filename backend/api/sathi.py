@@ -18,7 +18,8 @@ from database.sathi_models import (
 )
 from api.dependencies import get_current_user
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, cast
+from sqlalchemy.dialects.postgresql import JSONB
 
 logger = logging.getLogger(__name__)
 
@@ -263,21 +264,21 @@ async def find_available_sathis(
     # Filter by service stations
     if request.station_code:
         query = query.filter(
-            func.json_contains(Sathi.service_stations, f'"{request.station_code}"')
+            Sathi.service_stations.cast(JSONB).contains([request.station_code])
         )
     
     # Filter by specializations
     if request.required_specializations:
         for specialization in request.required_specializations:
             query = query.filter(
-                func.json_contains(Sathi.specializations, f'"{specialization}"')
+                Sathi.specializations.cast(JSONB).contains([specialization])
             )
     
     # Filter by languages
     if request.required_languages:
         for language in request.required_languages:
             query = query.filter(
-                func.json_contains(Sathi.languages_spoken, f'"{language}"')
+                Sathi.languages_spoken.cast(JSONB).contains([language])
             )
     
     # Filter by gender preference

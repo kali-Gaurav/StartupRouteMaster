@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, forwardRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useChatStore } from "@/store/useChatStore";
 import { useSystemStatus } from "@/store/useSystemStatus";
@@ -116,7 +116,7 @@ function ChatBubbleSkeleton({ role }: { role: "user" | "assistant" }) {
   );
 }
 
-export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortChange, onNavigate, className }: RailAssistantChatbotProps) {
+export const RailAssistantChatbot = forwardRef<HTMLDivElement, RailAssistantChatbotProps>(({ onSearchRequest, onSortChange: _onSortChange, onNavigate, className }, ref) => {
   const isBackendOnline = useBackendHealth();
   const { surgeLevel, latencyMs, retryAfter, fps } = useSystemStatus();
   const { isLowPowerMode } = useTheme();
@@ -781,13 +781,13 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
   }, [conversationState, surgeLevel]);
 
   return (
-    <div className={cn("fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none", className)}>
+    <div ref={ref} className={cn("fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none", className)}>
       
       <AnimatePresence mode="wait">
         {isOpen && (
           <motion.div 
-            key="chatbot-main-panel"
             ref={containerRef}
+            key="chatbot-main-panel"
             initial={{ opacity: 0, scale: 0.8, originX: 1, originY: 1 }}
             animate={{ 
               opacity: 1,
@@ -802,7 +802,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
               opacity: { duration: 0.2 }
             }}
             className={cn(
-              "w-full max-w-[440px] h-[calc(100vh-100px)] max-h-[800px] min-h-[500px] bg-background/90 dark:bg-[#0a0f1c]/95 backdrop-blur-[40px] border rounded-[2.5rem] shadow-[0_20px_80px_rgba(0,0,0,0.4)] flex flex-col overflow-hidden pointer-events-auto origin-bottom-right will-change-transform",
+              "pointer-events-auto w-full max-w-[440px] h-[calc(100vh-100px)] max-h-[800px] min-h-[500px] bg-background/90 dark:bg-[#0a0f1c]/95 backdrop-blur-[40px] border rounded-[2.5rem] shadow-[0_20px_80px_rgba(0,0,0,0.4)] flex flex-col overflow-hidden origin-bottom-right will-change-transform",
               isError 
                 ? "border-red-500/50 shadow-[0_0_40px_rgba(239,68,68,0.3)]" 
                 : "border-white/20 dark:border-cyan-500/30 dark:shadow-[0_20px_80px_rgba(6,182,212,0.15)]",
@@ -961,18 +961,21 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
           {/* New Message Badge (Task 1.10) */}
           <AnimatePresence>
             {showNewMessageBadge && (
-              <div key="new-message-badge" className="absolute bottom-32 left-1/2 -translate-x-1/2 z-10">
-                <motion.button 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 20 }}
+              <motion.div 
+                key="new-message-badge" 
+                className="absolute bottom-32 left-1/2 -translate-x-1/2 z-10"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+              >
+                <button 
                   onClick={() => scrollToNewMessage(true)}
                   className="px-4 py-2 bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest rounded-full shadow-lg flex items-center gap-2 hover:bg-cyan-600 transition-all border-2 border-white/20"
                 >
                   <ChevronDown className="w-3 h-3 animate-bounce" />
                   New Telemetry Received
-                </motion.button>
-              </div>
+                </button>
+              </motion.div>
             )}
           </AnimatePresence>
 
@@ -1068,7 +1071,7 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
             </div>
           </div>
         </motion.div>
-        )}
+      )}
       </AnimatePresence>
 
       {/* Floating Control Hub */}
@@ -1089,4 +1092,6 @@ export function RailAssistantChatbot({ onSearchRequest, onSortChange: _onSortCha
 
     </div>
   );
-}
+});
+
+RailAssistantChatbot.displayName = "RailAssistantChatbot";

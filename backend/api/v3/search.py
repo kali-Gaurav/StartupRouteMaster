@@ -4,7 +4,7 @@ import json
 import uuid
 import logging
 import time
-from typing import Optional, List, Any
+from typing import Optional, List, Any, cast
 from fastapi import APIRouter, Depends, Query, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -62,7 +62,8 @@ async def unified_nexus_search(
     identity_svc = IdentityService(db)
     fingerprint = await identity_svc.get_or_create_fingerprint(request)
     
-    if fingerprint.risk_score > 0.8:
+    fingerprint_risk_score = float(getattr(fingerprint, "risk_score", 0.0) or 0.0)
+    if fingerprint_risk_score > 0.8:
         logger.warning(f"🚫 [SENTINEL] Search blocked for high-risk device: {fingerprint.fingerprint_hash[:10]}")
         return error_response("Access restricted due to suspicious activity.", error_code="FRAUD_LIMIT", status_code=403)
 
@@ -86,7 +87,7 @@ async def unified_nexus_search(
     
     try:
         decision = await nexus_interceptor.intercept(request, source, destination)
-        if not decision.allowed:
+        if decision.allowed is False:
             return v3_response(
                 data=None,
                 status="HALT",
@@ -111,7 +112,7 @@ async def unified_nexus_search(
                 
                 nonce = str(uuid.uuid4())[:8]
                 ts = int(time.time())
-                target_user_id = fingerprint.user_id or fingerprint.fingerprint_hash
+                target_user_id = cast(str, fingerprint.user_id or fingerprint.fingerprint_hash)
                 sig = sign_result_payload(masked_results, target_user_id, nonce, ts)
                 
                 return v3_response(
@@ -221,7 +222,7 @@ async def unified_nexus_search(
         }
 
         # [Industrial Rigor 2.0] Sign with context (Replay Protection)
-        target_user_id = fingerprint.user_id or fingerprint.fingerprint_hash
+        target_user_id = cast(str, fingerprint.user_id or fingerprint.fingerprint_hash)
         sig = sign_result_payload(final_response_data, target_user_id, nonce)
         
         return v3_response(
@@ -261,7 +262,7 @@ async def unlock_search_details(
 
     with SessionTransit() as db:
         # Mock deduction via ledger
-        entry = await ledger_service.record_transaction(
+        entry = await ledger_service(db).record_transaction(
             db, "user_wallet", "platform_revenue", amount, "SEARCH_UNLOCK", user_id
         )
         
@@ -292,6 +293,32 @@ async def get_search_vitals():
         },
         "registry": "v3.fiber.search.l0"
     }
+
+
+@router.get("/load_more")
+async def load_more_search_results(
+    session_id: str = Query(..., min_length=1),
+    category: str = Query("all"),
+    limit: int = Query(10, ge=1, le=50),
+    cursor: Optional[float] = Query(None),
+    quota: str = Query("GN"),
+    db: Session = Depends(get_db)
+):
+    """
+    Compatibility endpoint for frontend v3 pagination.
+    Delegates to the production SearchService load-more pool created by the initial search.
+    """
+    search_svc = SearchService(db)
+    result = await search_svc.load_more_routes(
+        session_id=session_id,
+        limit=limit,
+        quota=quota,
+        cursor=cursor,
+        category=None if category == "all" else category,
+    )
+    if isinstance(result, dict) and "data" in result:
+        return v3_response(data=result.get("data"), metadata=result.get("metadata"))
+    return v3_response(data=result)
 
 @router.post("/feedback")
 async def record_search_feedback(

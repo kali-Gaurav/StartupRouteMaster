@@ -9,7 +9,7 @@ Provides REST API for:
 """
 
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -81,7 +81,7 @@ class NetworkSummaryResponse(BaseModel):
     high_demand_routes: int
     low_demand_routes: int
     balanced_routes: int
-    last_analysis: str = None
+    last_analysis: Optional[str] = None
     active_offers: int
 
 
@@ -102,7 +102,7 @@ class HealthResponse(BaseModel):
     status: str
     circuit_breaker: Dict[str, Any]
     metrics: Dict[str, Any]
-    last_analysis: str = None
+    last_analysis: Optional[str] = None
 
 
 # ============================================================================
@@ -233,7 +233,7 @@ async def identify_opportunities(
                     route_id=o.source_route.route_id,
                     source=o.source_route.source,
                     destination=o.source_route.destination,
-                    travel_date=o.source_route.travel_date.isoformat() if o.source_route.travel_date else None,
+                    travel_date=o.source_route.travel_date.isoformat(),
                     total_capacity=o.source_route.total_capacity,
                     current_bookings=o.source_route.current_bookings,
                     search_demand=o.source_route.search_demand,
@@ -245,7 +245,7 @@ async def identify_opportunities(
                     route_id=o.target_route.route_id,
                     source=o.target_route.source,
                     destination=o.target_route.destination,
-                    travel_date=o.target_route.travel_date.isoformat() if o.target_route.travel_date else None,
+                    travel_date=o.target_route.travel_date.isoformat(),
                     total_capacity=o.target_route.total_capacity,
                     current_bookings=o.target_route.current_bookings,
                     search_demand=o.target_route.search_demand,

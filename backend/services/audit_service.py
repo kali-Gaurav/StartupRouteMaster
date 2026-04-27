@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database.models import AuditLog
 from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
 from core.retry import RetryPolicy, retry
@@ -216,7 +217,7 @@ class AuditService:
         Returns:
             Dict of action to count
         """
-        query = db.query(AuditLog.action, db.func.count(AuditLog.id))
+        query = db.query(AuditLog.action, func.count(AuditLog.id))
         
         if start_time:
             query = query.filter(AuditLog.timestamp >= start_time)

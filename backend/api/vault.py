@@ -31,7 +31,7 @@ async def store_in_vault(
     if vault.is_weak_password(req.irctc_pass):
         logger.warning(f"VAULT_WEAK_PWD | User {current_user.id} using weak IRCTC password.")
 
-    success = vault.store_credentials(
+    success = await vault.store_credentials(
         str(current_user.id), 
         req.irctc_user, 
         req.irctc_pass, 
@@ -55,7 +55,7 @@ async def mfa_challenge_bridge(
     MFA Challenge Bridge for IRCTC.
     """
     logger.info(f"VAULT_MFA | Received OTP for user {current_user.id} | {otp[:2]}****")
-    return success_response(message="MFA challenge response forwarded to worker")
+    return success_response(data={}, message="MFA challenge response forwarded to worker")
 
 @router.delete("/wipe")
 async def manual_wipe(
@@ -66,4 +66,4 @@ async def manual_wipe(
     vault = CredentialVault(db)
     vault.auto_wipe(str(current_user.id))
     logger.info(f"VAULT_WIPE | Manual wipe for user {current_user.id}")
-    return success_response(message="Credentials wiped successfully")
+    return success_response(data={}, message="Credentials wiped successfully")

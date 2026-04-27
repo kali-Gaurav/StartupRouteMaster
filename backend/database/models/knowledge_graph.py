@@ -241,39 +241,4 @@ class StationPatternModel(UserBase):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class KnowledgeGraphSnapshot(UserBase):
-    """
-    Stores knowledge graph snapshots for backup and versioning.
-    """
-    __tablename__ = "knowledge_graph_snapshots"
-    
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    # Snapshot info
-    snapshot_name = Column(String(100), nullable=False)
-    version = Column(String(20), default="1.0.0")
-    
-    # Statistics
-    total_stations = Column(Integer, default=0)
-    total_routes = Column(Integer, default=0)
-    total_users = Column(Integer, default=0)
-    total_interactions = Column(Integer, default=0)
-    
-    # Data
-    graph_data = Column(JSON, nullable=True)  # Serialized graph data
-    preferences_data = Column(JSON, nullable=True)  # Serialized preferences
-    patterns_data = Column(JSON, nullable=True)  # Serialized patterns
-    
-    # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    created_by = Column(String(36), nullable=True)
-    description = Column(Text, nullable=True)
-    
-    def get_stats(self):
-        """Get snapshot statistics."""
-        return {
-            "total_stations": self.total_stations,
-            "total_routes": self.total_routes,
-            "total_users": self.total_users,
-            "total_interactions": self.total_interactions
-        }
+# KnowledgeGraphSnapshot is already defined in models.py

@@ -1,7 +1,17 @@
 # Ensure necessary imports are present (e.g., math for isclose)
+import logging
 import math
+import asyncio
+from datetime import datetime
+from typing import Any, Dict, Optional
+from collections import deque
+
+from core.resilience import circuit_breaker_manager, CircuitConfig
+from core.retry import RetryPolicy
 from services.vault_service import pnr_vault
 from providers.gateway import provider_gateway
+
+logger = logging.getLogger(__name__)
 
 class BookingVerificationService:
     """
@@ -140,20 +150,18 @@ class BookingVerificationService:
             blind_index = pnr_vault.get_blind_index(pnr_number)
             logger.info(f"🔒 [VAULT] JIT PNR Verification initiated | Index: {blind_index[:8]}...")
             
-            pnr_data = await provider_gateway.get_pnr_status(pnr_number=pnr_number)
+            pnr_data = await provider_gateway.get_pnr_status(pnr=pnr_number)
             verification_results["pnr_status"] = pnr_data
-            if pnr_data and pnr_data.get("success"):
+            if pnr_data:
                 # Basic check: Does PNR data match basic booking info if available?
-                if train_number and pnr_data.get("train_number") != train_number:
+                if train_number and getattr(pnr_data, "train_number", None) != train_number:
                     verification_results["issues"].append("PNR train number mismatch.")
-                    logger.warning(f"PNR {pnr_number}: Train number mismatch. PNR shows {pnr_data.get('train_number')}, booking detail has {train_number}.")
-                if travel_date and pnr_data.get("travel_date") != travel_date:
+                    logger.warning(f"PNR {pnr_number}: Train number mismatch. PNR shows {getattr(pnr_data, 'train_number', None)}, booking detail has {train_number}.")
+                if travel_date and getattr(pnr_data, "travel_date", None) != travel_date:
                     verification_results["issues"].append("PNR travel date mismatch.")
-                    logger.info(f"PNR {pnr_number}: Travel date mismatch. PNR shows {pnr_data.get('travel_date')}, booking detail has {travel_date}.")
+                    logger.info(f"PNR {pnr_number}: Travel date mismatch. PNR shows {getattr(pnr_data, 'travel_date', None)}, booking detail has {travel_date}.")
                 # Add more checks as needed (e.g., stations, class)
-            elif pnr_data and not pnr_data.get("success"):
-                verification_results["issues"].append(f"PNR verification failed: {pnr_data.get('error')}")
-            elif not pnr_data:
+            else:
                 verification_results["issues"].append("PNR lookup failed.")
         
         # --- 2. Verify Live Train Status & ML Predictions ---
@@ -175,6 +183,7 @@ class BookingVerificationService:
 
             # 2.2 ML-Based Prediction [Task 103]
             from services.delay_predictor import delay_predictor
+            prediction = None
             # Parse travel_date for features
             try:
                 dt_obj = datetime.strptime(travel_date, "%Y-%m-%d")
@@ -185,13 +194,13 @@ class BookingVerificationService:
                     departure_hour=12 # Fallback if not provided
                 )
                 
-                if prediction > 120 and real_time_delay <= 120:
+                if prediction is not None and prediction > 120 and real_time_delay <= 120:
                     verification_results["issues"].append(f"⚠️ PREDICTIVE ALERT: High probability of >2hr delay ({int(prediction)} mins predicted).")
                     logger.warning(f"ML Predictor flagged potential disruption for train {train_number}: {prediction} mins")
             except Exception as e:
                 logger.error(f"Failed to fetch ML Prediction: {e}")
 
-            if not live_status_data and not prediction:
+            if not live_status_data and prediction is None:
                  verification_results["issues"].append("Live train status and prediction lookup failed.")
 
 
@@ -199,20 +208,21 @@ class BookingVerificationService:
         # This check requires booking_fare, class_code, quota, stations, train_number, travel_date
         if booking_fare is not None and class_code and quota and from_station_code and to_station_code and train_number and travel_date:
             logger.debug(f"Verifying fare for train {train_number} ({from_station_code}->{to_station_code}) on {travel_date}")
-            fare_list = await provider_gateway.get_fare(
-                train_number=train_number, travel_date=travel_date,
-                from_station_code=from_station_code, to_station_code=to_station_code,
-                class_code=class_code, quota=quota
+            fare_response = await provider_gateway.get_fare(
+                train_number=train_number,
+                travel_date=travel_date,
+                from_stn=from_station_code,
+                to_stn=to_station_code,
+                cls=class_code,
+                quota=quota
             )
-            verification_results["fare_details"] = fare_list
+            verification_results["fare_details"] = [item.model_dump() for item in fare_response.fare_details] if fare_response else None
 
-            if fare_list:
-                # Find the matching fare if available
-                matching_fare = next((item for item in fare_list if item.get('class_code') == class_code and item.get('quota') == quota), None)
+            if fare_response and fare_response.fare_details:
+                matching_fare = next((item for item in fare_response.fare_details if item.class_code == class_code and item.quota == quota), None)
                 
-                if matching_fare and matching_fare.get('fare') is not None:
-                    # Compare booking fare with fetched fare. Allow for small tolerance.
-                    fetched_fare = matching_fare.get('fare')
+                if matching_fare and matching_fare.fare is not None:
+                    fetched_fare = matching_fare.fare
                     if not math.isclose(booking_fare, fetched_fare, rel_tol=0.05): # Allow 5% tolerance
                         verification_results["issues"].append(f"Fare mismatch: Booking fare ${booking_fare} vs fetched fare ${fetched_fare}.")
                         logger.warning(f"Booking Verification: Fare mismatch for {train_number} ({class_code}/{quota}). Booking: ${booking_fare}, Fetched: ${fetched_fare}")

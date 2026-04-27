@@ -5,7 +5,7 @@ With circuit breaker protection, distributed locking, and comprehensive error ha
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from typing import Optional, Dict, Any
@@ -35,7 +35,7 @@ class InventoryResult:
     """Result of inventory operation."""
     success: bool
     trip_id: int
-    travel_date: datetime.date
+    travel_date: date
     coach_type: str
     operation: str
     available_seats: int
@@ -64,16 +64,16 @@ class InventoryService:
             self._lock_manager = cache_service
         return self._lock_manager
     
-    def _get_cache_key(self, trip_id: int, travel_date: datetime.date, coach_type: str) -> str:
+    def _get_cache_key(self, trip_id: int, travel_date: date, coach_type: str) -> str:
         """Generate cache key for inventory."""
         return f"inventory:{trip_id}:{travel_date.isoformat()}:{coach_type}"
     
-    def _get_cached_inventory(self, trip_id: int, travel_date: datetime.date, coach_type: str) -> Optional[Dict]:
+    def _get_cached_inventory(self, trip_id: int, travel_date: date, coach_type: str) -> Optional[Dict]:
         """Get cached inventory data."""
         cache_key = self._get_cache_key(trip_id, travel_date, coach_type)
         return cache_service.get(cache_key)
     
-    def _cache_inventory(self, trip_id: int, travel_date: datetime.date, coach_type: str, data: Dict):
+    def _cache_inventory(self, trip_id: int, travel_date: date, coach_type: str, data: Dict):
         """Cache inventory data."""
         cache_key = self._get_cache_key(trip_id, travel_date, coach_type)
         cache_service.set(cache_key, data, ttl_seconds=self.config.cache_ttl_seconds)
@@ -84,7 +84,7 @@ class InventoryService:
         self,
         db: Session, 
         trip_id: int, 
-        travel_date: datetime.date, 
+        travel_date: date, 
         coach_type: str,
         booking_id: str,
         lock_minutes: Optional[int] = None
@@ -280,7 +280,7 @@ class InventoryService:
         self,
         db: Session,
         trip_id: int,
-        travel_date: datetime.date,
+        travel_date: date,
         coach_type: str,
         booking_id: str,
         reason: str = "cancellation"
@@ -302,9 +302,9 @@ class InventoryService:
         try:
             # Find the inventory record with lock
             inventory = db.query(SeatInventory).filter(
-                SeatInventory.trip_id == trip_id,
-                SeatInventory.travel_date == travel_date,
-                SeatInventory.coach_type == coach_type
+                SeatInventory.train_number == str(trip_id),
+                SeatInventory.journey_date == travel_date,
+                SeatInventory.class_type == coach_type
             ).with_for_update().first()
             
             if not inventory:
@@ -397,7 +397,7 @@ class InventoryService:
         self,
         db: Session,
         trip_id: int,
-        travel_date: datetime.date,
+        travel_date: date,
         coach_type: str,
         bypass_cache: bool = False
     ) -> Dict[str, Any]:
@@ -428,9 +428,9 @@ class InventoryService:
         
         try:
             inventory = db.query(SeatInventory).filter(
-                SeatInventory.trip_id == trip_id,
-                SeatInventory.travel_date == travel_date,
-                SeatInventory.coach_type == coach_type
+                SeatInventory.train_number == str(trip_id),
+                SeatInventory.journey_date == travel_date,
+                SeatInventory.class_type == coach_type
             ).first()
             
             if not inventory:
@@ -476,8 +476,8 @@ class InventoryService:
         operation: str,
         success: bool,
         trip_id: int,
-        travel_date: Optional[datetime.date],
-        coach_type: str
+        travel_date: Optional[date],
+        coach_type: Optional[str]
     ):
         """Record operation for metrics."""
         if self._metrics_lock is None:
@@ -498,8 +498,8 @@ class InventoryService:
         operation: str,
         success: bool,
         trip_id: int,
-        travel_date: Optional[datetime.date],
-        coach_type: str
+        travel_date: Optional[date],
+        coach_type: Optional[str]
     ):
         """Record operation for metrics (async)."""
         async with self._metrics_lock:

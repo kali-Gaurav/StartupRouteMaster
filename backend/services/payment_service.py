@@ -45,6 +45,64 @@ RAZORPAY_BREAKER = circuit_manager.get_or_create(
 # =========================================================================
 
 @dataclass
+class WebhookDeliveryLog:
+    webhook_id: str
+    attempts: int = 0
+    last_attempt_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+
+
+class PaymentAuditLog(Base):
+    __tablename__ = "payment_audit_logs"
+    audit_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    payment_id = Column(String(36), nullable=True, index=True)
+    order_id = Column(String(128), nullable=True, index=True)
+    action = Column(String(50), nullable=False)
+    previous_state = Column(String(50), nullable=True)
+    new_state = Column(String(50), nullable=False)
+    actor_type = Column(String(50), nullable=False)
+    actor_id = Column(String(36), nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(10), default="INR")
+    extra_data = Column(JSON, default=dict)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    checksum = Column(String(64), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    @staticmethod
+    def compute_checksum(audit_data: Dict) -> str:
+        canonical = json.dumps(audit_data, sort_keys=True, default=str)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class PaymentIdempotency(Base):
+    __tablename__ = "payment_idempotency"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    idempotency_key = Column(String(255), unique=True, nullable=False)
+    operation_type = Column(String(50), nullable=False)
+    request_hash = Column(String(128), nullable=False)
+    response = Column(JSON, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class PaymentFraudCheck(Base):
+    __tablename__ = "payment_fraud_checks"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    payment_id = Column(String(36), nullable=True)
+    user_id = Column(String(36), nullable=False)
+    check_type = Column(String(50), nullable=False)
+    risk_score = Column(Float, default=0.0)
+    flags = Column(JSON, default=list)
+    decision = Column(String(20), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# =========================================================================
+# CONFIGURATION
+# =========================================================================
+
+@dataclass
 class PaymentConfig:
     """Configuration for payment service."""
     cache_ttl_seconds: int = 300
@@ -208,6 +266,17 @@ class PaymentService:
     # TASK: IDEMPOTENCY
     # =========================================================================
     
+    async def calculate_unlock_fee(self, route_complexity: float, total_fare: float) -> int:
+        """
+        Patent-Level Algorithm: Yield-Based Pricing for Algorithm Access.
+        Base fee: ₹49. Max fee: ₹149.
+        """
+        base_fee = 49
+        bonus = min(100, int(max(0, route_complexity - 1.0) * 50))
+        final_fee = base_fee + bonus
+        capped_fee = min(final_fee, int(total_fare * 0.10))
+        return max(49, capped_fee)
+
     def _generate_request_hash(
         self,
         operation_type: str,
@@ -667,7 +736,8 @@ class PaymentService:
                     action="VERIFY_FAILED",
                     new_state="failed",
                     actor_type="SYSTEM",
-                    reason="Signature mismatch",
+                    amount=None,
+                    extra_data={"reason": "Signature mismatch"},
                     ip_address=ip_address
                 )
                 
@@ -915,6 +985,6 @@ class PaymentService:
         metrics = breaker.get_metrics() if breaker else None
         return {
             "configured": self.is_configured(),
-            "circuit_breaker": metrics.to_dict() if metrics else None,
+            "circuit_breaker": metrics if metrics else None,
             "cache_size": len(self._order_cache)
         }

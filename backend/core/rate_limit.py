@@ -3,6 +3,7 @@ import logging
 import asyncio
 from typing import Dict, Any
 from .redis_client import async_redis_client
+from core.sovereign.network_pressure import network_pressure
 
 logger = logging.getLogger("routemaster.rate_limit")
 
@@ -48,6 +49,52 @@ class HybridRateLimiter:
             asyncio.create_task(self._sync_to_redis(window_key, counter["count"], window))
             
         return True
+
+    async def is_corridor_allowed(self, ip: str, source: str, destination: str) -> bool:
+        """
+        [SOVEREIGN] Demand-Aware Rate Limiting.
+        Tightens limits for a specific corridor as its pressure increases.
+        Prevents 'Demand Manipulation Attacks' that try to trigger EDR incentives.
+        """
+        # 1. Get current pressure
+        node = await network_pressure.get_corridor_pressure(source, destination)
+        pressure = node.pressure_score
+        
+        # 2. Calculate dynamic limit
+        # Base limit is 30 searches per hour per corridor for normal users
+        base_limit = 30
+        
+        # Tighten limit as pressure increases
+        # Pressure 0.0 -> 30, Pressure 0.9 -> 10, Pressure 1.0 -> 5
+        dynamic_limit = int(base_limit * (1.0 - (pressure ** 2)))
+        dynamic_limit = max(5, dynamic_limit) # Minimum 5 searches
+        
+        key = f"rl:corridor:{source}:{destination}:{ip}"
+        window = 3600 # 1 hour
+        
+        allowed = await self.is_allowed(key, dynamic_limit, window)
+        
+        if not allowed:
+            logger.warning(
+                f"🚨 [SOVEREIGN:RL] Demand Attack Blocked! IP {ip} targeting {source}->{destination} "
+                f"(Pressure: {pressure:.2f}, Limit: {dynamic_limit})"
+            )
+            
+        return allowed
+
+    async def is_incentive_farming(self, user_id: str) -> bool:
+        """
+        [SOVEREIGN] Anti-Farming Logic.
+        Checks if a user is repeatedly triggering and accepting incentives across many corridors.
+        """
+        if not user_id or not self._redis:
+            return False
+            
+        key = f"rl:farming:{user_id}"
+        count = await self._redis.get(key)
+        if count and int(count) > 10: # Threshold for suspected farming
+            return True
+        return False
 
     def _get_tier_limit(self, api_key: str) -> int:
         """[Task 112] Lookup the rate limit based on the API key prefix or metadata."""

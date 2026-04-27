@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import logging
 import hashlib
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class TravelPattern:
     """User travel pattern analysis."""
     user_id: str
-    most_frequent_routes: List[tuple] = field(default_factory=list)  # [(source, dest), ...]
+    most_frequent_routes: List[Tuple[str, str]] = field(default_factory=list)  # [(source, dest), ...]
     preferred_times: List[int] = field(default_factory=list)  # Hours of day
     preferred_days: List[int] = field(default_factory=list)  # Day of week
     avg_booking_advance_days: float = 7.0
@@ -73,6 +73,7 @@ class UserServiceMetrics:
         }
 
 
+
 class UserService:
     """User management service with caching, validation, and knowledge integration."""
 
@@ -80,17 +81,14 @@ class UserService:
         self.db = db
         self.kg = knowledge_graph  # Knowledge Graph integration
         self.redistribution = redistribution_service  # Demand Redistribution integration
-        
         # Cache management
         self._cache: Dict[str, Dict] = {}
         self._cache_ttl_seconds = 300  # 5 minutes
-        
         # Circuit breaker for database operations
         self._db_breaker = circuit_breaker_manager.get_or_create(
             "user_service_db",
             CircuitConfig(failure_threshold=5, timeout_seconds=30.0, success_threshold=2)
         )
-        
         # Retry policy for database operations
         self._db_retry = RetryPolicy(
             max_attempts=3,
@@ -101,11 +99,13 @@ class UserService:
                 lambda e: "timeout" in str(e).lower()
             ]
         )
-        
         # Metrics tracking
         self._metrics = UserServiceMetrics()
-        
         logger.info("UserService initialized with resilience patterns and service integrations")
+
+    def get_user_by_phone(self, phone: str) -> Optional[User]:
+        """Lookup user by phone number."""
+        return self.db.query(User).filter((User.phone_number == phone) | (User.phone_number == str(phone))).first()
 
     def _get_cache_key(self, key_type: str, value: str) -> str:
         """Generate cache key for user lookups."""
@@ -123,7 +123,6 @@ class UserService:
         Task 6.3: Cached user lookup by email.
         """
         cache_key = self._get_cache_key("email", email.lower())
-        
         # Check cache first
         if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]):
             cached = self._cache[cache_key]
@@ -131,10 +130,8 @@ class UserService:
             # Return user from cache by fetching from DB with cached ID
             if cached.get("user_id"):
                 return self.db.query(User).filter(User.id == cached["user_id"]).first()
-        
         # Perform DB query
         user = self.db.query(User).filter(User.email == email.lower()).first()
-        
         # Cache the result
         if user:
             self._cache[cache_key] = {
@@ -142,7 +139,6 @@ class UserService:
                 "email": user.email,
                 "_cached_at": datetime.utcnow().timestamp()
             }
-        
         return user
 
     def get_user_by_supabase_id(self, supabase_id: str) -> Optional[User]:
@@ -306,7 +302,7 @@ class UserService:
             logger.warning(f"Authentication failed: user not found for email {email}")
             return None
         
-        if not verify_password(password, user.password_hash):
+        if not user.password_hash or not verify_password(password, user.password_hash):
             logger.warning(f"Authentication failed: invalid password for {email}")
             return None
         
@@ -335,7 +331,8 @@ class UserService:
         if user_fields:
             for k, v in user_fields.items():
                 setattr(user, k, v)
-            self._invalidate_email_cache(user.email)
+            if user.email:
+                self._invalidate_email_cache(user.email)
         
         # Update profile fields
         if profile_fields:
@@ -352,7 +349,8 @@ class UserService:
         self.db.refresh(user)
         
         # Invalidate caches
-        self._invalidate_email_cache(user.email)
+        if user.email:
+            self._invalidate_email_cache(user.email)
         if user.supabase_id:
             self._invalidate_supabase_cache(user.supabase_id)
         
@@ -391,16 +389,81 @@ class UserService:
         if not user:
             return False
         
-        user.is_active = False
+        # Only set is_active if attribute exists and is in model columns
+        if hasattr(user, 'is_active') and 'is_active' in user.__table__.columns:
+            setattr(user, 'is_active', False)
         self.db.commit()
         
         # Invalidate all caches for this user
-        self._invalidate_email_cache(user.email)
+        if user.email:
+            self._invalidate_email_cache(user.email)
         if user.supabase_id:
             self._invalidate_supabase_cache(user.supabase_id)
         
         logger.info(f"❌ User deactivated: {user_id}")
         return True
+
+    # =========================================================================
+    # TELEGRAM INTEGRATION
+    # =========================================================================
+
+    async def get_user_by_telegram_id(self, telegram_id: str) -> Optional[User]:
+        """Lookup user by Telegram chat ID."""
+        # Try primary telegram_id on User table
+        user = self.db.query(User).filter(User.telegram_id == telegram_id).first()
+        if user:
+            return user
+        
+        # Try TelegramAccount table
+        from database.models import TelegramAccount
+        account = self.db.query(TelegramAccount).filter(
+            TelegramAccount.telegram_id == telegram_id,
+            TelegramAccount.is_active == True
+        ).first()
+        
+        if account:
+            return self.db.query(User).filter(User.id == account.user_id).first()
+            
+        return None
+
+    async def link_telegram_account(self, token: str, telegram_id: str, telegram_user_data: Any) -> Optional[User]:
+        """Link a Telegram account to a user via one-time token."""
+        user = self.db.query(User).filter(
+            User.telegram_link_token == token,
+            User.telegram_link_expiry > datetime.utcnow()
+        ).first()
+        
+        if not user:
+            return None
+        
+        # Update User table
+        user.telegram_id = telegram_id
+        user.telegram_link_token = None
+        user.telegram_link_expiry = None
+        
+        # Create or update TelegramAccount
+        from database.models import TelegramAccount
+        account = self.db.query(TelegramAccount).filter(TelegramAccount.telegram_id == telegram_id).first()
+        if not account:
+            account = TelegramAccount(
+                user_id=user.id,
+                telegram_id=telegram_id,
+                username=getattr(telegram_user_data, 'username', None),
+                first_name=getattr(telegram_user_data, 'first_name', None),
+                last_name=getattr(telegram_user_data, 'last_name', None),
+                linked_at=datetime.utcnow()
+            )
+            self.db.add(account)
+        else:
+            account.user_id = user.id
+            account.is_active = True
+            account.linked_at = datetime.utcnow()
+            
+        self.db.commit()
+        self.db.refresh(user)
+        
+        logger.info(f"✅ Linked Telegram ID {telegram_id} to user {user.id}")
+        return user
 
     def clear_cache(self) -> None:
         """Clear all user caches."""
@@ -444,14 +507,22 @@ class UserService:
                 return pattern
             
             pattern.total_trips = len(bookings)
-            pattern.last_travel_date = bookings[0].travel_date if bookings else None
+            pattern.last_travel_date = None
+            if bookings and hasattr(bookings[0], 'travel_date') and bookings[0].travel_date:
+                # Convert date to datetime for compatibility
+                if isinstance(bookings[0].travel_date, datetime):
+                    pattern.last_travel_date = bookings[0].travel_date
+                else:
+                    pattern.last_travel_date = datetime.combine(bookings[0].travel_date, datetime.min.time())
             
             # Analyze routes
-            route_counts: Dict[str, int] = defaultdict(int)
+            route_counts: Dict[Tuple[str, str], int] = defaultdict(int)
             for booking in bookings:
-                route_key = (booking.source_station, booking.destination_station)
-                route_counts[route_key] += 1
-            
+                source = getattr(booking, 'source_station', None)
+                dest = getattr(booking, 'destination_station', None)
+                if source and dest:
+                    route_key = (source, dest)
+                    route_counts[route_key] += 1
             # Get top routes
             sorted_routes = sorted(route_counts.items(), key=lambda x: x[1], reverse=True)
             pattern.most_frequent_routes = [r[0] for r in sorted_routes[:5]]
@@ -462,13 +533,15 @@ class UserService:
             advance_days: List[int] = []
             
             for booking in bookings:
-                if hasattr(booking, 'departure_time') and booking.departure_time:
-                    departure_hours[booking.departure_time.hour] += 1
-                
-                departure_days[booking.travel_date.weekday()] += 1
-                
-                if hasattr(booking, 'booking_date'):
-                    advance = (booking.travel_date - booking.booking_date).days
+                dep_time = getattr(booking, 'departure_time', None)
+                if dep_time:
+                    departure_hours[getattr(dep_time, 'hour', 0)] += 1
+                travel_date = getattr(booking, 'travel_date', None)
+                if travel_date:
+                    departure_days[getattr(travel_date, 'weekday', lambda: 0)()] += 1
+                booking_date = getattr(booking, 'booking_date', None)
+                if travel_date and booking_date:
+                    advance = (travel_date - booking_date).days
                     advance_days.append(advance)
             
             # Get preferred times (top 3 hours)
@@ -486,8 +559,9 @@ class UserService:
             # Analyze class preferences
             class_counts: Dict[str, int] = defaultdict(int)
             for booking in bookings:
-                if hasattr(booking, 'booking_class') and booking.booking_class:
-                    class_counts[booking.booking_class] += 1
+                booking_class = getattr(booking, 'booking_class', None)
+                if booking_class:
+                    class_counts[booking_class] += 1
             
             if class_counts:
                 pattern.preferred_class = max(class_counts.items(), key=lambda x: x[1])[0]

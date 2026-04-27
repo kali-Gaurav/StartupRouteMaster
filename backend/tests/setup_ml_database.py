@@ -10,6 +10,7 @@ Run this before starting the ML training pipeline.
 import os
 import sys
 import logging
+from urllib.parse import urlparse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -24,7 +25,11 @@ def get_database_url():
 def run_migration(db_url: str, schema_file: str):
     """Run database migration from SQL file"""
 
-    logger.info(f"Connecting to database: {db_url.replace(db_url.split('@')[0].split('//')[1].split(':')[0], '***')}")
+    parsed_url = urlparse(db_url)
+    safe_db_url = db_url
+    if parsed_url.username:
+        safe_db_url = db_url.replace(parsed_url.username, '***', 1)
+    logger.info(f"Connecting to database: {safe_db_url}")
 
     try:
         engine = create_engine(db_url)
@@ -32,7 +37,8 @@ def run_migration(db_url: str, schema_file: str):
         # Test connection
         with engine.connect() as conn:
             result = conn.execute(text("SELECT version()"))
-            version = result.fetchone()[0]
+            row = result.fetchone()
+            version = row[0] if row else "unknown"
             logger.info(f"Connected to PostgreSQL: {version}")
 
         # Read and execute schema

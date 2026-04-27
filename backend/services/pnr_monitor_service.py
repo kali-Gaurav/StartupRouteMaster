@@ -211,8 +211,8 @@ class PNRMonitorService:
             if result and result.get("pnr_status"):
                 pnr_status = result["pnr_status"]
                 return PNRStatus(
-                    pnr_number=booking.pnr_number,
-                    train_number=booking.train_number,
+                    pnr_number=str(booking.pnr_number or ""),
+                    train_number=str(booking.train_number or ""),
                     status=pnr_status.get("status", "UNKNOWN"),
                     delay_minutes=pnr_status.get("delay_minutes", 0),
                     issues=result.get("issues", [])

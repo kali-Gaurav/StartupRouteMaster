@@ -279,12 +279,20 @@ async def tier_aware_search(
             segments.append({
                 "train_number": seg.train_number,
                 "train_name": getattr(seg, "train_name", ""),
+                # All naming conventions for station codes
                 "departure_station": getattr(seg, "departure_code", ""),
                 "arrival_station": getattr(seg, "arrival_code", ""),
+                "from_station_code": getattr(seg, "departure_code", ""),
+                "to_station_code": getattr(seg, "arrival_code", ""),
+                "from_station": getattr(seg, "departure_code", ""),
+                "to_station": getattr(seg, "arrival_code", ""),
                 "departure_time": departure_time.isoformat() if departure_time else None,
                 "arrival_time": arrival_time.isoformat() if arrival_time else None,
                 "duration_minutes": seg.duration_minutes,
+                "duration": seg.duration_minutes,
                 "distance_km": getattr(seg, "distance_km", 0),
+                "distance": getattr(seg, "distance_km", 0),
+                "fare": getattr(seg, "fare", 0),
                 "departure_platform": getattr(seg, "departure_platform", "—"),
                 "arrival_platform": getattr(seg, "arrival_platform", "—"),
             })
@@ -298,20 +306,37 @@ async def tier_aware_search(
                 "type": getattr(t, "transfer_type", "same_station"),
             })
 
+        num_transfers = len(route.transfers or [])
+        jid = getattr(route, "journey_id", None) or route.metadata.get("journey_id", f"model_{len(journeys)}")
         journeys.append({
+            "journey_id": jid,
             "segments": segments,
+            "legs": segments,  # frontend alias
             "transfers": transfers,
+            # Duration — both naming conventions
             "total_duration_minutes": route.total_duration,
+            "total_duration": route.total_duration,
+            # Distance — both naming conventions
             "total_distance_km": getattr(route, "total_distance", 0),
+            "total_distance": getattr(route, "total_distance", 0),
+            # Cost
             "total_cost": getattr(route, "total_cost", 0),
+            "total_fare": getattr(route, "total_cost", 0),
+            # Transfers
+            "transfer_count": num_transfers,
+            "num_transfers": num_transfers,
+            # Scoring
             "score": getattr(route, "score", 0),
-            "transfer_count": len(route.transfers or []),
+            "reliability_score": route.metadata.get("reliability_score", getattr(route, "reliability", 0.85)),
+            "safety_score": route.metadata.get("safety_score", getattr(route, "safety_score", 1.0)),
+            "availability_status": route.metadata.get("live_availability", "AVAILABLE"),
+            "delay_probability": route.metadata.get("delay_probability"),
+            # Metadata
             "engine_used": route.metadata.get("engine", "unknown"),
             "model_tier": route.metadata.get("model_tier", tier.value),
             "model_display_name": route.metadata.get("model_display_name", ""),
-            "reliability_score": route.metadata.get("reliability_score"),
-            "safety_score": route.metadata.get("safety_score"),
-            "delay_probability": route.metadata.get("delay_probability"),
+            "is_locked": getattr(route, "is_locked", False),
+            "metadata": route.metadata,
         })
 
     # [Task F4] Apply Route Locks and Masks (Monetization Engine)

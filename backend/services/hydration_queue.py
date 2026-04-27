@@ -33,7 +33,7 @@ class PrioritizedHydrationQueue:
         
         logger.info("PrioritizedHydrationQueue initialized with resilience patterns")
     
-    async def _record_metrics(self, operation_type: str, success: bool, error: str = None):
+    async def _record_metrics(self, operation_type: str, success: bool, error: Optional[str] = None):
         """Record metrics for queue operations."""
         async with self._metrics_lock:
             self._metrics.append({

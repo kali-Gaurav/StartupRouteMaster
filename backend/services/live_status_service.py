@@ -289,12 +289,13 @@ class LiveStatusService:
         
         output = {}
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Batch fetch error: {result}")
-            else:
-                train_num, status = result
-                output[train_num] = status
-        
+                continue
+
+            train_num, status = result
+            output[train_num] = status
+
         return output
 
     def _record_request(self, result: LiveStatusResult):
@@ -363,13 +364,13 @@ class LiveStatusService:
     # TASK LS-1: RATE LIMITING
     # =========================================================================
 
-    def check_rate_limit(self, api_key: Optional[str] = None) -> Tuple[bool, Dict]:
+    async def check_rate_limit(self, api_key: Optional[str] = None) -> Tuple[bool, Dict]:
         """
         Check if request is within rate limits.
         Returns: (is_allowed, details)
         """
         key = api_key or "default"
-        return self._rate_limiter.allow(key)
+        return await self._rate_limiter.allow(key)
 
     def get_rate_limit_status(self, api_key: Optional[str] = None) -> Dict:
         """Get current rate limit status."""
@@ -444,7 +445,7 @@ class LiveStatusService:
         Critical requests (bookings) get processed first.
         """
         # Check rate limit first
-        allowed, limit_info = self.check_rate_limit()
+        allowed, limit_info = await self.check_rate_limit()
         if not allowed:
             logger.warning(f"Rate limit exceeded: {limit_info}")
             # For critical requests, try to proceed anyway

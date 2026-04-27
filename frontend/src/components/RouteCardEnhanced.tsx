@@ -39,7 +39,7 @@ export function RouteCardEnhanced({
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-primary">
-            {formatCost(route.totalCost)}
+            {route.totalCost > 0 ? formatCost(route.totalCost) : <span className="text-sm text-muted-foreground italic">Pricing Pending</span>}
           </div>
           <div className="text-sm text-muted-foreground">
             {formatDuration(route.totalTime)}
@@ -111,7 +111,7 @@ export function RouteCardEnhanced({
                     {/* Duration and Distance */}
                     <div className="flex items-center gap-4 text-xs text-muted-foreground">
                       <span>{formatDuration(segment.duration)}</span>
-                      <span>{segment.distance} km</span>
+                      {segment.distance > 0 && <span>{segment.distance} km</span>}
                       {segment.liveFare > 0 && (
                         <span className="text-green-600 dark:text-green-400">
                           {formatCost(segment.liveFare)}
@@ -146,7 +146,7 @@ export function RouteCardEnhanced({
               </div>
               <div>
                 <div className="text-muted-foreground">Distance</div>
-                <div className="font-semibold">{route.totalDistance} km</div>
+                <div className="font-semibold">{route.totalDistance > 0 ? `${route.totalDistance} km` : "—"}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Safety</div>

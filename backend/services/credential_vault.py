@@ -103,7 +103,7 @@ class CredentialVault:
         )
         return kdf.derive(self.master_key)
 
-    def store_credentials(self, user_id: str, irctc_user: str, irctc_pass: str, persistent: bool = False):
+    async def store_credentials(self, user_id: str, irctc_user: str, irctc_pass: str, persistent: bool = False):
         """Task 35.9: Encryption at REST with circuit breaker protection."""
         import time
         
@@ -143,12 +143,12 @@ class CredentialVault:
         
         start_time = time.perf_counter()
         try:
-            result = self._db_breaker.execute(
+            result = await self._db_breaker.execute(
                 self._db_retry.execute,
                 _do_store
             )
             duration_ms = (time.perf_counter() - start_time) * 1000
-            asyncio.create_task(self._metrics.record_access("store", result, duration_ms))
+            asyncio.create_task(self._metrics.record_access("store", bool(result), duration_ms))
             return result
         except Exception as e:
             duration_ms = (time.perf_counter() - start_time) * 1000
@@ -156,7 +156,7 @@ class CredentialVault:
             logger.error(f"Failed to store credentials: {e}")
             return False
 
-    def get_credentials(self, user_id: str) -> Optional[Tuple[str, str]]:
+    async def get_credentials(self, user_id: str) -> Optional[Tuple[str, str]]:
         """Task 35.5: Security Audit Log on access with circuit breaker protection."""
         import time
         
@@ -195,7 +195,7 @@ class CredentialVault:
         
         start_time = time.perf_counter()
         try:
-            result = self._db_breaker.execute(
+            result = await self._db_breaker.execute(
                 self._db_retry.execute,
                 _do_get
             )

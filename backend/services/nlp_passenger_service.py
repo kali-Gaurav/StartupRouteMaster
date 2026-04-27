@@ -1,8 +1,14 @@
 import logging
 import re
 import json
-from typing import List, Dict, Any
-import google.generativeai as genai
+from importlib import import_module
+from typing import List, Dict, Any, Optional
+
+try:
+    genai = import_module("google.generativeai")
+except ImportError:
+    genai = None
+
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -15,15 +21,20 @@ class NLPPassengerService:
     def __init__(self):
         # Configure Gemini
         self.api_key = Config.GEMINI_API_KEY if hasattr(Config, 'GEMINI_API_KEY') else None
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.model: Any = None
+
+        if self.api_key and genai is not None:
+            if hasattr(genai, "configure"):
+                genai.configure(api_key=self.api_key)
+            if hasattr(genai, "GenerativeModel"):
+                self.model = getattr(genai, "GenerativeModel")('gemini-2.5-flash')
         else:
             logger.warning("GEMINI_API_KEY not configured. NLP Passenger parsing will fail or mock.")
 
-    def normalize_berth(self, raw_berth: str) -> str:
+    def normalize_berth(self, raw_berth: Optional[str]) -> Optional[str]:
         """Task 29.3: Berth preference normalization."""
-        if not raw_berth: return None
+        if not raw_berth:
+            return None
         raw = raw_berth.lower().strip()
         if raw in ['lb', 'lower', 'lower berth', 'down', 'bottom']: return 'LOWER'
         if raw in ['mb', 'middle', 'middle berth', 'mid']: return 'MIDDLE'
@@ -32,7 +43,7 @@ class NLPPassengerService:
         if raw in ['su', 'side upper', 'side upper berth']: return 'SIDE_UPPER'
         return None
 
-    def detect_identity_document(self, text: str) -> Dict[str, str]:
+    def detect_identity_document(self, text: str) -> Optional[Dict[str, str]]:
         """Task 29.9: Identity document type mapping."""
         # Aadhar: 12 digits, often formatted as xxxx xxxx xxxx
         text_clean = text.replace(" ", "")
@@ -78,7 +89,7 @@ class NLPPassengerService:
                 "name": name,
                 "age": age,
                 "gender": p.get("gender", "M").upper(), # Default to M if unknown, frontend will flag
-                "berth_preference": self.normalize_berth(p.get("berth_preference")),
+                "berth_preference": self.normalize_berth(str(p.get("berth_preference", "")) if p.get("berth_preference") is not None else None),
                 "is_senior_citizen": is_senior,
                 "is_child": is_child,
                 "document": doc,
@@ -110,6 +121,8 @@ class NLPPassengerService:
         """
         
         try:
+            if self.model is None:
+                raise RuntimeError("Gemini model is not configured")
             response = self.model.generate_content(prompt)
             raw_json = response.text.strip()
             

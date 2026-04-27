@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Optional
-
+from typing import Optional, List, Any, Dict
 from enum import Enum
-
 from core.data_structures import Persona
 
 class DiscoveryModel(Enum):
@@ -63,8 +61,8 @@ class RouteConstraints:
     # [Task 1] Engine Filtering
     permitted_engines: Optional[list[str]] = None
     
-    # Task 30: Generic Metadata for Orchestration
-    metadata: dict = field(default_factory=dict)
+    # [Task 41.22] Unified telemetry and cross-engine coordination
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Task 31: Adaptive Yield Goals
     yield_goal: int = 35
@@ -72,6 +70,9 @@ class RouteConstraints:
 
     # [Elite: Hub Bridge] Pre-resolved multimodal jumps (e.g., {"NDLS": [{"to_stop_id": 123, ...}]})
     multimodal_jumps: dict = field(default_factory=dict)
+    
+    # [Safety Engine] Passenger list for persona-aware scoring
+    passengers: list = field(default_factory=list)
 
     @dataclass
     class Weights:

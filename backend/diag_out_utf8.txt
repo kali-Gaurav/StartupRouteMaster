@@ -1,0 +1,54 @@
+﻿python : INFO:diagnose-connections:Loading environment from C:\Users\Gaurav 
+Nagar\OneDrive\Desktop\startupV2\backend\.env
+At line:1 char:1
++ python scripts/diagnose_connections.py > diag_out.txt 2>&1
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO:diagnose-c...V2\backend\.env:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO:diagnose-connections:Testing Redis: amazed-rat-39065.upstash.io:6379
+INFO:diagnose-connections:[OK] Redis Connection Successful
+C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py:41: DeprecationWarning: Call 
+to deprecated close. (Use aclose() instead) -- Deprecated since version 5.0.1.
+  await close_result
+INFO:diagnose-connections:Testing Direct Host: db.bkzrxgtsfovctfviqkuh.supabase.co:5432 with user postgres
+Traceback (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py", line 50, in 
+test_supabase_pg_variation
+    conn = psycopg2.connect(
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\psycopg2\__init__.py", line 
+135, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: could not translate host name "db.bkzrxgtsfovctfviqkuh.supabase.co" to address: Name or 
+service not known
+
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py", line 121, in 
+<module>
+    asyncio.run(main())
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 653, in 
+run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py", line 97, in main
+    pg1 = test_supabase_pg_variation(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py", line 62, in 
+test_supabase_pg_variation
+    log_error(f"[FAIL] {name} Failed: {e}")
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\scripts\diagnose_connections.py", line 18, in 
+log_error
+    with open("backend/scripts/diag_error.log", "a") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'backend/scripts/diag_error.log'

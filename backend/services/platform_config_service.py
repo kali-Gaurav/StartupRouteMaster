@@ -4,7 +4,7 @@ Handles real-time system settings like fees, maintenance, and thresholds.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from functools import lru_cache
 from sqlalchemy.orm import Session
 from database.models import PlatformConfig
@@ -73,7 +73,7 @@ class PlatformConfigService:
         # Using a simple cache here, but in production we'd use Redis
         config = db.query(PlatformConfig).filter(PlatformConfig.key == key).first()
         if config:
-            return config.value
+            return cast(str, getattr(config, "value", default))
         return default
 
     @staticmethod
@@ -81,10 +81,17 @@ class PlatformConfigService:
         """[25.4] Update or create a dynamic config."""
         config = db.query(PlatformConfig).filter(PlatformConfig.key == key).first()
         if config:
-            config.value = str(value)
-            if description: config.description = description
+            setattr(config, "value", str(value))
+            if description is not None:
+                setattr(config, "description", description)
         else:
-            config = PlatformConfig(key=key, value=str(value), description=description)
+            config_kwargs = {
+                "key": key,
+                "value": str(value)
+            }
+            if description is not None:
+                config_kwargs["description"] = description
+            config = PlatformConfig(**config_kwargs)
             db.add(config)
         db.commit()
         logger.info(f"Platform Config Updated: {key} = {value}")
@@ -132,4 +139,3 @@ class PlatformConfigService:
         }
         return defaults.get(fee_type, 0.0)
 
-from datetime import datetime, date

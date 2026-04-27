@@ -6,6 +6,7 @@
 import { getRailwayApiUrl } from '@/lib/utils';
 import type { Route, RouteSegment } from '@/data/routes';
 import { type Station } from '@/data/stations';
+import { v3Fetch } from '@/lib/apiClient';
 
 export interface FareRow {
   class_code: string;
@@ -152,6 +153,21 @@ export interface BackendRoutesResponse {
     latency_ms?: number;
     cached?: boolean;
     surge_level?: number;
+    corridor_pressure?: number;
+    edr_nudges?: Array<{
+      id: string;
+      type: string;
+      headline: string;
+      description: string;
+      incentive: string;
+      target_route?: string;
+    }>;
+    shadow_guide?: {
+      message: string;
+      tone: string;
+      safety_tip?: string;
+      food_recommendation?: string;
+    };
   };
 }
 
@@ -288,7 +304,7 @@ export function mapBackendRoutesToRoutes(
   const backendJourneys = data.data?.journeys || [];
   const mostOptimalIds = new Set((data.data?.grouped_journeys?.top_5_optimal || []).map((j: BackendJourney) => j.journey_id));
   
-  backendJourneys.forEach(j => {``
+  backendJourneys.forEach(j => {
     const rid = j.journey_id;
     let category = j.num_transfers === 0 ? 'DIRECT' : `${j.num_transfers} TRANSFER${j.num_transfers > 1 ? 'S' : ''}`;
     
@@ -300,20 +316,23 @@ export function mapBackendRoutesToRoutes(
     const segments: RouteSegment[] = [];
     if (j.legs) {
       j.legs.forEach((leg, index) => {
+        // Backend may send station codes as from_station_code OR from_station
+        const fromCode = leg.from_station_code || (leg as any).from_station || "";
+        const toCode = leg.to_station_code || (leg as any).to_station || "";
         segments.push({
           routeId: rid,
           category,
           segment: index,
           trainNumber: leg.train_number || j.train_no || "N/A",
-          trainName: leg.train_name || `Train ${leg.train_number}`,
-          from: leg.from_station_code,
-          to: leg.to_station_code,
-          fromName: getStationName(leg.from_station_code),
-          toName: getStationName(leg.to_station_code),
+          trainName: leg.train_name || (leg as any).train_name || `Train ${leg.train_number}`,
+          from: fromCode,
+          to: toCode,
+          fromName: getStationName(fromCode),
+          toName: getStationName(toCode),
           departure: formatTime(leg.departure_time),
           arrival: formatTime(leg.arrival_time),
-          distance: leg.distance ?? 0,
-          duration: leg.duration_minutes ?? 0,
+          distance: leg.distance ?? (leg as any).distance_km ?? 0,
+          duration: leg.duration_minutes ?? (leg as any).duration ?? 0,
           waitBefore: 0,
           liveSeatAvailability: j.availability_status ?? 'UNKNOWN',
           liveFare: leg.fare ?? 0,
@@ -327,15 +346,15 @@ export function mapBackendRoutesToRoutes(
       id: rid,
       category,
       segments,
-      totalTime: j.total_duration ?? 0,
-      totalCost: j.total_cost ?? 0,
-      totalTransfers: j.num_transfers ?? 0,
-      totalDistance: j.total_distance ?? 0,
-      liveFareTotal: j.total_cost ?? 0,
+      totalTime: j.total_duration ?? (j as any).total_duration_minutes ?? 0,
+      totalCost: j.total_cost ?? (j as any).total_fare ?? 0,
+      totalTransfers: j.num_transfers ?? (j as any).transfer_count ?? 0,
+      totalDistance: j.total_distance ?? (j as any).total_distance_km ?? 0,
+      liveFareTotal: j.total_cost ?? (j as any).total_fare ?? 0,
       seatProbability: j.reliability_score ?? 0.85,
       reliabilityBadge: j.reliability_badge,
       isLocked: j.is_locked ?? true,
-      safetyScore: j.metadata?.safety_score ?? 100,
+      safetyScore: (j as any).safety_score ?? j.metadata?.safety_score ?? 100,
       metadata: j.metadata,
       redistribution_options: j.metadata?.redistribution_options || []
     });
@@ -394,4 +413,42 @@ export function getSearchHistory(): any[] {
     const data = localStorage.getItem('rm_search_history');
     return data ? JSON.parse(data) : [];
   } catch { return []; }
+}
+
+/**
+ * [Phase 6] Claims a Sovereign Intelligence incentive.
+ */
+export async function claimIncentiveApi(data: {
+  amount: number;
+  nudge_id: string;
+  description?: string;
+  type?: string;
+}) {
+  return v3Fetch<any>("/v3/intelligence/sovereign/claim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+/**
+ * [Phase 6] Retrieves the user's Sovereign Wallet summary.
+ */
+export async function getSovereignWalletApi() {
+  return v3Fetch<any>("/v3/intelligence/sovereign/wallet");
+}
+
+/**
+ * [Phase 7] Records an A/B testing conversion for Sovereign Intelligence.
+ */
+export async function recordAbConversionApi(data: {
+  experiment_id?: string;
+  variant: string;
+  goal?: string;
+}) {
+  return v3Fetch<any>("/v3/intelligence/ab/convert", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
 }

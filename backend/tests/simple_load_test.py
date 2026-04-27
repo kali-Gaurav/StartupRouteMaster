@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import psutil
+from typing import Any, cast
 
 # Add backend to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -42,7 +43,7 @@ async def run_load_test():
 
     # Check producer
     _event_producer = None  # Reset for fresh test
-    producer = get_event_producer()
+    producer = cast(Any, get_event_producer())
     print(f"Using producer: {type(producer).__name__}")
     if hasattr(producer, 'reset_circuit_breaker'):
         producer.reset_circuit_breaker()

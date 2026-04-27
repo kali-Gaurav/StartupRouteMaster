@@ -1,3 +1,5 @@
+CACHE_VERSION = "v1"
+
 """
 Multi-Layer Cache System - IRCTC-Level Performance
 Upgraded with Pub/Sub Invalidation and Memory Policies (TODO #26).
@@ -137,6 +139,32 @@ from core.providers import ServiceProvider, ServiceStatus
 from core.container import container
 
 class MultiLayerCache(ServiceProvider):
+    # Raw (uncompressed, direct) cache access for session_lock_service compatibility
+    async def get_raw(self, key: str) -> Any:
+        if self.redis:
+            try:
+                return await self.redis.get(key)
+            except Exception as e:
+                logger.error(f"get_raw error: {e}")
+                return None
+        return self.lru.get(key)
+
+    async def set_raw(self, key: str, value: Any, ttl: int = 600):
+        if self.redis:
+            try:
+                await self.redis.setex(key, ttl, value)
+            except Exception as e:
+                logger.error(f"set_raw error: {e}")
+        else:
+            self.lru.put(key, value)
+
+    async def delete_raw(self, key: str):
+        if self.redis:
+            try:
+                await self.redis.delete(key)
+            except Exception as e:
+                logger.error(f"delete_raw error: {e}")
+        self.lru.delete(key)
     def __init__(self):
         super().__init__("cache", version="2.2.0")
         self.redis: Optional[Any] = None

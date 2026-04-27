@@ -143,6 +143,16 @@ class RateLimiter:
             
             return True, {"remaining_minute": int(bucket["minute_tokens"]), "remaining_hour": int(bucket["hour_tokens"])}
 
+    def get_status(self, key: str) -> Dict:
+        """Get rate limit status."""
+        bucket = self._get_bucket(key)
+        return {
+            "remaining_minute": int(bucket["minute_tokens"]),
+            "remaining_hour": int(bucket["hour_tokens"]),
+            "limit_minute": self.requests_per_minute,
+            "limit_hour": self.requests_per_hour
+        }
+
 
 class FareServiceMetrics:
     """Metrics tracking for fare service."""
@@ -965,29 +975,24 @@ class FareService:
 # RESILIENCE PATTERNS
 # =========================================================================
 
-def get_metrics(self) -> dict:
-    """Get service metrics."""
-    return self._metrics.get_metrics()
+    def get_metrics(self) -> dict:
+        """Get service metrics."""
+        return self._metrics.get_metrics()
 
-def health_check(self) -> dict:
-    """Check service health."""
-    return {
-        "status": "healthy",
-        "circuit_breakers": {
-            "rapidapi": self._rapidapi_breaker.get_metrics().to_dict(),
-            "database": self._db_breaker.get_metrics().to_dict()
-        },
-        "metrics": self._metrics.get_metrics(),
-        "cache_stats": self.get_cache_stats()
-    }
+    def health_check(self) -> dict:
+        """Check service health."""
+        return {
+            "status": "healthy",
+            "circuit_breakers": {
+                "rapidapi": self._rapidapi_breaker.get_metrics(),
+                "database": self._db_breaker.get_metrics()
+            },
+            "metrics": self._metrics.get_metrics(),
+            "cache_stats": self.get_cache_stats()
+        }
 
-def reset_circuit_breakers(self):
-    """Reset all circuit breakers."""
-    self._rapidapi_breaker.reset()
-    self._db_breaker.reset()
-    logger.info("All circuit breakers reset for fare_service")
-
-# Bind methods to class
-FareService.get_metrics = get_metrics
-FareService.health_check = health_check
-FareService.reset_circuit_breakers = reset_circuit_breakers
+    def reset_circuit_breakers(self):
+        """Reset all circuit breakers."""
+        self._rapidapi_breaker.reset()
+        self._db_breaker.reset()
+        logger.info("All circuit breakers reset for fare_service")

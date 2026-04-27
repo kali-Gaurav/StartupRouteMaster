@@ -80,6 +80,8 @@ class HubRoutingEngine(BaseRoutingEngine):
             return results
         except Exception as e:
             logger.error(f"HubRoutingEngine failed to search hubs: {e}")
+            if db:
+                db.rollback()
             return []
 
     async def find_routes(self, request: RoutingRequest) -> RoutingResponse:

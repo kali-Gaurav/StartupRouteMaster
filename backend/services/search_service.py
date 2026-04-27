@@ -37,6 +37,8 @@ from core.route_engine.categorization import CategorizationEngine
 from services.unlock_service import UnlockService
 from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
 from core.retry import RetryPolicy
+from core.rate_limit import rate_limiter
+from core.sovereign.edr_algorithm import edr_engine
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +267,9 @@ class SearchService:
             logger.debug(f"Return suggestion failed: {e}")
         return None
 
+    from services.telemetry_service import telemetry_collector
+
+    @telemetry_collector
     async def search_routes(
         self, source: str, destination: str, travel_date: str, 
         budget_category: Optional[str] = None, page: int = 1, limit: int = 15, 
@@ -288,6 +293,23 @@ class SearchService:
         if request and await request.is_disconnected():
             logger.warning("🚫 Search Aborted: Client disconnected before processing.")
             return {"status": "aborted", "journeys": []}
+
+        # [SOVEREIGN] Demand-Aware Rate Limiting
+        # Protects corridors under pressure from 'Demand Attacks' and 'Incentive Farming'
+        client_host = None
+        if request is not None and getattr(request, "client", None) is not None:
+            client_host = getattr(request.client, "host", None)
+        ip_addr = client_ip or (client_host if client_host is not None else "unknown")
+        
+        # [Task 42] WAF Bypass for Dev
+        if not (request and request.headers.get("X-Dev-Bypass") == "TRUE"):
+            if not await rate_limiter.is_corridor_allowed(ip_addr, source.upper(), destination.upper()):
+                from fastapi import HTTPException
+                logger.warning(f"🚫 [SOVEREIGN:BLOCK] Rate limit triggered for {ip_addr} on {source}->{destination}")
+                raise HTTPException(
+                    status_code=429, 
+                    detail="High demand detected on this corridor. Rate limiting applied to protect system stability."
+                )
 
         gc.disable() 
         
@@ -565,8 +587,11 @@ class SearchService:
                         recovery_tasks.append(orchestrator.search_all_tiers(r_req))
                 
                 if recovery_tasks:
-                    recovery_results = await asyncio.gather(*recovery_tasks)
+                    recovery_results = await asyncio.gather(*recovery_tasks, return_exceptions=True)
                     for batch in recovery_results:
+                        if isinstance(batch, (Exception, BaseException)):
+                            logger.error(f"Proximity recovery task failed: {batch}")
+                            continue
                         for r in batch:
                             if r.journey_id not in all_unique_routes:
                                 r.metadata["is_proximity_alt"] = True
@@ -848,12 +873,16 @@ class SearchService:
                         )
                     except Exception as pe:
                         logger.warning(f"Dynamic pricing injection failed (possibly circuit open): {pe}")
+                        if self.db:
+                            try: self.db.rollback()
+                            except: pass
                         metadata["unlock_fee"] = 0.0
                         if metadata.get("ui_reasons") is None:
                             metadata["ui_reasons"] = []
 
                 if verified_routes:
-                    await asyncio.gather(*[inject_metadata(r) for r in verified_routes])
+                    for r in verified_routes:
+                        await inject_metadata(r)
                 
                 # [Point 22] Guardian Agent - Persona-Safe Routing
                 from services.agents.guardian_agent import GuardianAgent
@@ -882,6 +911,9 @@ class SearchService:
                     r.metadata["pricing_breakdown"] = breakdown
                 except Exception as pe:
                     logger.warning(f"Pricing engine failure for {r.journey_id}: {pe}")
+                    if self.db:
+                        try: self.db.rollback()
+                        except: pass
 
             # [ALGORITHM_MVP] Integrate Delay-Aware Routing
             # Apply delay predictions to route scoring
@@ -893,6 +925,9 @@ class SearchService:
                     logger.info(f"Applied delay predictions to {len(verified_routes)} routes")
             except Exception as de:
                 logger.warning(f"Delay-aware routing integration failed: {de}")
+                if self.db:
+                    try: self.db.rollback()
+                    except: pass
 
             # [ALGORITHM_MVP] Integrate Real-Time Route Hydration
             # Apply live status data to routes
@@ -913,6 +948,8 @@ class SearchService:
                 data_service.record_search_event(source, destination, dt.date())
             except Exception as de:
                 logger.debug(f"Data service integration failed: {de}")
+                try: self.db.rollback()
+                except: pass
 
             # [ALGORITHM_MVP] Generate Complete Travel Plan with Unified Planner
             # This provides multi-option travel plans with crowd awareness
@@ -951,6 +988,9 @@ class SearchService:
                     logger.info(f"Travel plan generated with {len(travel_plan.options)} options")
             except Exception as tpe:
                 logger.debug(f"Travel plan generation failed: {tpe}")
+                if self.db:
+                    try: self.db.rollback()
+                    except: pass
 
             # [P28] Growth Agent Integration: Conversion Hooks
             from services.agents.growth_agent import growth_agent_swarm as growth_agent
@@ -963,19 +1003,74 @@ class SearchService:
                 else:
                     verified_routes = personalize_result
 
+            # [SOVEREIGN] Execute Unified Intelligence Pipeline (SIO)
+            # This replaces fragmented EDR/Guide calls with a single neural cycle
+            final_response = {"metadata": {}}
+            try:
+                from core.sovereign.orchestrator import sio
+                sio_res = await sio.execute_search_cycle(
+                    source=source,
+                    destination=destination,
+                    initial_routes=verified_routes,
+                    user_id=getattr(getattr(request, "state", None), "user_id", "anonymous"),
+                    persona=persona.value,
+                    tier=getattr(getattr(request, "state", None), "user_tier", "FREE")
+                )
+                edr_decision = sio_res["decision"]
+                guide_res = sio_res["guidance"]
+                # Apply redistribution score adjustments to ranking
+                if edr_decision.should_trigger_redistribution:
+                    for r in verified_routes:
+                        jid = getattr(r, "journey_id", None)
+                        if jid in edr_decision.route_score_adjustments:
+                            r.score += edr_decision.route_score_adjustments[jid]
+                # Inject Nudges into Response
+                if edr_decision.has_nudges:
+                    final_response["metadata"]["edr_nudges"] = [
+                        {
+                            "id": n.nudge_id,
+                            "type": n.nudge_type.value,
+                            "headline": n.headline,
+                            "description": n.description,
+                            "incentive": n.incentive_value,
+                            "target_route": n.target_route_id
+                        } for n in edr_decision.nudges
+                    ]
+                final_response["metadata"]["corridor_pressure"] = edr_decision.corridor_pressure
+                # Inject Shadow-Guide guidance
+                if guide_res:
+                    final_response["metadata"]["shadow_guide"] = {
+                        "message": guide_res.message,
+                        "tone": guide_res.tone,
+                        "safety_tip": guide_res.safety_tip,
+                        "food_recommendation": guide_res.food_recommendation
+                    }
+                final_response["metadata"]["sio_tracking"] = sio_res["metadata"]
+                logger.info(f"\u2728 [SIO] Unified cycle complete: {edr_decision.pressure_level.value}")
+            except Exception as sio_err:
+                logger.error(f"Sovereign Orchestration failed: {sio_err}")
+                edr_decision = None # Fallback
+                # final_response and guide_res already initialized
+
+            # --- RESTORED CORE LOGIC START ---
+            # Ensure final_response and guide_res are always initialized
+            final_response = {"metadata": {}}
+            guide_res = None
+
             def final_rank_score(r):
                 base = r.metadata.get("value_score", 0)
                 safety = getattr(r, "safety_score", 1.0)
                 # If persona is ECONOMY (Family), safety has higher weight
                 if persona.upper() in ["ECONOMY", "FAMILY"]:
-                    return base * (safety ** 2) 
+                    return base * (safety ** 2)
                 return base * safety
 
             verified_routes.sort(key=final_rank_score, reverse=True)
             logger.info(f"Reranked {len(verified_routes)} routes using Safety-Weighted Value Scoring.")
 
+            from core.route_engine.categorization import CategorizationEngine
             categories = CategorizationEngine.categorize(verified_routes, persona)
-            
+
             # [Task 12.1] Bucket Preservation in Redis for Category-Aware Load More
             if multi_layer_cache.redis:
                 data_key = f"search:data:{quota}:{session_id}"
@@ -983,7 +1078,7 @@ class SearchService:
                     # 1. Store global data for all verified routes
                     for r in verified_routes:
                         await pipe.hset(data_key, r.journey_id, json.dumps(r.to_dict(), default=str))
-                    
+
                     # 2. Store specific category pools (ZSETs)
                     for bucket_name, bucket_routes in categories.items():
                         if bucket_name in ["direct", "one_transfer", "two_transfer", "three_plus_transfer"] and isinstance(bucket_routes, list):
@@ -991,18 +1086,18 @@ class SearchService:
                             for r_dict in bucket_routes:
                                 score = r_dict.get("score", 0)
                                 await pipe.zadd(cat_pool_key, {r_dict["journey_id"]: score})
-                            await pipe.expire(cat_pool_key, TTL_ROUTE_SEARCH)
-                    
+                            await pipe.expire(cat_pool_key, 3600)
+
                     # 3. Store the master session pool for regular pagination
                     master_pool_key = f"search:pool:{quota}:{session_id}"
                     for r in verified_routes:
                         await pipe.zadd(master_pool_key, {r.journey_id: r.score})
-                    await pipe.expire(master_pool_key, TTL_ROUTE_SEARCH)
-                    await pipe.expire(data_key, TTL_ROUTE_SEARCH)
-                    
+                    await pipe.expire(master_pool_key, 3600)
+                    await pipe.expire(data_key, 3600)
+
                     await pipe.execute()
                     logger.info(f"💾 [REDIS:STORAGE] Session {session_id} results pooled across {len(categories)} categories.")
-            
+
             all_hydrated_dicts = []
             seen_jids = set()
             for bucket_name, bucket_routes in categories.items():
@@ -1012,10 +1107,13 @@ class SearchService:
                             all_hydrated_dicts.append(r_dict)
                             seen_jids.add(r_dict["journey_id"])
 
+            from services.unlock_service import UnlockService
             masked_journeys = [UnlockService.mask_route(rd) for rd in all_hydrated_dicts]
             next_cursor = verified_routes[-1].score if verified_routes else None
 
+            import math
             total_pages = math.ceil(len(candidate_list) / limit) if candidate_list else 0
+            from core.data_structures import PaginationMetadata
             pagination = PaginationMetadata(
                 total_results=len(candidate_list),
                 current_page=1,
@@ -1050,6 +1148,29 @@ class SearchService:
                 }
             }
 
+            # Inject SIO/EDR data back into the newly created final_response
+            if edr_decision:
+                final_response["metadata"]["corridor_pressure"] = edr_decision.corridor_pressure
+                if edr_decision.has_nudges:
+                    final_response["metadata"]["edr_nudges"] = [
+                        {
+                            "id": n.nudge_id,
+                            "type": n.nudge_type.value,
+                            "headline": n.headline,
+                            "description": n.description,
+                            "incentive": n.incentive_value,
+                            "target_route": n.target_route_id
+                        } for n in edr_decision.nudges
+                    ]
+
+                final_response["metadata"]["shadow_guide"] = {
+                    "message": getattr(guide_res, "message", None),
+                    "tone": getattr(guide_res, "tone", None),
+                    "safety_tip": getattr(guide_res, "safety_tip", None),
+                    "food_recommendation": getattr(guide_res, "food_recommendation", None)
+                }
+            # --- RESTORED CORE LOGIC END ---
+
             if travel_plan_metadata:
                 final_response["metadata"].update(travel_plan_metadata)
 
@@ -1057,16 +1178,16 @@ class SearchService:
             from database.models import RouteSearchLog, SearchOutcome
             if self.db:
                 log = RouteSearchLog(
-                    src=source, 
-                    dst=destination, 
+                    src=source,
+                    dst=destination,
                     date=dt.date(),
-                    latency_ms=latency, 
-                    ip_address=client_ip, 
+                    latency_ms=latency,
+                    ip_address=client_ip,
                     geo_state=geo_state
                 )
                 self.db.add(log)
                 self.db.commit()
-                
+
                 for r in verified_routes[:5]:
                     outcome = SearchOutcome(
                         search_id=str(log.id),
@@ -1076,13 +1197,13 @@ class SearchService:
                         metadata_snapshot=r.to_dict()
                     )
                     self.db.add(outcome)
-                
+
                 self.db.commit()
-    
+
                 # [Point 15.2] NIS Observation: Log Recommendation Event
                 if intel_svc and search_event_id:
                     await intel_svc.log_recommendations(search_event_id, verified_routes)
-            
+
             return final_response
         finally:
             if 'transit_db' in locals() and transit_db is not None:
@@ -1159,6 +1280,38 @@ class SearchService:
         if request and await request.is_disconnected():
             logger.warning("🚫 Stream Aborted: Client disconnected.")
             return
+
+        # [SOVEREIGN] Inject Intelligence into Stream
+        edr_decision = None
+        shadow_guide_data = None
+        try:
+            from core.sovereign.orchestrator import sio
+            sio_res = await sio.execute_search_cycle(
+                source=source,
+                destination=destination,
+                initial_routes=routes,
+                user_id=getattr(request.state, "user_id", "anonymous") if request and hasattr(request, "state") else "anonymous",
+                persona=persona.value,
+                tier=getattr(request.state, "user_tier", "FREE") if request and hasattr(request, "state") else "FREE"
+            )
+            edr_decision = sio_res["decision"]
+            guide_res = sio_res["guidance"]
+            shadow_guide_data = {
+                "message": guide_res.message,
+                "tone": guide_res.tone,
+                "safety_tip": guide_res.safety_tip,
+                "food_recommendation": guide_res.food_recommendation
+            }
+            # Re-sort with SIO adjustments if needed
+            if edr_decision.should_trigger_redistribution:
+                for r in routes:
+                    jid = getattr(r, "journey_id", None)
+                    if jid in edr_decision.route_score_adjustments:
+                        r.score += edr_decision.route_score_adjustments[jid]
+                routes.sort(key=lambda x: x.score, reverse=True)
+                
+        except Exception as sio_err:
+            logger.error(f"Sovereign Stream Orchestration failed: {sio_err}")
             
         # Mask and Hydrate
         masked = [UnlockService.mask_route(r.to_dict()) for r in routes]
@@ -1168,7 +1321,21 @@ class SearchService:
         payload = {
             "chunk": "final",
             "journeys": masked,
-            "latency_ms": int((time.time() - overall_start) * 1000)
+            "latency_ms": int((time.time() - overall_start) * 1000),
+            "metadata": {
+                "corridor_pressure": edr_decision.corridor_pressure if edr_decision else 0,
+                "edr_nudges": [
+                    {
+                        "id": n.nudge_id,
+                        "type": n.nudge_type.value,
+                        "headline": n.headline,
+                        "description": n.description,
+                        "incentive": n.incentive_value,
+                        "target_route": n.target_route_id
+                    } for n in edr_decision.nudges
+                ] if edr_decision and edr_decision.has_nudges else [],
+                "shadow_guide": shadow_guide_data
+            }
         }
         yield b"data: " + json.dumps(payload, default=str) + b"\n\n"
 
@@ -1447,7 +1614,8 @@ class SearchService:
             return route
 
         route.availability_probability = total_prob
-        route.total_cost = total_fare
+        if total_fare > 0:
+            route.total_cost = total_fare
         route.total_duration += total_delay
         route.metadata["is_verified"] = True
         return route
@@ -1484,7 +1652,8 @@ class SearchService:
         budget_category: Optional[str] = None, quota: str = "GN", 
         chunk_size: int = 3,
         permitted_engines: Optional[list[str]] = None,
-        discovery_only: bool = False
+        discovery_only: bool = False,
+        user_id: str = "anonymous"
     ):
         """Unified Search Implementation."""
         db = self.db
@@ -1498,6 +1667,7 @@ class SearchService:
         from core.route_engine.constraints_engine import ConstraintsEngine
         from core.data_structures import Persona
         from services.unlock_service import UnlockService
+        from core.sovereign.orchestrator import sio
         
         self.transit_db = SessionTransit()
         orchestrator = UnifiedRoutingOrchestrator(self.route_engine)
@@ -1520,6 +1690,7 @@ class SearchService:
         # Consume the generator dynamically
         req = RoutingRequest(source_code=source, destination_code=destination, departure_date=dt, constraints=c, limit=30, db_session=self.transit_db)
         routes = await orchestrator.stream_all_tiers(request=req)
+        all_routes_for_sovereign = [r.to_dict() for r in routes]
         routes_batches = []
 
         for i in range(0, len(routes), chunk_size):
@@ -1563,7 +1734,46 @@ class SearchService:
 
             await asyncio.sleep(0.01)
 
-        yield {"status": "complete", "message": "Full system scan complete.", "progress": 100}
+        # [SOVEREIGN] Inject Intelligence Metadata in the final chunk
+        try:
+            sio_result = await sio.execute_search_cycle(
+                source=source,
+                destination=destination,
+                initial_routes=all_routes_for_sovereign,
+                user_id=user_id,
+                persona=persona.value
+            )
+            
+            sovereign_metadata = {
+                "corridor_pressure": sio_result["decision"].corridor_pressure,
+                "shadow_guide": {
+                    "message": sio_result["guidance"].message,
+                    "sentiment": sio_result["guidance"].tone
+                },
+                "edr_nudges": [
+                    {
+                        "id": n.nudge_id,
+                        "type": n.nudge_type.value,
+                        "headline": n.headline,
+                        "description": n.description,
+                        "incentive": f"₹{n.incentive_value}",
+                        "target_route": n.target_route_id,
+                        "ab_variant": n.metadata.get("ab_variant")
+                    }
+                    for n in sio_result["decision"].nudges
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Sovereign Injection Failed: {e}")
+            sovereign_metadata = {}
+
+        yield {
+            "status": "complete", 
+            "message": "Full system scan complete.", 
+            "progress": 100,
+            "final": True,
+            "metadata": sovereign_metadata
+        }
 
     def __del__(self):
         transit_db = getattr(self, 'transit_db', None)

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import os
+from typing import List, Optional
 
 # Set PYTHONPATH
 sys.path.append(os.getcwd())
@@ -13,8 +14,8 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("stress-shutdown")
 
 class PersistentNode(NexusNode):
-    def __init__(self, name, dependencies=None):
-        super().__init__(name, dependencies=dependencies)
+    def __init__(self, name: str, dependencies: Optional[List[str]] = None):
+        super().__init__(name, dependencies=dependencies or [])
         self.flushed = False
 
     async def on_start(self):
