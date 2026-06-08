@@ -1,26 +1,24 @@
 """
-Services Package
-================
+Services Package (Modularized)
+==============================
 
-RouteMaster backend services for travel planning, booking, and chatbot functionality.
+RouteMaster backend services organized by logical domain.
+This module exports the main service interfaces for the application.
 
 Modules:
-- travel_planning_api: Travel planning API endpoints
-- telegram_dispatcher: Telegram bot notifications
-- conversation_manager: Multi-turn conversation handling
-- interactive_bot_handler: Interactive chatbot with rich responses
-- telegram_interactive_handler: Telegram-specific interactive handler
-- interactive_response_types: Rich response type definitions
-- interactive_bot_api: API endpoints for the interactive bot
-- demo_interactive_chatbot: Demo script for the chatbot
-
-Author: RouteMaster Team
-Version: 1.0.0
+- planning: Travel planning and reconstruction
+- telegram: Bot dispatching and interaction handling
+- intelligence: NLP, conversation, and rich responses
+- booking: PNR and reservation services
+- finance: Payments and reconciliation
+- pricing: Yield and price calculation
+- security: Fraud and audit
+- cache: Data caching and warming
 """
 
-from .travel_planning_api import router as travel_planning_router
-from .telegram_dispatcher import telegram_dispatcher
-from .conversation_manager import (
+from .planning.api import router as travel_planning_router
+from .telegram.bot import telegram_dispatcher
+from .intelligence.conversation import (
     ConversationManager,
     ConversationContext,
     ConversationState,
@@ -28,7 +26,7 @@ from .conversation_manager import (
     Entity,
     conversation_manager
 )
-from .interactive_bot_handler import (
+from .intelligence.bot_handler import (
     InteractiveBotHandler,
     InteractiveResponse,
     ActionType,
@@ -36,7 +34,7 @@ from .interactive_bot_handler import (
     Platform,
     interactive_bot_handler
 )
-from .interactive_response_types import (
+from .intelligence.response_types import (
     InteractiveResponseBuilder,
     Button,
     FormField,
@@ -46,12 +44,12 @@ from .interactive_response_types import (
     create_pnr_status,
     create_train_tracking
 )
-from .telegram_interactive_handler import (
+from .telegram.handler import (
     TelegramInteractiveHandler,
     TelegramUpdate,
     telegram_interactive_handler
 )
-from api.interactive_bot_api import router as interactive_bot_router
+# from api.communication.bot_api import router as interactive_bot_router  # Removed to avoid circularity
 
 __all__ = [
     # Travel Planning
@@ -92,5 +90,5 @@ __all__ = [
     'telegram_interactive_handler',
     
     # API
-    'interactive_bot_router'
+    # 'interactive_bot_router' # Removed
 ]

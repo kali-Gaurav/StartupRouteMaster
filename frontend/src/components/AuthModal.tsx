@@ -1,6 +1,6 @@
 /**
  * Authentication Modal
- * Handles Phone OTP, Email OTP, and Google OAuth using Supabase
+ * Handles Phone, Email, and Google OAuth using Firebase
  */
 
 import React, { useState } from 'react';
@@ -9,8 +9,16 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { supabase } from '@/lib/supabase';
+import { auth } from '@/lib/firebase';
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signInWithEmailAndPassword,
+  RecaptchaVerifier,
+  signInWithPhoneNumber
+} from 'firebase/auth';
 import { Loader2, Phone, Mail, CheckCircle2, AlertCircle } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface AuthModalProps {
   open: boolean;
@@ -26,6 +34,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [confirmationResult, setConfirmationResult] = useState<any>(null);
 
   const resetForm = () => {
     setStep('input');
@@ -33,6 +42,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setOtp('');
     setError('');
     setMessage('');
+    setConfirmationResult(null);
+  };
+
+  const setupRecaptcha = () => {
+    if (!(window as any).recaptchaVerifier) {
+      (window as any).recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+        'size': 'invisible',
+        'callback': () => {}
+      });
+    }
   };
 
   const handleSendOTP = async (e: React.FormEvent) => {
@@ -42,25 +61,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setLoading(true);
     
     try {
-      const { error: sbError } = await supabase.auth.signInWithOtp(
-        authMethod === 'email' 
-          ? { email: contact } 
-          : { phone: contact }
-      );
-
-      if (sbError) throw sbError;
-
-      setMessage(`OTP sent to your ${authMethod}.`);
-      setStep('verify');
+      if (authMethod === 'phone') {
+        setupRecaptcha();
+        const appVerifier = (window as any).recaptchaVerifier;
+        const result = await signInWithPhoneNumber(auth, contact, appVerifier);
+        setConfirmationResult(result);
+        setMessage('OTP sent to your phone.');
+        setStep('verify');
+      } else {
+        // For email in this modal, we'll suggest using the full login page or implement a quick password login
+        setError('Please use the dedicated Login page for email access.');
+      }
     } catch (err: any) {
       console.error('OTP Error:', err);
-      if (err.status === 429 || err.message?.includes('rate limit')) {
-        setError('Too many requests. Please wait a few minutes before trying again.');
-      } else if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
-        setError('Network error. Please check your internet connection and try again.');
-      } else {
-        setError(err.message || 'Failed to send OTP');
-      }
+      setError(err.message || 'Failed to send OTP');
     } finally {
       setLoading(false);
     }
@@ -72,19 +86,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setLoading(true);
     
     try {
-      const { error: sbError } = await (authMethod === 'email' 
-        ? supabase.auth.verifyOtp({ email: contact, token: otp, type: 'email' })
-        : supabase.auth.verifyOtp({ phone: contact, token: otp, type: 'sms' })
-      );
-
-      if (sbError) throw sbError;
-
-      setMessage('Login successful!');
-      setTimeout(() => {
-        onClose();
-        resetForm();
-        onSuccess?.();
-      }, 1000);
+      if (confirmationResult) {
+        await confirmationResult.confirm(otp);
+        setMessage('Login successful!');
+        setTimeout(() => {
+          onClose();
+          resetForm();
+          onSuccess?.();
+        }, 1000);
+      }
     } catch (err: any) {
       setError(err.message || 'Invalid OTP');
     } finally {
@@ -96,38 +106,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
     setLoading(true);
     setError('');
     try {
-      const { error: sbError } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin
-        }
-      });
-      if (sbError) throw sbError;
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      onClose();
+      onSuccess?.();
     } catch (err: any) {
       setError(err.message || 'Google authentication failed');
-      setLoading(false);
-    }
-  };
-
-  const handleResendOTP = async () => {
-    setOtp('');
-    setError('');
-    setMessage('');
-    setLoading(true);
-
-    try {
-      const { error: sbError } = await supabase.auth.signInWithOtp(
-        authMethod === 'email' ? { email: contact } : { phone: contact }
-      );
-      if (sbError) throw sbError;
-      setMessage('OTP resent successfully!');
-    } catch (err: any) {
-      if (err.status === 429) {
-        setError('Rate limit exceeded. Please wait before resending.');
-      } else {
-        setError(err.message || 'Failed to resend OTP');
-      }
-    } finally {
       setLoading(false);
     }
   };
@@ -142,6 +126,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
+        <div id="recaptcha-container"></div>
         <DialogHeader>
           <DialogTitle className="text-2xl font-bold text-center">
             Welcome to RouteMaster
@@ -177,9 +162,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                     required
                     disabled={loading}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Enter your phone number with country code
-                  </p>
                 </div>
 
                 {error && (
@@ -189,22 +171,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                   </div>
                 )}
 
-                {message && (
-                  <div className="text-sm text-green-600 bg-green-50 p-3 rounded-md flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {message}
-                  </div>
-                )}
-
                 <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Sending OTP...
-                    </>
-                  ) : (
-                    'Send OTP'
-                  )}
+                  {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Send OTP'}
                 </Button>
               </form>
             ) : (
@@ -214,176 +182,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
                   <Input
                     id="otp"
                     type="text"
-                    placeholder="123456"
                     value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    onChange={(e) => setOtp(e.target.value)}
                     required
-                    maxLength={6}
                     disabled={loading}
-                    autoFocus
                   />
-                  <p className="text-xs text-muted-foreground">
-                    OTP sent to {contact}
-                  </p>
                 </div>
-
-                {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                {message && (
-                  <div className="text-sm text-green-600 bg-green-50 p-3 rounded-md flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {message}
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setStep('input')}
-                    disabled={loading}
-                    className="flex-1"
-                  >
-                    Back
-                  </Button>
-                  <Button type="submit" className="flex-1" disabled={loading}>
-                    {loading ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Verifying...
-                      </>
-                    ) : (
-                      'Verify OTP'
-                    )}
-                  </Button>
-                </div>
-
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleResendOTP}
-                  disabled={loading}
-                  className="w-full text-sm"
-                >
-                  Didn't receive? Resend OTP
+                <Button type="submit" className="w-full" disabled={loading}>
+                  {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Verify OTP'}
                 </Button>
               </form>
             )}
           </TabsContent>
 
-          <TabsContent value="email" className="space-y-4 mt-6">
-            {step === 'input' ? (
-              <form onSubmit={handleSendOTP} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email Address</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    placeholder="you@example.com"
-                    value={contact}
-                    onChange={(e) => setContact(e.target.value)}
-                    required
-                    disabled={loading}
-                  />
-                </div>
-
-                {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                {message && (
-                  <div className="text-sm text-green-600 bg-green-50 p-3 rounded-md flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {message}
-                  </div>
-                )}
-
-                <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Sending OTP...
-                    </>
-                  ) : (
-                    'Send OTP'
-                  )}
-                </Button>
-              </form>
-            ) : (
-              <form onSubmit={handleVerifyOTP} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="otp-email">Enter OTP</Label>
-                  <Input
-                    id="otp-email"
-                    type="text"
-                    placeholder="123456"
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    required
-                    maxLength={6}
-                    disabled={loading}
-                    autoFocus
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    OTP sent to {contact}
-                  </p>
-                </div>
-
-                {error && (
-                  <div className="text-sm text-red-600 bg-red-50 p-3 rounded-md flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                {message && (
-                  <div className="text-sm text-green-600 bg-green-50 p-3 rounded-md flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4" />
-                    {message}
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setStep('input')}
-                    disabled={loading}
-                    className="flex-1"
-                  >
-                    Back
-                  </Button>
-                  <Button type="submit" className="flex-1" disabled={loading}>
-                    {loading ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Verifying...
-                      </>
-                    ) : (
-                      'Verify OTP'
-                    )}
-                  </Button>
-                </div>
-
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={handleResendOTP}
-                  disabled={loading}
-                  className="w-full text-sm"
-                >
-                  Didn't receive? Resend OTP
-                </Button>
-              </form>
-            )}
+          <TabsContent value="email" className="space-y-4 mt-6 text-center">
+            <p className="text-sm text-muted-foreground">
+              Please use the dedicated login page for email and password access.
+            </p>
+            <Button variant="outline" className="w-full" onClick={() => window.location.href = '/login'}>
+              Go to Login Page
+            </Button>
           </TabsContent>
         </Tabs>
 
@@ -396,36 +214,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ open, onClose, onSuccess }
           </div>
         </div>
 
-        <Button
-          variant="outline"
-          onClick={handleGoogleAuth}
-          className="w-full"
-          disabled={loading}
-        >
-          <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
-            <path
-              fill="currentColor"
-              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-            />
-            <path
-              fill="currentColor"
-              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-            />
-            <path
-              fill="currentColor"
-              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-            />
-          </svg>
+        <Button variant="outline" onClick={handleGoogleAuth} className="w-full" disabled={loading}>
           Google
         </Button>
-
-        <p className="text-xs text-center text-muted-foreground mt-4">
-          By continuing, you agree to our Terms of Service and Privacy Policy
-        </p>
       </DialogContent>
     </Dialog>
   );

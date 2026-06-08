@@ -1,6 +1,6 @@
 from core.route_engine.scoring import RouteScorer
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, Persona
+from core.data_utils.structures import Route, RouteSegment, Persona
 from datetime import datetime
 
 async def verify_task_36():

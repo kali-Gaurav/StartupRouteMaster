@@ -20,8 +20,8 @@ from services.verification_engine import (
     VerificationService, VerificationConfig, VerificationStatus,
     SeatCheckResult, TrainScheduleCheckResult, FareCheckResult, VerificationDetails
 )
-from core.resilience import circuit_breaker_manager, CircuitBreakerState
-from core.retry import RetryPolicy, retry_async
+from core.resilience.core import circuit_manager, CircuitBreakerState
+from core.resilience.retry import RetryPolicy, retry_async
 
 
 class TestTelegramService:
@@ -401,15 +401,15 @@ class TestCircuitBreakerIntegration:
     
     def test_circuit_breaker_states(self):
         """Test circuit breaker state transitions."""
-        breaker = circuit_breaker_manager.get_breaker("test_breaker")
+        breaker = circuit_manager.get_breaker("test_breaker")
         
         # Initial state should be CLOSED
         assert breaker.get_state() == CircuitBreakerState.CLOSED
     
     def test_multiple_breakers(self):
         """Test multiple named circuit breakers."""
-        breaker1 = circuit_breaker_manager.get_breaker("service_a")
-        breaker2 = circuit_breaker_manager.get_breaker("service_b")
+        breaker1 = circuit_manager.get_breaker("service_a")
+        breaker2 = circuit_manager.get_breaker("service_b")
         
         assert breaker1 is not None
         assert breaker2 is not None

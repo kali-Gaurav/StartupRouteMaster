@@ -10,7 +10,7 @@ sys.path.append(os.path.join(os.getcwd(), "backend"))
 from core.route_engine.raptor import OptimizedRAPTOR
 from core.route_engine.graph import TimeDependentGraph, StaticGraphSnapshot
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import RouteSegment
+from core.data_utils.structures import RouteSegment
 
 async def test_raptor_24h_window():
     logging.basicConfig(level=logging.INFO)

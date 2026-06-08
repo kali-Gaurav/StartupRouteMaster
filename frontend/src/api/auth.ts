@@ -2,6 +2,7 @@ import { v3Fetch } from "@/lib/apiClient";
 
 export interface AuthResponse {
   token: string;
+  token_type?: 'firebase_custom' | 'bearer' | string;
   user: Record<string, unknown>;
   is_new_user: boolean;
 }

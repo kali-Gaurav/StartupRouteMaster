@@ -10,10 +10,10 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List, Optional, Any, Dict, Set, Tuple, Union, cast
 
-from core.data_structures import Route, RouteSegment, TransferConnection, ensure_datetime
+from core.data_utils.structures import Route, RouteSegment, TransferConnection, ensure_datetime
 from core.route_engine.constraints import RouteConstraints
 from core.route_engine.graph import TimeDependentGraph, MemMapManager
-from core.frontier import FrontierManager, FrontierRoute
+from core.engines.frontier import FrontierManager, FrontierRoute
 from utils.station_utils import get_metro_group_codes
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 
@@ -28,7 +28,7 @@ AVG_TRAIN_SPEED_KMPH = 60
 
 class SearchState:
     """[Issue 5] Thread-safe state object (no pooling)."""
-    __slots__ = ('trip_id', 'stop_id', 'arr_ts', 'dep_ts', 'round_num', 'parent', 'wait_mins', 'boarded_idx')
+    __slots__ = ('trip_id', 'stop_id', 'arr_ts', 'dep_ts', 'round_num', 'parent', 'wait_mins', 'boarded_idx', 'v_bloom')
     
     def __init__(self, tid=0, sid=0, arr=0, dep=0, round_num=0, parent=None, wait=0, b_idx=0):
         self.trip_id = tid
@@ -39,6 +39,31 @@ class SearchState:
         self.parent = parent
         self.wait_mins = wait
         self.boarded_idx = b_idx
+        # [Task 1 & 2] 256-bit Double-Hash Bloom Filter
+        self.v_bloom = 0
+        if parent:
+            self.v_bloom = parent.v_bloom
+        
+        # Add current stop to bloom
+        idx1 = sid % 256
+        idx2 = (sid * 17) % 256
+        self.v_bloom |= (1 << idx1) | (1 << idx2)
+
+    def has_cycle(self, sid: int) -> bool:
+        idx1 = sid % 256
+        idx2 = (sid * 17) % 256
+        
+        # Fast bloom check
+        if not ((self.v_bloom & (1 << idx1)) and (self.v_bloom & (1 << idx2))):
+            return False
+            
+        # Collision confirmation via linked list traversal
+        curr = self
+        while curr:
+            if curr.stop_id == sid:
+                return True
+            curr = curr.parent
+        return False
 
 def haversine(lat1, lon1, lat2, lon2):
     """[Issue 1] Real distance for heuristic."""
@@ -98,6 +123,9 @@ class TripBasedRouter(BaseRoutingEngine):
 
     async def find_routes(self, request: RoutingRequest) -> RoutingResponse:
         source_stop_id = request.src_cluster_ids
+        from services.multi_layer_cache import multi_layer_cache
+        cache_key = f"nexus:search:{request.src_cluster_ids}:{request.dst_cluster_ids}:{request.departure_date.strftime('%Y%m%d')}:{request.constraints.persona.value}"
+        
         dest_stop_id = request.dst_cluster_ids
         departure_date = request.departure_date
         constraints = request.constraints
@@ -197,6 +225,7 @@ class TripBasedRouter(BaseRoutingEngine):
         trip_nodes = getattr(graph.snapshot, 'tbr_trip_nodes', None)
         t_index = getattr(graph.snapshot, 'tbr_trip_index', {})
         if trip_nodes is None or not t_index: return []
+        snapshot = cast(Any, graph.snapshot)
 
         if isinstance(source_id, list):
             src_ids = set(source_id)
@@ -239,14 +268,22 @@ class TripBasedRouter(BaseRoutingEngine):
         self.cost_fn = self.calculate_generalized_cost
         self.constraints = constraints
         
-        # [Task 42.1] Define Quotas for diverse transfer-counts (Generation 12.1 High Yield Overhaul)
-        quotas = {0: 300, 1: 200, 2: 100, 3: 50, 4: 30, 5: 20}
-        if load_more:
-            quotas = {0: 500, 1: 300, 2: 200, 3: 100, 4: 60, 5: 40}
+        # [Task 3] Align Quotas and Variety Labels with RoutingRequest Limit
+        base_multiplier = 4 if load_more else 2
+        quotas = {
+            0: int(limit * base_multiplier * 2),
+            1: int(limit * base_multiplier * 1.5),
+            2: int(limit * base_multiplier),
+            3: int(limit * base_multiplier * 0.5),
+            4: int(limit * base_multiplier * 0.25),
+            5: int(limit * base_multiplier * 0.1)
+        }
         
         # [Yield Modification] Massive slack and pareto limits for maximum 2, 3 transfer yields
         slack_sec = 86400 if load_more else 43200 # 24h or 12h slack
-        max_labels_per_stop = 35 if load_more else 25 # Increased Pareto yield limit
+        
+        # Scale max_labels_per_stop proportionally to limit
+        max_labels_per_stop = max(10, min(50, int(limit * 0.6))) 
         
         # 2. Closure Functions
         def get_delay(tid):
@@ -296,13 +333,30 @@ class TripBasedRouter(BaseRoutingEngine):
                 did_idx = snapshot.stop_id_to_idx.get(d_id) if snapshot is not None else None
                 if did_idx is None: continue
                 dy, dx = c_mat[did_idx]
-                # Manhattan-Euclidean (Faster than Haversine for A* search)
-                km = abs(curr_y - dy) * DEG_TO_KM_Y + abs(curr_x - dx) * DEG_TO_KM_X
+                # [Task 4] Accurate Haversine Distance Calculation
+                km = haversine(curr_y, curr_x, dy, dx)
                 if km < min_km: min_km = km
                 
-            h_mins = int(min_km / 0.75) # 0.75 km/min admissible estimate
-            _h_cache[curr_sid] = h_mins * 60 # Return in seconds for A*
-            return _h_cache[curr_sid]
+            # [Task 6] Dynamic Admissibility based on corridor length
+            admissibility_factor = 1.0 # 60 km/h default
+            if min_km > 500:
+                admissibility_factor = 1.33 # 80 km/h for long corridors (Express)
+            elif min_km < 100:
+                admissibility_factor = 0.66 # 40 km/h for short corridors (Local)
+                
+            h_mins = int(min_km / admissibility_factor) 
+            
+            # [Task 5] Historical Penalty Weighting
+            penalty_mins = 0
+            if snapshot is not None and hasattr(snapshot, 'transfers'):
+                # Proxy for historical congestion: Hubs with many transfers are penalized slightly
+                t_list = snapshot.transfers.get(curr_sid, [])
+                if len(t_list) > 10:
+                    penalty_mins = 15 # Add 15 mins to heuristic to discourage routing through overly congested hubs unless necessary
+            
+            h_cost = (h_mins + penalty_mins) * 60 # Return in seconds for A*
+            _h_cache[curr_sid] = h_cost
+            return h_cost
 
         # 3. Hot Loop Local References
         _edge_index_mmap = self._edge_index_mmap
@@ -427,6 +481,14 @@ class TripBasedRouter(BaseRoutingEngine):
                 curr_sid = int(stop_node['stop_id'])
                 current_arr_ts = int(stop_node['arr_ts']) + delay_secs
                 self._nodes_explored += 1
+                
+                # [Task 7] Time-Based Pruning: Strict discarding of paths arriving too late
+                if current_arr_ts > best_time_final + slack_sec:
+                    continue # Global pruning: Exceeds maximum acceptable slack relative to best known arrival
+                    
+                if current_arr_ts > best_arrival[curr_sid][curr.round_num] + 10800: # 3 hours local slack
+                    continue # Local pruning: Arrives much later than the best known arrival at this station for the same number of transfers
+
                  # --- [Nexus: Cost-Aware Pareto Pruning] ---
                 is_dom = False
                 prev_rid = curr.round_num
@@ -440,9 +502,16 @@ class TripBasedRouter(BaseRoutingEngine):
                 comfort = 0.5 
                 if any(p in train_num for p in ["VANDE", "RAJ", "SHT", "DUR"]): comfort += 0.3
                 
+                # [Task 1.1] Inject ML Availability Probability into A* cost
+                from services.ml.availability_heuristic import availability_heuristic
+                # Estimate probability; assuming general class '3A' and 'GN' quota for base routing
+                avail_prob = availability_heuristic.estimate_confirmation_chance(
+                    train_no=train_num, class_type="3A", travel_date=departure_date, quota="GN"
+                )
+                
                 current_cost = self.calculate_generalized_cost(
                     current_arr_ts, curr.round_num, curr.wait_mins, 
-                    dist_km, fare, comfort, 1.0, constraints
+                    dist_km, fare, comfort, avail_prob, constraints
                 )
 
                 # 1. Global Dominance
@@ -517,7 +586,13 @@ class TripBasedRouter(BaseRoutingEngine):
                                 wait=curr.wait_mins + (min_buffer_eff // 60),
                                 b_idx=n_idx
                             )
-                            h = get_heuristic(curr_sid, dst_ids)
+                            if curr_sid in dst_ids:
+                                h = 0 # Admissible goal
+                            else:
+                                if alight_state.has_cycle(curr_sid):
+                                    pruned_dominance += 1; continue
+                                h = get_heuristic(curr_sid, dst_ids)
+
                             heapq.heappush(pq, (next_state.arr_ts + h, id(next_state), next_state))
 
         logger.info(f"📊 TBR Stats: {found_goals} goals, {self._nodes_explored} nodes, PRUNED(time:{pruned_time}, dom:{pruned_dominance})")
@@ -542,6 +617,14 @@ class TripBasedRouter(BaseRoutingEngine):
         final_results = []
         best_overall_duration = min(r.total_duration for r in hydrated)
         
+        # [Task 8] Pre-compute constraint sets for O(1) lookups
+        _must_avoid_stops  = set(getattr(constraints, 'must_avoid_stops',  []) or [])
+        _must_avoid_trains = set(getattr(constraints, 'must_avoid_trains', []) or [])
+        _must_include_set  = set(getattr(constraints, 'must_include_stops', []) or [])
+        # [Task 9] preferred train keywords (e.g. ["VANDE", "RAJ"])
+        _pref_types        = [t.upper() for t in (getattr(constraints, 'preferred_train_types', []) or [])]
+        _non_pref_penalty  = float(getattr(constraints, 'non_preferred_train_penalty', 1.0))
+
         for t_count in sorted(by_transfers.keys()):
             tier_routes = sorted(by_transfers[t_count], key=lambda x: x.total_duration)
             quota = quotas.get(t_count, 5)
@@ -552,6 +635,37 @@ class TripBasedRouter(BaseRoutingEngine):
                 # Broad sanity filter
                 if r.total_duration > best_overall_duration + (slack_sec // 60) * 2:
                     continue
+
+                # [Task 8a] Must-Avoid stops: drop if any segment visits a banned stop
+                if _must_avoid_stops:
+                    visited = {s.departure_stop_id for s in r.segments} | {s.arrival_stop_id for s in r.segments}
+                    if visited & _must_avoid_stops:
+                        continue
+
+                # [Task 8b] Must-Avoid trains: drop if any segment uses a banned train number
+                if _must_avoid_trains:
+                    used_trains = {s.train_number for s in r.segments if s.train_number}
+                    if used_trains & _must_avoid_trains:
+                        continue
+
+                # [Task 8c] Must-Include stops: drop if route doesn't visit all required waypoints
+                if _must_include_set:
+                    visited = {s.departure_stop_id for s in r.segments} | {s.arrival_stop_id for s in r.segments}
+                    if not _must_include_set.issubset(visited):
+                        continue
+
+                # [Task 9] Train type preference: scale effective duration for sorting
+                # Routes using preferred trains are not penalized; others get a virtual duration bump
+                if _pref_types and _non_pref_penalty > 1.0:
+                    used_trains = [s.train_number or "" for s in r.segments]
+                    all_preferred = any(
+                        any(kw in tn.upper() for kw in _pref_types)
+                        for tn in used_trains
+                    )
+                    if not all_preferred:
+                        # Soft penalty: skip this route if non-preferred AND quota almost full
+                        if admitted >= max(1, quota // 2):
+                            continue
                 
                 final_results.append(r)
                 admitted += 1

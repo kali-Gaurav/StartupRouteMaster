@@ -3,7 +3,7 @@ import time
 import asyncio
 from datetime import timedelta
 from typing import List, Callable, Any
-from core.data_structures import Route, ensure_datetime
+from core.data_utils.structures import Route, ensure_datetime
 from .constraints import RouteConstraints
 from core.pricing.fare_calculator import calculate_fare
 from .scoring import RouteScorer
@@ -122,12 +122,18 @@ class HydrationPipeline:
         from providers.gateway import provider_gateway
         pref_classes = constraints.preferred_classes or (["3A", "2A", "SL"] if not constraints.preferred_class else [constraints.preferred_class])
         
-        async def hydrate_route_fare(r):
+        # [VYA Optimization] Sort by score to identify top routes for JIT hydration
+        routes.sort(key=lambda x: -(x.score or 0))
+
+        async def hydrate_route_fare(idx, r):
             total_cost = 0.0
+            # [Elite Policy] Only call RapidAPI for top 10 routes in the result set
+            # or if the iteration is 0 (first load).
+            is_priority = idx < 10 and not skip_api
+            
             for s in r.segments:
                 fare_found = False
-                # [Elite Policy] Only call RapidAPI if in Omniscient/Elite mode
-                if not skip_api:
+                if is_priority:
                     for cls in pref_classes:
                         try:
                             dep_time = ensure_datetime(s.departure_time)
@@ -148,12 +154,11 @@ class HydrationPipeline:
                         except Exception: continue
                 
                 if not fare_found:
-                    # HEURISTIC FALLBACK: Use distance-based fare calculator when available
+                    # HEURISTIC FALLBACK: Use distance-based fare calculator
                     if s.distance_km and s.distance_km > 0:
                         fare_result = calculate_fare(s.distance_km, constraints.preferred_class or "SL")
                         s.metadata["fare"] = float(fare_result.get("total_fare", 0.0)) or (s.distance_km * 0.5)
                     else:
-                        # Absolute fallback: duration-based estimate
                         t_no = str(s.train_number)
                         base = 350.0 if t_no.startswith(("12", "22")) else 200.0
                         s.metadata["fare"] = base + (s.duration_minutes * 0.4)
@@ -161,10 +166,9 @@ class HydrationPipeline:
                     s.metadata["fare_note"] = "Heuristic Estimate"
                     total_cost += s.metadata["fare"]
 
-
             r.total_cost = total_cost
 
-        await asyncio.gather(*[hydrate_route_fare(r) for r in routes])
+        await asyncio.gather(*[hydrate_route_fare(i, r) for i, r in enumerate(routes)])
         return routes
 
     async def _step_elite_verification(self, routes: List[Route], constraints: RouteConstraints, graph, db):
@@ -175,7 +179,10 @@ class HydrationPipeline:
 
         from providers.gateway import provider_gateway
         
-        async def verify_route_availability(r):
+        async def verify_route_availability(idx, r):
+            # Only proactively verify the top 5 routes to strictly manage the 7k/month quota
+            if idx >= 5: return
+            
             async def verify_segment(s):
                 # [Elite] Verify booking status for the primary class
                 cls = s.metadata.get("class", "SL")
@@ -209,7 +216,7 @@ class HydrationPipeline:
 
             await asyncio.gather(*[verify_segment(s) for s in r.segments])
 
-        await asyncio.gather(*[verify_route_availability(r) for r in routes])
+        await asyncio.gather(*[verify_route_availability(i, r) for i, r in enumerate(routes)])
 
     async def _step_reliability_badges(self, routes: List[Route], constraints: RouteConstraints, graph, db):
         for r in routes:
@@ -235,8 +242,47 @@ class HydrationPipeline:
             if 21 <= dep_hour or dep_hour <= 4: parts.append("Overnight")
             r.metadata["journey_story"] = " • ".join(parts)
 
-    def _step_integrity_check(self, routes: List[Route], constraints: RouteConstraints, graph, db):
-        """[Task 28.10] Final data validation & optimized synchronous scoring."""
+    async def _step_sathi_availability(self, routes: List[Route], constraints: RouteConstraints, graph, db):
+        """[Task RM-S-004] Inject real-time Sathi availability data for safety-conscious travelers."""
+        if not constraints.metadata.get("women_safety_priority", False):
+            return
+
+        from services.sathi_service import SathiService
+        sathi_svc = SathiService(db)
+        
+        # Map to store counts per station code to avoid redundant lookups
+        sathi_cache = {}
+
+        for r in routes:
+            route_sathi_total = 0
+            # Check all transfer points and the arrival station
+            check_points = [tr.station_code for tr in r.transfers]
+            if r.segments:
+                check_points.append(r.segments[-1].to)
+
+            for code in check_points:
+                if code not in sathi_cache:
+                    try:
+                        # Fetch station coordinates from the graph overlay
+                        # Fallback to 0 if station data is missing
+                        station = graph.overlay.get_station_by_code(code)
+                        if station and hasattr(station, 'lat') and hasattr(station, 'lng'):
+                            nearby = sathi_svc.get_nearby_sathi_locations(station.lat, station.lng, radius=5.0)
+                            sathi_cache[code] = len(nearby)
+                        else:
+                            sathi_cache[code] = 0
+                    except Exception:
+                        sathi_cache[code] = 0
+                
+                count = sathi_cache[code]
+                route_sathi_total += count
+            
+            if route_sathi_total > 0:
+                r.metadata["sathi_coverage"] = route_sathi_total
+                r.metadata["safety_badge"] = "SATHI_VERIFIED"
+
+    async def _step_integrity_check(self, routes: List[Route], constraints: RouteConstraints, graph, db):
+        """[Task 28.10] Final data validation & optimized asynchronous scoring."""
         for r in routes:
             if not r.total_cost or r.total_cost < 1:
                 # Use distance-based heuristic instead of blind ₹500
@@ -254,8 +300,8 @@ class HydrationPipeline:
                     departure = ensure_datetime(r.segments[0].departure_time, arrival)
                     r.total_duration = int((arrival - departure).total_seconds() / 60)
             
-            # [Task 28.1] Use synchronous scoring to avoid massive event loop overhead
-            r.score = RouteScorer.score_route_sync(r, constraints, passengers=constraints.passengers)
+            # [Task 28.1] Use asynchronous scoring to properly evaluate real-time safety vibes
+            r.score = await RouteScorer.score_route_sync(r, constraints, passengers=constraints.passengers)
 
 
     # --- HELPERS ---
@@ -270,6 +316,7 @@ def create_default_pipeline() -> HydrationPipeline:
     pipeline.add_step(pipeline._step_multi_class_fares)      # Primary fare calculation (API + heuristic)
     pipeline.add_step(pipeline._step_elite_verification)
     pipeline.add_step(pipeline._step_reliability_badges)
+    pipeline.add_step(pipeline._step_sathi_availability)
     pipeline.add_step(pipeline._step_journey_story)
     pipeline.add_step(pipeline._step_integrity_check)
     return pipeline

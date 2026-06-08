@@ -7,22 +7,52 @@ from typing import List, Dict, Any, Optional, Callable, Set, cast
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from .shadow_orchestrator import shadow_orchestrator
 import sys
 from pathlib import Path
 
-# [Task 117.9] Link backend module base index
-_root = Path(__file__).resolve().parent.parent.parent
-if str(_root) not in sys.path:
-    sys.path.append(str(_root))
+# [Task 117.9] Path normalization completed. Legacy sys.path hacks removed.
+# _root = Path(__file__).resolve().parent.parent.parent
+# if str(_root) not in sys.path:
+#     sys.path.append(str(_root))
 
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 from .constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, TransferConnection, Persona
+from core.data_utils.structures import Route, RouteSegment, TransferConnection, Persona
 
 from .turbo_router import TurboRouter
-from .ultra_turbo import UltraTurboDirectEngine
-from .raptor import OptimizedRAPTOR
+from .exhaustive_direct import ExhaustiveDirectEngine
+from .one_hop_hub import OneHopHubEngine
+from .multi_hop_discovery import MultiHopDiscoveryEngine
+from .ultra_turbo import get_db_path
+
+logger = logging.getLogger(__name__)
 from .fast_router import FastPathRouter
+
+# ── Tier-1 Features ───────────────────────────────────────────────────────
+# Feature B: Query Plan Optimizer
+try:
+    from .query_plan_optimizer import query_plan_optimizer, SearchDepth
+    _QPO_ENABLED = True
+except ImportError:
+    _QPO_ENABLED = False
+    logger.warning("[ORCHESTRATOR] QPO not available — using default dispatch.")
+
+# Feature C: Transfer Intelligence Score
+try:
+    from .tis_service import tis_service
+    _TIS_ENABLED = True
+except ImportError:
+    _TIS_ENABLED = False
+    logger.warning("[ORCHESTRATOR] TIS not available — skipping transfer scoring.")
+
+# Feature D: Corridor Safety Bus
+try:
+    from .corridor_safety_bus import corridor_safety_bus
+    _SAFETY_BUS_ENABLED = True
+except ImportError:
+    _SAFETY_BUS_ENABLED = False
+    logger.warning("[ORCHESTRATOR] CorridorSafetyBus not available — skipping safety penalties.")
 from .hub_router import HubRoutingEngine
 from .scoring import RouteScorer
 from .hydration import create_default_pipeline
@@ -30,6 +60,7 @@ from .circuit_breaker import EngineCircuitBreaker
 from .throttler import EngineThrottler
 from .multimodal_engine import MultimodalEngine
 from core.pricing.fare_calculator import calculate_fare
+from services.intelligence.demand_service import demand_service
 
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import os
@@ -100,7 +131,7 @@ class UnifiedRoutingOrchestrator:
 
     async def _inject_multimodal_jumps(self, request: RoutingRequest, constraints: RouteConstraints, graph: Any):
         """[Elite] Pre-scan for direct multimodal jumps (Flights/Buses) from major hubs."""
-        from core.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_TERMINAL_MAPPING
+        from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_TERMINAL_MAPPING
         from services.providers.bus_provider import bus_provider
         from database.models import Stop
         
@@ -108,7 +139,7 @@ class UnifiedRoutingOrchestrator:
 
         # [Task 11.2] Multi-Hub Bridge Discovery
         # If the source is not a hub, we look for nearby hubs to jump from
-        from core.hubs import get_hubs_near
+        from core.engines.hubs import get_hubs_near
         source_stop = request.db_session.query(Stop).filter(Stop.code == request.source_code).first()
         
         hub_codes = [request.source_code] if request.source_code in (MEGA_HUBS | MAJOR_HUBS) else []
@@ -153,6 +184,37 @@ class UnifiedRoutingOrchestrator:
             
             constraints.multimodal_jumps[hub_code] = jumps
 
+    async def _inject_safety_overlay(self, request: RoutingRequest, constraints: RouteConstraints):
+        """[Task RM-007] Fetch real-time Sathi counts and convert to safety scores (0.0 - 1.0)"""
+        from services.sathi_service import SathiService
+        from database.session import SessionUser
+        
+        db = None
+        try:
+            db = SessionUser()
+            sathi_service = SathiService(db)
+            counts = await sathi_service.get_active_sathi_counts()
+            
+            # Map station_code -> station_id for the current graph
+            graph = request.graph or self.engine.graph
+            if not graph: return
+            
+            scores = {}
+            for code, count in counts.items():
+                stop = graph.get_stop_by_code(code)
+                if stop:
+                    # Normalize: 1 Sathi = 0.7, 2+ = 0.9, 5+ = 1.0. Base is 0.5.
+                    score = 0.5 + min(0.5, count * 0.2)
+                    scores[stop.id] = score
+            
+            constraints.station_safety_scores = scores
+            logger.info(f"🛡️ [SAFETY:OVERLAY] Injected scores for {len(scores)} stations.")
+        except Exception as e:
+            logger.warning(f"Failed to inject safety overlay: {e}")
+        finally:
+            if db:
+                db.close()
+
     def get_health(self) -> Dict[str, Any]:
         """[Task 40.3 / 41.9] High-Efficiency Health Metrics for VPS monitoring."""
         return {
@@ -161,12 +223,17 @@ class UnifiedRoutingOrchestrator:
             "engines_registered": list(self.engines.keys())
         }
 
-    def __init__(self, route_engine_instance):
+    def __init__(self, route_engine_instance=None):
         self.engine = route_engine_instance
+        db_path = get_db_path()
         from .tbr_router import TripBasedRouter
+        from .raptor import OptimizedRAPTOR
+        from .multimodal_engine import MultimodalEngine
         self.engines: Dict[str, BaseRoutingEngine] = {
             "hub_tier_0": HubRoutingEngine(),
-            "ultra_turbo_direct": UltraTurboDirectEngine(),
+            "exhaustive_direct": ExhaustiveDirectEngine(db_path),
+            "one_hop_hub": OneHopHubEngine(db_path),
+            "multi_hop_discovery": MultiHopDiscoveryEngine(db_path),
             "turbo_router": TurboRouter(),
             "fastpath_bfs": FastPathRouter(),
             "raptor": OptimizedRAPTOR(),
@@ -174,8 +241,9 @@ class UnifiedRoutingOrchestrator:
             "multimodal": MultimodalEngine()
         }
         self.hub_router = self.engines["hub_tier_0"]
-        self.ultra_turbo = self.engines["ultra_turbo_direct"]
-        self.turbo_router = self.engines["turbo_router"]
+        self.exhaustive_direct = self.engines["exhaustive_direct"]
+        self.one_hop_hub = self.engines["one_hop_hub"]
+        self.multi_hop_discovery = self.engines["multi_hop_discovery"]
         self.fast_router = self.engines["fastpath_bfs"]
         self.raptor = self.engines["raptor"]
         self.tbr_router = self.engines["trip_based"] # [Task 27.17]
@@ -210,6 +278,10 @@ class UnifiedRoutingOrchestrator:
         on_progress=None,
         discovery_cache_key=None
     ) -> List[Route]:
+        # [Task RM-007] Inject real-time safety scores before searching
+        if request.db_session:
+            await self._inject_safety_overlay(request, request.constraints)
+
         return await self.stream_all_tiers(
             request=request,
             skip_heavy=skip_heavy,
@@ -319,6 +391,19 @@ class UnifiedRoutingOrchestrator:
                 
         return safe_routes
 
+    def _apply_demand_yield_boost(self, routes: List[Route], source: str, destination: str):
+        """
+        [Phase 3] Demand-Aware Biasing.
+        Boosts route scores for high-demand/low-yield corridors to encourage exploration.
+        """
+        demand_score = demand_service.get_corridor_demand(source, destination)
+        if demand_score > 0.1:
+            boost = 1.0 + (demand_score * 0.15) # Up to 15% boost
+            logger.info(f"📈 [ORCHESTRATOR:BOOST] Applying {boost:.2f}x Yield Boost for {source}->{destination} (Demand: {demand_score:.2f})")
+            for r in routes:
+                r.score = (r.score or 50.0) * boost
+                r.metadata["demand_yield_boost"] = True
+
     async def _filter_cancelled_trains(self, routes: List[Route], departure_date: datetime, db) -> List[Route]:
         if not routes:
             return []
@@ -362,29 +447,72 @@ class UnifiedRoutingOrchestrator:
         on_progress: Optional[Callable[[float], None]] = None,
         discovery_cache_key: Optional[str] = None
     ) -> List[Route]:
-        """[Task 30/105] Elite Resource-Aware Streaming Orchestrator."""
+        # [Task 30/105] Elite Omniscient Streaming Orchestrator
         source_code = request.source_code
         destination_code = request.destination_code
         departure_date = request.departure_date
         constraints = request.constraints
         limit = request.limit
         db = request.db_session
+        search_iteration = request.metadata.get("search_iteration", 0)
 
         # [Day 10] Multi-Layer Cache Check (Bypass heavy compute if hot)
         from services.multi_layer_cache import multi_layer_cache
         cache_key = f"nexus:search:{source_code}:{destination_code}:{departure_date.strftime('%Y%m%d')}:{constraints.persona.value}"
         if not request.force_refresh:
-            cached_res = await multi_layer_cache.get(cache_key)
-            if cached_res:
-                logger.info(f"⚡ [CACHE:HIT] Serving {len(cached_res)} routes from L2 Cache.")
-                # [SOS] Dynamically filter hazardous corridors from cache
-                cached_res = self._filter_hazardous_routes(cached_res)
-                # [Realtime] Inject latest pulses into cached items
-                await self._inject_realtime_heartbeat(cached_res, db)
-                return cached_res
-        # [Task 122 Refined] Nexus Governor Integration
-        from core.nexus.audit.governor import nexus_governor
-        gov_stats = await nexus_governor.get_stats()
+            try:
+                cached_res = await multi_layer_cache.get(cache_key)
+                if cached_res:
+                    # Reconstruct Route objects if they are dicts
+                    if isinstance(cached_res, list) and len(cached_res) > 0 and isinstance(cached_res[0], dict):
+                        from shared.models.route import Route
+                        cached_res = [Route(**r) for r in cached_res]
+                    logger.info(f"⚡ [CACHE:HIT] Serving {len(cached_res)} routes from L2 Cache.")
+                    return cached_res
+            except Exception as e:
+                logger.warning(f"Cache check failed: {e}")
+                
+        # ── [Feature B] QPO: Analyze query BEFORE dispatching engines ─────────
+        qpo_plan = None
+        if _QPO_ENABLED:
+            try:
+                qpo_plan = query_plan_optimizer.analyze(
+                    src_code=source_code,
+                    dst_code=destination_code,
+                    departure_datetime=departure_date,
+                    db=db,
+                )
+                # Apply QPO recommendations to constraints
+                if qpo_plan.max_journey_hours:
+                    constraints.max_journey_hours = qpo_plan.max_journey_hours
+                if qpo_plan.use_read_replica:
+                    request.metadata["use_read_replica"] = True
+                if qpo_plan.recommended_hub_limit:
+                    constraints.hub_limit = qpo_plan.recommended_hub_limit
+                
+                logger.info(f"🧠 [QPO] Plan: {qpo_plan.reasoning}")
+            except Exception as _qpo_err:
+                logger.warning(f"[QPO] Analysis failed (non-fatal): {_qpo_err}")
+
+        # ── [Feature D] Safety Bus: Check for active corridor alerts ──────────
+        if _SAFETY_BUS_ENABLED:
+            try:
+                safety_events = corridor_safety_bus.get_all_active_events()
+                if safety_events:
+                    # Inject active event station codes into constraints so engines can check them
+                    affected_stations = set()
+                    for ev in safety_events:
+                        affected_stations.update(ev.station_codes)
+                    constraints.metadata["safety_blocked_stations"] = list(affected_stations)
+                    logger.warning(
+                        f"🚨 [SafetyBus] {len(safety_events)} active corridor alerts. "
+                        f"Affected: {list(affected_stations)[:5]}..."
+                    )
+            except Exception as _sb_err:
+                logger.warning(f"[SafetyBus] Check failed (non-fatal): {_sb_err}")
+
+        # --- Phase 1: Engine Strategy Selection ---
+        active_engines = []
         
         # [Task 12.3] Omniscient Asset Management (Business Tier Aware)
         from services.rapidapi_provider import rapidapi_provider
@@ -392,57 +520,52 @@ class UnifiedRoutingOrchestrator:
         
         model = constraints.discovery_model or DiscoveryModel.BACKBONE
         api_available = rapidapi_provider.is_healthy and not rapidapi_provider.quota_latch_active
-        system_stress = gov_stats["throttle_factor"] > 0.8 # Crisis threshold
         
-        # Adaptive Engine Selection based on Business Model (3-Tier Implementation)
-        active_engines = []
+        # [Load More] Expansion Logic (VYA Strategy)
+        search_iteration = request.metadata.get("search_iteration", 0)
         
-        if model == DiscoveryModel.BACKBONE or system_stress:
-             # --- Tier 1: EXPRESS / FREE ---
-             # Focus: Speed & Direct Trains. No external API costs.
-             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router"]
-             constraints.max_transfers = min(constraints.max_transfers, 1) # Limit transfers to 1 for Free tier
-             constraints.timeout_ms = min(constraints.timeout_ms, 3000) # Fast 3s timeout
-             
-             if system_stress:
-                 logger.warning("📉 [ORCHESTRATOR:STRESS] Pressure Critical. Falling back to Core Backbone for safety.")
-             else:
-                 logger.info("🆓 [ORCHESTRATOR] Tier 1: EXPRESS (Free Tier).")
-        
-        elif model == DiscoveryModel.MULTIMODAL:
-             # --- Tier 2: PRO / SAFETY ---
-             # Focus: Reliability, Women's Safety, and Multi-modal discovery.
-             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router", "fastpath_bfs", "raptor"]
-             
-             # Safety weighting boost
-             if constraints.women_safety_priority:
-                 constraints.weights.safety = 5.0
-                 constraints.reliability_weight = 0.8
-             
-             constraints.max_transfers = min(constraints.max_transfers, 3) # Up to 3 transfers
-             
-             if api_available:
-                 active_engines.append("multimodal")
-             
-             # Force Skip Verification metadata (only discovery)
-             constraints.metadata["verification_mode"] = "DISCOVERY_ONLY"
-             logger.info("🚆 [ORCHESTRATOR] Tier 2: PRO / SAFETY (Standard Tier).")
-             
-        elif model == DiscoveryModel.OMNISCIENT:
-             # --- Tier 3: ELITE / OMNISCIENT ---
-             # Focus: Deep Intelligence, Real-time Verification, and Complex Interlining.
-             active_engines = ["hub_tier_0", "ultra_turbo_direct", "turbo_router", "fastpath_bfs", "raptor", "trip_based"]
-             
-             if api_available:
-                 active_engines.append("multimodal")
-             
-             # Upgrade search depth for Omniscient to DEEP for high-yield
-             constraints.search_depth = "DEEP"
-             constraints.max_transfers = max(constraints.max_transfers, 5) # Allow complex 5-stage journeys
-             constraints.timeout_ms = max(constraints.timeout_ms, 12000) # 12s for deep discovery
+        if qpo_plan and qpo_plan.engine_priority:
+            # QPO driven selection
+            active_engines = qpo_plan.engine_priority
+            # Filter by API availability if multimodal is in list
+            if not api_available and "multimodal" in active_engines:
+                active_engines = [e for e in active_engines if e != "multimodal"]
+        elif search_iteration > 0:
+            # Iteration 1+: Deep discovery, multimodal jumps, and relaxed transfer windows
+            active_engines = ["multi_hop_discovery", "multimodal", "raptor"]
+            request.limit = 150 
+            constraints.max_transfers = min(constraints.max_transfers + 1, 5)
+            constraints.transfer_window_max = 24 * 60 # 24 hours
+            logger.info(f"🔍 [EXPANSION] Iteration {search_iteration}: Depth increased to {constraints.max_transfers}T.")
+        else:
+            if model == DiscoveryModel.BACKBONE:
+                 active_engines = ["exhaustive_direct", "turbo_router"]
+                 constraints.max_transfers = min(constraints.max_transfers, 1)
+            elif model == DiscoveryModel.MULTIMODAL:
+                 active_engines = ["exhaustive_direct", "one_hop_hub", "turbo_router", "raptor"]
+                 if api_available: active_engines.append("multimodal")
+            elif model == DiscoveryModel.OMNISCIENT:
+                 # The "Discovery Squad" Full Stack
+                 active_engines = ["exhaustive_direct", "one_hop_hub", "multi_hop_discovery", "raptor", "trip_based"]
+                 if api_available: active_engines.append("multimodal")
                  
-             constraints.metadata["verification_mode"] = "ELITE_VERIFY"
-             logger.info("🧠 [ORCHESTRATOR] Tier 3: ELITE / OMNISCIENT (Premium + 5-Transfer DEEP).")
+                 constraints.search_depth = "DEEP"
+                 constraints.max_transfers = max(constraints.max_transfers, 5)
+                 constraints.timeout_ms = max(constraints.timeout_ms, 15000)
+        
+        # Map QPO alias to internal engine names if needed
+        qpo_map = {
+            "turbo_direct": "exhaustive_direct",
+            "turbo": "turbo_router",
+            "fast": "fastpath_bfs",
+            "hub": "one_hop_hub"
+        }
+        active_engines = [qpo_map.get(e, e) for e in active_engines]
+        
+        logger.info(f"🚀 [DISPATCH] Mode: {model} | Iteration: {search_iteration} | Engines: {active_engines}")
+        if model == DiscoveryModel.OMNISCIENT:
+            constraints.metadata["verification_mode"] = "ELITE_VERIFY"
+            logger.info("🧠 [ORCHESTRATOR] Tier 3: ELITE / OMNISCIENT (Premium + 5-Transfer DEEP).")
              
         # [Safety Engine] Propagate passengers to constraints for scoring
         constraints.passengers = getattr(request, "passengers", [])
@@ -465,7 +588,13 @@ class UnifiedRoutingOrchestrator:
                 return []
 
         try:
-            graph = await self.engine._get_current_graph(departure_date)
+            # [Safe Access] Check if engine has graph resolution capabilities
+            if hasattr(self.engine, "_get_current_graph"):
+                graph = await self.engine._get_current_graph(departure_date)
+            else:
+                from core.route_engine.engine import get_route_engine
+                engine_alt = get_route_engine()
+                graph = await engine_alt._get_current_graph(departure_date)
             # Ensure all graph-dependent routers have the latest graph
             self.fast_router.graph = graph
             self.raptor.graph = graph
@@ -545,8 +674,8 @@ class UnifiedRoutingOrchestrator:
             src_cluster_codes = get_metro_group_codes(source_code)
             dst_cluster_codes = get_metro_group_codes(destination_code)
 
-            from core.context import request_timeout_ctx
-            total_timeout = request_timeout_ctx.get() or 5.0
+            from core.data_utils.context import request_timeout_ctx
+            total_timeout = request_timeout_ctx.get() or 25.0 # Increased from 15.0 for deep discovery yield
             
             engine_limit = max(limit * 2, 50) 
             
@@ -582,30 +711,86 @@ class UnifiedRoutingOrchestrator:
                     # 3. [Aeon] Inject Pulse (Reliability + Social Trust)
                     await self._inject_realtime_heartbeat(all_routes, db_internal)
 
-                    # 4. Deduplication
+                    # 3.1 [Feature D] Corridor Safety Bus: Apply dynamic penalties for active alerts
+                    if _SAFETY_BUS_ENABLED:
+                        for r in all_routes:
+                            # Collect all unique stations in this route
+                            route_stations = set()
+                            for seg in r.segments:
+                                route_stations.add(seg.departure_code)
+                                route_stations.add(seg.arrival_code)
+                            
+                            safety_penalty = corridor_safety_bus.get_corridor_penalty(list(route_stations))
+                            if safety_penalty > 0:
+                                safety_factor = (1.0 - (min(safety_penalty, 120) / 240.0))
+                                r.score = (r.score or 50.0) * safety_factor
+                                r.safety_score = (getattr(r, 'safety_score', 1.0) + safety_factor) / 2.0
+                                r.metadata["safety_penalty_mins"] = safety_penalty
+                                r.metadata["safety_status"] = "CAUTION"
+                                logger.info(f"🚨 [SafetyBus] Applied {safety_penalty}m penalty to route {r.journey_id}")
+
+                    # 3.2 [Feature C] TIS: Calculate Transfer Intelligence Score
+                    if _TIS_ENABLED:
+                        for r in all_routes:
+                            if not r.transfers:
+                                continue
+                                
+                            tis_scores = []
+                            for i, trans in enumerate(r.transfers):
+                                # Map segments to transfer
+                                incoming = r.segments[i]
+                                outgoing = r.segments[i+1]
+                                
+                                try:
+                                    tis_res = await tis_service.score_transfer(
+                                        incoming_train_id=incoming.train_number,
+                                        outgoing_train_id=outgoing.train_number,
+                                        transfer_station_code=trans.station_code,
+                                        arr_minutes=tis_service._parse_time_to_min(trans.arrival_time),
+                                        dep_minutes=tis_service._parse_time_to_min(trans.departure_time),
+                                        db=db_internal
+                                    )
+                                    tis_scores.append(tis_res.score)
+                                    # Inject metadata into transfer object
+                                    trans.safety_score = tis_res.score
+                                    if "tis" not in trans.to_dict(): # Metadata check
+                                        trans.to_dict()["tis"] = {
+                                            "score": tis_res.score,
+                                            "risk_level": tis_res.risk_level.value,
+                                            "on_time_prob": tis_res.on_time_probability,
+                                            "reason": tis_res.reason
+                                        }
+                                except Exception as _tis_err:
+                                    logger.warning(f"TIS calculation failed for route {r.journey_id}: {_tis_err}")
+
+                            if tis_scores:
+                                avg_tis = sum(tis_scores) / len(tis_scores)
+                                r.reliability = (r.reliability + avg_tis) / 2.0
+                                r.metadata["tis_avg"] = round(avg_tis, 2)
+                                r.metadata["tis_count"] = len(tis_scores)
+
+                    # 4. Bucketing by Transfers (Tiered Yield)
                     new_routes = []
                     for r in all_routes:
                         if r.journey_id not in seen_jids:
                             seen_jids.add(r.journey_id)
                             new_routes.append(r)
 
-                    if new_routes:
-                        # 5. Eager Hydration
-                        if not constraints.discovery_only:
-                            await self.hydration_pipeline.execute(new_routes, constraints, graph, db_internal)
-                        else:
-                            for r in new_routes:
-                                r.metadata["discovery_mode"] = True
+                    yield_stats = {
+                        "raw": len(res),
+                        "valid": len(all_routes),
+                        "deduplicated": len(new_routes)
+                    }
+                    
+                    latency_total = (time.perf_counter() - start_time) * 1000
+                    for r in new_routes:
+                        r.metadata["orchestrator_latency_ms"] = round(latency_total, 2)
+                        r.metadata["yield_stats"] = yield_stats
+                        if "tier" not in r.metadata:
+                            engine_nm = r.metadata.get("engine", "default")
+                            r.metadata["tier"] = 1 if "ultra" in engine_nm else (2 if "turbo" in engine_nm else 3)
 
-                        latency_total = (time.perf_counter() - start_time) * 1000
-                        for r in new_routes:
-                            r.metadata["orchestrator_latency_ms"] = round(latency_total, 2)
-                            if "tier" not in r.metadata:
-                                engine_nm = r.metadata.get("engine", "default")
-                                r.metadata["tier"] = 1 if "ultra" in engine_nm else (2 if "turbo" in engine_nm else 3)
-
-                        return new_routes
-                    return []
+                    return new_routes
                 except Exception as e:
                     logger.error(f"⚠️ Engine {name} failed or timed out: {e}")
                     return []
@@ -652,6 +837,10 @@ class UnifiedRoutingOrchestrator:
                 except Exception as e:
                     logger.error(f"Orchestrator task failed: {e}")
 
+            # --- Phase 1.5: Final Merged Audit ---
+            for r in merged_routes:
+                logger.info(f"📍 [ORCHESTRATOR:AUDIT] JID:{r.journey_id} Segs:{len(r.segments)} Engine:{r.metadata.get('engine')}")
+            
             # --- Phase 2: Multi-Modal Interlining Pass (Task 12.5) ---
             interlined_results = []
             if model in [DiscoveryModel.MULTIMODAL, DiscoveryModel.OMNISCIENT]:
@@ -660,34 +849,47 @@ class UnifiedRoutingOrchestrator:
                 flight_routes = [r for r in merged_routes if r.metadata.get("mode") == "FLIGHT"]
                 bus_routes = [r for r in merged_routes if r.metadata.get("mode") == "BUS"]
                 
-                if rail_routes and (flight_routes or bus_routes):
+                if rail_routes:
                     from .interlining_engine import interlining_engine
-                    # 1. Rail -> Flight Stitching
-                    if flight_routes:
-                        stitched_air = await interlining_engine.find_interlined_routes(rail_routes, flight_routes)
-                        interlined_results.extend(stitched_air)
-                        logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched_air)} Rail-Air 'Jump' routes.")
+                    # Create pools for recursive discovery
+                    pools = []
+                    if flight_routes: pools.append(flight_routes)
+                    if bus_routes: pools.append(bus_routes)
                     
-                    # 2. Rail -> Bus Stitching
-                    if bus_routes:
-                        stitched_bus = await interlining_engine.find_interlined_routes(rail_routes, bus_routes)
-                        interlined_results.extend(stitched_bus)
-                        logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched_bus)} Rail-Bus 'Jump' routes.")
+                    if pools:
+                        # Start recursive stitching from Rail routes
+                        stitched = await interlining_engine.find_interlined_routes(
+                            rail_routes, 
+                            pools[0], 
+                            depth=1, 
+                            all_available_pools=pools
+                        )
+                        interlined_results.extend(stitched)
+                        logger.info(f"🧬 [ORCHESTRATOR:STITCH] Created {len(stitched)} recursive multimodal 'Jump' routes.")
             
             merged_routes.extend(interlined_results)
 
+            # --- Phase 2.5: Demand Yield Biasing ---
+            self._apply_demand_yield_boost(merged_routes, source_code, destination_code)
+
             # --- Phase 3: Safety & SOS Vacuuming ---
+            pre_safety_count = len(merged_routes)
             merged_routes = self._filter_hazardous_routes(merged_routes)
+            post_safety_count = len(merged_routes)
 
             # [Phase 3: Patent Optimization]
             # 1. Apply Pareto Frontier to ensure diverse, optimal choices
-            final_routes = pareto_optimizer.find_frontier(merged_routes)
+            pre_pareto_count = len(merged_routes)
+            final_routes = pareto_optimizer.find_frontier(merged_routes, discovery_model=model)
+            post_pareto_count = len(final_routes)
+            
+            logger.info(f"📊 [YIELD] Merge: {pre_safety_count} -> Safety: {post_safety_count} -> Pareto: {post_pareto_count}")
             
             # 2. Sort the frontier by persona preference
             if constraints.persona in (Persona.BUDGET, Persona.ECONOMY):
                 final_routes.sort(key=lambda x: (x.total_cost, x.total_duration))
             elif constraints.persona == Persona.EMERGENCY:
-                from core.data_structures import ensure_datetime
+                from core.data_utils.structures import ensure_datetime
                 final_routes.sort(key=lambda x: (ensure_datetime(x.segments[0].departure_time), x.total_duration))
             elif constraints.persona in (Persona.COMFORT, Persona.PREMIUM):
                 final_routes.sort(key=lambda x: (len(x.transfers), -x.score))
@@ -695,6 +897,8 @@ class UnifiedRoutingOrchestrator:
                 final_routes.sort(key=lambda x: -x.score)
 
             # [Phase 6: Cross-Modal Arbitrage]
+            from services.multi_layer_cache import multi_layer_cache
+            cache_key = f"nexus:search:{source_code}:{destination_code}:{departure_date.strftime('%Y%m%d')}:{constraints.persona.value}"
             try:
                 from services.agents.arbitrage_agent import arbitrage_agent
                 await arbitrage_agent.run({"routes": final_routes, "persona": constraints.persona})
@@ -714,9 +918,39 @@ class UnifiedRoutingOrchestrator:
                     # In a real API, this would be a separate 'suggestions' field
                     pass
 
+            # ── [Feature C] TIS: Score transfer risk on all multi-leg routes ──────
+            if _TIS_ENABLED:
+                try:
+                    for route in final_routes:
+                        if len(route.segments) >= 2:
+                            legs = []
+                            for seg in route.segments:
+                                legs.append({
+                                    "train": getattr(seg, "train_number", ""),
+                                    "to": str(getattr(seg, "to_station_code", getattr(seg, "arrival_code", ""))).upper(),
+                                    "arr": str(getattr(seg, "arrival_time", "00:00:00")),
+                                    "dep": str(getattr(seg, "departure_time", "00:00:00")),
+                                })
+                            tis_score, tis_risk = await tis_service.score_route_transfers(legs, db=db)
+                            route.metadata["tis_score"] = tis_score
+                            route.metadata["tis_risk"] = tis_risk.value
+                            # Penalize HIGH_RISK transfers in scoring using persona-aware weights
+                            if (tis_risk.value == "HIGH_RISK" or tis_score < 0.6) and route.score:
+                                # Scale penalty by TIS weight (e.g., FAMILY:5.0 -> ~25%, BUDGET:1.0 -> ~5%)
+                                penalty_factor = 0.05 * constraints.weights.tis
+                                route.score = route.score * (1.0 - min(penalty_factor, 0.4)) 
+                                logger.info(f"⚠️ [TIS] Applied {round(penalty_factor*100)}% penalty to route {route.journey_id} (Persona: {constraints.persona.value})")
+                except Exception as _tis_err:
+                    logger.warning(f"[TIS] Scoring failed (non-fatal): {_tis_err}")
+
+            # ── [Feature B] QPO: Update cache TTL based on QPO plan ──────────────
+            cache_ttl = 3600  # default 1 hour
+            if qpo_plan:
+                cache_ttl = qpo_plan.cache_ttl_seconds
+
             # [Day 10] Save to Multi-Layer Cache
             if final_routes and not request.force_refresh:
-                await multi_layer_cache.put(cache_key, final_routes, ttl=3600, use_pickle=True) # 1 hour search cache
+                await multi_layer_cache.put(cache_key, final_routes, ttl=cache_ttl, use_pickle=True)
 
             # [Elite Telemetry] Record latency for adaptive throttling
             total_latency_ms = (time.perf_counter() - start_time) * 1000
@@ -728,8 +962,40 @@ class UnifiedRoutingOrchestrator:
                 request.metadata["redistribution_options"] = redist_options
                 request.metadata["redistribution_summary"] = redistributor.generate_redistribution_summary(redist_options)
 
-            return final_routes[:min(limit * 5, 500)]
+            # --- Phase 4: Visible Yield Architecture (VYA) Bucketing ---
+            bucketed_results = self._bucket_and_rank_results(final_routes, limit=limit)
+            
+            # [Phase 3] Shadow Intelligence Audit (Background)
+            for bucket in bucketed_results.values():
+                if isinstance(bucket, list):
+                    for r in bucket:
+                        asyncio.create_task(shadow_orchestrator.audit_route_intelligence(r))
+            
+            # [Task: Safety Tagging] Flag routes with active Sathi protection
+            if constraints.women_safety_priority:
+                for bucket in bucketed_results.values():
+                    if isinstance(bucket, list):
+                        for r in bucket:
+                            r.metadata["sathi_protected"] = any(
+                                constraints.station_safety_scores.get(seg.departure_stop_id, 0.5) > 0.5 or 
+                                constraints.station_safety_scores.get(seg.arrival_stop_id, 0.5) > 0.5
+                                for seg in r.segments
+                            )
 
+            # Return bucketed structure for VYA-compatible frontends, 
+            # while maintaining a flattened list for legacy compatibility if requested.
+            if request.metadata.get("vya_enabled", True):
+                return {
+                    "metadata": {
+                        "engine_yield": pre_safety_count,
+                        "visible_yield": sum(len(b) if isinstance(b, list) else 0 for b in bucketed_results.values()),
+                        "search_iteration": request.metadata.get("search_iteration", 0)
+                    },
+                    "buckets": bucketed_results,
+                    "redistribution_options": request.metadata.get("redistribution_options", [])
+                }
+
+            return final_routes[:min(limit * 5, 500)]
 
         except Exception as e:
             logger.error(f"Orchestrator search failed: {e}")
@@ -751,3 +1017,45 @@ class UnifiedRoutingOrchestrator:
                     db.close()
                 except Exception:
                     pass
+
+    def _bucket_and_rank_results(self, routes: List[Route], limit: int = 10) -> Dict[str, List[Route]]:
+        """VYA: Buckets routes by transfer count and applies diversity ranking."""
+        buckets = {"direct": [], "one_transfer": [], "two_transfer": [], "three_transfer": [], "advanced": []}
+        
+        for r in routes:
+            t_count = len(r.segments) - 1
+            if t_count == 0: buckets["direct"].append(r)
+            elif t_count == 1: buckets["one_transfer"].append(r)
+            elif t_count == 2: buckets["two_transfer"].append(r)
+            elif t_count == 3: buckets["three_transfer"].append(r)
+            else: buckets["advanced"].append(r)
+            
+        logger.info(f"🪣 [ORCHESTRATOR:BUCKET] D:{len(buckets['direct'])} 1T:{len(buckets['one_transfer'])} 2T:{len(buckets['two_transfer'])}")
+        
+        # Diversity Ranking: Fulfilling the 15/10/10/10 yield requirement
+        return {
+            "direct": sorted(buckets["direct"], key=lambda x: x.total_duration), # All direct
+            "one_transfer": self._rank_by_diversity(buckets["one_transfer"], 15),
+            "two_transfer": self._rank_by_diversity(buckets["two_transfer"], 10),
+            "three_transfer": self._rank_by_diversity(buckets["three_transfer"], 10),
+            "advanced": self._rank_by_diversity(buckets["advanced"], 10)
+        }
+
+    def _rank_by_diversity(self, routes: List[Route], k: int) -> List[Route]:
+        """Ensures the top K routes in a bucket cover Fastest, Cheapest, and Safest."""
+        if not routes: return []
+        if len(routes) <= k: return routes
+        
+        selected: Dict[str, Route] = {}
+        # 1. Mandatory Persona Best
+        selected["fastest"] = min(routes, key=lambda x: x.total_duration)
+        selected["cheapest"] = min(routes, key=lambda x: x.total_cost)
+        selected["safest"] = max(routes, key=lambda x: getattr(x, 'safety_score', 0.5))
+        selected["balanced"] = max(routes, key=lambda x: x.score or 0.5)
+        
+        # 2. Fill remaining with highest score
+        unique_results = list({r.journey_id: r for r in selected.values()}.values())
+        remaining = [r for r in routes if r.journey_id not in [ur.journey_id for ur in unique_results]]
+        remaining.sort(key=lambda x: -(x.score or 0))
+        
+        return (unique_results + remaining)[:k]

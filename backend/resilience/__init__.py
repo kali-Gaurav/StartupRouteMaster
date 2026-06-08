@@ -1,11 +1,12 @@
 """
 Resilience Compatibility Layer
 ============================
-Redirects legacy 'resilience' imports to 'core.resilience' or provides
+Redirects legacy 'resilience' imports to 'core.resilience.core' or provides
 standalone implementations for scraper-sentinel and other services.
 """
 
-from core.resilience import CircuitState, CircuitBreaker as _CircuitBreaker
+from cat.reliability.circuit_breaker import CircuitState, CircuitBreaker, CircuitBreakerConfig
+from core.resilience.retry import retry as _retry, RetryPolicy
 
 # Mock metrics for now to avoid breaking imports
 class MetricsClient:
@@ -23,29 +24,19 @@ def track_metrics(**kwargs):
 
 # Circuit Breaker Decorator Factory
 def circuit_breaker(name: str, failure_threshold: int = 5, recovery_timeout: float = 60.0):
-    from core.resilience import CircuitBreaker, CircuitConfig
+    from core.resilience.core import circuit_manager, CircuitConfig
     config = CircuitConfig(
         failure_threshold=failure_threshold,
         timeout_seconds=recovery_timeout
     )
-    breaker = CircuitBreaker(name, config)
-    
-    class BreakerProxy:
-        def __init__(self, breaker):
-            self._breaker = breaker
-        def __call__(self, func):
-            return self._breaker.decorate(func)
-        def __getattr__(self, name):
-            return getattr(self._breaker, name)
-            
-    return BreakerProxy(breaker)
+    breaker = circuit_manager.get_or_create(name, config)
+    return breaker.decorate
 
-# Retry Policy
+# Retry Policy - returns the actual retry decorator
 class RetryStrategy:
     EXPONENTIAL_BACKOFF = "exponential"
     LINEAR_BACKOFF = "linear"
 
 def retry_policy(**kwargs):
-    def decorator(func):
-        return func
-    return decorator
+    """Retry policy decorator factory that returns the actual retry decorator."""
+    return _retry

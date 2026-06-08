@@ -1,7 +1,7 @@
 import asyncio
 from datetime import date
 from services.verification_engine import VerificationService
-from core.segment_detail import JourneyOption, SegmentDetail
+from core.data_utils.segment import JourneyOption, SegmentDetail
 
 async def test_verification():
     print("\n🔍 Phase 2: Testing Verification Service...")

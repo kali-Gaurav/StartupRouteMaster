@@ -50,6 +50,10 @@ const MiniAppHome = () => {
       webApp.ready();
       webApp.expand();
       applyTheme();
+      // Try to go fullscreen for that premium feel
+      if (webApp.requestFullscreen) {
+        webApp.requestFullscreen();
+      }
     }
   }, [webApp, applyTheme]);
 

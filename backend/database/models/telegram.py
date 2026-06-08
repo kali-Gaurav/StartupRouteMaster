@@ -1,99 +1,26 @@
 """
 Telegram Bot Database Models
-Stores user accounts, sessions, messages, and analytics for Telegram bot.
+Stores messages, bookings, SOS events, and analytics for Telegram bot.
+Core user and session models are maintained in core.py.
 """
 
-from database.base import UserBase
+from database.infrastructure.base import UserBase
 from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
-
-
-class TelegramUser(UserBase):
-    """
-    Maps Telegram users to system users.
-    Enables tracking and messaging Telegram users.
-    """
-    __tablename__ = "telegram_users"
-    __table_args__ = {'extend_existing': True}
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    telegram_id = Column(String(50), unique=True, nullable=False, index=True)
-    username = Column(String(100), nullable=True)
-    first_name = Column(String(100), nullable=False)
-    last_name = Column(String(100), nullable=True)
-    language_code = Column(String(10), default="en")
-    is_bot = Column(Boolean, default=False)
-    is_premium = Column(Boolean, default=False)
-    
-    # Linked system user
-    linked_user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
-    
-    # Preferences
-    notifications_enabled = Column(Boolean, default=True)
-    sos_enabled = Column(Boolean, default=True)
-    preferred_language = Column(String(10), default="en")
-    timezone = Column(String(50), default="Asia/Kolkata")
-    
-    # Tracking
-    message_count = Column(Integer, default=0)
-    last_activity = Column(DateTime, default=datetime.utcnow)
-    first_seen = Column(DateTime, default=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationships
-    sessions = relationship("TelegramSession", back_populates="user", cascade="all, delete-orphan")
-    messages = relationship("TelegramMessage", back_populates="telegram_user", cascade="all, delete-orphan")
-    bookings = relationship("TelegramBookingLink", back_populates="telegram_user", cascade="all, delete-orphan")
-    sos_events = relationship("TelegramSOSEvent", back_populates="telegram_user", cascade="all, delete-orphan")
-    
-    def __repr__(self):
-        return f"<TelegramUser(telegram_id={self.telegram_id}, name={self.first_name})>"
-
-
-class TelegramSession(UserBase):
-    """
-    Manages conversation state for each Telegram user.
-    Enables multi-step flows and context-aware responses.
-    """
-    __tablename__ = "telegram_sessions"
-    __table_args__ = {'extend_existing': True}
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
-    
-    # User reference
-    telegram_user_id = Column(Integer, ForeignKey("telegram_users.id"), nullable=False, index=True)
-    
-    # State management
-    current_state = Column(String(50), default="IDLE")
-    current_intent = Column(String(50), nullable=True)
-    current_step = Column(String(50), nullable=True)
-    
-    # Context data (JSON)
-    context = Column(JSON, nullable=True)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)
-    
-    # Relationships
-    telegram_user = relationship("TelegramUser", back_populates="sessions")
-    
-    def __repr__(self):
-        return f"<TelegramSession(user={self.telegram_user_id}, state={self.current_state})>"
+from .core import TelegramUser, TelegramSession
 
 
 class TelegramMessage(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores all messages for analytics and training.
     Enables message history and context.
     """
     __tablename__ = "telegram_messages"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
+
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     message_id = Column(String(50), nullable=False, index=True)
@@ -117,7 +44,7 @@ class TelegramMessage(UserBase):
     response_time_ms = Column(Integer, nullable=True)
     
     # Metadata
-    metadata = Column(JSON, nullable=True)
+    message_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -128,12 +55,14 @@ class TelegramMessage(UserBase):
 
 
 class TelegramBookingLink(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Tracks booking links created via Telegram.
     Enables deep linking and conversion tracking.
     """
     __tablename__ = "telegram_booking_links"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
+
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     link_token = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
@@ -165,12 +94,14 @@ class TelegramBookingLink(UserBase):
 
 
 class TelegramSOSEvent(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Tracks SOS events triggered via Telegram.
     Enables emergency response and analytics.
     """
     __tablename__ = "telegram_sos_events"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
+
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     event_id = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
@@ -208,12 +139,14 @@ class TelegramSOSEvent(UserBase):
 
 
 class TelegramAnalytics(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Daily analytics for Telegram bot performance.
     Enables monitoring and optimization.
     """
     __tablename__ = "telegram_analytics"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
+
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     date = Column(DateTime, nullable=False, index=True)
@@ -253,12 +186,14 @@ class TelegramAnalytics(UserBase):
 
 
 class TelegramNotificationTemplate(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores notification templates for consistent messaging.
     Enables localization and A/B testing.
     """
     __tablename__ = "telegram_notification_templates"
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = {"extend_existing": True}
+
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     template_id = Column(String(50), unique=True, nullable=False)

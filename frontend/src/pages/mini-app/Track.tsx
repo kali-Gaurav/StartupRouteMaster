@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 const MiniAppTrack = () => {
   const navigate = useNavigate();
-  const { webApp } = useTelegramWebApp();
+  const { webApp, showBackButton } = useTelegramWebApp();
   const [loading, setLoading] = useState(false);
   
   // Mock data for mini-app feel
@@ -39,12 +39,9 @@ const MiniAppTrack = () => {
   };
 
   useEffect(() => {
-    if (webApp) {
-      webApp.BackButton.show();
-      webApp.BackButton.onClick(() => navigate("/mini-app"));
-    }
-    return () => webApp?.BackButton.hide();
-  }, [webApp, navigate]);
+    const hide = showBackButton(() => navigate("/mini-app"));
+    return hide;
+  }, [showBackButton, navigate]);
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col selection:bg-primary selection:text-primary-foreground">

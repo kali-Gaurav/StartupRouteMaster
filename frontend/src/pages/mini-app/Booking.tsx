@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 const MiniAppBooking = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { webApp } = useTelegramWebApp();
+  const { webApp, showBackButton, hapticFeedback, showMainButton } = useTelegramWebApp();
   const [passengers, setPassengers] = useState<BookingRequestPassenger[]>([{ name: "", age: 25, gender: "M" }]);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -41,15 +41,20 @@ const MiniAppBooking = () => {
   const quota = searchParams.get("quota") || "GN";
 
   useEffect(() => {
-    if (webApp) {
-      webApp.BackButton.show();
-      webApp.BackButton.onClick(() => {
-        if (success) navigate("/mini-app");
-        else navigate("/mini-app/search");
-      });
+    const isFormValid = !loading && passengers.every(p => p.name && p.age);
+    if (isFormValid && !success) {
+      const hide = showMainButton("INITIALIZE BOOKING", handleBooking);
+      return hide;
     }
-    return () => webApp?.BackButton.hide();
-  }, [webApp, success, navigate]);
+  }, [loading, passengers, success, showMainButton]);
+
+  useEffect(() => {
+    const hide = showBackButton(() => {
+      if (success) navigate("/mini-app");
+      else navigate("/mini-app/search");
+    });
+    return hide;
+  }, [showBackButton, success, navigate]);
 
   const addPassenger = () => {
     if (passengers.length >= 6) {
@@ -77,7 +82,6 @@ const MiniAppBooking = () => {
         destination_station: toCode,
         journey_date: date,
         train_number: trainNumber,
-        train_name: trainName,
         class_type: classType,
         quota: quota,
         passengers: passengers
@@ -85,8 +89,10 @@ const MiniAppBooking = () => {
       
       setReferenceId(response.id);
       setSuccess(true);
+      hapticFeedback?.notificationOccurred("success");
       toast.success("Booking Request Synthesized");
     } catch (error: any) {
+      hapticFeedback?.notificationOccurred("error");
       toast.error(error.message || "Failed to create booking request");
     } finally {
       setLoading(false);
@@ -232,18 +238,20 @@ const MiniAppBooking = () => {
             </CardContent>
           </Card>
 
-          <Button 
-            disabled={loading || passengers.some(p => !p.name || !p.age)} 
-            onClick={handleBooking}
-            className="w-full h-16 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-primary/20 active:scale-95 transition-all group"
-          >
-            {loading ? <Loader2 className="h-6 w-6" /> : (
-              <div className="flex items-center gap-2">
-                <span>INITIALIZE BOOKING</span>
-                <Zap className="h-4 w-4 fill-current group-hover:animate-pulse" />
-              </div>
-            )}
-          </Button>
+          {!webApp && (
+            <Button 
+              disabled={loading || passengers.some(p => !p.name || !p.age)} 
+              onClick={handleBooking}
+              className="w-full h-16 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-primary/20 active:scale-95 transition-all group"
+            >
+              {loading ? <Loader2 className="h-6 w-6 animate-spin" /> : (
+                <div className="flex items-center gap-2">
+                  <span>INITIALIZE BOOKING</span>
+                  <Zap className="h-4 w-4 fill-current group-hover:animate-pulse" />
+                </div>
+              )}
+            </Button>
+          )}
         </div>
       </main>
     </div>

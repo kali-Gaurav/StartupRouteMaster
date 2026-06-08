@@ -7,7 +7,7 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 
 from core.ml_models.intent_predictor import intent_predictor
 from services.shadow_warmer import shadow_warmer
-from services.feedback_loop import feedback_loop
+from services.intelligence.feedback_loop_enhanced import feedback_loop
 from services.user_bloom_filter import user_bloom
 from services.behavior_tracker import behavior_tracker
 from services.prediction_hub import prediction_hub

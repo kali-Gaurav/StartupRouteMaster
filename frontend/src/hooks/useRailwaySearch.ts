@@ -30,6 +30,7 @@ interface UseRailwaySearchResult {
       sortBy?: string;
       useStream?: boolean; // Opt-in to SSE progressive mode
       engineModel?: string;
+      womenSafetyPriority?: boolean;
     }
   ) => Promise<Route[]>;
   isSearching: boolean;
@@ -83,6 +84,7 @@ export function useRailwaySearch({
         sortBy?: string;
         useStream?: boolean;
         engineModel?: string;
+        womenSafetyPriority?: boolean;
       }
     ): Promise<Route[]> => {
       setIsSearching(true);
@@ -90,18 +92,26 @@ export function useRailwaySearch({
       setMetadata(null);
       const sourceCode = source.toUpperCase().trim();
       const destCode = destination.toUpperCase().trim();
-      const normalizedDate = date || (() => {
-        const now = new Date();
-        return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-      })();
+      // Always use YYYY-MM-DD format (ISO) — the backend strptime requires it
+      const normalizedDate = date || new Date().toISOString().slice(0, 10);
       setCurrentParams({ src: sourceCode, dst: destCode, date: normalizedDate });
 
       try {
         // Strategy 1: Cached
         if (routeSource === "cached") {
-          const cached = getCachedRoutes(sourceCode, destCode, normalizedDate);
-          if (cached) {
-            const routes = mapBackendRoutesToRoutes(cached, sourceCode, destCode);
+          let routes: Route[] = [];
+          const staticCached = getCachedRoutes(sourceCode, destCode, normalizedDate);
+          if (staticCached) {
+            routes = mapBackendRoutesToRoutes(staticCached, sourceCode, destCode);
+          } else {
+            const { storageService } = await import("@/services/storageService");
+            const dbRoutes = await storageService.getCachedRoutes(sourceCode, destCode, normalizedDate);
+            if (dbRoutes && dbRoutes.length > 0) {
+              routes = dbRoutes as Route[];
+            }
+          }
+
+          if (routes.length > 0) {
             setLastSearchSource("cached");
             setSessionId(null);
             onSuccess?.(routes);
@@ -113,7 +123,7 @@ export function useRailwaySearch({
         // Strategy 2: [Point 18 & 30] SSE Streaming (live mode, opt-in)
         if (options?.useStream) {
           try {
-            await startStream(sourceCode, destCode, normalizedDate, "ECONOMY");
+            await startStream(sourceCode, destCode, normalizedDate, "ECONOMY", options?.womenSafetyPriority);
             setLastSearchSource("live");
             return streamRoutes;
           } catch (streamError) {
@@ -128,6 +138,7 @@ export function useRailwaySearch({
             routeSource: "live",
             sortBy: (options?.sortBy || "duration") as "duration" | "cost" | "score",
             engineModel: options?.engineModel,
+            womenSafetyPriority: options?.womenSafetyPriority,
           });
 
           const sid = (data as any).session_id || (data as any).data?.pagination?.session_id;
@@ -143,9 +154,19 @@ export function useRailwaySearch({
           const isHarvestingBlock = /HARVESTING_BLOCKED|automated data harvesting/i.test(message);
 
           if (isHarvestingBlock) {
-            const cached = getCachedRoutes(sourceCode, destCode, normalizedDate);
-            if (cached) {
-              const routes = mapBackendRoutesToRoutes(cached, sourceCode, destCode);
+            let routes: Route[] = [];
+            const staticCached = getCachedRoutes(sourceCode, destCode, normalizedDate);
+            if (staticCached) {
+              routes = mapBackendRoutesToRoutes(staticCached, sourceCode, destCode);
+            } else {
+              const { storageService } = await import("@/services/storageService");
+              const dbRoutes = await storageService.getCachedRoutes(sourceCode, destCode, normalizedDate);
+              if (dbRoutes && dbRoutes.length > 0) {
+                routes = dbRoutes as Route[];
+              }
+            }
+
+            if (routes.length > 0) {
               setLastSearchSource("cached");
               setSessionId(null);
               onSuccess?.(routes);
@@ -159,9 +180,19 @@ export function useRailwaySearch({
           // Strategy 4: Auto-retry with cached if live fails for backend unavailability
           const backendAvailable = await isBackendAvailable();
           if (!backendAvailable) {
-            const cached = getCachedRoutes(sourceCode, destCode, normalizedDate);
-            if (cached) {
-              const routes = mapBackendRoutesToRoutes(cached, sourceCode, destCode);
+            let routes: Route[] = [];
+            const staticCached = getCachedRoutes(sourceCode, destCode, normalizedDate);
+            if (staticCached) {
+              routes = mapBackendRoutesToRoutes(staticCached, sourceCode, destCode);
+            } else {
+              const { storageService } = await import("@/services/storageService");
+              const dbRoutes = await storageService.getCachedRoutes(sourceCode, destCode, normalizedDate);
+              if (dbRoutes && dbRoutes.length > 0) {
+                routes = dbRoutes as Route[];
+              }
+            }
+
+            if (routes.length > 0) {
               setLastSearchSource("cached");
               setSessionId(null);
               onSuccess?.(routes);

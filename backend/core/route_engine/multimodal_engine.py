@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
-from core.data_structures import Route, RouteSegment, TransferConnection
+from core.data_utils.structures import Route, RouteSegment, TransferConnection
 from services.providers.rapid_multimodal import RapidMultimodalProvider
 from schemas.multimodal import TransportMode
 

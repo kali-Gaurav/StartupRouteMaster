@@ -61,6 +61,7 @@ const Index = () => {
   const [filterDeparture, setFilterDeparture] = useState<"morning" | "afternoon" | "evening" | null>(null);
   const [filterMaxDurationHours, setFilterMaxDurationHours] = useState<number | null>(null);
   const [filterMaxCost, setFilterMaxCost] = useState<number | null>(null);
+  const [womenSafetyPriority, setWomenSafetyPriority] = useState(false);
   const [journeyMessage, setJourneyMessage] = useState<string | null>(null);
   const [bookingTips, setBookingTips] = useState<string[]>([]);
   const [stats, setStats] = useState<{ total_trains?: number; total_stations?: number } | null>(null);
@@ -124,14 +125,12 @@ const Index = () => {
       .catch(() => setStats(null));
   }, []);
 
-  // Effect to update unlockedRouteIds when a route is successfully unlocked via the modal
   useEffect(() => {
     if (lastUnlockedRouteId) {
       setUnlockedRouteIds(prev => new Set(prev).add(lastUnlockedRouteId));
     }
   }, [lastUnlockedRouteId]);
 
-  // When user logs in (token becomes available) re-check unlocked status for visible routes
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -155,36 +154,34 @@ const Index = () => {
     return () => { mounted = false; };
   }, [token, allRoutes]);
 
-  // Consolidated helper: fetch bulk unlocked IDs and merge into visible route set
   const reconcileUnlockedRoutes = useCallback(async (visibleRoutes: Route[]) => {
     if (!token || visibleRoutes.length === 0) return;
     try {
       const resp = await getUnlockedRoutes().catch(() => ({ routes: [] }));
       const unlockedSet = new Set<string>(resp?.routes ?? []);
-      const visibleUnlocked = visibleRoutes.filter((r) => unlockedSet.has(r.id)).map((r) => r.id);
-      if (visibleUnlocked.length > 0) {
+      const newlyUnlocked = visibleRoutes.filter((r) => unlockedSet.has(r.id)).map((r) => r.id);
+      if (newlyUnlocked.length > 0) {
         setUnlockedRouteIds((prev) => {
           const merged = new Set(prev);
-          visibleUnlocked.forEach((id) => merged.add(id));
+          newlyUnlocked.forEach((id) => merged.add(id));
           return merged;
         });
       }
     } catch (e) {
-      console.warn("Failed to reconcile unlocked routes:", e);
+      console.warn("Failed to fetch unlocked routes", e);
     }
   }, [token]);
 
   const handleUnlockRoute = useCallback(async (route: Route) => {
-    if (!origin || !destination || !travelDate) {
+    if (!token) {
       toast({
-        title: "Missing Information",
-        description: "Origin, Destination, or Travel Date is missing for unlock.",
-        variant: "destructive",
-      } as Toast);
+        title: "Authentication Required",
+        description: "Please login to unlock routes.",
+      });
       return;
     }
-    openUnlockPayment({ route, travelDate, originName: origin?.name ?? "", destName: destination?.name ?? "" });
-  }, [origin, destination, travelDate, openUnlockPayment]);
+    openUnlockPayment(route);
+  }, [token, openUnlockPayment]);
 
   const resolveStationForChatbot = useCallback(
     async (value: string) => {
@@ -331,7 +328,8 @@ const Index = () => {
       maxResults: 50,
       sortBy,
       useStream: routeSource === "live", // Only stream in live mode
-      engineModel
+      engineModel,
+      womenSafetyPriority
     });
   };
 
@@ -670,6 +668,19 @@ const Index = () => {
                       Discovery Mode (Baseline)
                     </label>
                   </div>
+                  <div className="flex items-center gap-2 mt-2 px-1">
+                    <input 
+                      type="checkbox" 
+                      id="womenSafety" 
+                      checked={womenSafetyPriority}
+                      onChange={(e) => setWomenSafetyPriority(e.target.checked)}
+                      className="accent-primary w-3 h-3 cursor-pointer"
+                    />
+                    <label htmlFor="womenSafety" className="text-[10px] uppercase font-black text-pink-600 dark:text-pink-400 cursor-pointer hover:text-pink-500 transition-colors tracking-tighter flex items-center gap-1">
+                      <Shield className="w-3 h-3" />
+                      Women & Family Safety Priority (Sathi Coverage)
+                    </label>
+                  </div>
                 </div>
                 <div>
                   <label htmlFor="travelDate" className="block text-sm font-medium text-muted-foreground mb-2">Travel date *</label>
@@ -767,19 +778,39 @@ const Index = () => {
                 />
               </div>
 
-              {/* Quick Stats */}
-              <div className="flex flex-wrap items-center justify-center gap-6 pt-4 border-t border-border px-6 pb-4">
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <MapPin className="w-4 h-4 text-primary" />
-                  <span>{stats?.total_trains != null ? `${stats.total_trains.toLocaleString()}+ Trains` : "11,000+ Trains"}</span>
+              {/* Quick Stats + Quick links */}
+              <div className="pt-4 border-t border-border px-6 pb-4">
+                <div className="flex flex-wrap items-center justify-center gap-6 mb-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <MapPin className="w-4 h-4 text-primary" />
+                    <span>{stats?.total_trains != null ? `${stats.total_trains.toLocaleString()}+ Trains` : "11,000+ Trains"}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <MapPin className="w-4 h-4 text-primary" />
+                    <span>{stats?.total_stations != null ? `${stats.total_stations.toLocaleString()}+ Stations` : "8,000+ Stations"}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Sparkles className="w-4 h-4 text-primary" />
+                    <span>Pareto-Optimal</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <MapPin className="w-4 h-4 text-primary" />
-                  <span>{stats?.total_stations != null ? `${stats.total_stations.toLocaleString()}+ Stations` : "8,000+ Stations"}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Sparkles className="w-4 h-4 text-primary" />
-                  <span>Pareto-Optimal</span>
+                {/* Quick-access links */}
+                <div className="flex flex-wrap justify-center gap-2">
+                  {[
+                    { label: "📋 PNR Status", href: "/pnr" },
+                    { label: "🚉 New Delhi Board", href: "/station/NDLS" },
+                    { label: "🚉 Mumbai Board", href: "/station/BCT" },
+                    { label: "📅 Delhi→Mumbai", href: "/trains/new-delhi/mumbai" },
+                    { label: "📅 Chennai→Bengaluru", href: "/trains/chennai/bengaluru" },
+                  ].map(link => (
+                    <a
+                      key={link.href}
+                      href={link.href}
+                      className="px-3 py-1 rounded-full border border-border bg-secondary/50 text-xs font-bold text-muted-foreground hover:text-primary hover:border-primary/30 transition-colors"
+                    >
+                      {link.label}
+                    </a>
+                  ))}
                 </div>
               </div>
             </div>
@@ -933,6 +964,33 @@ const Index = () => {
                     </div>
                     <p className="text-muted-foreground">
                       Showing {optimalRoutes.length} optimal and {allRoutes.length} total routes from {origin?.name} to {destination?.name}
+                    </p>
+                    {/* Deep-link discovery bar */}
+                    {origin && destination && (
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        <a
+                          href={`/station/${origin.code}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary border border-border text-xs font-bold text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors"
+                        >
+                          <Train className="w-3 h-3" />
+                          All departures from {origin.code} →
+                        </a>
+                        <a
+                          href={`/trains/${origin.name?.toLowerCase().replace(/\s+/g, '-')}/${destination.name?.toLowerCase().replace(/\s+/g, '-')}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary border border-border text-xs font-bold text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors"
+                        >
+                          <MapPin className="w-3 h-3" />
+                          {origin.code}→{destination.code} route guide →
+                        </a>
+                        <a
+                          href={`/station/${destination.code}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-secondary border border-border text-xs font-bold text-muted-foreground hover:text-primary hover:border-primary/40 transition-colors"
+                        >
+                          <MapPin className="w-3 h-3" />
+                          All arrivals at {destination.code} →
+                        </a>
+                      </div>
+                    )}
                     </p>
                   </div>
 

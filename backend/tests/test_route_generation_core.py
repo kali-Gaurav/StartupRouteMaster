@@ -151,7 +151,7 @@ def test_rt_008_response_schema_sanity_for_route_summary():
 @pytest.mark.asyncio
 async def test_rt_009_pagination_not_supported_but_api_handles_limit_param():
     # Search API does not implement pagination at engine-level; ensure search endpoint (not engine) can accept limit param (unit test)
-    from api.search import autocomplete_stations
+    from api.search.search import autocomplete_stations
     # function exists and is callable; we won't call HTTP here — just ensure function signature supports 'limit' in nearby endpoint
     assert callable(autocomplete_stations)
 

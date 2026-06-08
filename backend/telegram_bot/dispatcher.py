@@ -14,8 +14,8 @@ from collections import deque
 from enum import Enum
 
 from database.config import Config
-from core.resilience import circuit_breaker_manager, CircuitConfig
-from core.retry import RetryPolicy, retry_async
+from core.resilience.core import circuit_manager, CircuitConfig
+from core.resilience.retry import RetryPolicy, retry_async
 from .config import bot_config
 from .schemas import BotResponse
 
@@ -43,11 +43,13 @@ class TelegramDispatcher:
     """
     
     def __init__(self):
-        self.token = Config.TELEGRAM_TOKEN
+        self.token = bot_config.bot_token
+        if not self.token:
+            self.token = Config.TELEGRAM_TOKEN
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         
         # Circuit breaker for API calls
-        self._breaker = circuit_breaker_manager.get_or_create(
+        self._breaker = circuit_manager.get_or_create(
             "telegram_dispatcher",
             CircuitConfig(
                 failure_threshold=5,
@@ -145,7 +147,6 @@ class TelegramDispatcher:
             raise Exception("Rate limit exceeded")
         
         # Execute with retry
-        @retry_async(policy=self._retry_policy)
         async def _execute():
             client = self._get_client()
             
@@ -158,7 +159,7 @@ class TelegramDispatcher:
             return response.json()
         
         try:
-            result = await _execute()
+            result = await self._retry_policy.execute(_execute)
             
             # Record successful request
             async with self._history_lock:
@@ -209,8 +210,8 @@ class TelegramDispatcher:
         if keyboard:
             payload["reply_markup"] = keyboard
         
-        if inline_keyboards:
-            payload["reply_markup"] = {"inline_keyboard": inline_keyboards}
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
         
         try:
             result = await self._api_request("sendMessage", payload)
@@ -314,7 +315,7 @@ class TelegramDispatcher:
         message_id: int,
         text: str,
         parse_mode: str = "HTML",
-        inline_keyboards: Optional[List[List[Dict[str, str]]]] = None
+        inline_keyboard: Optional[List[List[Dict[str, str]]]] = None
     ) -> bool:
         """Edit an existing message."""
         payload = {
@@ -324,8 +325,8 @@ class TelegramDispatcher:
             "parse_mode": parse_mode
         }
         
-        if inline_keyboards:
-            payload["reply_markup"] = {"inline_keyboard": inline_keyboards}
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
         
         try:
             await self._api_request("editMessageText", payload)
@@ -390,7 +391,7 @@ class TelegramDispatcher:
             text=response.text,
             parse_mode=response.parse_mode,
             keyboard=response.keyboard,
-            inline_keyboards=response.inline_keyboard,
+            inline_keyboard=response.inline_keyboard,
             reply_to=response.reply_to,
             delete_after=response.delete_after
         )

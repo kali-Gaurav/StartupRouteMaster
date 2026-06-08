@@ -20,7 +20,7 @@ class TestRedistributionBookingIntegrator:
     
     def test_integrator_initialization(self):
         """Test integrator initializes properly"""
-        from services.redistribution_booking_integrator import RedistributionBookingIntegrator
+        from services.booking.redistribution_integrator import RedistributionBookingIntegrator
         
         mock_db = Mock()
         integrator = RedistributionBookingIntegrator(mock_db)
@@ -30,7 +30,7 @@ class TestRedistributionBookingIntegrator:
     
     def test_pnr_generation(self):
         """Test PNR generation"""
-        from services.redistribution_booking_integrator import RedistributionBookingIntegrator
+        from services.booking.redistribution_integrator import RedistributionBookingIntegrator
         
         mock_db = Mock()
         integrator = RedistributionBookingIntegrator(mock_db)
@@ -44,7 +44,7 @@ class TestRedistributionBookingIntegrator:
     
     def test_refund_calculation(self):
         """Test refund calculation based on days before travel"""
-        from services.redistribution_booking_integrator import RedistributionBookingIntegrator
+        from services.booking.redistribution_integrator import RedistributionBookingIntegrator
         
         mock_db = Mock()
         integrator = RedistributionBookingIntegrator(mock_db)
@@ -66,7 +66,7 @@ class TestRedistributionBookingIntegrator:
     
     def test_booking_details_extraction(self):
         """Test booking details extraction"""
-        from services.redistribution_booking_integrator import (
+        from services.booking.redistribution_integrator import (
             RedistributionBookingIntegrator, BookingDetails
         )
         
@@ -99,7 +99,7 @@ class TestRedistributionBookingIntegrator:
     @pytest.mark.asyncio
     async def test_handle_rejection(self):
         """Test offer rejection handling"""
-        from services.redistribution_booking_integrator import RedistributionBookingIntegrator
+        from services.booking.redistribution_integrator import RedistributionBookingIntegrator
         
         mock_db = Mock()
         integrator = RedistributionBookingIntegrator(mock_db)
@@ -126,7 +126,7 @@ class TestKnowledgeGraphPersistence:
     
     def test_persistence_initialization(self):
         """Test persistence layer initializes"""
-        from services.knowledge_graph_persistence import KnowledgeGraphPersistence
+        from services.data.knowledge_persistence import KnowledgeGraphPersistence
         
         mock_db = Mock()
         persistence = KnowledgeGraphPersistence(mock_db)
@@ -136,7 +136,7 @@ class TestKnowledgeGraphPersistence:
     
     def test_serialize_nodes(self):
         """Test node serialization"""
-        from services.knowledge_graph_persistence import KnowledgeGraphPersistence
+        from services.data.knowledge_persistence import KnowledgeGraphPersistence
         import json
         
         mock_db = Mock()
@@ -165,7 +165,7 @@ class TestKnowledgeGraphPersistence:
     
     def test_serialize_edges(self):
         """Test edge serialization"""
-        from services.knowledge_graph_persistence import KnowledgeGraphPersistence
+        from services.data.knowledge_persistence import KnowledgeGraphPersistence
         import json
         
         mock_db = Mock()
@@ -195,8 +195,8 @@ class TestKnowledgeGraphPersistence:
     
     def test_serialize_station_patterns(self):
         """Test station pattern serialization"""
-        from services.knowledge_graph_persistence import KnowledgeGraphPersistence
-        from services.knowledge_graph_service import StationNode
+        from services.data.knowledge_persistence import KnowledgeGraphPersistence
+        from services.data.knowledge_graph import StationNode
         import json
         
         mock_db = Mock()
@@ -227,7 +227,7 @@ class TestKnowledgeGraphPersistence:
     
     def test_get_snapshot_history(self):
         """Test getting snapshot history"""
-        from services.knowledge_graph_persistence import KnowledgeGraphPersistence
+        from services.data.knowledge_persistence import KnowledgeGraphPersistence
         
         mock_db = Mock()
         persistence = KnowledgeGraphPersistence(mock_db)
@@ -436,7 +436,7 @@ class TestAgentOrchestrator:
         agent = PricingAgent()
         
         # Mock the database session and calculator
-        with patch('services.booking_price_calculator.get_booking_price_calculator') as mock_calc:
+        with patch('services.deprecated.booking_price_calculator.get_booking_price_calculator') as mock_calc:
             mock_calculator = MagicMock()
             mock_calculator.calculate_total_price = MagicMock(return_value=MagicMock(
                 base_fare=500,
@@ -466,7 +466,7 @@ class TestAgentOrchestrator:
         agent = AllocationAgent()
         
         # Mock the database session and allocator
-        with patch('services.booking_seat_allocator.get_booking_seat_allocator') as mock_alloc:
+        with patch('services.inventory.allocator.get_booking_seat_allocator') as mock_alloc:
             mock_allocator = MagicMock()
             mock_allocator.allocate_seats_for_booking = MagicMock(return_value=MagicMock(
                 seats=["1", "2"],

@@ -4,7 +4,7 @@ import logging
 import statistics
 from core.nexus.financial.rollback import atomic_fiber
 from database.session import SessionUser, init_db
-from core.container import container
+from core.infrastructure.container import container
 import os
 
 # Set testing environment

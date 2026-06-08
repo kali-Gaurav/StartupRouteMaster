@@ -7,7 +7,7 @@ from sqlalchemy import text
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 
 from database.session import SessionTransit
-from core.container import container
+from core.infrastructure.container import container
 
 async def check_schema():
     await container.get("db")

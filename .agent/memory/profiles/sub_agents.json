@@ -1,0 +1,55 @@
+{
+  "engineering_swarm": [
+    {
+      "type": "Backend-Dev",
+      "focus": "API development, database integration, server-side logic.",
+      "tools": ["Python", "FastAPI", "PostgreSQL", "SQLAlchemy"]
+    },
+    {
+      "type": "Frontend-Dev",
+      "focus": "UI/UX implementation, responsive design, state management.",
+      "tools": ["React", "TypeScript", "TailwindCSS", "Framer Motion"]
+    },
+    {
+      "type": "QA-Engineer",
+      "focus": "Unit testing, integration testing, bug reproduction.",
+      "tools": ["Pytest", "Jest", "Playwright"]
+    }
+  ],
+  "intelligence_swarm": [
+    {
+      "type": "Data-Scraper",
+      "focus": "Automated data extraction, cleaning, and formatting.",
+      "tools": ["BeautifulSoup", "Scrapy", "Selenium"]
+    },
+    {
+      "type": "Model-Optimizer",
+      "focus": "Hyperparameter tuning, inference optimization, model compression.",
+      "tools": ["PyTorch", "TensorFlow", "ONNX"]
+    }
+  ],
+  "operations_swarm": [
+    {
+      "type": "DB-Admin",
+      "focus": "Migration management, index optimization, query performance.",
+      "tools": ["Alembic", "Supabase", "Redis"]
+    },
+    {
+      "type": "Security-Auditor",
+      "focus": "Vulnerability scanning, OAuth/Auth verification, dependency audits.",
+      "tools": ["Snyk", "Safety", "OWASP ZAP"]
+    }
+  ],
+  "product_swarm": [
+    {
+      "type": "Copywriter",
+      "focus": "Marketing copy, documentation, user messages.",
+      "tools": ["Markdown", "SEO"]
+    },
+    {
+      "type": "Market-Analyst",
+      "focus": "Competitor research, trend analysis, user feedback synthesis.",
+      "tools": ["Data Visualization", "Sentiment Analysis"]
+    }
+  ]
+}

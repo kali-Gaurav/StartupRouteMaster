@@ -1,0 +1,23 @@
+{
+  "project_histories": {
+    "RouteMaster": {
+      "summary": "A high-performance, resilient, and feature-rich railway routing and safety platform combining RAPTOR/Turbo algorithms with machine learning and a Women & Family Safety Engine.",
+      "lessons_learned": [
+        "RAPTOR multi-hop discovery can stall due to severe congestion caps. Search budgets must balance depth with transfer limits.",
+        "Telegram webhook mode requires careful parity between bot config and production environment variables to verify initData signatures.",
+        "Redis cache synchronization for ML inference workers can cause p99 latency spikes (15ms+) if not audited properly."
+      ],
+      "successful_patterns": [
+        "Vibe-to-Code pipeline with Kimi Swarm architecture for generating complex features autonomously.",
+        "Tiered route hydration (15/10/10/10 distribution) using unified orchestrator and Pareto Optimizer."
+      ]
+    }
+  },
+  "global_decisions": [
+    {
+      "date": "2026-05-04",
+      "decision": "Migrated from project-coupled CLI tools to an independent, portable Antigravity-orchestrated 'Office' structure.",
+      "reason": "To ensure agents retain knowledge across projects and allow for easy deployment on new machines from zero."
+    }
+  ]
+}

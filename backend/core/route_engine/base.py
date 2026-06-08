@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
-from core.data_structures import Route
+from core.data_utils.structures import Route
 from .constraints import RouteConstraints
 from .graph import TimeDependentGraph
 
@@ -11,7 +11,7 @@ class RoutingRequest(BaseModel):
     Standardized Request for all RouteMaster engines.
     Ensures that engines receive the same rich context.
     """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
     source_code: str
     destination_code: str
@@ -23,7 +23,7 @@ class RoutingRequest(BaseModel):
     constraints: RouteConstraints
     limit: int = 15
     budget: float = 1.0 
-    graph: Optional[TimeDependentGraph] = None
+    graph: Optional[Any] = None
     db_session: Any = None
     force_refresh: bool = False
     multi_modal: bool = False
@@ -39,7 +39,7 @@ class RoutingResponse(BaseModel):
     Standardized output from any RouteMaster engine.
     Ensures the Orchestrator can merge results without complex translation.
     """
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
     engine_name: str
     routes: List[Route]
@@ -51,6 +51,7 @@ class RoutingResponse(BaseModel):
     engines_invoked: int = 0
     engines_succeeded: int = 0
     engines_failed: int = 0
+    yield_per_stage: Dict[str, int] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class BaseRoutingEngine(ABC):
@@ -68,11 +69,12 @@ class BaseRoutingEngine(ABC):
 
     def calculate_generalized_cost(self, arrival_ts: int, transfers: int, wait_mins: int, 
                                   distance_km: float, fare: float, comfort: float,
-                                  reliability: float, constraints: RouteConstraints) -> float:
+                                  reliability: float, constraints: RouteConstraints,
+                                  safety_score: float = 0.5) -> float:
         """
         [Task 42.5] Centralized Persona-Aware Cost Calculation.
         Unifies search dominance criteria for RAPTOR, TBR, and Turbo.
-        Updated for McRAPTOR: Includes Fare, Comfort, and Reliability.
+        Updated for McRAPTOR: Includes Fare, Comfort, Reliability, and Safety.
         """
         w = constraints.weights
         
@@ -86,17 +88,19 @@ class BaseRoutingEngine(ABC):
         fare_cost = fare * w.cost
         
         # 4. Layover Fatigue / Comfort Score (Higher comfort = Lower cost)
-        # We treat comfort as a negative cost (0..1 score)
         comfort_bonus = comfort * w.comfort * 100
         
-        # 5. Reliability Penalty (1 - reliability) * weight
-        # Higher weight means higher penalty for low reliability
+        # 5. Reliability Penalty
         reliability_penalty = (1.0 - reliability) * w.reliability * 250.0 
         
-        # 6. Distance efficiency
+        # 6. [RM-007] Safety Bonus (Higher safety score = Lower cost)
+        # We treat safety as a significant cost reduction for family/emergency personas
+        safety_bonus = safety_score * w.safety * 300.0
+        
+        # 7. Distance efficiency
         distance_bias = distance_km * 0.1
         
-        return float(time_cost + transfer_cost + fare_cost - comfort_bonus + reliability_penalty + distance_bias)
+        return float(time_cost + transfer_cost + fare_cost - comfort_bonus + reliability_penalty + distance_bias - safety_bonus)
 
     @abstractmethod
     async def find_routes(self, *args: Any, **kwargs: Any) -> Any:

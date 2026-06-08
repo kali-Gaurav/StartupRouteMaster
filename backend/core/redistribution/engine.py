@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from services.demand_forecaster import demand_forecaster, DemandLevel
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 from core.route_engine.base import RoutingRequest
 
 logger = logging.getLogger(__name__)
@@ -119,42 +119,68 @@ class RedistributionEngine:
     ) -> List[RedistributionOption]:
         """
         Searches for alternative routes that bypass or replace saturated segments.
+        [VYA Optimization] Now considers multi-hop diversions to distribute load.
         """
         options = []
         if not search_callback:
             return options
 
         # 1. WAIT-AND-FLOW: Search for later departures (+2 to +6 hours)
-        # We modify the request to start later
         wait_request = RoutingRequest(
             source_code=request.source_code,
             destination_code=request.destination_code,
-            departure_date=request.departure_date + timedelta(hours=3),
+            departure_date=request.departure_date + timedelta(hours=4), # Shift by 4h
             limit=5,
             constraints=request.constraints
         )
         
-        later_routes = await search_callback(wait_request)
+        # 2. DIVERSION: Search for alternative hubs (multi-hop)
+        # We increase max_transfers to find routes that might be longer but have vacancy
+        diversion_request = RoutingRequest(
+            source_code=request.source_code,
+            destination_code=request.destination_code,
+            departure_date=request.departure_date,
+            limit=5,
+            constraints=request.constraints
+        )
+        diversion_request.constraints.max_transfers += 1
         
-        for alt in later_routes:
+        # Execute both searches
+        later_routes_task = asyncio.create_task(search_callback(wait_request))
+        diversion_routes_task = asyncio.create_task(search_callback(diversion_request))
+        
+        results = await asyncio.gather(later_routes_task, diversion_routes_task, return_exceptions=True)
+        
+        all_alts = []
+        for res in results:
+            if isinstance(res, list): all_alts.extend(res)
+        
+        for alt in all_alts:
+            if alt.journey_id == saturated_route.journey_id: continue
+            
             # Verify this alternative isn't also saturated
             is_alt_saturated = False
+            max_fill = 0.0
             for seg in alt.segments:
                 f = await demand_forecaster.forecast_segment(
                     str(seg.train_number), seg.departure_code, seg.arrival_code, seg.departure_time.date(), db=self.db
                 )
+                max_fill = max(max_fill, f.predicted_fill_rate)
                 if f.predicted_fill_rate >= self.redistribution_threshold:
                     is_alt_saturated = True
                     break
             
             if not is_alt_saturated:
-                # Calculate benefit: How many saturated seats do we clear?
-                benefit = 0.8  # High benefit for moving from overflow to vacancy
+                # Calculate benefit: How much does this help the system?
+                # High benefit if it uses a train with < 60% fill
+                benefit = 0.9 if max_fill < 0.6 else 0.7
                 
                 time_diff = alt.total_duration - saturated_route.total_duration
-                
-                # If it's a 'Wait and Flow', we add premium incentives
                 incentives = self._calculate_incentive(benefit, int(time_diff))
+                
+                msg = "Switch to this route for a more comfortable, guaranteed seat."
+                if len(alt.segments) > len(saturated_route.segments):
+                    msg = "Relaxed alternative: More transfers but guaranteed vacancy."
                 
                 options.append(RedistributionOption(
                     original_route=saturated_route,
@@ -163,8 +189,8 @@ class RedistributionEngine:
                     cost_difference=alt.total_cost - saturated_route.total_cost,
                     incentives=incentives,
                     system_benefit_score=benefit,
-                    ui_display_text=f"Switch to {alt.segments[0].train_number} for a more comfortable, guaranteed seat.",
-                    is_premium_waiting=True
+                    ui_display_text=msg,
+                    is_premium_waiting=time_diff > 120
                 ))
         
         return options

@@ -23,7 +23,7 @@ import joblib
 
 from database.models import Stop, StopTime, TrainState
 from database.session import SessionLocal
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 

@@ -28,6 +28,7 @@ class TelegramBotConfig:
     bot_mode: BotMode = BotMode.POLLING
     webhook_url: Optional[str] = None
     webhook_path: str = "/webhooks/telegram"
+    web_app_url: str = field(default_factory=lambda: os.getenv("TELEGRAM_WEB_APP_URL", "https://routemaster-webapp.vercel.app/mini-app"))
     
     # Performance settings
     max_concurrent_updates: int = 10
@@ -74,6 +75,7 @@ class TelegramBotConfig:
             rate_limit_messages=int(os.getenv("TELEGRAM_RATE_LIMIT", "30")),
             max_retries=int(os.getenv("TELEGRAM_MAX_RETRIES", "3")),
             log_level=os.getenv("TELEGRAM_LOG_LEVEL", "INFO"),
+            web_app_url=os.getenv("TELEGRAM_WEB_APP_URL", "https://routemaster-webapp.vercel.app/mini-app"),
         )
     
     @property

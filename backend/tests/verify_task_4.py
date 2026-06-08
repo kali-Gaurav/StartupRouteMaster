@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 from datetime import datetime
 from core.route_engine.turbo_router import TurboRouter
-from core.frontier import FrontierRoute
+from core.engines.frontier import FrontierRoute
 
 class TestTurboRouterFrontier(unittest.TestCase):
     def setUp(self):

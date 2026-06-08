@@ -31,7 +31,7 @@ async def seed_data():
                 email=admin_email,
                 full_name="Super Admin",
                 role="admin",
-                supabase_id="mock-admin-id"
+                firebase_uid="mock-admin-id"
             )
             session.add(admin)
             
@@ -58,7 +58,7 @@ async def seed_data():
                 email=test_email,
                 full_name="Test Passenger",
                 role="user",
-                supabase_id="mock-test-id"
+                firebase_uid="mock-test-id"
             )
             session.add(user)
             

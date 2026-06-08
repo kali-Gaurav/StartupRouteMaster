@@ -35,7 +35,7 @@ async def test_tc01_intent_override(db):
     session_manager.update_session(db, str(chat_id), intent="search", step="awaiting_route")
     
     with patch("api.telegram_bot.SessionTransit", return_value=db), \
-         patch("services.telegram_dispatcher.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("services.telegram.bot.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
          patch("utils.nlp_router.get_local_intent") as mock_nlp:
         
         # User sends SOS instead of route
@@ -79,7 +79,7 @@ async def test_tc04_identity_conflict(db):
     db.add(user_b)
     db.commit()
     
-    with patch("services.telegram_dispatcher.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send:
+    with patch("services.telegram.bot.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send:
         # This should fail or handle the conflict
         await start_command_handler(int(chat_id.replace("tg_","")), "TOKEN_B", db)
         # We need to ensure the system doesn't just overwrite without logic
@@ -93,7 +93,7 @@ async def test_tc05_performance_burst(db):
     chat_id = 777
     engine = ConversationEngine(db)
     
-    with patch("services.telegram_dispatcher.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
+    with patch("services.telegram.bot.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
          patch("utils.nlp_router.get_local_intent", return_value={"intent": "search"}):
         
         # Fire 10 requests at once

@@ -24,11 +24,11 @@ from typing import Dict, List, Any, Optional
 # Add backend to path
 sys.path.insert(0, 'backend')
 
-from core.resilience import (
+from core.resilience.core import (
     CircuitBreaker, CircuitState, CircuitConfig, 
-    circuit_breaker_manager, CircuitOpenError
+    circuit_manager, CircuitOpenError
 )
-from core.retry import RetryPolicy, retry, retry_sync
+from core.resilience.retry import RetryPolicy, retry, retry_sync
 
 
 class TestAdvancedSeatAllocationEngine:
@@ -37,7 +37,7 @@ class TestAdvancedSeatAllocationEngine:
     @pytest.fixture
     def engine(self):
         """Create a fresh engine instance for each test."""
-        from services.advanced_seat_allocation_engine import AdvancedSeatAllocationEngine
+        from services.inventory.advanced_engine import AdvancedSeatAllocationEngine
         return AdvancedSeatAllocationEngine()
     
     def test_init_with_resilience_patterns(self, engine):
@@ -83,7 +83,7 @@ class TestAdvancedSeatAllocationEngine:
         engine.initialize_coaches(train_id=12301, coaches_config=coaches_config)
         
         # Allocate seats
-        from services.advanced_seat_allocation_engine import PassengerPreference, BerthType
+        from services.inventory.advanced_engine import PassengerPreference, BerthType
         preferences = [
             PassengerPreference(berth_type=BerthType.LOWER),
             PassengerPreference(berth_type=BerthType.UPPER),

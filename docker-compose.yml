@@ -1,311 +1,167 @@
-version: '3.8'
-
 services:
-  # --- database has been removed in favor of Supabase ---
-  # all Postgres containers (db, routemaster_db, routemaster_ml_db) were
-  # originally declared here.  RouteMaster now uses a managed Supabase
-  # PostgreSQL instance; set `DATABASE_URL` environment variables in each
-  # service to the connection string supplied by Supabase, or leave the
-  # variable unset entirely if the service only uses the Supabase client.  
-  #
-  # To clean up an existing development machine, stop and remove the old
-  # containers/volumes:
-  #   docker compose stop db routemaster_db routemaster_ml_db
-  #   docker compose rm -v db routemaster_db routemaster_ml_db
-  #
-  # The remainder of this compose file continues with non‑database services.
-
-  redis:
-    image: redis/redis-stack:7.2.0-v9
-    container_name: startupv2_redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  # Message Broker: Apache Kafka
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.4.0
-    container_name: startupv2_zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: confluentinc/cp-kafka:7.4.0
-    container_name: startupv2_kafka
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-      - "9101:9101"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_JMX_PORT: 9101
-      KAFKA_JMX_HOSTNAME: localhost
-
-  # Observability: Prometheus
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: startupv2_prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=200h'
-      - '--web.enable-lifecycle'
-
-  # Observability: Grafana
-  grafana:
-    image: grafana/grafana:latest
-    container_name: startupv2_grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - grafana_data:/var/lib/grafana
-
-  # Observability: Loki for logging
-  loki:
-    image: grafana/loki:latest
-    container_name: startupv2_loki
-    ports:
-      - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - ./monitoring/loki/local-config.yaml:/etc/loki/local-config.yaml
-
-  # Observability: Promtail for log shipping
-  promtail:
-    image: grafana/promtail:latest
-    container_name: startupv2_promtail
-    volumes:
-      - /var/log:/var/log
-      - ./monitoring/promtail/config.yml:/etc/promtail/config.yml
-    command: -config.file=/etc/promtail/config.yml
-
-  # Scraper Orchestrator Service
-  scraper:
-    build: ./backend/scraper
-    container_name: startupv2_scraper
-    ports:
-      - "8001:8001"
-    depends_on:
-      - redis
-      - kafka
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    volumes:
-      - ./backend/scraper:/app/backend/scraper
-    networks:
-      - default
-
-  # Scraper Worker (Celery)
-  scraper_worker:
-    build: ./backend/scraper
-    container_name: startupv2_scraper_worker
-    depends_on:
-      - redis
-      - kafka
-    environment:
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    volumes:
-      - ./backend/scraper:/app/backend/scraper
-    command: celery -A app.celery worker --loglevel=info
-    networks:
-      - default
-
-  # ETL Consumer Service
-  etl:
-    build: ./backend/etl
-    container_name: startupv2_etl
-    depends_on:
-      - db
-      - kafka
-    restart: unless-stopped
-    networks:
-      - default
-
-  # Route Search & Optimization Service
-  route_service:
-    build: ./backend/route_service
-    container_name: startupv2_route_service
-    ports:
-      - "8002:8002"
-    # no local database container; this service should use
-    # $DATABASE_URL pointing at your Supabase Postgres or rely on
-    # the shared supabase_client for auth/queries.
-    depends_on:
-      - redis
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    networks:
-      - default
-
-  # ML & RL Recommendation Service
-  rl_service:
-    build: ./backend/rl_service
-    container_name: startupv2_rl_service
-    ports:
-      - "8003:8003"
-    depends_on:
-      - redis
-      - kafka
-    environment:
-      - REDIS_URL=redis://redis:6379
-    networks:
-      - default
-
-  user_service:
-    build: ./backend/user_service
-    container_name: startupv2_user_service
-    restart: unless-stopped
-    ports:
-      - "8004:8004"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - SECRET_KEY=your-secret-key-change-in-production
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    depends_on:
-      - redis
-    networks:
-      - default
-
-  payment_service:
-    build: ./backend/payment_service
-    container_name: startupv2_payment_service
-    restart: unless-stopped
-    ports:
-      - "8005:8005"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - SECRET_KEY=your-secret-key-change-in-production
-      - STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
-      - STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    depends_on:
-      - redis
-    networks:
-      - default
-
-  notification_service:
-    build: ./backend/notification_service
-    container_name: startupv2_notification_service
-    restart: unless-stopped
-    ports:
-      - "8006:8006"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - TWILIO_ACCOUNT_SID=your_twilio_account_sid
-      - TWILIO_AUTH_TOKEN=your_twilio_auth_token
-      - TWILIO_PHONE_NUMBER=your_twilio_phone_number
-      - SENDGRID_API_KEY=your_sendgrid_api_key
-      - FROM_EMAIL=noreply@railwayintelligence.com
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    depends_on:
-      - redis
-    networks:
-      - default
-
-  api_gateway:
-    build: ./backend/api_gateway
-    container_name: startupv2_api_gateway
-    restart: unless-stopped
+  # Main API service
+  backend:
+    build: .
     ports:
       - "8000:8000"
     environment:
-      - SCRAPER_URL=http://scraper:8001
-      - ROUTE_URL=http://route_service:8002
-      - RL_URL=http://rl_service:8003
-      - USER_URL=http://user_service:8004
-      - PAYMENT_URL=http://payment_service:8005
-      - NOTIFICATION_URL=http://notification_service:8006
+      - DATABASE_URL=${DATABASE_URL:-postgresql://routemaster:password@db:5432/travel_db}
+      - REDIS_URL=${REDIS_URL:-redis://:password@redis:6379}
+      - KAFKA_URL=${KAFKA_URL:-kafka:9092}
+      - ENVIRONMENT=production
     depends_on:
-      - scraper
-      - etl
-      - route_service
-      - user_service
-    networks:
-      - default
-
-  routemaster_agent:
-    build: ./routemaster_agent
-    container_name: startupv2_routemaster_agent
-    ports:
-      - "8008:8008"
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    depends_on:
-      - redis
-    networks:
-      - default
-
-  # Frontend React Application
-  frontend:
-    build:
-      context: .
-      dockerfile: ./Dockerfile.frontend
-    container_name: startupv2_frontend
-    ports:
-      - "5173:5173"
-    environment:
-      - RAILWAY_BACKEND_URL=http://api_gateway:8000
-      - NODE_ENV=production
-    depends_on:
-      - api_gateway
-    networks:
-      - default
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
     restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - backend_net
+      - frontend_net
 
-  alembic_runner:
-    image: python:3.11-slim
-    container_name: startupv2_alembic_runner
-    volumes:
-      - .:/usr/src/app # Mount the entire project root
-    working_dir: /usr/src/app # Set working directory to project root
-    # assumes migrations will run against the Supabase database; make sure
-    # DATABASE_URL is set accordingly in your environment before invoking.
+  # Intelligence Worker (Shadow Brain)
+  intelligence-worker:
+    build: .
+    command: ["python", "-m", "workers.intelligence_worker"]
     environment:
-      - PYTHONPATH=/usr/src/app # Add project root to PYTHONPATH
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        pip install --no-cache-dir alembic "sqlalchemy<2.0" "GeoAlchemy2==0.13.3" "psycopg2-binary" "python-dotenv" "fastapi" "pydantic"
-        alembic -c backend/alembic.ini upgrade head
+      - DATABASE_URL=${DATABASE_URL:-postgresql://routemaster:password@db:5432/travel_db}
+      - REDIS_URL=${REDIS_URL:-redis://:password@redis:6379}
+      - KAFKA_URL=${KAFKA_URL:-kafka:9092}
+      - PYTHONPATH=/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - backend_net
+
+  # PostgreSQL database
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-travel_db}
+      - POSTGRES_USER=${POSTGRES_USER:-routemaster}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-routemaster} -d $${POSTGRES_DB:-travel_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend_net
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    environment:
+      - REDISCLI_AUTH=${REDIS_PASSWORD:-password}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-password}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend_net
+
+  # Kafka for event streaming
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend_net
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend_net
+
+  # Nginx load balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - frontend_net
 
 volumes:
-  # pgdata: {}                    # no longer used - Supabase provides managed storage
-  grafana_data: {}
-  # routemaster_pgdata: {}
-  # routemaster_ml_pgdata: {}
+  postgres_data:
+  redis_data:
+  kafka_data:
+
+networks:
+  frontend_net:
+  backend_net:

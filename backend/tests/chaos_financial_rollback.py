@@ -17,7 +17,7 @@ async def test_atomic_rollback():
     """[Task 43] Verify that a failed search unlock voids the ledger entry."""
     logger.info("🧪 Testing Task 43: Atomic Saga Rollback...")
     
-    from core.container import container
+    from core.infrastructure.container import container
     from database.session import database_service, init_db
     await container.get("db") # Boot database
     await init_db() # Create tables if missing

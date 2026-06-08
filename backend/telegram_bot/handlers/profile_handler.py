@@ -4,6 +4,7 @@ Profile Handler
 Handles user profile and account management.
 """
 
+from telegram_bot.schemas import UserState
 import logging
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -78,9 +79,10 @@ class ProfileHandler:
         """Get user profile from database."""
         try:
             from services.user_service import UserService
-            from database.session import get_db
+            from database.session import SessionUser
             
-            async with get_db() as db:
+            db = SessionUser()
+            try:
                 user_service = UserService(db)
                 
                 # Try to find user by Telegram ID
@@ -95,6 +97,8 @@ class ProfileHandler:
                         "is_verified": user.is_verified,
                         "created_at": user.created_at
                     }
+            finally:
+                db.close()
                     
         except Exception as e:
             logger.error(f"Error getting user profile: {e}")
@@ -248,7 +252,9 @@ To use all features, please link your account.
     ) -> HandlerResult:
         """Show real user statistics."""
         try:
-            async with get_db() as db:
+            from database.session import SessionUser
+            db = SessionUser()
+            try:
                 user_service = UserService(db)
                 user = await user_service.get_user_by_telegram_id(str(chat_id))
                 
@@ -292,6 +298,8 @@ To use all features, please link your account.
                         inline_keyboards=[[{"text": "🔙 Back", "callback_data": "profile_back"}]]
                     )
                 )
+            finally:
+                db.close()
         except Exception as e:
             logger.error(f"Error showing stats: {e}")
             return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
@@ -314,7 +322,9 @@ To use all features, please link your account.
     ) -> HandlerResult:
         """Show real booking history."""
         try:
-            async with get_db() as db:
+            from database.session import SessionUser
+            db = SessionUser()
+            try:
                 user_service = UserService(db)
                 user = await user_service.get_user_by_telegram_id(str(chat_id))
                 
@@ -358,6 +368,8 @@ To use all features, please link your account.
                         ]
                     )
                 )
+            finally:
+                db.close()
         except Exception as e:
             logger.error(f"Error showing history: {e}")
             return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
@@ -369,7 +381,9 @@ To use all features, please link your account.
     ) -> HandlerResult:
         """Show real wallet and credit information."""
         try:
-            async with get_db() as db:
+            from database.session import SessionUser
+            db = SessionUser()
+            try:
                 user_service = UserService(db)
                 user = await user_service.get_user_by_telegram_id(str(chat_id))
                 
@@ -426,6 +440,8 @@ To use all features, please link your account.
                         ]
                     )
                 )
+            finally:
+                db.close()
         except Exception as e:
             logger.error(f"Error showing wallet: {e}")
             return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
@@ -489,6 +505,10 @@ To use all features, please link your account.
         context.data["flow_step_idx"] = 0
         context.data["flow_waiting_input"] = False
         
+        # We need to set state to something unique for this flow so flow_handler picks it up
+        from ..schemas import UserState
+        context.state = UserState.PROFILE_EDIT
+        
         # Start the flow
         return await flow_handler.handle_flow("", context, chat_id)
 
@@ -540,3 +560,35 @@ Please enter your 12-digit redemption code below.
 
 # Global instance
 profile_handler = ProfileHandler()
+
+# Setup Profile Edit Flow
+from ..flow_handler import flow_handler, Flow, FlowStep
+from ..schemas import UserState
+
+async def save_profile_name(text: str, context: UserContext):
+    context.data["edit_profile_name"] = text
+
+async def save_profile_email(text: str, context: UserContext):
+    context.data["edit_profile_email"] = text
+    # In a real app, we would save to DB here
+    
+profile_edit_flow = Flow(
+    name="Profile Edit",
+    state=UserState.PROFILE_EDIT,
+    steps=[
+        FlowStep(
+            id="name",
+            prompt="✏️ Please enter your Full Name:",
+            validator=lambda x: len(x) > 2,
+            processor=save_profile_name
+        ),
+        FlowStep(
+            id="email",
+            prompt="📧 Please enter your Email Address:",
+            validator=lambda x: "@" in x and "." in x,
+            processor=save_profile_email
+        )
+    ]
+)
+
+flow_handler.register_flow(profile_edit_flow)

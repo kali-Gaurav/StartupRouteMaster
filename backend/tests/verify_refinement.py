@@ -9,7 +9,7 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 try:
-    from core.data_structures import Route, RouteSegment, Persona
+    from core.data_utils.structures import Route, RouteSegment, Persona
     from core.route_engine.raptor import SearchRoute
     from core.route_engine.tbr_router import haversine
     print("✅ Basic Imports Successful")

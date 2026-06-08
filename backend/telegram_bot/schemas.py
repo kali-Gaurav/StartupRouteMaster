@@ -28,6 +28,7 @@ class MessageType(str, Enum):
     CONTACT = "contact"
     VOICE = "voice"
     VIDEO = "video"
+    WEB_APP_DATA = "web_app_data"
 
 
 class UserState(str, Enum):
@@ -41,6 +42,12 @@ class UserState(str, Enum):
     FEEDBACK = "feedback"
     SOS = "sos"
     AUTH = "auth"
+    PNR_INPUT = "pnr_input_flow"
+    PROFILE_EDIT = "profile_edit_flow"
+    AWAITING_ORIGIN = "awaiting_origin"
+    AWAITING_DESTINATION = "awaiting_destination"
+    AWAITING_DATE = "awaiting_date"
+    READY_TO_SEARCH = "ready_to_search"
 
 
 class IntentType(str, Enum):
@@ -122,6 +129,7 @@ class TelegramMessage(BaseModel):
     message_type: MessageType = MessageType.TEXT
     location: Optional[Dict[str, float]] = None
     contact: Optional[Dict[str, str]] = None
+    web_app_data: Optional[Dict[str, str]] = None
     reply_to_message: Optional["TelegramMessage"] = None
 
 

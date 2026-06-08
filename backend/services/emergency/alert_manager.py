@@ -11,7 +11,7 @@ from sqlalchemy import text
 from database.session import SessionLocal, SessionTransit
 from database.models import Trip, Booking, StopTime, Stop, TrainLiveUpdate, Route
 from services.realtime_ingestion.position_estimator import TrainPositionEstimator
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 
@@ -341,8 +341,8 @@ class EmergencyAlertManager:
             import re
             match = re.match(r"([A-Z]+)(\d+)", str(coach).upper())
             if not match:
-                all_confirmed = self.db.query(User.supabase_id, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
-                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.supabase_id != excluded_user_id
+                all_confirmed = self.db.query(User.firebase_uid, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
+                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.firebase_uid != excluded_user_id
                 ).all()
                 nearby_users = all_confirmed
             else:
@@ -350,8 +350,8 @@ class EmergencyAlertManager:
                 c_num = int(c_num)
                 target_coaches = [f"{c_prefix}{c_num-1}", f"{c_prefix}{c_num}", f"{c_prefix}{c_num+1}"]
                 
-                all_confirmed = self.db.query(User.supabase_id, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
-                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.supabase_id != excluded_user_id
+                all_confirmed = self.db.query(User.firebase_uid, Booking.booking_details).join(Booking, User.id == Booking.user_id).filter(
+                    Booking.trip_id == trip_id, Booking.booking_status == 'confirmed', User.firebase_uid != excluded_user_id
                 ).all()
                 
                 nearby_users = []
@@ -365,7 +365,7 @@ class EmergencyAlertManager:
                 # Task 32: Sort by Karma Score
                 from database.models import Profile, User
                 user_ids = [r[0] for r in nearby_users]
-                karma_data = self.db.query(User.supabase_id, Profile.karma_score).join(Profile, User.id == Profile.user_id).filter(User.supabase_id.in_(user_ids)).all()
+                karma_data = self.db.query(User.firebase_uid, Profile.karma_score).join(Profile, User.id == Profile.user_id).filter(User.firebase_uid.in_(user_ids)).all()
                 profiles = {k[0]: k[1] for k in karma_data}
                 nearby_users.sort(key=lambda x: profiles.get(x[0], 100), reverse=True)
                 
@@ -396,7 +396,7 @@ class EmergencyAlertManager:
         from database.models import User, Profile
         from api.websockets import manager
         try:
-            volunteers = self.db.query(User.supabase_id, Profile.expertise).join(Profile, User.id == Profile.user_id).filter(
+            volunteers = self.db.query(User.firebase_uid, Profile.expertise).join(Profile, User.id == Profile.user_id).filter(
                 Profile.is_volunteer == True
             ).all()
             

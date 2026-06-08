@@ -30,7 +30,7 @@ async def verify_task_18():
     # 1. Mock searches for GN and TQ
     async def mock_orch(source_code, destination_code, departure_date, constraints, limit, db):
         # Return simple route
-        from core.data_structures import Route, RouteSegment
+        from core.data_utils.structures import Route, RouteSegment
         r = Route()
         r.add_segment(RouteSegment(trip_id=1, departure_stop_id=1, arrival_stop_id=2, 
                                    departure_time=datetime.now(), arrival_time=datetime.now(),

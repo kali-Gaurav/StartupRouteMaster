@@ -2,11 +2,12 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import logging
 import numpy as np
-from core.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
+from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
 
 logger = logging.getLogger(__name__)
-from core.data_structures import Route, RouteSegment, Passenger, ensure_datetime
+from core.data_utils.structures import Route, RouteSegment, Passenger, ensure_datetime
 from .constraints import RouteConstraints, Persona
+from services.sathi_location_service import SathiLocationService
 
 class RouteScorer:
     """
@@ -16,13 +17,9 @@ class RouteScorer:
     
     @staticmethod
     async def score_route(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
-        """Async wrapper for backward compatibility."""
-        return RouteScorer.score_route_sync(route, constraints, reliability_scores, passengers)
-
-    @staticmethod
-    def score_route_sync(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+        """Core asynchronous scoring entry point."""
         try:
-            return RouteScorer._score_route_impl(route, constraints, reliability_scores, passengers)
+            return await RouteScorer._score_route_impl(route, constraints, reliability_scores, passengers)
         except Exception as e:
             import traceback
             logger.error(f"CRITICAL: Scoring Error for route {route}: {e}")
@@ -30,7 +27,12 @@ class RouteScorer:
             return 0.0
 
     @staticmethod
-    def _score_route_impl(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+    async def score_route_sync(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+        """Deprecated: Use score_route instead. Kept for legacy hydration steps."""
+        return await RouteScorer.score_route(route, constraints, reliability_scores, passengers)
+
+    @staticmethod
+    async def _score_route_impl(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
         # [Task 25.1] Get specialized score based on persona for primary ranking
         persona_score = RouteScorer.get_persona_score(route, constraints)
         
@@ -108,13 +110,109 @@ class RouteScorer:
             # Looking at line 46: time_score = duration * weight. Usually lower score = better route.
             # But let's check persona_score logic.
             
+        # [Task RM-A-030] Turbo-Vibe Intelligence Injection
+        vibe_penalty = 0
+        stations_to_check = {s.departure_code for s in route.segments} | {s.arrival_code for s in route.segments}
+        
+        # [Task RM-ML-601] SafetyBERT Sentiment Simulation
+        # Simulate Transformer inference on recent social reports
+        sentiment_risk_score = 0
+        for station in stations_to_check:
+            # In a real industrial deployment, this would be a call to a PyTorch/ONNX model
+            # Here we simulate the 'SafetyBERT' detecting sarcasm/tension in feedback
+            reports = route.metadata.get("intelligence", {}).get("station_reports", {}).get(station, [])
+            for report in reports:
+                if "tension" in report or "crowd" in report:
+                    sentiment_risk_score += 1000 # Detected high-risk sentiment
+        
+        vibe_penalty += sentiment_risk_score
+
+        for station in stations_to_check:
+            # Fetch Vibe Telemetry (Mocked from Redis/ML service)
+            vibe_data = await SathiLocationService.get_station_vibe(station)
+            lighting = vibe_data.get("lighting", 100)
+            crowd = vibe_data.get("crowd_density", 0.5)
+            security = vibe_data.get("security_presence", 50)
+            
+            is_night = any(RouteScorer.is_night_time(ensure_datetime(s.arrival_time)) for s in route.segments if s.arrival_code == station)
+            
+            if is_night:
+                if lighting < 40:
+                    vibe_penalty += 5000 # Critical safety risk: Dark platform
+                if crowd < 0.1:
+                    vibe_penalty += 3000 # Risk: Deserted platform
+                if security < 20:
+                    vibe_penalty += 2000 # Risk: No security nearby
+            
+            # [Patent Upgrade: Audio Sentiment Awareness]
+            audio_stress = vibe_data.get("audio_stress_level", 0)
+            if audio_stress > 80:
+                vibe_penalty += 7000 # Risk: High-decibel distress or shouting detected
+            
+            # Bonus for "High Vibe" safe havens
+            if lighting > 90 and crowd > 0.4 and security > 70:
+                vibe_penalty -= 2000
+        
+        # [Council Recommendation: JIT Safety]
+        live_incident_penalty = 0
+        for station in stations_to_check:
+            # Check for high-priority incidents reported by Sathis in the last 15 mins
+            active_incidents = await SathiLocationService.get_active_incidents(station)
+            for incident in active_incidents:
+                if incident.get("risk_level") == "HIGH":
+                    live_incident_penalty += 10000 # Critical: Avoid this station entirely
+                else:
+                    live_incident_penalty += 3000
+        
+        safety_boost += vibe_penalty + live_incident_penalty
+
+        # [Task RM-A-012] Dynamic Sathi Presence Injection
+        sathi_presence_boost = 0
+        for station in stations_to_check:
+            count = await SathiLocationService.get_station_sathi_count(station)
+            if count > 0:
+                sathi_presence_boost -= (count * 1500)
+                
         if is_solo_female:
             # Boost safety if guardian score is high at transfer points
             social_trust_boost -= (guardian_val * 3000)
+            
+            # [Task RM-S-004] Real-time Sathi Coverage Reward
+            if sathi_presence_boost < 0:
+                # Significant reward for verified human presence during solo female travel
+                safety_boost += (sathi_presence_boost * 1.5) # Amplify for solo female
+
             for tr in route.transfers:
                 if RouteScorer.is_night_time(ensure_datetime(tr.arrival_time)) or RouteScorer.is_night_time(ensure_datetime(tr.departure_time)):
                     safety_boost += 2000 # Penalty for night transfers
         
+        # Apply the general sathi boost to all personas
+        safety_boost += sathi_presence_boost
+
+        # [Task RM-A-040] Last-Mile Intelligence Sync
+        last_mile_penalty = 0
+        for i in range(len(route.segments) - 1):
+            transfer_station = route.segments[i].arrival_code
+            # Check for "Last-Mile" coverage (Verified E-rickshaws, Safe Corridors)
+            coverage_data = await SathiLocationService.get_last_mile_coverage(transfer_station)
+            
+            has_verified_transit = coverage_data.get("has_verified_transit", False)
+            safety_kiosk = coverage_data.get("has_safety_kiosk", False)
+            
+            arrival_time = ensure_datetime(route.segments[i].arrival_time)
+            is_deep_night = arrival_time.hour >= 23 or arrival_time.hour <= 4
+            
+            if is_deep_night:
+                if not has_verified_transit:
+                    last_mile_penalty += 4000 # Critical: No safe exit at night
+                if not safety_kiosk:
+                    last_mile_penalty += 2000 # High: No safe haven while waiting
+            else:
+                if has_verified_transit:
+                    last_mile_penalty -= 1000 # Bonus: Seamless safe transfer
+        
+        safety_boost += last_mile_penalty
+
         # [Day 1 Refinement] Heartbeat Reliability Reward
         heartbeat_reward = 0
         if route.metadata.get("heartbeat_verified"):

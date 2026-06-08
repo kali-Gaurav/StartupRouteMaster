@@ -3,7 +3,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { auth } from '@/lib/firebase';
+import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -33,12 +34,7 @@ const LoginPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email: data.email,
-        password: data.password,
-      });
-
-      if (authError) throw authError;
+      await signInWithEmailAndPassword(auth, data.email, data.password);
 
       toast.success("Welcome back!", {
         description: "You have successfully signed in.",
@@ -46,8 +42,9 @@ const LoginPage = () => {
       navigate('/dashboard');
     } catch (err: any) {
         console.error("Login failed:", err);
-        setError(err.message || "Failed to sign in. Please check your credentials.");
-        toast.error("Login failed", { description: err.message || "Please try again." });
+        const msg = err.code === 'auth/invalid-credential' ? 'Invalid email or password.' : (err.message || "Failed to sign in.");
+        setError(msg);
+        toast.error("Login failed", { description: msg });
     } finally {
       setLoading(false);
     }
@@ -56,13 +53,9 @@ const LoginPage = () => {
   const handleSocialLogin = async (provider: 'google' | 'github') => {
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: `${window.location.origin}/dashboard`,
-        }
-      });
-      if (error) throw error;
+      const authProvider = provider === 'google' ? new GoogleAuthProvider() : new GithubAuthProvider();
+      await signInWithPopup(auth, authProvider);
+      navigate('/dashboard');
     } catch (err: any) {
       toast.error(`${provider} login failed`, { description: err.message });
       setLoading(false);

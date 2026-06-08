@@ -426,3 +426,22 @@ SLA_CHECK_STATUS = Gauge(
     'sla_check_status',
     'Result of last SLA check (1 = pass, 0 = fail).'
 )
+
+# --- RAPTOR Performance Hardening (Tasks 15 & 16) ---
+RAPTOR_PARALLEL_INIT_SECONDS = Histogram(
+    'raptor_parallel_init_seconds',
+    'Time spent in parallel Round 0 initialization (seconds).',
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.5)
+)
+
+RAPTOR_EARLY_EXIT_TOTAL = Counter(
+    'raptor_early_exit_total',
+    'Total number of searches that terminated early due to destination dominance.',
+    ['round_num']
+)
+
+RAPTOR_PRUNED_BRANCHES_TOTAL = Counter(
+    'raptor_pruned_branches_total',
+    'Number of active search branches pruned by dominance checks.',
+    ['reason'] # 'early_exit', 'dominance', 'slack'
+)

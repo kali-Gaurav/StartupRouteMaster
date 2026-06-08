@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 from database.session import get_db
 from services.auth.engine import AuthMicroservice
 from microservices.shared.auth import SharedAuthManager
-from core.service_discovery import ServiceRegistry
-from core.lifespan import get_redis
+from core.integration.discovery import ServiceRegistry
+from core.infrastructure.lifespan import get_redis
 
 app = FastAPI(title="RouteMaster Auth Microservice")
 

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from api.telegram_bot import router as telegram_router
 from backend.schemas.telegram_bot_schemas import Update, Message, Chat, User
 from backend.services.command_handlers.command_handler import CommandHandler
-from backend.services.telegram_dispatcher import TelegramDispatcher
+from backend.services.telegram.bot import TelegramDispatcher
 import api.telegram_bot as telegram_module
 
 # Create a test FastAPI app
@@ -186,3 +186,107 @@ async def test_pnr_command_handler_found_booking(monkeypatch, mock_dependencies)
 
     await pnr_command_handler(12345, "1234567890", mock_db)
     mock_dependencies["telegram_dispatcher"].send_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ticket_command_handler_uses_pnr(monkeypatch, mock_dependencies):
+    from backend.api.telegram_bot import ticket_command_handler, pnr_command_handler
+
+    mock_pnr = AsyncMock()
+    monkeypatch.setattr('backend.api.telegram_bot.pnr_command_handler', mock_pnr)
+
+    mock_db = MagicMock()
+    await ticket_command_handler(12345, "1234567890", mock_db)
+
+    mock_pnr.assert_called_once_with(12345, "1234567890", mock_db)
+
+
+@pytest.mark.asyncio
+async def test_book_command_handler_starts_booking_search(monkeypatch, mock_dependencies):
+    from backend.api.telegram_bot import book_command_handler
+
+    mock_db = MagicMock()
+    mock_send = AsyncMock()
+    monkeypatch.setattr('backend.api.telegram_bot.get_local_intent', lambda text: {'intent': 'search', 'entities': {'source': 'Mumbai', 'destination': 'Delhi'}})
+    monkeypatch.setattr('backend.api.telegram_bot._send_search_results', mock_send)
+
+    await book_command_handler(12345, "Mumbai to Delhi on 2026-05-01", mock_db)
+
+    mock_send.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_send_search_results_renders_select_buttons(mock_dependencies):
+    from backend.api.telegram_bot import _send_search_results
+
+    mock_db = MagicMock()
+    mock_dependencies['telegram_dispatcher'].send_message = AsyncMock()
+
+    journeys = [
+        {
+            "journey_id": "journey_1",
+            "train_name": "Test Express",
+            "departure_time": "10:00",
+            "arrival_time": "18:00",
+            "available_seats": 10,
+            "fare": "₹500"
+        },
+        {
+            "journey_id": "journey_2",
+            "train_name": "Another Express",
+            "departure_time": "11:00",
+            "arrival_time": "19:00",
+            "available_seats": 5,
+            "fare": "₹750"
+        }
+    ]
+
+    async def fake_search_routes(source, destination, travel_date, limit):
+        return {"journeys": journeys}
+
+    mock_service = MagicMock()
+    mock_service.search_routes = AsyncMock(side_effect=fake_search_routes)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr('backend.api.telegram_bot.SearchService', lambda db: mock_service)
+
+    await _send_search_results(12345, "Mumbai", "Delhi", "2026-05-01", mock_db)
+
+    mock_dependencies['telegram_dispatcher'].send_message.assert_called_once()
+    args, kwargs = mock_dependencies['telegram_dispatcher'].send_message.call_args
+    assert "Choose one of the options" in args[1]
+    assert kwargs['reply_markup']['inline_keyboard'][0][0]['callback_data'] == 'select_train:journey_1'
+    assert kwargs['reply_markup']['inline_keyboard'][1][0]['callback_data'] == 'select_train:journey_2'
+    monkeypatch.undo()
+
+@pytest.mark.asyncio
+async def test_start_command_handler_creates_telegram_account(monkeypatch, mock_dependencies):
+    from backend.api.telegram_bot import start_command_handler
+
+    mock_user = MagicMock()
+    mock_user.telegram_link_token = "TEST1234"
+    mock_user.telegram_link_expiry = None
+    mock_user.full_name = "Test User"
+    mock_user.id = "user_1"
+
+    def fake_query(model):
+        q = MagicMock()
+        if model.__name__ == 'User':
+            q.filter.return_value.first.return_value = mock_user
+        elif model.__name__ == 'TelegramAccount':
+            q.filter.return_value.first.return_value = None
+        else:
+            q.filter.return_value.first.return_value = None
+        return q
+
+    mock_db = MagicMock()
+    mock_db.query.side_effect = fake_query
+
+    mock_dependencies['telegram_dispatcher'].send_message = AsyncMock()
+
+    await start_command_handler(12345, "TEST1234", mock_db)
+
+    assert mock_db.add.called
+    assert mock_db.commit.called
+    assert mock_user.telegram_id == '12345'
+    assert mock_user.telegram_link_token is None
+    assert mock_user.telegram_link_expiry is None
+    mock_dependencies['telegram_dispatcher'].send_message.assert_called_once()

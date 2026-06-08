@@ -55,7 +55,7 @@ header = """
 import time
 import asyncio
 from typing import List, Callable, Any
-from core.data_structures import Route, RouteConstraints
+from core.data_utils.structures import Route, RouteConstraints
 from core.pricing.fare_calculator import calculate_fare
 import logging
 

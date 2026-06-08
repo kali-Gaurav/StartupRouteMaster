@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from database.session import SessionLocal, engine_transit
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.constraints_engine import ConstraintsEngine
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 
 async def verify_task_8():
     print("\n>>> STARTING VERIFICATION: MVP TASK 8 (CANCELLATION PRUNING)")

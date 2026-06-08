@@ -9,7 +9,7 @@ from services.agent_booking_service import AgentBookingService
 from services.unlock_service import UnlockService
 from database.session import SessionLocal
 from database.models import User, Booking, PassengerDetails, AuditLog
-from core.data_structures import Passenger
+from core.data_utils.structures import Passenger
 
 def verify_task_42():
     print("\n>>> COMPREHENSIVE VERIFICATION: TASK 42 (AGENT BOOKING LOGIC)")

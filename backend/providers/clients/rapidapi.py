@@ -23,7 +23,7 @@ from schemas.rapidapi_models import (
     TrainsByStation, LiveStatus, LiveStation
 )
 from utils.rate_limiter import RedisTokenBucket
-from core.redis_client import async_redis_client
+from core.infrastructure.redis_manager import async_redis_client
 
 logger = logging.getLogger("provider.rapidapi")
 

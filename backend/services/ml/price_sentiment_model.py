@@ -5,7 +5,7 @@ from typing import Dict, Any, List
 from datetime import datetime, timedelta
 from database.session import SessionLocal
 from database.models import RouteSearchLog
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 
@@ -99,8 +99,6 @@ class PriceSentimentModel:
             for _ in range(10)
         ]
 
-price_sentiment_model = PriceSentimentModel()
-
     def get_metrics(self) -> Dict[str, Any]:
         """Get service metrics for monitoring."""
         return {
@@ -127,3 +125,6 @@ price_sentiment_model = PriceSentimentModel()
         """Reset the circuit breaker to closed state."""
         self._sentiment_circuit_breaker.reset()
         logger.info("🔄 [SENTIMENT] Circuit breaker reset for price sentiment model")
+
+# Global instance
+price_sentiment_model = PriceSentimentModel()

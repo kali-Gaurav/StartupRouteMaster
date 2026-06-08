@@ -8,7 +8,7 @@ sys.path.append(os.path.join(os.getcwd(), "backend"))
 from database.session import SessionTransit
 
 async def migrate_stops():
-    from core.container import container
+    from core.infrastructure.container import container
     await container.get("db")
     
     db = SessionTransit()

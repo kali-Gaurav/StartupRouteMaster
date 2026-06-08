@@ -637,7 +637,7 @@ class TestAPIEndpoints:
     def client(self):
         """Create test client"""
         from fastapi.testclient import TestClient
-        from services.travel_planning_api import router
+        from services.planning.api import router
         from fastapi import FastAPI
         
         app = FastAPI()
@@ -657,7 +657,7 @@ class TestAPIEndpoints:
     
     def test_travel_plan_request_model(self):
         """Test travel plan request model validation"""
-        from services.travel_planning_api import TravelPlanRequest
+        from services.planning.api import TravelPlanRequest
         
         # Valid request
         request = TravelPlanRequest(
@@ -694,7 +694,7 @@ class TestAPIEndpoints:
     
     def test_waiting_booking_request_model(self):
         """Test waiting booking request model"""
-        from services.travel_planning_api import WaitingBookingRequest
+        from services.planning.api import WaitingBookingRequest
         
         request = WaitingBookingRequest(
             passenger_id="user123",

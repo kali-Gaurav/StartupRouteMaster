@@ -7,7 +7,7 @@ import asyncio
 import logging
 from database.session import SessionLocal, SessionTransit
 from tasks.cleanup_tasks import release_expired_claims
-from services.inventory_service import InventoryService
+from services.inventory.service import InventoryService
 
 logger = logging.getLogger(__name__)
 

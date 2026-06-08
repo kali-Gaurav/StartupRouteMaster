@@ -63,13 +63,13 @@ class ObservabilityMiddleware:
                         f"({duration:.2f}ms)"
                     )
                     # [Task 13.8] Log to Heatmap
-                    from core.metrics import jit_metrics
+                    from core.infrastructure.metrics import jit_metrics
                     import asyncio
                     asyncio.create_task(jit_metrics.record_latency(path, duration))
 
                     # [Task 13.9] SLA Monitoring
                     if duration > 2000: # 2s SLA
-                        from services.alert_service import alert_service
+                        from services.communication.alert_service import alert_service
                         import asyncio
                         asyncio.create_task(alert_service.monitor_sla(duration, path))
 
@@ -83,7 +83,7 @@ class ObservabilityMiddleware:
                     exc_info=True
                 )
                 # [Task 13.6] Critical Alert on unhandled crash
-                from services.alert_service import alert_service
+                from services.communication.alert_service import alert_service
                 import asyncio
                 asyncio.create_task(alert_service.send_alert(
                     f"🔥 CRITICAL: {type(e).__name__} at {path}", 

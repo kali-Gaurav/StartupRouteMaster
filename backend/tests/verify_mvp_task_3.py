@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.route_engine.scoring import RouteScorer
 from core.route_engine.constraints_engine import ConstraintsEngine
-from core.data_structures import Route, RouteSegment, TransferConnection
+from core.data_utils.structures import Route, RouteSegment, TransferConnection
 
 async def verify_task_3():
     print("\n>>> STARTING VERIFICATION: MVP TASK 3 (SMART TRANSFER WEIGHTS)")

@@ -3,7 +3,7 @@ import time
 import hashlib
 from typing import Dict, Any, Optional
 from fastapi import Request, HTTPException
-from core.container import container
+from core.infrastructure.container import container
 from core.auth.utils import AUTH_SECRET
 
 logger = logging.getLogger("nexus.sybil")

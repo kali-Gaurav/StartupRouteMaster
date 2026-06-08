@@ -20,18 +20,15 @@ import { cn } from "@/lib/utils";
 
 const MiniAppSOS = () => {
   const navigate = useNavigate();
-  const { webApp } = useTelegramWebApp();
+  const { webApp, showBackButton } = useTelegramWebApp();
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(false);
   const [activeMode, setActiveMode] = useState<'emergency' | 'shield'>('emergency');
 
   useEffect(() => {
-    if (webApp) {
-      webApp.BackButton.show();
-      webApp.BackButton.onClick(() => navigate("/mini-app"));
-    }
-    return () => webApp?.BackButton.hide();
-  }, [webApp, navigate]);
+    const hide = showBackButton(() => navigate("/mini-app"));
+    return hide;
+  }, [showBackButton, navigate]);
 
   const handleTrigger = () => {
     setLoading(true);

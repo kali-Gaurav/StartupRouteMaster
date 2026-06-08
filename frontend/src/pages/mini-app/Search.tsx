@@ -24,12 +24,18 @@ import { cn } from "@/lib/utils";
 const MiniAppSearch = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { webApp, showBackButton } = useTelegramWebApp();
   const [from, setFrom] = useState(searchParams.get("from") || "");
   const [to, setTo] = useState(searchParams.get("to") || "");
   const [date, setDate] = useState(searchParams.get("date") || new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+
+  useEffect(() => {
+    const hide = showBackButton(() => navigate("/mini-app"));
+    return hide;
+  }, [showBackButton, navigate]);
 
   useEffect(() => {
     if (from && to) {

@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("turbo-bench")
 
 async def benchmark_turbo():
-    from core.container import container
+    from core.infrastructure.container import container
     from database.session import SessionTransit
     
     # Initialize DB via IoC

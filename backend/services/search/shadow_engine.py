@@ -33,7 +33,7 @@ class ShadowEngine:
         Includes Autonomous Rebalancing (Offloading to healthy nodes).
         """
         from services.cache_service import cache_service
-        from core.system_monitor import system_monitor
+        from core.infrastructure.system_monitor import system_monitor
         import httpx # Using httpx for async delegation
         
         # 0. Circuit Breaker [Task 4.6]

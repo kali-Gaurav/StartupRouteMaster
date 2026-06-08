@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.route_engine.categorization import CategorizationEngine
-from core.data_structures import Route, RouteSegment, Persona
+from core.data_utils.structures import Route, RouteSegment, Persona
 
 def create_mock_route(jid, duration, cost, prob=0.9):
     r = Route()

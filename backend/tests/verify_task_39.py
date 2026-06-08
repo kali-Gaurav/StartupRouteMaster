@@ -1,7 +1,7 @@
 from core.pricing.fare_calculator import calculate_fare
 from core.route_engine.scoring import RouteScorer
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, Persona, Passenger
+from core.data_utils.structures import Route, RouteSegment, Persona, Passenger
 from datetime import datetime
 
 async def verify_task_39():
@@ -27,7 +27,7 @@ async def verify_task_39():
     assert fare_res['total_fare'] < fare_single['total_fare'] * 2
     
     # 2. Test Persona-Aware Scoring (Subtask 39.2)
-    from core.data_structures import TransferConnection
+    from core.data_utils.structures import TransferConnection
     r_transfer = Route(total_duration=500, total_cost=1000)
     r_transfer.add_segment(RouteSegment(trip_id=1, departure_stop_id=1, arrival_stop_id=2, departure_time=datetime.now(), arrival_time=datetime.now(), duration_minutes=200, distance_km=100))
     r_transfer.add_transfer(TransferConnection(station_id=2, station_name="HUB", arrival_time=datetime.now(), departure_time=datetime.now(), duration_minutes=100))

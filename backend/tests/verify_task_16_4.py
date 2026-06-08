@@ -5,7 +5,7 @@ import numpy as np
 
 # Add backend to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 from core.route_engine.scoring import RouteScorer
 from core.route_engine.constraints import RouteConstraints, Persona
 

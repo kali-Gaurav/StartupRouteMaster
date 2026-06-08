@@ -1,6 +1,7 @@
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
-import { ShieldAlert, CheckCircle, Zap, ShieldCheck } from "lucide-react";
+import { ShieldAlert, CheckCircle, Zap, ShieldCheck, HeartHandshake } from "lucide-react";
+import { SathiMapOverlay } from "@/components/SathiMapOverlay";
 
 export default function SafetyPage() {
   const safetyFeatures = [
@@ -23,6 +24,11 @@ export default function SafetyPage() {
       icon: <ShieldCheck className="w-8 h-8 text-blue-500" />,
       title: "Verified Safe Routes",
       description: "All recommended routes are continuously verified through real-time telemetry from thousands of active journeys."
+    },
+    {
+      icon: <HeartHandshake className="w-8 h-8 text-indigo-500" />,
+      title: "Sathi Safety Companions",
+      description: "Verified personnel available at major stations to assist women and family travelers. Look for the Sathi icon on the map."
     }
   ];
 
@@ -47,6 +53,54 @@ export default function SafetyPage() {
               <p className="text-muted-foreground leading-relaxed">{f.description}</p>
             </div>
           ))}
+        </div>
+
+        {/* Real-time Sathi Map Section */}
+        <div className="mt-24 text-left">
+           <div className="flex items-center gap-4 mb-8">
+              <div className="p-3 bg-emerald-100 rounded-2xl">
+                 <ShieldCheck className="w-8 h-8 text-emerald-600" />
+              </div>
+              <div>
+                 <h2 className="text-3xl font-black uppercase tracking-tighter italic">Sathi Near Me</h2>
+                 <p className="text-muted-foreground">Real-time distribution of verified safety personnel in your vicinity.</p>
+              </div>
+           </div>
+           
+           <div className="h-[500px] w-full rounded-[2.5rem] overflow-hidden border-4 border-white shadow-2xl relative">
+              <SathiMapOverlay className="w-full h-full" />
+           </div>
+           
+           <div className="mt-8 p-8 bg-emerald-600 text-white rounded-3xl flex flex-col md:flex-row items-center justify-between gap-6 shadow-xl animate-in zoom-in duration-500">
+              <div className="flex items-center gap-4">
+                 <div className="p-3 bg-white/20 rounded-2xl">
+                    <HeartHandshake className="w-8 h-8" />
+                 </div>
+                 <div>
+                    <h3 className="text-xl font-bold italic tracking-tighter uppercase">Become a Sathi</h3>
+                    <p className="text-emerald-100 text-sm">Join our mission to make railway travel safe for everyone.</p>
+                 </div>
+              </div>
+              <a 
+                href="/sathi/onboard" 
+                className="px-8 py-4 bg-white text-emerald-700 rounded-2xl font-black uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg"
+              >
+                Apply Now
+              </a>
+           </div>
+           
+           <div className="mt-6 flex flex-wrap gap-4 justify-center md:justify-start">
+              <div className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 rounded-full text-xs font-bold border border-emerald-100">
+                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                 Verified & Active
+              </div>
+              <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 rounded-full text-xs font-bold border border-blue-100">
+                 GPS Tracked
+              </div>
+              <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 text-amber-700 rounded-full text-xs font-bold border border-amber-100">
+                 Background Checked
+              </div>
+           </div>
         </div>
 
         <div className="mt-20 p-12 bg-slate-900 text-white rounded-[2.5rem] relative overflow-hidden text-left shadow-2xl">

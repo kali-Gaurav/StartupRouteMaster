@@ -1,17 +1,14 @@
-from .session import (
-    SessionLocal, 
-    SessionUser, 
-    SessionTransit, 
-    SessionAuth, 
-    engine, 
-    get_db, 
-    init_db, 
-    Base, 
-    get_source_connection,
-    initialize_database_pools
-)
+# database package initialization
+# Optimized for modular architecture
 
-# Backward compatibility aliases
-engine_write = engine
-engine_read = engine # In SQLite local mode, read/write use the same engine
-close_db = lambda: None # Placeholder if needed
+from .infrastructure.session import (
+    SessionUser, SessionTransit, SessionAuth, SessionLocal, SessionRead,
+    AsyncSessionUser, AsyncSessionTransit, AsyncSessionAuth, AsyncSessionRead,
+    get_db, get_transit_db, get_async_db, get_async_transit_db,
+    initialize_database_pools, database_service
+)
+from .infrastructure.base import Base, UserBase, TransitBase
+from .infrastructure.config import Config
+
+# Re-export models for convenience
+from .models import *

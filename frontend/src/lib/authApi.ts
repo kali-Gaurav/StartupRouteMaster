@@ -3,7 +3,7 @@
  * Uses shared apiClient for base URL, auth header, and 401 → logout.
  */
 
-import { fetchWithAuth } from './apiClient';
+import { fetchWithAuth, getApiBase } from './apiClient';
 
 export interface User {
   user_id: string | number;
@@ -20,6 +20,7 @@ export interface AuthResponse {
   success: boolean;
   message: string;
   token?: string;
+  token_type?: 'firebase_custom' | 'bearer' | string;
   refresh_token?: string;
   user?: User;
   is_new_user?: boolean;
@@ -102,7 +103,7 @@ export const updateLocation = async (latitude: number, longitude: number): Promi
 // Refreshes tokens using the stored refresh token. Returns new auth response or throws on failure.
 export const refreshToken = async (): Promise<AuthResponse> => {
   // Direct fetch; this should not call fetchWithAuth to avoid recursion
-  const base = API_BASE.replace(/\/$/, '');
+  const base = getApiBase();
   const url = base + '/api/auth/refresh';
   const refresh_token = localStorage.getItem('refresh_token');
   if (!refresh_token) throw new Error('No refresh token available');

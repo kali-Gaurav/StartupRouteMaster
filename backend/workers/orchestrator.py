@@ -138,6 +138,24 @@ def ml_retraining_job():
 
 scheduler = None
 
+
+def _safe_interval_minutes() -> int:
+    value = getattr(Config, "PAYMENT_RECONCILIATION_INTERVAL_MINUTES", None)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        logger.warning("PAYMENT_RECONCILIATION_INTERVAL_MINUTES missing/invalid. Falling back to 10 minutes.")
+        return 10
+
+
+def _safe_interval_seconds() -> int:
+    value = getattr(Config, "INVENTORY_RECONCILIATION_INTERVAL_SECONDS", None)
+    try:
+        return max(5, int(value))
+    except (TypeError, ValueError):
+        logger.warning("INVENTORY_RECONCILIATION_INTERVAL_SECONDS missing/invalid. Falling back to 300 seconds.")
+        return 300
+
 def start_reconciliation_worker():
     global scheduler
     if scheduler:
@@ -147,14 +165,14 @@ def start_reconciliation_worker():
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         reconcile_payments,
-        IntervalTrigger(minutes=Config.PAYMENT_RECONCILIATION_INTERVAL_MINUTES), # Use Config
+        IntervalTrigger(minutes=_safe_interval_minutes()),
         id='payment_reconciliation_job',
         name='Razorpay Payment Reconciliation',
         replace_existing=True
     )
     scheduler.add_job(
         inventory_reconciliation_wrapper, # Use the wrapper for async task
-        IntervalTrigger(seconds=Config.INVENTORY_RECONCILIATION_INTERVAL_SECONDS),
+        IntervalTrigger(seconds=_safe_interval_seconds()),
         id='inventory_reconciliation_job',
         name='Seat Inventory Reconciliation',
         replace_existing=True

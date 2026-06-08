@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, Any, List, Optional
-from core.ml_integration import HybridMLModel
-from core.data_structures import Persona
+from core.engines.ml_integration import HybridMLModel
+from core.data_utils.structures import Persona
 
 logger = logging.getLogger("ml.journey_story")
 

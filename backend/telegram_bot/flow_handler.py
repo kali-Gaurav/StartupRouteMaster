@@ -28,10 +28,11 @@ class FlowStep:
         self.processor = processor
 
 class Flow:
-    def __init__(self, name: str, state: UserState, steps: List[FlowStep]):
+    def __init__(self, name: str, state: UserState, steps: List[FlowStep], on_complete: Optional[Callable[[UserContext, int], Awaitable[HandlerResult]]] = None):
         self.name = name
         self.state = state
         self.steps = steps
+        self.on_complete = on_complete
 
 class FlowHandler:
     """Manages multi-turn flows by tracking current step in UserContext."""
@@ -95,6 +96,10 @@ class FlowHandler:
             # Flow complete
             context.data.pop("flow_step_idx", None)
             context.data.pop("flow_waiting_input", None)
+            
+            if hasattr(flow, 'on_complete') and flow.on_complete:
+                return await flow.on_complete(context, chat_id)
+                
             return HandlerResult(
                 status=HandlerResultStatus.SUCCESS,
                 response=BotResponse(

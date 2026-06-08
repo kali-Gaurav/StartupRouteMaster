@@ -8,9 +8,9 @@ from typing import Dict, Any, Optional, List, Set, Tuple
 from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.responses import JSONResponse
 
-from core.system_monitor import system_monitor, SystemState
+from core.infrastructure.system_monitor import system_monitor, SystemState
 from services.jit_manager import jit_manager
-from core.metrics import jit_metrics
+from core.infrastructure.metrics import jit_metrics
 from utils.responses import SafeJSONResponse
 from core.middleware.control import TokenBucket, TrafficPredictor, register_middleware
 
@@ -136,7 +136,7 @@ class SmartMiddleware:
             return await self.handle_options(scope, receive, send)
 
         # Activity Reporting
-        from core.orchestrator import orchestrator
+        from core.engines.orchestrator import orchestrator
         orchestrator.report_request()
         
         try:

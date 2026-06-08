@@ -16,11 +16,13 @@ import { LocationService } from "@/lib/locationService";
 import { voiceService } from "@/services/voiceService";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { cn, getRailwayApiUrl } from "@/lib/utils";
+import { TacticalSOS } from "@/components/TacticalSOS";
 
 export default function SOSPage() {
-  const { user, isAuthenticated, session } = useAuth();
+  const { user, isAuthenticated, token: authToken } = useAuth();
   const { isSubscribed, subscribeUser, unsubscribeUser } = usePushNotifications();
-  const token = session?.access_token;
+  // SOS is safety-critical — works with or without auth token
+  const token = authToken || null;
   
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -39,6 +41,8 @@ export default function SOSPage() {
   useEffect(() => {
     if (!eventId || (!sent && !isShieldActive && !isGuardianActive)) return;
 
+    let timeoutId: NodeJS.Timeout;
+
     const syncTelemetry = async () => {
       if (!location) return;
       try {
@@ -48,25 +52,34 @@ export default function SOSPage() {
           batteryLevel = battery.level;
         }
 
-        await fetch(getRailwayApiUrl(`/sos/${eventId}/telemetry`), {
+        await fetch(getRailwayApiUrl(`/api/v1/sos/${eventId}/telemetry`), {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
             ...(token ? { 'Authorization': `Bearer ${token}` } : {})
           },
           body: JSON.stringify({
             lat: location.lat,
             lng: location.lng,
-            battery_level: batteryLevel
+            battery_level: batteryLevel,
+            timestamp: new Date().toISOString(),
           })
         });
+
+        // Dynamic interval: 15s if > 20% battery, 60s if <= 20%
+        const interval = batteryLevel > 0.2 ? 15000 : 60000;
+        timeoutId = setTimeout(syncTelemetry, interval);
       } catch (err) {
         console.error("Telemetry sync failed", err);
+        // Retry with default interval on error
+        timeoutId = setTimeout(syncTelemetry, 30000);
       }
     };
 
-    const interval = setInterval(syncTelemetry, 30000);
-    return () => clearInterval(interval);
+    // Initial call
+    syncTelemetry();
+
+    return () => clearTimeout(timeoutId);
   }, [eventId, location, sent, isShieldActive, isGuardianActive, token]);
 
   // Load initial location
@@ -128,8 +141,12 @@ export default function SOSPage() {
         if (voiceEnabled) voiceService.speak("shield_active");
       }
       
+      let lastUpdateTime = 0;
       LocationService.startWatching(
         async (loc) => {
+          const now = Date.now();
+          if (now - lastUpdateTime < 10000) return; // 10s distance/time throttling threshold
+          lastUpdateTime = now;
           try {
             await sendLocationUpdate(res.id, loc.latitude, loc.longitude);
             if (token) await LocationService.updateServerLocation(loc);
@@ -358,34 +375,8 @@ export default function SOSPage() {
           /* Initial Activation View */
           <div className="flex-1 flex flex-col py-4 animate-in slide-in-from-bottom-4 duration-500">
             {activeTab === 'emergency' ? (
-              <div className="space-y-10">
-                <div className="space-y-4">
-                  <h2 className="text-5xl font-black uppercase tracking-tighter leading-none italic text-foreground">
-                    Critical<br />
-                    Response
-                  </h2>
-                  <p className="text-muted-foreground font-bold">Use only in case of immediate danger, theft, or medical emergency.</p>
-                </div>
-
-                <div className="flex flex-col items-center">
-                  <button
-                    onClick={() => startTracking('high')}
-                    disabled={sending || !location}
-                    className="group relative"
-                    aria-label="Activate SOS Emergency Distress Signal"
-                  >
-                    <div className="absolute inset-0 bg-red-600 rounded-full blur-3xl opacity-20 group-hover:opacity-40 transition-opacity" />
-                    <div className="w-64 h-64 rounded-full bg-red-600 flex flex-col items-center justify-center shadow-[0_0_100px_rgba(220,38,38,0.4)] relative z-10 active:scale-95 transition-transform hover:scale-105 border-8 border-background">
-                      {sending ? <Loader2 className="w-16 h-16 animate-spin text-white" /> : (
-                        <div className="flex flex-col items-center text-white">
-                          <Zap className="w-12 h-12 mb-2 fill-current" />
-                          <span className="text-4xl font-black uppercase tracking-widest italic">SOS</span>
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                  <p className="mt-8 text-muted-foreground text-[10px] font-black uppercase tracking-[0.2em]">Press to signal</p>
-                </div>
+              <div className="flex-1 flex flex-col justify-center">
+                <TacticalSOS />
               </div>
             ) : (
               <div className="space-y-10">

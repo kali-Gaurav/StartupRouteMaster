@@ -16,17 +16,22 @@ backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
-from core.data_structures import Route, RouteSegment, TransferConnection, Persona
-from core.frontier import FrontierManager, FrontierRoute
+from core.data_utils.structures import Route, RouteSegment, TransferConnection, Persona
+from core.engines.frontier import FrontierManager, FrontierRoute
 from services.ml.reliability_engine import reliability_engine
-from .constraints import RouteConstraints
-from core.hubs import MEGA_HUBS, MAJOR_HUBS
+from .constraints import RouteConstraints, DiscoveryModel
+from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from core.routing.frequency_aware_range import get_frequency_aware_sizer
 from core.nexus.audit.chaos import chaos_trap
 from core.nexus.audit.governor import nexus_governor
 from .neural_pruner import get_raptor_pruner
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
+from utils.metrics import (
+    RAPTOR_PARALLEL_INIT_SECONDS,
+    RAPTOR_EARLY_EXIT_TOTAL,
+    RAPTOR_PRUNED_BRANCHES_TOTAL
+)
 
 logger = logging.getLogger("raptor")
 
@@ -43,29 +48,24 @@ class SearchRoute:
     transfer: Optional[TransferConnection] = None
     total_dist: float = 0.0
     total_wait: int = 0
-    # [Task 4] Bloom-filter based cycle detection (128-bit split bitmask)
-    v_bloom_low: int = 0
-    v_bloom_high: int = 0
+    # [Task 1 & 2] Bloom-filter based cycle detection (256-bit double-hash)
+    v_bloom: int = 0
     reliability: float = 1.0 
     total_cost: float = 0.0    # [McRAPTOR]
     comfort_score: float = 0.5 # [McRAPTOR]
+    safety_score: float = 0.5  # [Task RM-007]
 
     def add_to_bloom(self, station_id: int):
-        idx = station_id % 128
-        if idx < 64:
-            self.v_bloom_low |= (1 << idx)
-        else:
-            self.v_bloom_high |= (1 << (idx - 64))
+        idx1 = station_id % 256
+        idx2 = (station_id * 17) % 256
+        self.v_bloom |= (1 << idx1) | (1 << idx2)
 
     def has_cycle(self, station_id: int) -> bool:
-        idx = station_id % 128
-        is_set = False
-        if idx < 64:
-            is_set = bool(self.v_bloom_low & (1 << idx))
-        else:
-            is_set = bool(self.v_bloom_high & (1 << (idx - 64)))
-            
-        if not is_set:
+        idx1 = station_id % 256
+        idx2 = (station_id * 17) % 256
+        
+        # Fast bloom check
+        if not ((self.v_bloom & (1 << idx1)) and (self.v_bloom & (1 << idx2))):
             return False
             
         # Bloom hit: Check linked list to confirm (avoids collision pruning)
@@ -75,6 +75,45 @@ class SearchRoute:
                 return True
             curr = curr.parent
         return False
+
+class SearchRoutePool:
+    """[Task 12] Object pool for SearchRoute to reduce GC churn and fragmentation."""
+    def __init__(self, initial_size: int = 10000):
+        self._pool: List[SearchRoute] = [self._create_empty() for _ in range(initial_size)]
+        self._ptr = 0
+        self._capacity = initial_size
+
+    def _create_empty(self) -> SearchRoute:
+        return SearchRoute(
+            trip_id=0, from_stop_id=0, to_stop_id=0,
+            departure_time=datetime(1980, 1, 1),
+            arrival_time=datetime(1980, 1, 1),
+            round_num=0
+        )
+
+    def acquire(self, **kwargs) -> SearchRoute:
+        if self._ptr < self._capacity:
+            obj = self._pool[self._ptr]
+            self._ptr += 1
+        else:
+            # Expand pool by 50%
+            new_size = int(self._capacity * 1.5)
+            self._pool.extend([self._create_empty() for _ in range(new_size - self._capacity)])
+            self._capacity = new_size
+            obj = self._pool[self._ptr]
+            self._ptr += 1
+        
+        # In-place update
+        for k, v in kwargs.items():
+            setattr(obj, k, v)
+        # Reset metadata and parent for reuse safety
+        obj.parent = kwargs.get('parent', None)
+        if hasattr(obj, 'metadata'):
+             delattr(obj, 'metadata')
+        return obj
+
+    def reset(self):
+        self._ptr = 0
 
 class OptimizedRAPTOR(BaseRoutingEngine):
     @property
@@ -94,6 +133,8 @@ class OptimizedRAPTOR(BaseRoutingEngine):
         # [Task 51.1] Elastic Frontier Sizing (Reduced aggressiveness to avoid valid-path cuts)
         # Expanded to 5 rounds for OMNISCIENT high-yield discovery
         self.round_frontier_multipliers = {0: 1.0, 1: 1.5, 2: 2.5, 3: 3.5, 4: 5.0, 5: 7.0}
+        self._pool = SearchRoutePool()
+        self._executor = ThreadPoolExecutor(max_workers=min(32, (os.cpu_count() or 4) * 2))
 
     def _estimate_fare(self, distance_km: float, constraints: RouteConstraints) -> float:
         """[McRAPTOR] Fast fare estimation for hot loop."""
@@ -194,6 +235,7 @@ class OptimizedRAPTOR(BaseRoutingEngine):
         
         self._nodes_explored = 0 
         self._global_min_arrival_mins = float('inf')
+        self._pool.reset()
         
         # [Task 27.14] Distance-Aware Window Optimization
         if graph:
@@ -210,8 +252,10 @@ class OptimizedRAPTOR(BaseRoutingEngine):
 
         # [Task 8.3] Direct Latency Gate
         # Block search if Cache Latch is down (to prevent DB-thundering-herd)
+        # UNLESS we are in OMNISCIENT discovery mode where load is expected.
         from services.multi_layer_cache import multi_layer_cache
-        if not multi_layer_cache.health_latch:
+        is_omniscient = (getattr(constraints, 'discovery_model', None) == DiscoveryModel.OMNISCIENT)
+        if not multi_layer_cache.health_latch and not is_omniscient:
              logger.critical("🛑 [NEXUS:SEARCH] L2 CACHE FABRIC DOWN. Blocking search to protect DB.")
              return RoutingResponse(
                  engine_name=self.engine_id, 
@@ -263,11 +307,24 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             routes = [r for r in routes if r and len(r.segments) > 0]
             
             if not routes:
+                # [Task 6] Zero-Yield Diagnostics
+                diag = {
+                    "nodes_explored": self._nodes_explored, 
+                    "reason": "PRUNED_BY_BUDGET",
+                    "results_count": len(results),
+                    "global_min_arrival": self._global_min_arrival_mins if self._global_min_arrival_mins != float('inf') else "INF"
+                }
+                if self._nodes_explored == 0: diag["reason"] = "NO_DEPARTURES_FOUND"
+                elif self._global_min_arrival_mins == float('inf'): diag["reason"] = "NO_REACHABLE_DESTINATION"
+                
+                logger.warning(f"🔍 [RAPTOR:ZERO_YIELD] Nodes: {self._nodes_explored}, DestReached: {diag['global_min_arrival']}, Results: {len(results)}")
+
                 return RoutingResponse(
                     engine_name=self.engine_id, 
                     routes=[], 
                     latency_ms=latency_ms, 
-                    yield_count=0
+                    yield_count=0,
+                    metadata=diag
                 )
             
             # [Task 7] ML Scoring fallback
@@ -359,7 +416,7 @@ class OptimizedRAPTOR(BaseRoutingEngine):
         [Task 5] Support Multi-Source Multi-Target (MSMT).
         """
         # [Analysis Only] Surge level detection
-        from core.resource_monitor import resource_monitor, SurgeLevel
+        from core.infrastructure.resource_monitor import resource_monitor, SurgeLevel
         level = resource_monitor.get_surge_level()
         if level != SurgeLevel.NORMAL:
             logger.info(f"📊 RAPTOR Surge Analysis: Level {level.name} detected. Budget: {self.traversal_budget}")
@@ -382,6 +439,13 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             return []
         trip_reachability_bitset = getattr(snapshot, "_trip_reachability_bitset", None)
         
+        # [Task 13] Vectorized Footprints
+        # Initialize a best-arrival-time array for all stations
+        num_stations = len(snapshot._stop_id_map)
+        self.best_arrivals = np.full(num_stations, 2000000000, dtype=np.int32)
+        # Slack for multi-objective diversity (allow routes up to 6 hours later than best time)
+        self._pruning_slack = 360 
+
         # [Subtask 146.4] Resolve Bridge Stop IDs for reachability overrides
         bridge_indices = []
         if constraints and getattr(constraints, 'metadata', None):
@@ -414,125 +478,134 @@ class OptimizedRAPTOR(BaseRoutingEngine):
         pressure = nexus_governor.throttle_factor
 
         # Round 0: Initialize from ALL source stations
+        departure_ts = int(departure_dt.timestamp())
+        self._departure_ts = departure_ts # For helper methods
         lookahead = constraints.range_minutes if constraints.range_minutes > 0 else 1440
         f_size = 1
-        
+
+        # [Task 15] Parallelize Round 0 Initialization
+        t_init_start = _time.perf_counter()
+        init_tasks = []
         for src_id in source_stop_ids:
             pattern_deps = graph.get_pattern_departures(src_id, departure_dt, lookahead=lookahead)
-
             for pid_hash_val, deps in pattern_deps.items():
-                check_timeout()
-                if self._nodes_explored > self.traversal_budget: break
-                
-                # [Task 121: Elite Yield] Fetch pattern segments once per PID to save 10x overhead
-                # We need the real pid from snapshot._trip_to_pid for the segment data lookup
-                # This needs to be done more elegantly. For now, assume a pattern hash value maps to segment data.
-                # The pid_hash_val is generated in graph.py now.
-                
-                pattern_raw = graph.get_pattern_segments(pid_hash_val)
-                if pattern_raw is None: continue
+                init_tasks.append((src_id, pid_hash_val, deps))
 
-                for dep_time, trip_id in deps[: self.max_initial_departures or None]:
-                    # [Task 146] Zero-Latency Reachability Pruning [Elite]
-                    # Pruning Rule: Keep trip if it hits a Goal OR a Major Hub.
-                    # This ensures we don't explore tiny branch lines that never connect back.
-                    can_reach_goal = any(graph.can_reach_destination(trip_id, d_id) for d_id in dest_stop_ids)
-                    if not can_reach_goal:
-                        # [Elite Yield] Check if trip hits ANY bridge hub or major hub
-                        t_idx = snapshot._trip_id_map.get(int(trip_id))
-                        if t_idx is not None and effective_bridges and trip_reachability_bitset is not None:
-                             bitset_row = trip_reachability_bitset[t_idx]
-                             h_found = False
-                             for h_idx in effective_bridges:
-                                  if bitset_row[h_idx // 64] & (np.uint64(1) << np.uint64(h_idx % 64)):
-                                       h_found = True; break
-                             if not h_found: continue
-                        else:
-                             # Legacy fallback if no bitsets
-                             if not graph.can_reach_any_hub(trip_id):
-                                  continue 
-                    
-                    # Proceed with expansion...
-                    wait_mins = 0 # [Task 121: Correctness] Root-leg wait is always zero relative to departure_dt
-                    
-                    if overlay.is_cancelled(trip_id): continue
+        logger.info(f"🔍 [RAPTOR] Round 0 Init: {len(init_tasks)} tasks from {len(source_stop_ids)} sources.")
 
-                    self._nodes_explored += 1
-                    delay_secs = overlay.get_trip_delay(trip_id) * 60
-                    dep_ts_int = int(dep_time.timestamp())
-                    start_found = False
-                    total_dist_m = 0
-                    
-                    for row in pattern_raw:
-                        s_dep_sid, s_arr_sid = int(row['dep_sid']), int(row['arr_sid'])
-                        # The pattern segments return relative time (seconds from midnight).
-                        # We need to make them absolute again relative to dep_time for this trip.
-                        s_dep_ts_rel = int(row['dep_time']) 
-                        s_arr_ts_rel = int(row['arr_time'])
-                        
-                        # Calculate absolute timestamps for this specific trip
-                        trip_start_of_day_ts = dep_ts_int - (dep_ts_int % 86400)
-                        s_dep_ts_abs = trip_start_of_day_ts + s_dep_ts_rel + delay_secs
-                        s_arr_ts_abs = trip_start_of_day_ts + s_arr_ts_rel + delay_secs
-                        
-                        # Handle overnight trips within the pattern segments
-                        if s_arr_ts_abs < s_dep_ts_abs:
-                            s_arr_ts_abs += 86400 # Add a day
-                            
-                        if not start_found:
-                            # Fuzzy match for departure sequence
-                            if s_dep_sid == src_id:
-                                # We assume the dep_time from 'deps' IS for this src_id
-                                start_found = True
-                            else: continue
+        # [Task 15] Collector Pattern for Thread-Safe Merging
+        all_candidates = []
+        if init_tasks:
+            futures = []
+            for task in init_tasks:
+                futures.append(self._executor.submit(
+                    self._process_pattern_init,
+                    task, departure_ts, dest_stop_ids, graph, constraints, 
+                    overlay, snapshot, effective_bridges, trip_reachability_bitset
+                ))
+            
+            for f in futures:
+                candidates = f.result()
+                if candidates:
+                    all_candidates.extend(candidates)
+        
+        RAPTOR_PARALLEL_INIT_SECONDS.observe(_time.perf_counter() - t_init_start)
 
-                        # Accumulate distance from start of trip segment
-                        dist_m = int(row.get('dist_m', 0))
-                        total_dist_m += dist_m
-                        total_dist = total_dist_m / 1000.0
-                        fare = self._estimate_fare(total_dist, constraints)
-                        train_num = snapshot.trip_to_train.get(trip_id, "")
-                        comfort = self._estimate_comfort(train_num, constraints.preferred_class or "3A")
-                        arr_mins = (s_arr_ts_abs - departure_ts) // 60
-                        rel = 1.0 # Base reliability
-                        
-                        if not self.frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
-                                arrival_time=arr_mins, transfers=0, total_wait=wait_mins, total_distance=total_dist,
-                                reliability=rel, total_cost=fare, comfort_score=comfort), max_size=f_size):
-                             sr = SearchRoute(trip_id=trip_id, from_stop_id=src_id, to_stop_id=s_arr_sid,
-                                              departure_time=dep_time, arrival_time=self._safe_fromtimestamp(s_arr_ts_abs),
-                                              round_num=0, total_dist=total_dist, total_wait=wait_mins,
-                                              reliability=rel, total_cost=fare, comfort_score=comfort)
-                             sr.v_bloom_low = 0; sr.v_bloom_high = 0
-                             sr.add_to_bloom(src_id); sr.add_to_bloom(s_arr_sid)
-                             routes_by_round[0].append(sr)
-                             if s_arr_sid in dest_stop_ids: self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+        # Sequential Merge to maintain thread-safety for FrontierManager and best_arrivals
+        # ... (lines 498-530 remain same, but I'll include them to be safe or use smaller chunks)
+
+        # Sequential Merge to maintain thread-safety for FrontierManager and best_arrivals
+        for c in all_candidates:
+            check_timeout()
+            self._nodes_explored += 1
+            
+            s_arr_sid = c['s_arr_sid']
+            arr_mins = c['arr_mins']
+            s_idx = snapshot._stop_id_map.get(s_arr_sid)
+            
+            if s_idx is not None:
+                if arr_mins < self.best_arrivals[s_idx]:
+                    self.best_arrivals[s_idx] = arr_mins
+                elif arr_mins > self.best_arrivals[s_idx] + self._pruning_slack:
+                    continue
+
+            fr = FrontierRoute(
+                arrival_time=arr_mins, transfers=0, total_wait=c['wait_mins'], 
+                total_distance=c['total_dist'], reliability=c['rel'], 
+                total_cost=c['fare'], comfort_score=c['comfort'], safety_score=c['safety']
+            )
+
+            if not self.frontier_manager.is_dominated(s_arr_sid, fr, max_size=f_size):
+                sr = self._pool.acquire(
+                    trip_id=c['trip_id'], from_stop_id=c['src_id'], to_stop_id=s_arr_sid,
+                    departure_time=c['dep_time'], arrival_time=self._safe_fromtimestamp(c['s_arr_ts_abs']),
+                    round_num=0, total_dist=c['total_dist'], total_wait=c['wait_mins'],
+                    reliability=c['rel'], total_cost=c['fare'], comfort_score=c['comfort'],
+                    safety_score=c['safety'], v_bloom=0
+                )
+                sr.add_to_bloom(c['src_id']); sr.add_to_bloom(s_arr_sid)
+                routes_by_round[0].append(sr)
+                if s_arr_sid in dest_stop_ids: 
+                    self._global_min_arrival_mins = min(self._global_min_arrival_mins, arr_mins)
+
+        # [Task 16] Early Exit Check after Round 0
+        if self._check_early_exit(routes_by_round[0], dest_stop_ids):
+            logger.info("🛡️ [RAPTOR:EARLY_EXIT] Search terminated after Round 0 due to target dominance.")
+            RAPTOR_EARLY_EXIT_TOTAL.labels(round_num=0).inc()
+            # We don't break yet, we let the loop handle it if onward rounds are needed.
+            # But if routes_by_round[0] is empty, it will break anyway.
 
         # Onward Rounds [Task 86] Elastic Graph Depth
         effective_max = self.max_transfers
-        if nexus_governor.throttle_factor > 0.75:
-             effective_max = min(1, self.max_transfers)
-             logger.warning(f"⚠️ [RAPTOR:GOVERNOR] Congestion detected ({nexus_governor.throttle_factor:.2f}). Capping to {effective_max} transfers.")
+        # [Nexus Governor] Adaptive Load Shedding
+        throttle = nexus_governor.get_throttle_factor()
+        is_omniscient = (getattr(constraints, 'discovery_model', None) == DiscoveryModel.OMNISCIENT)
+        if throttle > 0.95: # Critical threshold
+             if is_omniscient:
+                  logger.info(f"🛡️ [RAPTOR:BYPASS] Severe congestion ({throttle:.2f}) ignored for OMNISCIENT model.")
+             else:
+                  logger.warning(f"⚠️ [RAPTOR:CRITICAL] Severe congestion ({throttle:.2f}). Capping to 1 transfer.")
+                  effective_max = 1
+        elif throttle > 0.8 and not is_omniscient:
+             logger.warning(f"⚠️ [RAPTOR:GOVERNOR] Congestion detected ({throttle:.2f}). Capping to 1 transfers.")
+             effective_max = 1
 
         for r in range(1, effective_max + 1):
             if not routes_by_round[r-1]: break
             if self._nodes_explored > self.traversal_budget: break
+            
+            # [Task 4] Mid-Search Governor Re-check
+            if r > 2:
+                dynamic_throttle = nexus_governor.get_throttle_factor()
+                if dynamic_throttle > 0.9:
+                    logger.warning(f"⚠️ [RAPTOR:DYNAMO] Severe load spike during Round {r}. Terminating early to protect Nexus.")
+                    break
+
+            # [Task 51.2] Apply Elastic Multiplier for onward transfers
+            multiplier = self.round_frontier_multipliers.get(r, 1.0)
+            effective_f_size = int(f_size * multiplier)
+
             for psr in routes_by_round[r-1]:
                 check_timeout()
                 if psr.to_stop_id in dest_stop_ids: continue
-                # [Task 171] Branch Pruning at the Transfer Level
-                # [Task 51.2] Apply Elastic Multiplier for onward transfers
-                multiplier = self.round_frontier_multipliers.get(r, 1.0)
-                effective_f_size = int(f_size * multiplier)
                 
+                # [Task 171] Branch Pruning at the Transfer Level
                 # Check if branch should be pruned
                 if pruner.should_prune(psr.to_stop_id, dest_stop_ids, 
                                       (int(psr.arrival_time.timestamp()) - departure_ts) // 60,
                                       int(self._global_min_arrival_mins), r, pressure):
                      continue
                      
-                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, check_timeout, pruner, pressure, effective_bridges, overlay)
+                new_found = self._process_transfers_sync(psr, graph, dest_stop_ids, constraints, departure_dt, r, 
+                                                         check_timeout, pruner, pressure, effective_bridges, 
+                                                         overlay, effective_f_size)
                 routes_by_round[r].extend(new_found)
+            
+            # [Task 16] Early Exit Check after Round Expansion
+            if self._check_early_exit(routes_by_round[r], dest_stop_ids):
+                logger.info(f"🛡️ [RAPTOR:EARLY_EXIT] Search terminated after Round {r} due to target dominance.")
+                RAPTOR_EARLY_EXIT_TOTAL.labels(round_num=r).inc()
+                break
         all_results = []
         for r_idx in range(self.max_transfers + 1):
             for sr in routes_by_round[r_idx]:
@@ -541,8 +614,8 @@ class OptimizedRAPTOR(BaseRoutingEngine):
 
     def _process_transfers_sync(self, psr: SearchRoute, graph: TimeDependentGraph, dest_stop_ids: Set[int], 
                                  constraints: RouteConstraints, base_departure_dt: datetime, 
-                                 round_num: int, check_timeout: Any, pruner: Any, pressure: float,
-                                 effective_bridges: List[int], overlay: Any) -> List[SearchRoute]:
+                                  round_num: int, check_timeout: Any, pruner: Any, pressure: float,
+                                  effective_bridges: List[int], overlay: Any, f_size: int = 1) -> List[SearchRoute]:
         new_routes = []
         base_departure_ts = int(base_departure_dt.timestamp())
         min_tr = constraints.min_transfer_time or 15
@@ -580,14 +653,24 @@ class OptimizedRAPTOR(BaseRoutingEngine):
                         # jump format: {to_stop_id, arrival_time (abs), duration, cost, type}
                         total_dist = psr.total_dist + jump.get("distance_km", 100.0)
                         arr_mins = (int(jump["arrival_time"].timestamp()) - base_departure_ts) // 60
+                        safety = constraints.station_safety_scores.get(jump["to_stop_id"], 0.5)
+                        
+                        # [Task 13] Vectorized Footprint Pruning
+                        s_idx = snapshot._stop_id_map.get(jump["to_stop_id"])
+                        if s_idx is not None:
+                            if arr_mins < self.best_arrivals[s_idx]:
+                                self.best_arrivals[s_idx] = arr_mins
+                            elif arr_mins > self.best_arrivals[s_idx] + self._pruning_slack:
+                                continue
+
                         if not self.frontier_manager.is_dominated(jump["to_stop_id"], FrontierRoute(
                                 arrival_time=arr_mins, transfers=round_num, total_wait=psr.total_wait, 
-                                total_distance=total_dist, reliability=0.9), max_size=5):
+                                total_distance=total_dist, reliability=0.9, safety_score=safety), max_size=5):
                              # Create a virtual SearchRoute tagged as the jump type
-                             sr = SearchRoute(trip_id=-999, from_stop_id=tr.station_id, to_stop_id=jump["to_stop_id"],
+                             sr = self._pool.acquire(trip_id=-999, from_stop_id=tr.station_id, to_stop_id=jump["to_stop_id"],
                                               departure_time=jump["departure_time"], arrival_time=jump["arrival_time"],
                                               round_num=round_num, parent=psr, total_dist=total_dist, 
-                                              total_wait=psr.total_wait, reliability=0.9)
+                                              total_wait=psr.total_wait, reliability=0.9, safety_score=safety)
                              sr.metadata = {"jump_type": jump["type"], "provider_id": jump["provider_id"]}
                              new_routes.append(sr)
 
@@ -598,7 +681,11 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             for pid, deps in onward.items():
                 check_timeout()
                 if self._nodes_explored > self.traversal_budget: break
-                for dep_t, trip_id in deps[:self.max_onward_departures]:
+                # [Task 4] Adaptive Onward Breadth (Governor-Aware)
+                onward_limit = self.max_onward_departures
+                if pressure > 0.6: onward_limit = max(100, int(onward_limit * (1.0 - pressure)))
+
+                for dep_t, trip_id in deps[:onward_limit]:
                     # [Standard Rail Onward logic ...]
                     can_reach_goal = any(graph.can_reach_destination(trip_id, did) for did in dest_stop_ids)
                     if not can_reach_goal:
@@ -661,14 +748,25 @@ class OptimizedRAPTOR(BaseRoutingEngine):
                         train_num = snapshot.trip_to_train.get(trip_id, "")
                         comfort = (psr.comfort_score + self._estimate_comfort(train_num, constraints.preferred_class or "3A")) / 2.0
                         
+                        safety = constraints.station_safety_scores.get(s_arr_sid, 0.5)
+                        
+                        # [Task 13] Vectorized Footprint Pruning
+                        s_idx = snapshot._stop_id_map.get(s_arr_sid)
+                        if s_idx is not None:
+                            if arr_mins < self.best_arrivals[s_idx]:
+                                self.best_arrivals[s_idx] = arr_mins
+                            elif arr_mins > self.best_arrivals[s_idx] + self._pruning_slack:
+                                continue
+
                         if not frontier_manager.is_dominated(s_arr_sid, FrontierRoute(
                                 arrival_time=arr_mins, transfers=round_num, total_wait=total_wait, 
-                                total_distance=total_dist, reliability=rel, total_cost=fare, comfort_score=comfort), max_size=f_size):
-                             sr = SearchRoute(trip_id=trip_id, from_stop_id=tr.station_id, to_stop_id=s_arr_sid,
+                                total_distance=total_dist, reliability=rel, total_cost=fare, comfort_score=comfort,
+                                safety_score=safety), max_size=f_size):
+                             sr = self._pool.acquire(trip_id=trip_id, from_stop_id=tr.station_id, to_stop_id=s_arr_sid,
                                               departure_time=dep_t, arrival_time=self._safe_fromtimestamp(s_arr_ts_abs),
                                               round_num=round_num, parent=psr, total_dist=total_dist, 
-                                              total_wait=total_wait, reliability=rel, total_cost=fare, comfort_score=comfort)
-                             sr.v_bloom_low = psr.v_bloom_low; sr.v_bloom_high = psr.v_bloom_high
+                                              total_wait=total_wait, reliability=rel, total_cost=fare, comfort_score=comfort,
+                                              safety_score=safety, v_bloom=psr.v_bloom)
                              sr.add_to_bloom(tr.station_id); sr.add_to_bloom(s_arr_sid)
                              new_routes.append(sr)
                              
@@ -720,18 +818,22 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             start_idx = -1
             for i, row in enumerate(raw_segments):
                 s_dep_sid = int(row['dep_sid'])
-                trip_start_of_day_ts = int(node.departure_time.timestamp()) - (int(node.departure_time.timestamp()) % 86400)
+                # [Fix] Use local midnight to align with row['dep_time'] (seconds from local midnight)
+                trip_start_of_day_ts = int(node.departure_time.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
                 seg_dep_abs_ts = trip_start_of_day_ts + int(row['dep_time']) + delay_secs
                 if s_dep_sid == node.from_stop_id and abs(seg_dep_abs_ts - int(node.departure_time.timestamp())) < 2:
                     start_idx = i; break
             
-            if start_idx == -1: continue 
+            if start_idx == -1: 
+                if raw_segments is not None:
+                    logger.debug(f"❌ [HYDRATE] Could not find start segment for trip {node.trip_id} at stop {node.from_stop_id}. Expected {node.departure_time.timestamp()}, Checked {len(raw_segments)} segments.")
+                continue 
 
             for i in range(start_idx, len(raw_segments)):
                 row = raw_segments[i]
                 s_dep_sid, s_arr_sid = int(row['dep_sid']), int(row['arr_sid'])
                 s_dep_ts_rel, s_arr_ts_rel = int(row['dep_time']), int(row['arr_time'])
-                trip_start_of_day_ts = int(node.departure_time.timestamp()) - (int(node.departure_time.timestamp()) % 86400)
+                trip_start_of_day_ts = int(node.departure_time.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
                 seg_dep_abs_ts = trip_start_of_day_ts + s_dep_ts_rel + delay_secs
                 seg_arr_abs_ts = trip_start_of_day_ts + s_arr_ts_rel + delay_secs
                 if seg_arr_abs_ts < seg_dep_abs_ts: seg_arr_abs_ts += 86400
@@ -750,6 +852,8 @@ class OptimizedRAPTOR(BaseRoutingEngine):
                     train_number=snapshot.trip_to_train.get(node.trip_id, ""),
                     departure_code=dep_stop.code if dep_stop else "",
                     arrival_code=arr_stop.code if arr_stop else "",
+                    from_station_name=dep_stop.name if dep_stop else "",
+                    to_station_name=arr_stop.name if arr_stop else "",
                     fare=0.0
                 ))
                 if s_arr_sid == node.to_stop_id: break
@@ -763,6 +867,7 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             
         rt.metadata["engine"] = "raptor_v2_window"
         rt.metadata["reliability"] = round(sr.reliability, 2)
+        rt.metadata["safety_score"] = round(sr.safety_score, 2)
         return rt
 
     def _deduplicate_search_routes(self, routes: List[SearchRoute]) -> List[SearchRoute]:
@@ -773,6 +878,129 @@ class OptimizedRAPTOR(BaseRoutingEngine):
             k = tuple(reversed(p))
             if k not in unique or r.arrival_time < unique[k].arrival_time: unique[k] = r
         return list(unique.values())
+
+    def _process_pattern_init(self, task: Tuple[int, int, List[Tuple[datetime, int]]], 
+                             departure_ts: int, dest_stop_ids: Set[int], graph: TimeDependentGraph, 
+                             constraints: RouteConstraints, overlay: Any, snapshot: Any, 
+                             effective_bridges: List[int], trip_reachability_bitset: Optional[np.ndarray]) -> List[Dict[str, Any]]:
+        """
+        [Task 15] Parallel worker for Round 0 pattern expansion.
+        Processes a single pattern-departure set and returns candidates.
+        """
+        src_id, pid, deps = task
+        candidates = []
+        
+        # Limit departures per pattern to avoid explosion in Round 0
+        limit = self.max_initial_departures
+        for dep_t, trip_id in deps[:limit]:
+            if overlay.is_cancelled(trip_id): continue
+            
+            # Optimization: Quick bitset reachability check
+            if trip_reachability_bitset is not None:
+                t_idx = snapshot._trip_id_map.get(int(trip_id))
+                if t_idx is not None:
+                    bitset_row = trip_reachability_bitset[t_idx]
+                    can_reach = False
+                    for gid in dest_stop_ids:
+                        g_idx = snapshot._stop_id_map.get(gid)
+                        if g_idx is not None and (bitset_row[g_idx // 64] & (np.uint64(1) << np.uint64(g_idx % 64))):
+                            can_reach = True; break
+                    if not can_reach:
+                        for h_idx in effective_bridges:
+                            if bitset_row[h_idx // 64] & (np.uint64(1) << np.uint64(h_idx % 64)):
+                                can_reach = True; break
+                    if not can_reach: continue
+
+            raw = graph.get_trip_segments_raw(trip_id)
+            if raw is None: continue
+            
+            delay_secs = overlay.get_trip_delay(trip_id) * 60
+            dep_ts_int = int(dep_t.timestamp())
+            start_found = False
+            dist_m = 0
+            
+            for i, row in enumerate(raw):
+                s_dep_sid, s_arr_sid = int(row['dep_sid']), int(row['arr_sid'])
+                if not start_found:
+                    if s_dep_sid == src_id:
+                        start_found = True
+                    else: continue
+                
+                dist_m += int(row['dist_m'])
+                is_goal = s_arr_sid in dest_stop_ids
+                is_hub = s_arr_sid in effective_bridges
+                
+                # Sample non-goal/non-hub nodes to keep frontier lean
+                if not (is_goal or is_hub) and i % 10 != 0:
+                    continue
+                
+                trip_start_of_day_ts = dep_ts_int - (dep_ts_int % 86400)
+                s_arr_ts_abs = trip_start_of_day_ts + int(row['arr_time']) + delay_secs
+                if s_arr_ts_abs < dep_ts_int: s_arr_ts_abs += 86400
+                
+                arr_mins = (s_arr_ts_abs - departure_ts) // 60
+                wait_mins = (dep_ts_int - departure_ts) // 60
+                total_dist = dist_m / 1000.0
+                rel = 1.0
+                fare = self._estimate_fare(total_dist, constraints)
+                train_num = snapshot.trip_to_train.get(trip_id, "")
+                comfort = self._estimate_comfort(train_num, constraints.preferred_class or "3A")
+                safety = constraints.station_safety_scores.get(s_arr_sid, 0.5)
+                
+                candidates.append({
+                    'src_id': src_id,
+                    's_arr_sid': s_arr_sid,
+                    'arr_mins': arr_mins,
+                    'wait_mins': wait_mins,
+                    'trip_id': trip_id,
+                    'dep_time': dep_t,
+                    's_arr_ts_abs': s_arr_ts_abs,
+                    'total_dist': total_dist,
+                    'rel': rel,
+                    'fare': fare,
+                    'comfort': comfort,
+                    'safety': safety
+                })
+        return candidates
+
+    def _check_early_exit(self, round_routes: List[SearchRoute], dest_stop_ids: Set[int]) -> bool:
+        """
+        [Task 16] Strict Pareto Dominance Early Exit.
+        Terminates the search if existing routes at the destination dominate all active branches.
+        """
+        if not round_routes or not dest_stop_ids:
+            return False
+            
+        dest_best_frontier = []
+        for did in dest_stop_ids:
+            f = self.frontier_manager.get_frontier(did)
+            if f and f.routes:
+                dest_best_frontier.extend(f.routes)
+        
+        if not dest_best_frontier:
+            return False
+            
+        # Global best arrival time at any destination
+        best_dest_arr = min(r.arrival_time for r in dest_best_frontier)
+        
+        # If all routes in the current round are already arriving much later than our best destination route,
+        # and we have enough diverse results (e.g. 3+), we can stop expanding.
+        if len(dest_best_frontier) >= 3:
+            all_significantly_worse = True
+            pruned_count = 0
+            for sr in round_routes:
+                curr_arr_mins = (int(sr.arrival_time.timestamp()) - self._departure_ts) // 60
+                # If any active branch still has a chance to be faster (with 30m buffer for multi-objective), don't exit.
+                if curr_arr_mins < best_dest_arr + 30:
+                    all_significantly_worse = False
+                    break
+                pruned_count += 1
+            
+            if all_significantly_worse:
+                RAPTOR_PRUNED_BRANCHES_TOTAL.labels(reason='early_exit').inc(pruned_count)
+                return True
+            
+        return False
 
     async def find_one_transfer_hub_routes(self, source_stop_id: int, dest_stop_id: int,
                                          departure_date: datetime, constraints: RouteConstraints,

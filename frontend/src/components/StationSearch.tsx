@@ -201,6 +201,10 @@ export function StationSearch({
           onFocus={() => { if (query.length >= 2 || recentStations.length > 0) setIsOpen(true); }}
           placeholder={placeholder}
           autoComplete="off"
+          role="combobox"
+          aria-expanded={isOpen || showRecent}
+          aria-controls={`${id}-listbox`}
+          aria-activedescendant={highlightedIdx >= 0 ? `${id}-option-${highlightedIdx}` : undefined}
           className={cn("w-full pl-10 pr-10 py-3 rounded-lg bg-secondary/50 border-2 border-border focus:border-primary transition-all duration-200 outline-none text-base font-medium")}
         />
         <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
@@ -210,10 +214,10 @@ export function StationSearch({
       </div>
       {searchError && <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded-lg"><p className="text-xs text-destructive">{searchError}</p></div>}
       {showRecent && (
-        <div ref={dropdownRef} className="absolute z-50 w-full mt-2 bg-card border border-border rounded-xl shadow-card overflow-hidden">
+        <div id={`${id}-listbox`} role="listbox" ref={dropdownRef} className="absolute z-50 w-full mt-2 bg-card border border-border rounded-xl shadow-card overflow-hidden">
           <div className="px-4 py-2 bg-muted/30 border-b"><span className="text-xs font-semibold text-muted-foreground uppercase">Recent</span></div>
           {recentStations.slice(0, 6).map((station, idx) => (
-            <button type="button" key={idx} onMouseDown={(e) => { e.preventDefault(); handleSelect(station); }} className="w-full px-4 py-3 text-left flex items-center gap-2 hover:bg-primary/10 transition-colors border-b last:border-b-0">
+            <button id={`${id}-option-${idx}`} role="option" aria-selected={idx === highlightedIdx} type="button" key={idx} onMouseDown={(e) => { e.preventDefault(); handleSelect(station); }} className="w-full px-4 py-3 text-left flex items-center gap-2 hover:bg-primary/10 transition-colors border-b last:border-b-0">
               <MapPin className="w-4 h-4 text-muted-foreground" />
               <div className="font-semibold text-sm">{station?.name} <span className="font-mono text-primary">{station?.code}</span></div>
             </button>
@@ -221,9 +225,12 @@ export function StationSearch({
         </div>
       )}
       {isOpen && results.length > 0 && !showRecent && (
-        <div ref={dropdownRef} className="absolute z-50 w-full mt-2 bg-card border border-border rounded-xl shadow-card overflow-y-auto max-h-80 custom-scrollbar">
+        <div id={`${id}-listbox`} role="listbox" ref={dropdownRef} className="absolute z-50 w-full mt-2 bg-card border border-border rounded-xl shadow-card overflow-y-auto max-h-80 custom-scrollbar">
           {results.map((station, idx) => (
             <button
+              id={`${id}-option-${idx}`}
+              role="option"
+              aria-selected={idx === highlightedIdx}
               type="button"
               key={idx}
               data-idx={idx}

@@ -32,10 +32,18 @@ class UserSession:
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert session to dictionary."""
+        # Use mode='json' if available (Pydantic 2)
+        try:
+            context_dict = self.context.model_dump(mode='json')
+        except TypeError:
+            # Fallback for Pydantic 1
+            import json
+            context_dict = json.loads(self.context.json())
+
         return {
             "chat_id": self.chat_id,
             "user_id": self.user_id,
-            "context": self.context.model_dump(),
+            "context": context_dict,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
             "message_count": self.message_count,
@@ -64,12 +72,15 @@ class UserSessionManager:
     
     def __init__(self, prefix: str = "telegram_session:"):
         self.prefix = prefix
-        self.redis = multi_layer_cache.redis
         self.ttl = bot_config.session_ttl_hours * 3600
         
         # Local cache for active sessions
         self._local_cache: Dict[str, UserSession] = {}
         self._cache_lock = asyncio.Lock()
+
+    @property
+    def redis(self):
+        return multi_layer_cache.redis
         
         # Metrics
         self._metrics: deque = deque(maxlen=500)

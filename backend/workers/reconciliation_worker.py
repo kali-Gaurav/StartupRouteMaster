@@ -10,7 +10,7 @@ from database import get_db
 from database.models import Payment as PaymentModel, Refund as RefundModel, User
 from services.payment_service import PaymentService
 from services.booking_service import BookingService
-from services.telegram_dispatcher import telegram_dispatcher
+from services.telegram.bot import telegram_dispatcher
 from services.telegram_session_manager import session_manager
 from services.unified_travel_planner import UnifiedTravelPlanner, TravelRequest, TravelPreference
 from utils.nlp_router import get_local_intent

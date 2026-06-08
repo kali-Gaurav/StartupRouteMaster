@@ -4,7 +4,7 @@ import asyncio
 from typing import List, Dict, Tuple, Set, Union, Optional
 from datetime import datetime, timedelta
 
-from core.data_structures import Route, RouteSegment, TransferConnection, ensure_datetime
+from core.data_utils.structures import Route, RouteSegment, TransferConnection, ensure_datetime
 from .graph import TimeDependentGraph
 from .constraints import RouteConstraints
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
@@ -56,7 +56,7 @@ class FastPathRouter(BaseRoutingEngine):
         
         # Phase 2: 2-Hub Transfer (Only if yield from Phase 1 is low or explicitly deep)
         if len(all_found) < 5 or getattr(constraints, 'search_depth', 'SHALLOW') != 'SHALLOW':
-             from core.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_COORDINATES
+             from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, HUB_COORDINATES
              
              # Resolve local hubs
              src_hubs = [h for h in source_ids if (stop := graph.stop_cache.get(h)) and (stop.code in MEGA_HUBS or stop.code in MAJOR_HUBS)]
@@ -85,7 +85,7 @@ class FastPathRouter(BaseRoutingEngine):
     def _find_2_hub_transfers(self, s_hub: int, d_hub: int, start: datetime, end: datetime, graph: TimeDependentGraph) -> List[Route]:
         # Implementation of 2-hub transfer search logic here
         # For now, we use a middle-hub lookup if any intermediary hub connects both
-        from core.hubs import MEGA_HUBS
+        from core.engines.hubs import MEGA_HUBS
         results = []
         # Find hubs that can be reached from s_hub AND can reach d_hub
         # This is a classic BFS-2

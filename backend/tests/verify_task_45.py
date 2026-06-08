@@ -5,7 +5,7 @@ import threading
 from sqlalchemy import text
 from database.session import SessionTransit, SessionLocal
 from database.models import SeatInventory, AuditLog
-from services.inventory_service import InventoryService
+from services.inventory.service import InventoryService
 
 def verify_task_45():
     print("\n>>> COMPREHENSIVE VERIFICATION: TASK 45 (SEAT INVENTORY LOCK)")

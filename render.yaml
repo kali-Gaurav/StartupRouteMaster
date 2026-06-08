@@ -1,0 +1,84 @@
+## Route Master — Render.com Deployment Config
+## Deploy: render.com → New → Blueprint → connect repo
+## OR: Create web + cron services manually
+
+services:
+  # ── Web API ─────────────────────────────────────────────────────────────────
+  - type: web
+    name: routemaster-api
+    runtime: python
+    region: singapore        # Closest to India — lowest latency
+    plan: free               # 512MB RAM, sleeps after 15min idle → upgrade to starter ($7) for always-on
+
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 30
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOW_DEGRADED_BOOT
+        value: "true"
+      - key: LOG_LEVEL
+        value: info
+      - key: JWT_SECRET
+        generateValue: true          # Render auto-generates
+
+      # ── Set manually in Render dashboard ─────────────────────────────────
+      - key: DATABASE_URL
+        sync: false                  # postgresql://postgres...@supabase.com:5432/postgres
+      - key: REDIS_URL
+        sync: false                  # rediss://...@upstash.io:6379
+      - key: FRONTEND_URL
+        sync: false                  # https://routemaster.vercel.app
+      - key: RENDER_EXTERNAL_URL
+        sync: false                  # https://routemaster-api.onrender.com (Telegram webhook)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false                  # From @BotFather — already in local .env
+      - key: TELEGRAM_CHAT_ID
+        sync: false                  # Your personal chat ID for admin alerts
+      - key: RAPIDAPI_KEY
+        sync: false                  # Optional — PNR status
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+
+  # ── Daily Cron Jobs ─────────────────────────────────────────────────────────
+  # Requires Render paid plan ($7/mo) OR use free alternatives below.
+  # Free alternative: GitHub Actions cron (see .github/workflows/daily-tasks.yml)
+
+  - type: cron
+    name: routemaster-fare-alerts
+    runtime: python
+    region: singapore
+    plan: starter              # Cron services require at least starter plan
+    schedule: "30 1 * * *"    # 7:00 AM IST = 01:30 UTC daily
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -c "
+import asyncio, httpx, os
+async def run():
+    url = os.getenv('API_BASE_URL', 'https://routemaster-api.onrender.com')
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(f'{url}/api/v1/alerts/check')
+        print('Fare alerts result:', r.json())
+asyncio.run(run())
+"
+    envVars:
+      - key: API_BASE_URL
+        value: https://routemaster-api.onrender.com
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false

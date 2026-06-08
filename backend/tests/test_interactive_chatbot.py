@@ -11,14 +11,14 @@ Version: 1.0.0
 import pytest
 import asyncio
 from datetime import datetime
-from services.interactive_response_types import (
+from services.intelligence.response_types import (
     InteractiveResponseBuilder, Button, FormField, CarouselItem,
     ResponseType, ActionType, InteractiveResponse
 )
-from services.conversation_manager import (
+from services.intelligence.conversation import (
     ConversationManager, ConversationContext, ConversationState, Intent, Entity
 )
-from services.interactive_bot_handler import InteractiveBotHandler, Platform
+from services.intelligence.bot_handler import InteractiveBotHandler, Platform
 
 
 class TestInteractiveResponseTypes:

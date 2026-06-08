@@ -5,7 +5,7 @@ from database.session import SessionUser, init_db
 from database.models import User, Subscription, Booking, EscrowStatus
 from services.subscription_service import subscription_service
 from services.platform_config_service import PlatformConfigService
-from core.data_structures import Persona
+from core.data_utils.structures import Persona
 from datetime import datetime, timedelta
 
 async def verify_task_41():

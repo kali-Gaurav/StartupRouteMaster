@@ -11,9 +11,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from database.session import SessionTransit as SessionLocal
 
-from core.dynamic_logic import is_valid_transfer
-from core.data_structures import DynamicWaitConfig, SearchPhase, Route, RouteSegment
-from core.frontier import FrontierManager, FrontierRoute
+from core.engines.dynamic_logic import is_valid_transfer
+from core.data_utils.structures import DynamicWaitConfig, SearchPhase, Route, RouteSegment
+from core.engines.frontier import FrontierManager, FrontierRoute
 from database.config import Config
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 
@@ -179,13 +179,13 @@ class TurboRouter(BaseRoutingEngine):
         if code1 == code2:
             now = time.time()
             # Refresh every 4 hours
-            if not self._penalty_cache or (now - self._last_penalty_refresh > 14400):
+            if not self.__class__._penalty_cache or (now - self.__class__._last_penalty_refresh > 14400):
                 try:
                     from database.models import StationTypeConfig
                     configs = db.execute(text("SELECT station_size, transfer_penalty_minutes FROM station_type_configs")).fetchall()
                     if configs:
-                        self._penalty_cache = {row[0]: row[1] for row in configs}
-                        self._last_penalty_refresh = now
+                        self.__class__._penalty_cache = {row[0]: row[1] for row in configs}
+                        self.__class__._last_penalty_refresh = now
                 except: pass
 
             try:
@@ -195,8 +195,8 @@ class TurboRouter(BaseRoutingEngine):
                 if res and res[0]:
                     size = res[0]
                     # 2. Return from cache or use hardcoded fallbacks
-                    if size in self._penalty_cache:
-                        return self._penalty_cache[size]
+                    if size in self.__class__._penalty_cache:
+                        return self.__class__._penalty_cache[size]
                     
                     # Classic Fallback
                     fallbacks = {
@@ -233,7 +233,7 @@ class TurboRouter(BaseRoutingEngine):
             dst_ids = request.dst_cluster_ids or [request.destination_code]
 
             raw_results = await asyncio.wait_for(
-                asyncio.to_thread(self._find_routes_sync, src_ids, dst_ids, departure_date, limit, request.db_session),
+                asyncio.to_thread(self._find_routes_sync, src_ids, dst_ids, departure_date, limit, request.db_session, request.constraints),
                 timeout=5.0 
             )
             
@@ -272,6 +272,7 @@ class TurboRouter(BaseRoutingEngine):
                         route.total_distance = float(r.get('distance', 0.0))
                         route.metadata["engine"] = self.engine_id
                         route.metadata["hubs"] = r.get("hubs", "")
+                        route.metadata["safety_score"] = r.get("safety_score", 0.5)
                         routes.append(route)
                     elif r.get('type') == '1-transfer':
                         legs = r.get("legs", [])
@@ -299,6 +300,7 @@ class TurboRouter(BaseRoutingEngine):
                         route = Route(segments=[seg1, seg2])
                         route.total_distance = float(r.get('distance', 0.0))
                         route.metadata["engine"] = self.engine_id
+                        route.metadata["safety_score"] = r.get("safety_score", 0.5)
                         routes.append(route)
                     else:
                         dep_dt = self._parse_turbo_time(r['dep'], departure_date)
@@ -320,6 +322,7 @@ class TurboRouter(BaseRoutingEngine):
                         )
                         route = Route(segments=[seg])
                         route.metadata["engine"] = self.engine_id
+                        route.metadata["safety_score"] = r.get("safety_score", 0.5)
                         routes.append(route)
                 except Exception as e:
                     continue
@@ -353,7 +356,7 @@ class TurboRouter(BaseRoutingEngine):
                 metadata={"error": str(e)}
             )
 
-    def _find_routes_sync(self, src_ids: List[Any], dst_ids: List[Any], departure_date: datetime, limit: int = 15, session: Any = None) -> List[Dict[str, Any]]:
+    def _find_routes_sync(self, src_ids: List[Any], dst_ids: List[Any], departure_date: datetime, limit: int = 15, session: Any = None, constraints: Optional[Any] = None) -> List[Dict[str, Any]]:
         start_ts = time.perf_counter()
         gc.disable() 
         
@@ -407,7 +410,7 @@ class TurboRouter(BaseRoutingEngine):
                 src_id = src_ids[sid_idx]
                 for did_idx, dst in enumerate(dst_codes):
                     dst_id = dst_ids[did_idx]
-                    direct = self._search_direct_binary_batched(blob_map, src, dst, day_mask, limit, gtfs_adds)
+                    direct = self._search_direct_binary_batched(blob_map, src, dst, day_mask, limit, gtfs_adds, constraints)
                     # Label with station code for sorting
                     for r in direct:
                         r['src_code'] = src
@@ -447,7 +450,7 @@ class TurboRouter(BaseRoutingEngine):
             # 2. Multi-Phase 1-Transfer Search (Revitalized RO-012)
             # Fetching major hubs + top junctions for high-yield coverage
             major_hubs = ['NDLS', 'NZM', 'CSMT', 'LTT', 'HWH', 'MAS', 'SBC', 'ADI', 'BPL', 'KYN', 'BRC', 'RTM', 'KOTA', 'BSL', 'ET', 'NGP', 'PNBE', 'LKO', 'DDU']
-            hub_results = self._search_one_transfer_binary(db, src_ids, dst_ids, src_codes, dst_codes, day_mask, limit * 5, major_hubs, gtfs_cancelled, gtfs_adds)
+            hub_results = self._search_one_transfer_binary(db, src_ids, dst_ids, src_codes, dst_codes, day_mask, limit * 5, major_hubs, gtfs_cancelled, gtfs_adds, constraints=constraints)
             
             for r in hub_results:
                 jid = f"1tr_{r['hub']}_{r['legs'][0]['train']}_{r['legs'][1]['train']}"
@@ -462,7 +465,7 @@ class TurboRouter(BaseRoutingEngine):
                 two_tr_results = self._search_two_transfer_binary(
                     db, src_ids, dst_ids, src_codes, dst_codes,
                     day_mask, limit * 3, major_hubs,
-                    gtfs_cancelled, gtfs_adds, blob_map
+                    gtfs_cancelled, gtfs_adds, blob_map, constraints=constraints
                 )
                 for r in two_tr_results:
                     jid = f"2tr_{r['hubs']}_{r['legs'][0]['train']}_{r['legs'][1]['train']}_{r['legs'][2]['train']}"
@@ -479,7 +482,7 @@ class TurboRouter(BaseRoutingEngine):
             db.close()
             gc.enable() 
 
-    def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int]) -> List[Dict[str, Any]]:
+    def _search_direct_binary_batched(self, blob_map: Dict[str, bytes], src: str, dst: str, mask: int, limit: int, gtfs_adds: Set[int], constraints: Optional[Any] = None) -> List[Dict[str, Any]]:
         """[Elite] Direct Intersection Logic using Binary Fiber Index."""
         try:
             if src not in blob_map or dst not in blob_map: return []
@@ -497,10 +500,15 @@ class TurboRouter(BaseRoutingEngine):
                     duration = d_data['arr'] - s_data['dep']
                     if duration < 0: duration += 1440 # Basic wrap
                     
+                    safety = 0.5
+                    if constraints and hasattr(constraints, 'station_safety_scores'):
+                        safety = constraints.station_safety_scores.get(dst, 0.5)
+
                     results.append({
                         "type": "direct", "train_no": str(tid), "dep": self._min_to_time(s_data['dep']),
                         "arr": self._min_to_time(d_data['arr']), "duration": duration,
-                        "day_offset": day_offset, "distance": float(d_data['dist'] - s_data['dist']), "score": 100
+                        "day_offset": day_offset, "distance": float(d_data['dist'] - s_data['dist']), "score": 100,
+                        "safety_score": safety
                     })
             return sorted(results, key=lambda x: x['duration'])[:limit]
         except Exception as e:
@@ -533,7 +541,7 @@ class TurboRouter(BaseRoutingEngine):
             except: continue
         return records
 
-    def _search_one_transfer_binary(self, db, src_ids: List[int], dst_ids: List[int], src_codes: List[str], dst_codes: List[str], mask: int, limit: int, hubs: List[str], gtfs_cancelled: Set[int], gtfs_adds: Set[int], phase: SearchPhase = SearchPhase.MODERATE) -> List[Dict[str, Any]]:
+    def _search_one_transfer_binary(self, db, src_ids: List[int], dst_ids: List[int], src_codes: List[str], dst_codes: List[str], mask: int, limit: int, hubs: List[str], gtfs_cancelled: Set[int], gtfs_adds: Set[int], phase: SearchPhase = SearchPhase.MODERATE, constraints: Optional[Any] = None) -> List[Dict[str, Any]]:
         """[Elite] Refactored 1-transfer binary search with Metro Hub logic."""
         try:
             # [4.12] Use Hub Caching for performance
@@ -596,7 +604,7 @@ class TurboRouter(BaseRoutingEngine):
             results, query_weekday = [], math.log2(mask) if mask > 0 else 0
             for h in hubs:
                 # [Task 29.3] Context-Aware Checkpoint
-                from core.context import check_timeout
+                from core.data_utils.context import check_timeout
                 check_timeout()
 
                 # h is the arrival station of Leg 1
@@ -665,60 +673,28 @@ class TurboRouter(BaseRoutingEngine):
                                     # Calculate Leg 2 start day offset relative to ITS OWN start
                                     leg2_start_offset = h2_data['dep'] // 1440
                                     
-                                    # Case A: Same Day Connection
-                                    # We depart h_dep on 'target_mask_day'.
-                                    # Leg 2 must have started on (target_mask_day - leg2_start_offset).
-                                    req_day_A = (target_mask_day - leg2_start_offset) % 7
-                                    runs_A = (h2_data['mask'] & (1 << req_day_A)) or self._safe_int(tid2) in gtfs_adds
-                                    
-                                    # Case B: Next Day Connection (Overnight wait)
-                                    # We depart h_dep on 'target_mask_day + 1'.
-                                    req_day_B = (target_mask_day + 1 - leg2_start_offset) % 7
-                                    runs_B = (h2_data['mask'] & (1 << req_day_B)) or self._safe_int(tid2) in gtfs_adds
-                                    
-                                    if not (runs_A or runs_B): continue
-                                    
-                                    # Now check validity using dynamic logic
-                                    transfer_penalty = self._get_transfer_penalty(db, h, h_dep)
-                                    
-                                    # Normalizing times to a common timeline is hard without full date.
-                                    # But is_valid_transfer handles the modulo math.
-                                    # We just need to know if a valid connection EXISTS.
-                                    # is_valid_transfer(arr_time, dep_time, ...) checks if dep is within window after arr.
-                                    # It handles the overnight wraparound.
-                                    
-                                    journey_so_far = (h1_data['arr'] - s_data['dep']) # absolute minutes
-                                    # We pass arrival time mod 1440 to logic?
-                                    # dynamic_logic.is_valid_transfer signature:
-                                    # (arrival_time_min: int, departure_time_min: int, journey_duration: int, ...)
-                                    # It treats times as minutes from midnight (0-1440).
-                                    
                                     arr_mod = h1_data['arr'] % 1440
                                     dep_mod = h2_data['dep'] % 1440
                                     
-                                    valid_A = runs_A and is_valid_transfer(arr_mod, dep_mod, journey_so_far, self.wait_config, h, transfer_penalty, phase)
+                                    transfer_penalty = self._get_transfer_penalty(db, h, h_dep)
+                                    journey_so_far = (h1_data['arr'] - s_data['dep']) # absolute minutes
                                     
-                                    # For Case B (Next Day), we add 1440 to dep_mod effectively?
-                                    # is_valid_transfer usually handles "next day" if dep < arr.
-                                    # But if dep > arr, it assumes same day.
-                                    # We explicitly want to check "wait until tomorrow" if today fails.
-                                    # Actually is_valid_transfer might implicitly handle 24h+ wait? No, max wait is 4h.
-                                    
-                                    # If runs_B is true, we try connecting to the *next day* instance of this train.
-                                    # effectively dep_mod + 1440.
-                                    valid_B = False
-                                    if runs_B and not valid_A: 
-                                        wait_B = (dep_mod + 1440) - arr_mod
-                                        if self.wait_config.min_wait_minutes <= (wait_B - transfer_penalty) <= self.wait_config.max_wait_minutes:
-                                            valid_B = True
-
-                                    if not (valid_A or valid_B): continue
+                                    if not is_valid_transfer(arr_mod, dep_mod, journey_so_far, self.wait_config, h, transfer_penalty, phase):
+                                        continue
+                                        
+                                    # Check runs mask based on wrap-around logic
+                                    if dep_mod >= arr_mod:
+                                        # Same calendar day connection
+                                        req_day = (target_mask_day - leg2_start_offset) % 7
+                                    else:
+                                        # Next calendar day connection (overnight)
+                                        req_day = (target_mask_day + 1 - leg2_start_offset) % 7
+                                        
+                                    runs = (h2_data['mask'] & (1 << req_day)) or self._safe_int(tid2) in gtfs_adds
+                                    if not runs: continue
                                     
                                     # Score calculation
                                     layover = (dep_mod - arr_mod) % 1440
-                                    # If we used Valid B, layover is wait_B + penalty
-                                    if valid_B and not valid_A:
-                                        layover = (dep_mod + 1440 - arr_mod)
                                         
                                     arrival_at_dest = d_data['arr'] # relative to leg 2 start
                                     # If we used B, we arrive 1 day later relative to query start
@@ -731,12 +707,23 @@ class TurboRouter(BaseRoutingEngine):
                                     total_dist = float((h1_data['dist'] - s_data['dist']) + (d_data['dist'] - h2_data['dist']))
                                     dst_id = dst_ids[dst_codes.index(d)]
                                     
+                                    # [RM-007] Safety Score at Hub
+                                    safety_h1 = 0.5
+                                    safety_dst = 0.5
+                                    if constraints and hasattr(constraints, 'station_safety_scores'):
+                                        safety_h1 = constraints.station_safety_scores.get(h, 0.5)
+                                        safety_dst = constraints.station_safety_scores.get(d, 0.5)
+                                    
+                                    # Path safety is average of transfer point and destination
+                                    path_safety = (safety_h1 + safety_dst) / 2.0
+                                    
                                     # Using total_duration (minutes from origin) as arrival time metric
-                                    if not self.frontier_manager.is_dominated(dst_id, FrontierRoute(total_duration, 1, layover, total_dist)):
+                                    if not self.frontier_manager.is_dominated(dst_id, FrontierRoute(total_duration, 1, layover, total_dist, safety_score=path_safety)):
                                         results.append({
                                             "type": "1-transfer",
                                             "hub": h if h == h_dep else f"{h}->{h_dep}",
-                                            "score": 80 - (layover / 15.0) - (20 if h != h_dep else 0),
+                                            "score": 80 - (layover / 15.0) - (20 if h != h_dep else 0) + (path_safety * 10),
+                                            "safety_score": path_safety,
                                             "legs": [
                                                 {"train": str(tid1), "from": s, "to": h, "dep": self._min_to_time(s_data['dep']), "arr": self._min_to_time(h1_data['arr']), "dist": float(h1_data['dist'] - s_data['dist'])},
                                                 {"train": str(tid2), "from": h_dep, "to": d, "dep": self._min_to_time(h2_data['dep']), "arr": self._min_to_time(d_data['arr']), "dist": float(d_data['dist'] - h2_data['dist'])}
@@ -765,7 +752,7 @@ class TurboRouter(BaseRoutingEngine):
         try:
             from core.route_engine.engine import route_engine
             overlay = route_engine.overlay
-            from core.context import check_timeout
+            from core.data_utils.context import check_timeout
 
             # Unpack all blobs once
             data = {code: self._unpack_trains(blob_map[code]) for code in blob_map}
@@ -840,19 +827,26 @@ class TurboRouter(BaseRoutingEngine):
                                     continue
                                 
                                 dep2_mod = hd1_l2['dep'] % 1440
+                                penalty1 = self._get_transfer_penalty(db, h1, h1)
+                                journey_so_far_1 = hd1['arr'] - sd1['dep']
+
+                                if not is_valid_transfer(arr1_mod, dep2_mod, journey_so_far_1, self.wait_config, h1, penalty1, SearchPhase.MODERATE):
+                                    continue
+                                    
                                 leg2_start_offset = hd1_l2['dep'] // 1440
-                                req_day2 = (target_day_h1 - leg2_start_offset) % 7
+                                if dep2_mod >= arr1_mod:
+                                    req_day2 = (target_day_h1 - leg2_start_offset) % 7
+                                else:
+                                    req_day2 = (target_day_h1 + 1 - leg2_start_offset) % 7
+
                                 if not ((hd1_l2['mask'] & (1 << req_day2)) or self._safe_int(tid2) in gtfs_adds):
                                     continue
                                 
-                                # Transfer 1 validation: arrival at H1 -> departure from H1
+                                # Transfer 1 validation: wait1 for later usage
                                 wait1 = (dep2_mod - arr1_mod) % 1440
-                                penalty1 = self._get_transfer_penalty(db, h1, h1)
                                 if wait1 < (self.wait_config.min_wait_minutes + penalty1):
                                     # Try next-day
                                     wait1 = wait1 + 1440
-                                if wait1 > self.wait_config.max_wait_minutes * 2:
-                                    continue
                                 
                                 arr2_mod = hd2['arr'] % 1440
                                 arr2_day = hd2['arr'] // 1440
@@ -878,18 +872,25 @@ class TurboRouter(BaseRoutingEngine):
                                             continue
                                         
                                         dep3_mod = hd2_l3['dep'] % 1440
+                                        penalty2 = self._get_transfer_penalty(db, h2, h2)
+                                        journey_so_far_2 = (hd1['arr'] - sd1['dep']) + wait1 + (hd2['arr'] - hd1_l2['dep'])
+                                        
+                                        if not is_valid_transfer(arr2_mod, dep3_mod, journey_so_far_2, self.wait_config, h2, penalty2, SearchPhase.MODERATE):
+                                            continue
+
                                         leg3_start_offset = hd2_l3['dep'] // 1440
-                                        req_day3 = (target_day_h2 - leg3_start_offset) % 7
+                                        if dep3_mod >= arr2_mod:
+                                            req_day3 = (target_day_h2 - leg3_start_offset) % 7
+                                        else:
+                                            req_day3 = (target_day_h2 + 1 - leg3_start_offset) % 7
+
                                         if not ((hd2_l3['mask'] & (1 << req_day3)) or self._safe_int(tid3) in gtfs_adds):
                                             continue
                                         
-                                        # Transfer 2 validation
+                                        # Transfer 2 validation: wait2 for later usage
                                         wait2 = (dep3_mod - arr2_mod) % 1440
-                                        penalty2 = self._get_transfer_penalty(db, h2, h2)
                                         if wait2 < (self.wait_config.min_wait_minutes + penalty2):
                                             wait2 = wait2 + 1440
-                                        if wait2 > self.wait_config.max_wait_minutes * 2:
-                                            continue
                                         
                                         # Total journey metrics
                                         leg1_dur = (hd1['arr'] - sd1['dep']) % 1440

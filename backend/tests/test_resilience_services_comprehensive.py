@@ -70,7 +70,7 @@ class TestCircuitBreaker:
     
     def test_circuit_breaker_closed_state(self):
         """Test circuit breaker starts in closed state."""
-        from core.resilience import CircuitBreaker, CircuitState, CircuitConfig
+        from core.resilience.core import CircuitBreaker, CircuitState, CircuitConfig
         
         breaker = CircuitBreaker("test_breaker", CircuitConfig(failure_threshold=3))
         assert breaker.state == CircuitState.CLOSED
@@ -79,7 +79,7 @@ class TestCircuitBreaker:
     
     def test_circuit_breaker_opens_after_failures(self):
         """Test circuit breaker opens after reaching failure threshold."""
-        from core.resilience import CircuitBreaker, CircuitState, CircuitConfig
+        from core.resilience.core import CircuitBreaker, CircuitState, CircuitConfig
         
         breaker = CircuitBreaker("test_breaker", CircuitConfig(
             failure_threshold=3,
@@ -96,7 +96,7 @@ class TestCircuitBreaker:
     
     def test_circuit_breaker_half_open_after_timeout(self):
         """Test circuit breaker transitions to half-open after timeout."""
-        from core.resilience import CircuitBreaker, CircuitState, CircuitConfig
+        from core.resilience.core import CircuitBreaker, CircuitState, CircuitConfig
         
         breaker = CircuitBreaker("test_breaker", CircuitConfig(
             failure_threshold=1,
@@ -123,7 +123,7 @@ class TestCircuitBreaker:
     
     def test_circuit_breaker_rejects_when_open(self):
         """Test circuit breaker rejects calls when open."""
-        from core.resilience import CircuitBreaker, CircuitState, CircuitConfig, CircuitOpenError
+        from core.resilience.core import CircuitBreaker, CircuitState, CircuitConfig, CircuitOpenError
         
         breaker = CircuitBreaker("test_breaker", CircuitConfig(
             failure_threshold=1,
@@ -150,7 +150,7 @@ class TestRetryPolicy:
     
     def test_retry_policy_success_first_attempt(self):
         """Test retry policy succeeds on first attempt."""
-        from core.retry import RetryPolicy
+        from core.resilience.retry import RetryPolicy
         
         policy = RetryPolicy(max_attempts=3, initial_delay=0.01)
         
@@ -167,7 +167,7 @@ class TestRetryPolicy:
     
     def test_retry_policy_retries_on_failure(self):
         """Test retry policy retries on failure."""
-        from core.retry import RetryPolicy
+        from core.resilience.retry import RetryPolicy
         
         policy = RetryPolicy(
             max_attempts=3,
@@ -190,7 +190,7 @@ class TestRetryPolicy:
     
     def test_retry_policy_gives_up_after_max_attempts(self):
         """Test retry policy gives up after max attempts."""
-        from core.retry import RetryPolicy
+        from core.resilience.retry import RetryPolicy
         
         policy = RetryPolicy(
             max_attempts=3,
@@ -206,7 +206,7 @@ class TestRetryPolicy:
     
     def test_retry_policy_exponential_backoff(self):
         """Test retry policy uses exponential backoff."""
-        from core.retry import RetryPolicy
+        from core.resilience.retry import RetryPolicy
         import time
         
         policy = RetryPolicy(
@@ -463,7 +463,7 @@ class TestSettlementService:
     
     def test_health_check(self, mock_db_session):
         """Test health check returns correct status."""
-        from services.settlement_service import SettlementService
+        from services.finance.settlement import SettlementService
         
         service = SettlementService(mock_db_session)
         
@@ -476,7 +476,7 @@ class TestSettlementService:
     
     def test_get_metrics(self, mock_db_session):
         """Test metrics collection."""
-        from services.settlement_service import SettlementService
+        from services.finance.settlement import SettlementService
         
         service = SettlementService(mock_db_session)
         
@@ -711,7 +711,7 @@ class TestPredictionFeedbackLoop:
     
     def test_health_check(self):
         """Test health check returns correct status."""
-        from services.feedback_loop import PredictionFeedbackLoop
+        from services.intelligence.feedback_loop_enhanced import PredictionFeedbackLoop
         
         loop = PredictionFeedbackLoop()
         
@@ -724,7 +724,7 @@ class TestPredictionFeedbackLoop:
     
     def test_get_metrics(self):
         """Test metrics collection."""
-        from services.feedback_loop import PredictionFeedbackLoop
+        from services.intelligence.feedback_loop_enhanced import PredictionFeedbackLoop
         
         loop = PredictionFeedbackLoop()
         
@@ -737,7 +737,7 @@ class TestPredictionFeedbackLoop:
     
     def test_multiplier_initialization(self):
         """Test initial multiplier values."""
-        from services.feedback_loop import PredictionFeedbackLoop
+        from services.intelligence.feedback_loop_enhanced import PredictionFeedbackLoop
         
         loop = PredictionFeedbackLoop()
         

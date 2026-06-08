@@ -24,12 +24,12 @@ async def run_integration_suite():
     logger.info("🎬 [SOVEREIGN] Starting End-to-End Integration & Workflow Test...")
     
     # Imports inside to avoid early init issues
-    from core.waf import SovereignWAFMiddleware
+    from core.resilience.waf import SovereignWAFMiddleware
     from core.sovereign.network_pressure import network_pressure
     from core.sovereign.edr_algorithm import edr_engine
     from services.search_service import search_service
     from services.sovereign_cache_warmer import sovereign_cache_warmer
-    from core.rate_limit import rate_limiter
+    from core.resilience.rate_limit import rate_limiter
 
     # --- PHASE 1: WAF & FINGERPRINTING ---
     logger.info("\n--- 🛡️ PHASE 1: WAF & Fingerprinting Test ---")

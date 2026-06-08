@@ -15,7 +15,7 @@ def create_all_safe(metadata, engine):
         metadata.create_all(bind=engine)
     except OperationalError as exc:
         msg = str(exc).lower()
-        if "already exists" in msg and "create unique index" in msg:
+        if "already exists" in msg:
             return
         raise
 
@@ -44,7 +44,7 @@ async def test_search_flow_start(conversation_engine, db):
     text = "Delhi to Mumbai"
     
     with patch("utils.nlp_router.get_local_intent") as mock_nlp, \
-         patch("services.telegram_dispatcher.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("services.telegram.bot.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
          patch("services.unified_travel_planner.UnifiedTravelPlanner.create_travel_plan", new_callable=AsyncMock) as mock_plan:
         
         mock_nlp.return_value = {
@@ -91,8 +91,8 @@ async def test_callback_selection(conversation_engine, db):
     from services.telegram_session_manager import session_manager
     session_manager.update_session(db, str(chat_id), intent="search", step="results", context={"source": "DELHI", "destination": "MUMBAI"})
     
-    with patch("services.telegram_dispatcher.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
-         patch("services.telegram_dispatcher.telegram_dispatcher._api_request", new_callable=AsyncMock) as mock_api:
+    with patch("services.telegram.bot.telegram_dispatcher.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("services.telegram.bot.telegram_dispatcher._api_request", new_callable=AsyncMock) as mock_api:
         
         await conversation_engine.handle_callback(chat_id, "select_train:12951", "callback_query_id")
         

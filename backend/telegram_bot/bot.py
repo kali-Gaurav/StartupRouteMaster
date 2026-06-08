@@ -17,10 +17,6 @@ from telegram_bot.schemas import (
 )
 from telegram_bot.dispatcher import TelegramDispatcher, telegram_dispatcher
 from telegram_bot.command_router import CommandRouter, command_router
-from telegram_bot.handlers import (
-    StartHandler, SearchHandler, BookingHandler,
-    PNRHandler, ProfileHandler, SOSHandler, HelpHandler
-)
 from telegram_bot.user_session_manager import user_session_manager
 from telegram_bot.config import bot_config
 
@@ -55,6 +51,10 @@ class TelegramBot:
     
     def _init_handlers(self):
         """Initialize command handlers."""
+        from telegram_bot.handlers import (
+            StartHandler, SearchHandler, BookingHandler,
+            PNRHandler, ProfileHandler, SOSHandler, HelpHandler
+        )
         self.start_handler = StartHandler()
         self.search_handler = SearchHandler()
         self.booking_handler = BookingHandler()
@@ -354,6 +354,8 @@ class TelegramBot:
             message_type = MessageType.LOCATION
         elif "contact" in msg:
             message_type = MessageType.CONTACT
+        elif "web_app_data" in msg:
+            message_type = MessageType.WEB_APP_DATA
         else:
             message_type = MessageType.TEXT
         return TelegramMessage(
@@ -365,6 +367,7 @@ class TelegramBot:
             message_type=message_type,
             location=msg.get("location"),
             contact=msg.get("contact"),
+            web_app_data=msg.get("web_app_data"),
             reply_to_message=self._parse_message(msg["reply_to_message"]) if msg.get("reply_to_message") else None
         )
     
@@ -428,7 +431,10 @@ class TelegramBot:
             handlers = {
                 "search": self.search_handler,
                 "book": self.booking_handler,
+                "method": self.booking_handler,
+                "live": self.pnr_handler,
                 "pnr": self.pnr_handler,
+                "refresh": self.pnr_handler,
                 "booking": self.pnr_handler,
                 "pdf": self.pnr_handler,
                 "cancel": self.pnr_handler,

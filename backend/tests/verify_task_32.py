@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from core.route_engine.categorization import CategorizationEngine
-from core.data_structures import Route, RouteSegment, Persona
+from core.data_utils.structures import Route, RouteSegment, Persona
 
 def verify_task_32_complete():
     print("\n>>> COMPREHENSIVE VERIFICATION: TASK 32 (TOP 3 HIGHLIGHTING)")

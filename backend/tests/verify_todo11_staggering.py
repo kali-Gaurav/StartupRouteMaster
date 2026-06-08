@@ -13,14 +13,14 @@ import core.nexus.audit.governor
 core.nexus.audit.governor.nexus_governor = MagicMock()
 core.nexus.audit.governor.nexus_governor.get_stats = AsyncMock(return_value={"cpu": 10, "ram": 20})
 
-import core.resource_monitor
-core.resource_monitor.resource_monitor = MagicMock()
-core.resource_monitor.resource_monitor.get_surge_level = MagicMock(return_value=MagicMock(name="NORMAL"))
+import core.infrastructure.resource_monitor
+core.infrastructure.resource_monitor.resource_monitor = MagicMock()
+core.infrastructure.resource_monitor.resource_monitor.get_surge_level = MagicMock(return_value=MagicMock(name="NORMAL"))
 
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.base import BaseRoutingEngine, RoutingRequest, RoutingResponse
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Route
+from core.data_utils.structures import Route
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("verify.todo11")

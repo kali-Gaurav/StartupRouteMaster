@@ -1,6 +1,6 @@
 import logging
 from typing import Callable, Dict, List, Any, Optional
-from services.telegram_dispatcher import telegram_dispatcher # Moved import to module level
+from services.telegram.bot import telegram_dispatcher # Moved import to module level
 
 logger = logging.getLogger(__name__)
 

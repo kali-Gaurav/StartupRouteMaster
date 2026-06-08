@@ -1,5 +1,5 @@
 from core.route_engine.categorization import CategorizationEngine
-from core.data_structures import Route, RouteSegment, Persona
+from core.data_utils.structures import Route, RouteSegment, Persona
 from datetime import datetime
 
 def verify_subtask_32_3():

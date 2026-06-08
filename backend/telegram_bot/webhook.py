@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 
-from .bot import telegram_bot
 from .config import bot_config
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,7 @@ async def telegram_webhook(request: Request) -> Dict[str, str]:
     This endpoint receives all updates from Telegram when configured
     in webhook mode.
     """
+    from .bot import telegram_bot
     try:
         # Get update from request
         update = await request.json()
@@ -54,6 +54,7 @@ async def webhook_health() -> Dict[str, str]:
 @webhook_router.get("/webhooks/telegram/info")
 async def webhook_info() -> Dict[str, Any]:
     """Get webhook information."""
+    from .bot import telegram_bot
     health = telegram_bot.get_health()
     return {
         "bot_status": health["status"],

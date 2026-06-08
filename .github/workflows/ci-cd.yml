@@ -57,7 +57,7 @@ jobs:
       run: |
         # Add test commands here
         echo "Running tests..."
-        # python -m pytest backend/tests/ -v
+        python -m pytest backend/ -v
 
     - name: Build Docker images
       run: |
@@ -99,13 +99,16 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA
         done
 
+    - name: Set Kubeconfig
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+
     - name: Deploy to Kubernetes
       run: |
         # Update Kubernetes manifests with new image tags
-        sed -i "s|startupv2-scraper:latest|$ECR_REGISTRY/$ECR_REPOSITORY:scraper-$GITHUB_SHA|g" k8s/scraper.yaml
-        sed -i "s|startupv2-etl:latest|$ECR_REGISTRY/$ECR_REPOSITORY:etl-$GITHUB_SHA|g" k8s/etl.yaml
-        sed -i "s|startupv2-route_service:latest|$ECR_REGISTRY/$ECR_REPOSITORY:route_service-$GITHUB_SHA|g" k8s/route-service.yaml
-        sed -i "s|startupv2-user_service:latest|$ECR_REGISTRY/$ECR_REPOSITORY:user_service-$GITHUB_SHA|g" k8s/user-service.yaml
+        sed -i "s|routemaster/backend:latest|$ECR_REGISTRY/$ECR_REPOSITORY:backend-$GITHUB_SHA|g" k8s/production-deployments.yaml
+        sed -i "s|routemaster/frontend:latest|$ECR_REGISTRY/$ECR_REPOSITORY:frontend-$GITHUB_SHA|g" k8s/production-deployments.yaml
 
         # Apply Kubernetes manifests
         kubectl apply -f k8s/

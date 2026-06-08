@@ -1,8 +1,8 @@
 import asyncio
 import logging
 from datetime import datetime
-from database.session import SessionLocal
-from database.redis_client import redis_client
+from database.infrastructure.session import SessionLocal
+from core.infrastructure.redis_manager import async_redis_client as redis_client
 from database.models import DemandTrainingData
 
 logger = logging.getLogger("routemaster.demand_exporter")

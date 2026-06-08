@@ -1,6 +1,6 @@
 import time
-from core.data_structures import DynamicWaitConfig, SearchPhase
-from core.dynamic_logic import compute_dynamic_window, is_valid_transfer
+from core.data_utils.structures import DynamicWaitConfig, SearchPhase
+from core.engines.dynamic_logic import compute_dynamic_window, is_valid_transfer
 
 def test_phase_windows():
     config = DynamicWaitConfig()

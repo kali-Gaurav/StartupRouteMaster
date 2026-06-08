@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from providers.clients.ntes_scraper import NtesScraperClient
 from services.scraper.ntes_sync_service import ntes_sync_service
-from core.redis_client import async_redis_client, resource_lock
+from core.infrastructure.redis_manager import async_redis_client, resource_lock
 
 logger = logging.getLogger("scraper.tasks")
 

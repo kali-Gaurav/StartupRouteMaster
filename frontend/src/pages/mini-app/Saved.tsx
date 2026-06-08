@@ -18,17 +18,14 @@ import { useTelegramWebApp } from "@/hooks/useTelegramWebApp";
 
 const MiniAppSaved = () => {
   const navigate = useNavigate();
-  const { webApp } = useTelegramWebApp();
+  const { webApp, showBackButton, hapticFeedback } = useTelegramWebApp();
   const [favorites, setFavorites] = useState<any[]>([]);
 
   useEffect(() => {
     loadFavorites();
-    if (webApp) {
-      webApp.BackButton.show();
-      webApp.BackButton.onClick(() => navigate("/mini-app"));
-    }
-    return () => webApp?.BackButton.hide();
-  }, [webApp, navigate]);
+    const hide = showBackButton(() => navigate("/mini-app"));
+    return hide;
+  }, [showBackButton, navigate]);
 
   const loadFavorites = async () => {
     try {
@@ -40,6 +37,7 @@ const MiniAppSaved = () => {
   };
 
   const removeFavorite = async (id: string) => {
+    hapticFeedback?.impactOccurred("medium");
     await storageService.removeFavorite(id);
     loadFavorites();
   };

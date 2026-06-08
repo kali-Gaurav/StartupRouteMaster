@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 import json
 
 import app as _app
-import api.chat as chat_module
+import api.communication.chat as chat_module
 
 
 class FakeRedis:

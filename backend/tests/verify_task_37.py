@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, AsyncMock
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from services.search_service import SearchService
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 
 async def verify_task_37():
     print("\n>>> COMPREHENSIVE VERIFICATION: TASK 37 (PLATFORM TRACKING)")

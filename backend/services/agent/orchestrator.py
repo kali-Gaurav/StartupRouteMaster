@@ -15,11 +15,11 @@ import logging
 import asyncio
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from abc import ABC, abstractmethod
 
-from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.resilience.core import circuit_breaker_manager, CircuitBreaker, CircuitConfig
 
 logger = logging.getLogger("agent.orchestrator")
 
@@ -130,8 +130,8 @@ class RoutingAgent(BaseAgent):
         self._search_service = None
     
     async def initialize(self) -> bool:
-        from services.search_service import SearchService
-        from database.session import SessionLocal
+        from services.search.service import SearchService
+        from database.infrastructure.session import SessionLocal
         self._search_service = SearchService(SessionLocal())
         return True
     
@@ -238,8 +238,8 @@ class PricingAgent(BaseAgent):
     
     async def _calculate_price(self, input_data: Dict) -> Dict:
         """Calculate booking price"""
-        from services.booking_price_calculator import get_booking_price_calculator
-        from database.session import SessionLocal
+        from services.deprecated.booking_price_calculator import get_booking_price_calculator
+        from database.infrastructure.session import SessionLocal
         
         calculator = get_booking_price_calculator(SessionLocal())
         
@@ -315,8 +315,8 @@ class AllocationAgent(BaseAgent):
     
     async def _allocate_seats(self, input_data: Dict) -> Dict:
         """Allocate seats for booking"""
-        from services.booking_seat_allocator import get_booking_seat_allocator
-        from database.session import SessionLocal
+        from services.inventory.allocator import get_booking_seat_allocator
+        from database.infrastructure.session import SessionLocal
         
         allocator = get_booking_seat_allocator(SessionLocal())
         

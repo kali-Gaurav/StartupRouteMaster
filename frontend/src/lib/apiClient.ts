@@ -3,7 +3,7 @@
  * - Brotli/Gzip Compression Headers (Suggestion #10)
  */
 
-import { supabase } from "./supabase";
+import { auth } from "./firebase";
 import {
   normalizeApiError,
   AuthError,
@@ -44,12 +44,11 @@ export async function fetchWithAuth(
     url = API_BASE ? `${API_BASE.replace(/\/$/, "")}${apiPath}` : apiPath;
   }
 
-  const { data: { session } } = await supabase.auth.getSession();
-  let accessToken = session?.access_token || null;
-  const legacyToken = localStorage.getItem("supabase.auth.token") || localStorage.getItem("sb-vclitvpgmqzntscvshje-auth-token");
-  if (!accessToken && legacyToken) {
-    accessToken = legacyToken;
+  let accessToken = null;
+  if (auth.currentUser) {
+    accessToken = await auth.currentUser.getIdToken();
   }
+
 
   const headers = new Headers(init?.headers);
   const adminToken = localStorage.getItem("admin_token");
@@ -74,15 +73,11 @@ export async function fetchWithAuth(
   if (res.status === 401 && retryCount < 1) {
     // [34.3] Attempt token refresh ONLY ONCE
     try {
-      const { data, error } = await supabase.auth.refreshSession();
-      if (error || !data?.session?.access_token) {
-        // Refresh failed - user must re-login
-        on401();
-        throw new AuthError("Session expired", 401);
-      }
+      if (!auth.currentUser) throw new Error("No user");
+      const token = await auth.currentUser.getIdToken(true);
       
       // Retry with new token and increment counter
-      headers.set("Authorization", `Bearer ${data.session.access_token}`);
+      headers.set("Authorization", `Bearer ${token}`);
       return fetchWithAuth(pathOrUrl, init, retryCount + 1);
     } catch {
       on401();

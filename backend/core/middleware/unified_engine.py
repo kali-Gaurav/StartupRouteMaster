@@ -8,10 +8,10 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 from starlette.responses import JSONResponse
 from fastapi import Request
 
-from core.state_manager import state_manager, SystemState
-from core.system_monitor import system_monitor
-from core.orchestrator import orchestrator
-from core.metrics import jit_metrics
+from core.engines.state import state_manager, SystemState
+from core.infrastructure.system_monitor import system_monitor
+from core.engines.orchestrator import orchestrator
+from core.infrastructure.metrics import jit_metrics
 from services.jit_manager import jit_manager
 from utils.responses import SafeJSONResponse
 
@@ -56,7 +56,7 @@ class UnifiedSmartMiddlewareEngine:
         self._route_cache = {}
 
         # Task 7.8: Circuit Breakers for each microservice
-        from core.resilience import CircuitBreaker
+        from core.resilience.core import CircuitBreaker
         self.circuits = {
             "search": CircuitBreaker("search", failure_threshold=5, recovery_timeout=30),
             "auth": CircuitBreaker("auth", failure_threshold=5, recovery_timeout=30),
@@ -91,7 +91,7 @@ class UnifiedSmartMiddlewareEngine:
         category = self._get_route_category(path)
         
         # 2. EMERGENCY GUARD (ControlPlane System Level) [Task 9]
-        from core.control_plane import control_plane, SystemLevel
+        from core.engines.control_plane import control_plane, SystemLevel
         level = await control_plane.get_level()
         
         if category != RouteCategory.ESSENTIAL:
@@ -124,7 +124,7 @@ class UnifiedSmartMiddlewareEngine:
         stress_index = nexus_cortex.get_stress_index()
         
         # Map stress_index (0-100) back to SystemState for adaptive logic
-        from core.system_monitor import SystemState
+        from core.infrastructure.system_monitor import SystemState
         if stress_index > 90:
             state = SystemState.CRITICAL
         elif stress_index > 70:
@@ -181,7 +181,7 @@ class UnifiedSmartMiddlewareEngine:
             timeout = self.base_timeout * timeout_factor
             
             # [Task 29] Set context timeout and start time
-            from core.context import request_timeout_ctx, request_start_time_ctx
+            from core.data_utils.context import request_timeout_ctx, request_start_time_ctx
             request_start_time_ctx.set(time.perf_counter())
             token = request_timeout_ctx.set(timeout)
             
@@ -192,7 +192,7 @@ class UnifiedSmartMiddlewareEngine:
                     return await self._proxy_to_microservice(scope, receive, send, "auth", "/validate")
                 
                 # 9. JIT READINESS (Local Fallback) -> Now IoC Container [Task 8]
-                from core.container import container
+                from core.infrastructure.container import container
                 if category == RouteCategory.HEAVY:
                     # [Task 81] Pull fresh status from governor
                     from core.nexus.audit.governor import nexus_governor
@@ -302,8 +302,8 @@ class UnifiedSmartMiddlewareEngine:
         Task 7.11 Hardened: Formal API Gateway Layer.
         Proxies request to microservice with Persistent Pooling and MQ Analytics.
         """
-        from core.service_discovery import service_registry
-        from core.resilience import retry_with_backoff 
+        from core.integration.discovery import service_registry
+        from core.resilience.core import retry_with_backoff 
         from services.multi_layer_cache import multi_layer_cache
 
         circuit = self.circuits.get(service_name)

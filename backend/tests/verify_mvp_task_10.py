@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from services.search_service import SearchService
 from database.session import SessionLocal
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 
 async def verify_task_10():
     print("\n>>> STARTING VERIFICATION: MVP TASK 10 (PERSONA OVERRIDES)")

@@ -16,7 +16,7 @@ from playwright.async_api import Page
 from ..config import config
 from ..models import UnifiedLiveStatus
 from utils.rate_limiter import RedisTokenBucket
-from core.redis_client import async_redis_client
+from core.infrastructure.redis_manager import async_redis_client
 from services.scraper_sentinel import scraper_sentinel
 
 logger = logging.getLogger("provider.ntes_scraper")

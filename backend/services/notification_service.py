@@ -1,376 +1,396 @@
+"""
+Notification Service - Multi-channel notification delivery.
+"""
+
 import logging
-import asyncio
-from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+from enum import Enum
+
 from sqlalchemy.orm import Session
-from datetime import datetime
-from dataclasses import dataclass, field
-from collections import deque
+from sqlalchemy import select
 
-from database.models import User, NotificationToken, UserAlert, NotificationPreference, NotificationLog
-from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
-from core.retry import RetryPolicy
+from database.models import Notification, NotificationPreference
+from schemas.notification import NotificationType, NotificationChannel
 
-logger = logging.getLogger("notification-service")
-
-
-class NotificationServiceMetrics:
-    """Metrics tracking for notification service."""
-    
-    def __init__(self):
-        self._metrics: deque = deque(maxlen=1000)
-        self._metrics_lock = asyncio.Lock()
-    
-    async def record_notification(self, channel: str, success: bool, duration_ms: float):
-        """Record notification metrics."""
-        async with self._metrics_lock:
-            self._metrics.append({
-                "timestamp": datetime.utcnow(),
-                "channel": channel,
-                "success": success,
-                "duration_ms": duration_ms
-            })
-    
-    def get_metrics(self) -> dict:
-        """Get service metrics."""
-        if not self._metrics:
-            return {"total_notifications": 0, "success_rate": 0.0}
-        
-        total = len(self._metrics)
-        successful = sum(1 for m in self._metrics if m["success"])
-        by_channel = {}
-        for m in self._metrics:
-            channel = m["channel"]
-            if channel not in by_channel:
-                by_channel[channel] = {"total": 0, "success": 0}
-            by_channel[channel]["total"] += 1
-            if m["success"]:
-                by_channel[channel]["success"] += 1
-        
-        return {
-            "total_notifications": total,
-            "successful_notifications": successful,
-            "failed_notifications": total - successful,
-            "success_rate": successful / total if total > 0 else 0.0,
-            "by_channel": by_channel
-        }
+logger = logging.getLogger("notification_service")
 
 
 @dataclass
-class NotificationJob:
-    """Represents a notification job to be processed."""
-    user_id: str
-    title: str
-    body: str
-    alert_type: str = "SYSTEM"
-    priority: int = 10
-    payload: Optional[Dict[str, Any]] = None
-    booking_id: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    retry_count: int = 0
-    max_retries: int = 3
-
-
-class NotificationQueue:
-    """Thread-safe notification queue with retry logic."""
-    
-    def __init__(self, max_size: int = 1000):
-        self._queue: List[NotificationJob] = []
-        self._max_size = max_size
-        self._lock = asyncio.Lock()
-    
-    async def put(self, job: NotificationJob) -> bool:
-        """Add a notification job to the queue."""
-        async with self._lock:
-            if len(self._queue) >= self._max_size:
-                logger.warning("Notification queue full, dropping oldest")
-                self._queue.pop(0)
-            self._queue.append(job)
-            return True
-    
-    async def get(self) -> Optional[NotificationJob]:
-        """Get the next notification job."""
-        async with self._lock:
-            if not self._queue:
-                return None
-            return self._queue.pop(0)
-    
-    def size(self) -> int:
-        """Get current queue size."""
-        return len(self._queue)
-    
-    def clear(self) -> None:
-        """Clear the queue."""
-        self._queue.clear()
-
-
-# Global notification queue
-notification_queue = NotificationQueue()
+class NotificationResult:
+    """Result of notification send attempt."""
+    success: bool
+    channel: str
+    message_id: Optional[str] = None
+    error: Optional[str] = None
 
 
 class NotificationService:
-    """Notification service with queuing and retry support."""
-
-    def __init__(self):
-        self._queue = notification_queue
-        self._worker_task: Optional[asyncio.Task] = None
-        
-        # Circuit breakers for external services
-        self._fcm_breaker = circuit_breaker_manager.get_or_create(
-            "notification_fcm",
-            CircuitConfig(failure_threshold=5, timeout_seconds=30.0, success_threshold=2)
-        )
-        self._telegram_breaker = circuit_breaker_manager.get_or_create(
-            "notification_telegram",
-            CircuitConfig(failure_threshold=3, timeout_seconds=15.0, success_threshold=2)
-        )
-        self._db_breaker = circuit_breaker_manager.get_or_create(
-            "notification_db",
-            CircuitConfig(failure_threshold=5, timeout_seconds=10.0, success_threshold=3)
-        )
-        
-        # Retry policies
-        self._fcm_retry = RetryPolicy(
-            max_attempts=3,
-            initial_delay=0.5,
-            max_delay=10.0,
-            conditions=[
-                lambda e: "timeout" in str(e).lower(),
-                lambda e: "connection" in str(e).lower()
-            ]
-        )
-        self._telegram_retry = RetryPolicy(
-            max_attempts=3,
-            initial_delay=0.5,
-            max_delay=5.0,
-            conditions=[
-                lambda e: "timeout" in str(e).lower()
-            ]
-        )
-        
-        # Metrics tracking
-        self._metrics = NotificationServiceMetrics()
-        
-        # Worker task (started on first use)
-        self._worker_task = None
-        logger.info("NotificationService initialized with resilience patterns")
+    """Multi-channel notification service."""
     
-    def _start_worker(self):
-        """Start the background worker if not already running."""
-        if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self._process_queue())
-            logger.info("Notification worker started")
-
-    async def _process_queue(self):
-        """Background worker to process notification queue."""
-        while True:
-            try:
-                job = await self._queue.get()
-                if job is None:
-                    await asyncio.sleep(1)
-                    continue
-                
-                # Process the notification
-                await self._send_notification(job)
-                
-                # Small delay between notifications
-                await asyncio.sleep(0.1)
-                
-            except asyncio.CancelledError:
-                logger.info("Notification worker cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in notification worker: {e}")
-                await asyncio.sleep(1)
-
-    async def _send_notification(self, job: NotificationJob):
-        """Send a single notification with retry."""
-        from database.session import SessionLocal
-        
-        db = SessionLocal()
-        success_count: int = 0
-        failure_count: int = 0
-        try:
-            # 1. Store in DB (In-App History)
-            alert = UserAlert(
-                user_id=job.user_id,
-                title=job.title,
-                body=job.body,
-                alert_type=job.alert_type,
-                priority=job.priority,
-                payload=job.payload or {}
-            )
-            db.add(alert)
-            
-            # 2. Find active channels
-            tokens = db.query(NotificationToken).filter(
-                NotificationToken.user_id == job.user_id,
-                NotificationToken.is_active == True
-            ).all()
-            
-            # 3. Check Preferences
-            prefs = db.query(NotificationPreference).filter(
-                NotificationPreference.user_id == job.user_id
-            ).first()
-            
-            db.commit()
-            
-            # 4. [Task 1.1.5] Notification Delivery Logging
-            for t in tokens:
-                try:
-                    # Priority & Preference Routing
-                    if job.alert_type == "PROMOTION" and prefs and not prefs.enable_promotions:
-                        continue
-                    
-                    log_entry = NotificationLog(
-                        booking_id=job.booking_id,
-                        channel=t.channel,
-                        status="pending"
-                    )
-                    db.add(log_entry)
-                    db.flush() # Get notification_id
-                    
-                    try:
-                        if t.channel == "WEB_PUSH":
-                            await self._send_fcm(str(t.token), job.title, job.body, job.payload)
-                        elif t.channel == "TELEGRAM":
-                            from services.telegram_dispatcher import telegram_dispatcher
-                            await telegram_dispatcher.send_message(str(t.token), f"<b>{job.title}</b>\n\n{job.body}")
-                        
-                        log_entry.status = "sent"
-                        success_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to deliver to {t.channel} for {job.user_id}: {e}")
-                        log_entry.status = "failed"
-                        log_entry.error_message = str(e)
-                        failure_count += 1
-                except Exception as inner_e:
-                    logger.error(f"Error logging notification delivery: {inner_e}")
-            
-            db.commit()
-            logger.info(f"📲 Notification sent to {job.user_id}: {success_count} success, {failure_count} failures")
-            
-        except Exception as e:
-            logger.error(f"Error sending notification: {e}")
-            db.rollback()
-            
-            # Retry logic
-            if job.retry_count < job.max_retries:
-                job.retry_count += 1
-                await self._queue.put(job)
-                logger.info(f"🔄 Retrying notification ({job.retry_count}/{job.max_retries})")
-        finally:
-            db.close()
-
-    async def send_alert(
-        self, 
-        db: Session, 
-        user_id: str, 
-        title: str, 
-        body: str, 
-        alert_type: str = "SYSTEM", 
-        priority: int = 10, 
-        payload: Optional[Dict[str, Any]] = None,
-        booking_id: Optional[str] = None,
-        immediate: bool = False
-    ):
+    def __init__(self, db: Session):
+        self.db = db
+        self.templates = self._load_templates()
+    
+    def _load_templates(self) -> Dict[str, Dict]:
+        """Load notification templates."""
+        return {
+            "booking_confirmed": {
+                "sms": "Your booking {pnr} is confirmed! Train {train} from {from} to {to} on {date}. Have a safe journey!",
+                "email": "Booking Confirmation - Your trip is confirmed!",
+                "push": "Booking {pnr} confirmed for {date}"
+            },
+            "payment_received": "Payment of ₹{amount} received for booking {pnr}. Thank you!",
+            "pnr_status": "PNR {pnr} status update: {status}",
+            "delay_alert": "Alert: Train {train} is delayed by {delay} minutes. New arrival time: {new_time}",
+            "safety_alert": "Safety Alert: {message}",
+            "booking_initiated": "Your booking request for {pnr} is being processed. Complete payment within {time} minutes."
+        }
+    
+    async def queue_notification(
+        self,
+        user_id: str,
+        notification_type: str,
+        data: Dict[str, Any]
+    ) -> str:
         """
-        [Task 46.1 & 46.4] Main orchestrator for delivering an alert.
+        Queue a notification for delivery.
         
         Args:
-            db: Database session
             user_id: Target user ID
-            title: Notification title
-            body: Notification body
-            alert_type: Type of alert (SYSTEM, PROMOTION, etc.)
-            priority: Priority level (1-10, lower is higher priority)
-            payload: Additional data
-            booking_id: Optional booking reference (Task 1.1.5)
-            immediate: If True, send immediately; otherwise queue
+            notification_type: Type of notification
+            data: Template variables
+            
+        Returns:
+            Notification ID
         """
-        # Ensure worker is running
-        self._start_worker()
+        notification_id = str(datetime.now().timestamp()).replace(".", "")[:12]
         
-        job = NotificationJob(
+        notification = Notification(
+            id=notification_id,
             user_id=user_id,
-            title=title,
-            body=body,
-            alert_type=alert_type,
-            priority=priority,
-            payload=payload,
-            booking_id=booking_id
+            notification_type=notification_type,
+            data=data,
+            status="queued",
+            created_at=datetime.now(timezone.utc)
         )
         
-        if immediate:
-            # Send immediately
-            await self._send_notification(job)
-        else:
-            # Queue for background processing
-            await self._queue.put(job)
-            logger.debug(f"Notification queued for {user_id}: {title[:30]}...")
-
-    async def _send_fcm(self, token: str, title: str, body: str, payload: Optional[Dict[str, Any]] = None):
-        """
-        [Task 46.2] Firebase Cloud Messaging.
-        """
-        logger.info(f"📲 FCM Push Sent to {token[:10]}... | {title}")
-        # firebase_admin.messaging.send(...) would go here
-
-    async def _send_telegram(self, chat_id: str, title: str, body: str):
-        """
-        [Task 46.3] Telegram Bot API.
-        """
-        logger.info(f"✈️ Telegram Sent to {chat_id} | {title}")
-        # requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", ...)
-
-    def get_user_notifications(
-        self, 
-        db: Session, 
-        user_id: str, 
-        limit: int = 20,
-        unread_only: bool = False
-    ) -> List[UserAlert]:
-        """
-        [Task 46.6] Fetch notification history for in-app center.
-        """
-        query = db.query(UserAlert).filter(UserAlert.user_id == user_id)
+        self.db.add(notification)
+        self.db.commit()
         
-        if unread_only:
-            query = query.filter(UserAlert.is_read == False)
+        # Process asynchronously in production
+        return notification_id
+    
+    async def send_notification(
+        self,
+        user_id: str,
+        notification_type: str,
+        channels: List[str] = ["sms", "email", "push"],
+        data: Optional[Dict[str, Any]] = None
+    ) -> List[NotificationResult]:
+        """
+        Send notification through specified channels.
         
-        return query.order_by(UserAlert.timestamp.desc()).limit(limit).all()
-
-    def mark_as_read(self, db: Session, alert_id: int, user_id: str) -> bool:
-        """Mark a notification as read."""
+        Args:
+            user_id: Target user ID
+            notification_type: Type of notification
+            channels: List of channels to use
+            data: Template variables
+            
+        Returns:
+            List of results per channel
+        """
+        results = []
+        data = data or {}
+        
+        # Get user preferences
+        prefs = await self.get_user_preferences(user_id)
+        
+        for channel in channels:
+            # Check if channel is enabled
+            if channel == "sms" and not prefs.get("sms_enabled", True):
+                results.append(NotificationResult(success=False, channel=channel, error="SMS disabled"))
+                continue
+            if channel == "email" and not prefs.get("email_enabled", True):
+                results.append(NotificationResult(success=False, channel=channel, error="Email disabled"))
+                continue
+            if channel == "push" and not prefs.get("push_enabled", True):
+                results.append(NotificationResult(success=False, channel=channel, error="Push disabled"))
+                continue
+            
+            # Send based on channel
+            if channel == "sms":
+                result = await self._send_sms(user_id, notification_type, data)
+            elif channel == "email":
+                result = await self._send_email(user_id, notification_type, data)
+            elif channel == "push":
+                result = await self._send_push(user_id, notification_type, data)
+            else:
+                result = NotificationResult(success=False, channel=channel, error="Unknown channel")
+            
+            results.append(result)
+        
+        return results
+    
+    async def _send_sms(
+        self,
+        user_id: str,
+        notification_type: str,
+        data: Dict[str, Any]
+    ) -> NotificationResult:
+        """Send SMS notification."""
         try:
-            alert = db.query(UserAlert).filter(
-                UserAlert.id == alert_id,
-                UserAlert.user_id == user_id
-            ).first()
-            if alert:
-                # Fix for SQLAlchemy Column assignment
-                setattr(alert, "is_read", True)
-                db.commit()
-                return True
-            return False
+            # Get user phone
+            from database.models import User
+            user = self.db.get(User, user_id)
+            phone = user.phone if user else None
+            
+            if not phone:
+                return NotificationResult(success=False, channel="sms", error="No phone number")
+            
+            # Get template
+            template = self.templates.get(notification_type, {}).get("sms", "")
+            if isinstance(template, dict):
+                template = template.get("sms", "")
+            
+            # Format message
+            message = template.format(**data)
+            
+            # In production, integrate with SMS provider (Twilio, etc.)
+            logger.info(f"SMS to {phone}: {message[:50]}...")
+            
+            # Simulate SMS send
+            return NotificationResult(
+                success=True,
+                channel="sms",
+                message_id=f"sms_{datetime.now().timestamp()}"
+            )
+            
         except Exception as e:
-            logger.error(f"Failed to mark notification as read: {e}")
-            return False
-
-    def get_queue_stats(self) -> Dict[str, Any]:
-        """Get notification queue statistics."""
+            logger.error(f"SMS send error: {e}")
+            return NotificationResult(success=False, channel="sms", error=str(e))
+    
+    async def _send_email(
+        self,
+        user_id: str,
+        notification_type: str,
+        data: Dict[str, Any]
+    ) -> NotificationResult:
+        """Send email notification."""
+        try:
+            from database.models import User
+            user = self.db.get(User, user_id)
+            email = user.email if user else None
+            
+            if not email:
+                return NotificationResult(success=False, channel="email", error="No email")
+            
+            # Get template
+            template = self.templates.get(notification_type, {}).get("email", "")
+            if isinstance(template, dict):
+                template = template.get("email", "")
+            
+            # Format subject and body
+            subject = f"Travel Booking - {notification_type.replace('_', ' ').title()}"
+            body = template.format(**data)
+            
+            # In production, integrate with email provider (SendGrid, etc.)
+            logger.info(f"Email to {email}: {subject}")
+            
+            return NotificationResult(
+                success=True,
+                channel="email",
+                message_id=f"email_{datetime.now().timestamp()}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Email send error: {e}")
+            return NotificationResult(success=False, channel="email", error=str(e))
+    
+    async def _send_push(
+        self,
+        user_id: str,
+        notification_type: str,
+        data: Dict[str, Any]
+    ) -> NotificationResult:
+        """Send push notification."""
+        try:
+            # In production, integrate with push service (Firebase, etc.)
+            logger.info(f"Push to user {user_id}: {notification_type}")
+            
+            return NotificationResult(
+                success=True,
+                channel="push",
+                message_id=f"push_{datetime.now().timestamp()}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Push send error: {e}")
+            return NotificationResult(success=False, channel="push", error=str(e))
+    
+    async def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Get user notification preferences."""
+        result = self.db.execute(
+            select(NotificationPreference).where(
+                NotificationPreference.user_id == user_id
+            )
+        ).scalar_one_or_none()
+        
+        if result:
+            return {
+                "sms_enabled": result.sms_enabled,
+                "email_enabled": result.email_enabled,
+                "push_enabled": result.push_enabled,
+                "booking_confirmed": result.booking_confirmed,
+                "payment_received": result.payment_received,
+                "pnr_status": result.pnr_status,
+                "delay_alerts": result.delay_alerts,
+                "safety_alerts": result.safety_alerts,
+                "marketing": result.marketing
+            }
+        
+        # Default preferences
         return {
-            "queue_size": self._queue.size(),
-            "worker_running": self._worker_task is not None and not self._worker_task.done()
+            "sms_enabled": True,
+            "email_enabled": True,
+            "push_enabled": True,
+            "booking_confirmed": True,
+            "payment_received": True,
+            "pnr_status": True,
+            "delay_alerts": True,
+            "safety_alerts": True,
+            "marketing": False
         }
+    
+    async def update_preferences(
+        self,
+        user_id: str,
+        preferences: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update user notification preferences."""
+        existing = self.db.execute(
+            select(NotificationPreference).where(
+                NotificationPreference.user_id == user_id
+            )
+        ).scalar_one_or_none()
+        
+        if existing:
+            for key, value in preferences.items():
+                if hasattr(existing, key):
+                    setattr(existing, key, value)
+        else:
+            existing = NotificationPreference(
+                id=str(datetime.now().timestamp()).replace(".", "")[:12],
+                user_id=user_id,
+                **preferences
+            )
+            self.db.add(existing)
+        
+        self.db.commit()
+        
+        return await self.get_user_preferences(user_id)
 
-    def shutdown(self):
-        """Shutdown the notification worker."""
-        if self._worker_task:
-            self._worker_task.cancel()
-            logger.info("Notification worker shutdown initiated")
+
+# ==================== MOCK NOTIFICATION METHODS FOR DEMO ====================
+
+async def send_sms_stub(
+    self,
+    phone_number: str,
+    message: str
+) -> bool:
+    """
+    Mock SMS sending for demo purposes.
+    Logs the SMS instead of sending.
+    """
+    logger.info(f"[SMS STUB] To: {phone_number}")
+    logger.info(f"[SMS STUB] Message: {message}")
+    
+    # Create notification log
+    notification = Notification(
+        id=str(datetime.now().timestamp()).replace(".", "")[:12],
+        user_id="stub",
+        notification_type="sms",
+        data={"phone": phone_number, "message": message},
+        status="sent",
+        created_at=datetime.now(timezone.utc)
+    )
+    
+    self.db.add(notification)
+    self.db.commit()
+    
+    return True
+
+async def send_email_stub(
+    self,
+    email: str,
+    subject: str,
+    body: str,
+    html: Optional[str] = None
+) -> bool:
+    """
+    Mock email sending for demo purposes.
+    Logs the email instead of sending.
+    """
+    logger.info(f"[EMAIL STUB] To: {email}")
+    logger.info(f"[EMAIL STUB] Subject: {subject}")
+    logger.info(f"[EMAIL STUB] Body: {body}")
+    
+    # Create notification log
+    notification = Notification(
+        id=str(datetime.now().timestamp()).replace(".", "")[:12],
+        user_id="stub",
+        notification_type="email",
+        data={"email": email, "subject": subject, "body": body},
+        status="sent",
+        created_at=datetime.now(timezone.utc)
+    )
+    
+    self.db.add(notification)
+    self.db.commit()
+    
+    return True
+
+async def send_booking_confirmation(
+    self,
+    user_id: str,
+    booking_id: str,
+    pnr_number: str,
+    train_details: Dict[str, Any]
+) -> bool:
+    """
+    Send booking confirmation via all channels.
+    """
+    # Format SMS
+    sms_message = f"Booking Confirmed! PNR: {pnr_number}. Train: {train_details.get('train_number')}. Date: {train_details.get('date')}. Safe travels!"
+    
+    # Format email
+    email_subject = f"Booking Confirmed - PNR {pnr_number}"
+    email_body = f"""
+    Your booking is confirmed!
+    
+    PNR: {pnr_number}
+    Train: {train_details.get('train_number')}
+    Date: {train_details.get('date')}
+    From: {train_details.get('from')}
+    To: {train_details.get('to')}
+    
+    Show this email at the station.
+    """
+    
+    # Send via stubs
+    await self.send_sms_stub("+91XXXXXXXXXX", sms_message)
+    await self.send_email_stub("user@example.com", email_subject, email_body)
+    
+    return True
 
 
-notification_service = NotificationService()
+# Singleton instance
+notification_service = None
 
-
-
+def get_notification_service(db: Session) -> NotificationService:
+    """Get or create notification service instance."""
+    global notification_service
+    if notification_service is None:
+        notification_service = NotificationService(db)
+    return notification_service

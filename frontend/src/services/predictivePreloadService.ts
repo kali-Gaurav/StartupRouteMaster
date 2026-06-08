@@ -3,6 +3,7 @@
  * Pre-caches potential routes in IndexedDB for instant offline access
  */
 import { storageService } from './storageService';
+import { searchRoutesApi, mapBackendRoutesToRoutes } from './railwayBackApi';
 
 // Fallback "popular" routes for zero-data users
 const POPULAR_ROUTES = [
@@ -42,18 +43,19 @@ export const predictivePreloadService = {
   },
 
   async _cacheRoute(src: string, dest: string) {
-    const existing = await storageService.getCachedRoutes(src, dest);
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const existing = await storageService.getCachedRoutes(src, dest, dateStr);
     
     if (!existing) {
-      // Mocking a background fetch. In a real app, this calls the backend
-      // and saves the response into Dexie.
-      const mockResult: any[] = [
-        { id: "101", name: "SF Express", type: "Superfast", time: "10:00" },
-        { id: "102", name: "SF Express 2", type: "SF", time: "22:00" }
-      ];
-      
-      await storageService.cacheRoutes(src, dest, mockResult);
-      console.log(`[Predictive] Cached ${src}-${dest}`);
+      try {
+        const result = await searchRoutesApi(src, dest, 2, 20, { date: dateStr, routeSource: "live", sortBy: "duration" });
+        const mappedRoutes = mapBackendRoutesToRoutes(result, src, dest);
+        await storageService.cacheRoutes(src, dest, dateStr, mappedRoutes);
+        console.log(`[Predictive] Cached ${src}-${dest} successfully.`);
+      } catch (e) {
+        console.warn(`[Predictive] Failed to cache ${src}-${dest}`, e);
+      }
     }
   }
 };

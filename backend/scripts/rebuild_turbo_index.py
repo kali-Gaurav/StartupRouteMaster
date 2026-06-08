@@ -10,7 +10,7 @@ from sqlalchemy import text
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 
 from database.session import SessionTransit
-from core.container import container
+from core.infrastructure.container import container
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("index-builder")

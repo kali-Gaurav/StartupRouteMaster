@@ -9,11 +9,11 @@ Version: 1.0.0
 """
 
 import logging
+import os
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from typing import Dict, Any
 
-from .bot import telegram_bot
 from .config import bot_config
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,18 @@ async def telegram_webhook(request: Request) -> Dict[str, str]:
     This endpoint receives all updates from Telegram when configured
     in webhook mode.
     """
+    from .bot import telegram_bot
     try:
+        # Verify secret token if configured
+        webhook_secret = bot_config.webhook_url # This is a bit weird in config, let's use a direct env fetch or update config
+        # Actually let's use os.getenv directly to be safe or update TelegramBotConfig
+        secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        expected_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+        
+        if expected_secret and secret_header != expected_secret:
+            logger.warning(f"Unauthorized webhook attempt from {request.client.host if request.client else 'unknown'}")
+            raise HTTPException(status_code=403, detail="Forbidden")
+
         # Get update from request
         update = await request.json()
         
@@ -60,6 +71,7 @@ async def webhook_health() -> Dict[str, str]:
 @telegram_router.get("/webhook/info")
 async def webhook_info() -> Dict[str, Any]:
     """Get webhook and bot information."""
+    from .bot import telegram_bot
     health = telegram_bot.get_health()
     return {
         "status": "healthy",

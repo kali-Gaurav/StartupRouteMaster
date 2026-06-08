@@ -7,7 +7,7 @@ from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine import get_route_engine
 from core.route_engine.base import RoutingRequest
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Persona
+from core.data_utils.structures import Persona
 from core.knowledge.graph_store import knowledge_graph
 from datetime import datetime
 

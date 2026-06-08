@@ -6,7 +6,7 @@ from typing import List, Optional, Any
 from .csa_kernel import CSARoutingKernel
 from .scoring import RouteScorer
 from .constraints import RouteConstraints
-from core.data_structures import Route, RouteSegment, TransferConnection, ensure_datetime
+from core.data_utils.structures import Route, RouteSegment, TransferConnection, ensure_datetime
 
 logger = logging.getLogger(__name__)
 

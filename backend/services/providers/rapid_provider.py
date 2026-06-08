@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from services.providers.base_provider import BaseProvider, TransportType
 from database.config import Config
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 

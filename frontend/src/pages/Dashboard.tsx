@@ -4,14 +4,25 @@
  */
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { 
-  MapPin, ExternalLink, User, AlertCircle, CheckCircle, RefreshCw, 
-  Train, Wifi, WifiOff, History, Star, Cloud, ArrowRight, Zap, ShieldAlert 
+import {
+  MapPin, ExternalLink, User, AlertCircle, CheckCircle, RefreshCw,
+  Train, Wifi, WifiOff, History, Star, Cloud, ArrowRight, Zap, ShieldAlert
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { getAllSOS, resolveSOS, type SOSEvent } from "@/services/sosApi";
 import { useBackendHealth } from "@/hooks/useBackendHealth";
 import { storageService } from "@/services/storageService";
 import { useBookings } from "@/api/hooks/useBookings";
+import { useAuth } from "@/context/AuthContext";
+import { getRailwayApiUrl } from "@/lib/utils";
+
+interface SavedRoute {
+  id: string;
+  from_code: string; to_code: string;
+  from_name: string; to_name: string;
+  route_data?: any;
+  created_at: string;
+}
 
 function StatCard({ title, value, icon: Icon, colorClass, subtitle }: { title: string; value: string | number; icon: any; colorClass: string; subtitle?: string }) {
   return (
@@ -108,11 +119,36 @@ function cn(...inputs: any[]) {
 
 export default function Dashboard() {
   const isOnline = useBackendHealth();
+  const { token } = useAuth();
   const [events, setEvents] = useState<SOSEvent[]>([]);
   const [recentSearches, setRecentSearches] = useState<any[]>([]);
   const [favorites, setFavorites] = useState<any[]>([]);
+  const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [loading, setLoading] = useState(true);
+
+  const fetchSavedRoutes = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(getRailwayApiUrl('/api/v1/users/saved-routes'), {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSavedRoutes(data.routes || []);
+      }
+    } catch { /* non-critical */ }
+  };
+
+  const deleteSavedRoute = async (id: string) => {
+    try {
+      const res = await fetch(getRailwayApiUrl(`/api/v1/users/saved-routes/${id}`), {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (res.ok) setSavedRoutes(prev => prev.filter(r => r.id !== id));
+    } catch { /* non-critical */ }
+  };
 
   // Manual Booking Integration
   const { data: bookingsData } = useBookings({ limit: 3 });
@@ -133,6 +169,7 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     setLoading(true);
+    fetchSavedRoutes(); // non-blocking
     try {
       // 1. Fetch SOS Events
       try {
@@ -217,101 +254,104 @@ export default function Dashboard() {
       <main className="container mx-auto px-4 py-8">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard title="Active SOS" value={activeCount} icon={AlertCircle} colorClass="bg-red-500" subtitle={`${resolvedToday} resolved today`} />
-          <StatCard title="Monitored Routes" value={favorites.length} icon={Star} colorClass="bg-yellow-500" subtitle="Pinned itineraries" />
+          <StatCard title="Saved Routes" value={savedRoutes.length} icon={Star} colorClass="bg-yellow-500" subtitle="Tap to re-search" />
           <StatCard title="Pending Sync" value={pendingSyncCount} icon={Cloud} colorClass="bg-blue-500" subtitle="Edge queue size" />
-          <StatCard title="Total Reach" value="12.4k" icon={User} colorClass="bg-emerald-500" subtitle="+18.2% monthly" />
+          <StatCard title="API Status" value={isOnline ? "Online" : "Degraded"} icon={isOnline ? Wifi : WifiOff} colorClass={isOnline ? "bg-emerald-500" : "bg-red-500"} subtitle="Backend health" />
         </div>
 
-        {/* Manual Booking Requests Section (Wizard-of-Oz MVP) */}
-        {manualBookings.length > 0 && (
-          <section className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        {/* Saved Routes Panel */}
+        {savedRoutes.length > 0 && (
+          <section className="mb-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-black flex items-center gap-2 uppercase tracking-tight">
-                <History className="w-6 h-6 text-purple-500" />
-                Your Booking Status
+                <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
+                Saved Routes ({savedRoutes.length})
               </h2>
-              <Link to="/bookings" className="text-xs font-bold text-primary hover:underline">VIEW ALL HISTORY →</Link>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {manualBookings.map((b, i) => (
-                <div key={i} className="bg-white dark:bg-card border-2 border-border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
-                  <div className="flex justify-between items-start mb-3">
-                    <span className="text-[10px] font-black bg-muted px-2 py-1 rounded-lg uppercase text-muted-foreground tracking-tighter">
-                      PNR: {b.pnr_number || "TBD"}
-                    </span>
-                    <span className={cn(
-                      "text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border",
-                      b.booking_status === "ticket_sent" ? "bg-blue-500/10 text-blue-600 border-blue-200" :
-                      b.booking_status === "confirmed" ? "bg-green-500/10 text-green-600 border-green-200" :
-                      "bg-purple-500/10 text-purple-600 border-purple-200 animate-pulse"
-                    )}>
-                      {b.booking_status?.replace('_', ' ')}
-                    </span>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-sm font-black group-hover:text-primary transition-colors">
-                      {b.booking_details?.origin || "Route"} → {b.booking_details?.destination || "Manual"}
-                    </p>
-                    <p className="text-[10px] font-bold text-muted-foreground">
-                      {new Date(b.travel_date).toLocaleDateString("en-IN", { dateStyle: 'medium' })} • {b.booking_details?.passengers?.length || 1} PAX
-                    </p>
-                  </div>
-                  {b.booking_status === "pending_manual" && (
-                    <div className="mt-4 pt-4 border-t border-dashed border-border">
-                      <p className="text-[9px] font-medium text-muted-foreground leading-relaxed">
-                        Our team is manually processing your ticket. You will receive it via Telegram/Email shortly.
-                      </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {savedRoutes.map(r => (
+                <div key={r.id} className="bg-card border-2 border-border rounded-2xl p-4 hover:border-primary/30 transition-all group">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Train className="w-4 h-4 text-primary" />
+                      <span className="font-black text-sm">{r.from_name || r.from_code}</span>
+                      <ArrowRight className="w-3 h-3 text-muted-foreground" />
+                      <span className="font-black text-sm">{r.to_name || r.to_code}</span>
                     </div>
+                    <button
+                      onClick={() => deleteSavedRoute(r.id)}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded-lg hover:bg-destructive/10 hover:text-destructive transition-all text-muted-foreground"
+                      title="Remove"
+                    >×</button>
+                  </div>
+                  {r.route_data && (
+                    <p className="text-xs text-muted-foreground font-medium mb-2">
+                      {r.route_data.train_name || ''} · {r.route_data.departure || ''} → {r.route_data.arrival || ''} · {r.route_data.total_cost > 0 ? `₹${r.route_data.total_cost}` : ''}
+                    </p>
                   )}
-                  {b.pnr_number && (
-                    <Link to={`/ticket/${b.pnr_number}`} className="mt-4 w-full py-2 bg-primary text-primary-foreground rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all">
-                      TRACK JOURNEY <Zap className="w-3 h-3 fill-current" />
+                  <div className="flex gap-2 mt-2">
+                    <Link
+                      to={`/?from=${r.from_code}&to=${r.to_code}`}
+                      className="flex-1 py-1.5 text-center rounded-lg bg-primary/10 text-primary text-xs font-black hover:bg-primary/20 transition-colors"
+                    >
+                      Re-search
                     </Link>
-                  )}
+                    {r.route_data?.irctc_url && (
+                      <a
+                        href={r.route_data.irctc_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-lg border border-border text-xs font-bold text-muted-foreground hover:text-primary transition-colors"
+                      >
+                        IRCTC
+                      </a>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           </section>
         )}
 
-        {/* Manual Booking Requests Section (Wizard-of-Oz MVP) */}
+        {/* Automated Booking Engine Status */}
         {manualBookings.length > 0 && (
           <section className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-black flex items-center gap-2 uppercase tracking-tight">
                 <History className="w-6 h-6 text-purple-500" />
-                Your Booking Status
+                Active Bookings Queue
               </h2>
-              <Link to="/bookings" className="text-xs font-bold text-primary hover:underline">VIEW ALL HISTORY →</Link>
+              <Link to="/bookings" className="text-xs font-bold text-primary hover:underline">VIEW ALL BOOKINGS →</Link>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {manualBookings.map((b, i) => (
                 <div key={i} className="bg-white dark:bg-card border-2 border-border rounded-2xl p-5 shadow-sm hover:shadow-md transition-all group">
                   <div className="flex justify-between items-start mb-3">
                     <span className="text-[10px] font-black bg-muted px-2 py-1 rounded-lg uppercase text-muted-foreground tracking-tighter">
-                      PNR: {b.pnr_number || "TBD"}
+                      PNR: {b.pnr_number || "AWAITING_ASSIGNMENT"}
                     </span>
                     <span className={cn(
                       "text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-widest border",
-                      b.booking_status === "ticket_sent" ? "bg-blue-500/10 text-blue-600 border-blue-200" :
                       b.booking_status === "confirmed" ? "bg-green-500/10 text-green-600 border-green-200" :
+                      b.booking_status === "failed" ? "bg-red-500/10 text-red-600 border-red-200" :
                       "bg-purple-500/10 text-purple-600 border-purple-200 animate-pulse"
                     )}>
-                      {b.booking_status?.replace('_', ' ')}
+                      {b.booking_status?.replace('_', ' ') || "queued"}
                     </span>
                   </div>
                   <div className="space-y-1">
                     <p className="text-sm font-black group-hover:text-primary transition-colors">
-                      {b.booking_details?.origin || "Route"} → {b.booking_details?.destination || "Manual"}
+                      {b.booking_details?.origin || "Route"} → {b.booking_details?.destination || "Assigned"}
                     </p>
                     <p className="text-[10px] font-bold text-muted-foreground">
                       {new Date(b.travel_date).toLocaleDateString("en-IN", { dateStyle: 'medium' })} • {b.booking_details?.passengers?.length || 1} PAX
                     </p>
                   </div>
-                  {b.booking_status === "pending_manual" && (
+                  {(b.booking_status === "pending_manual" || b.booking_status === "pending" || b.booking_status === "queued") && (
                     <div className="mt-4 pt-4 border-t border-dashed border-border">
-                      <p className="text-[9px] font-medium text-muted-foreground leading-relaxed">
-                        Our team is manually processing your ticket. You will receive it via Telegram/Email shortly.
+                      <p className="text-[9px] font-medium text-muted-foreground leading-relaxed flex items-center gap-2">
+                         <RefreshCw className="w-3 h-3 animate-spin text-purple-500" />
+                         Automated backend is currently processing your reservation with IRCTC.
                       </p>
                     </div>
                   )}

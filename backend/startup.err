@@ -1,2 +1,67 @@
-C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\venv\Lib\site-packages\requests\__init__.py:109: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.1.0)/charset_normalizer (3.4.6) doesn't match a supported version!
-  warnings.warn(
+Task exception was never retrieved
+future: <Task finished name='Task-69' coro=<TaxEngineAgent.execute() done, defined at C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\agents\compliance_agents.py:59> exception=InvalidRequestError('One or more mappers failed to initialize - can\'t proceed with initialization of other mappers. Triggering mapper: \'Mapper[UserAlert(user_alerts)]\'. Original exception was: Multiple classes found for path "User" in the registry of this declarative base. Please use a fully module-qualified path.')>
+Traceback (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\agents\compliance_agents.py", line 64, in execute
+    pending = db.query(Booking).filter(
+              ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\session.py", line 2941, in query
+    return self._query_cls(entities, self, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 276, in __init__
+    self._set_entities(entities)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 288, in _set_entities
+    self._raw_columns = [
+                        ^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 289, in <listcomp>
+    coercions.expect(
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\sql\coercions.py", line 389, in expect
+    insp._post_inspect
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\util\langhelpers.py", line 1235, in __get__
+    obj.__dict__[self.__name__] = result = self.fget(obj)
+                                           ^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 2733, in _post_inspect
+    self._check_configure()
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 2410, in _check_configure
+    _configure_registries({self.registry}, cascade=True)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 4227, in _configure_registries
+    _do_configure_registries(registries, cascade)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 4264, in _do_configure_registries
+    raise e
+sqlalchemy.exc.InvalidRequestError: One or more mappers failed to initialize - can't proceed with initialization of other mappers. Triggering mapper: 'Mapper[UserAlert(user_alerts)]'. Original exception was: Multiple classes found for path "User" in the registry of this declarative base. Please use a fully module-qualified path.
+Task exception was never retrieved
+future: <Task finished name='Task-56' coro=<RecoveryAgent.run_cold_start_sequence() done, defined at C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\agents\recovery_agent.py:23> exception=InvalidRequestError('One or more mappers failed to initialize - can\'t proceed with initialization of other mappers. Triggering mapper: \'Mapper[UserAlert(user_alerts)]\'. Original exception was: Multiple classes found for path "User" in the registry of this declarative base. Please use a fully module-qualified path.')>
+Traceback (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\agents\recovery_agent.py", line 36, in run_cold_start_sequence
+    await asyncio.gather(*tasks)
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\agents\recovery_agent.py", line 59, in _clear_ghost_standoff_locks
+    stale_bookings = db.query(Booking).filter(Booking.status == "PENDING_PAYMENT").all()
+                     ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\session.py", line 2941, in query
+    return self._query_cls(entities, self, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 276, in __init__
+    self._set_entities(entities)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 288, in _set_entities
+    self._raw_columns = [
+                        ^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\query.py", line 289, in <listcomp>
+    coercions.expect(
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\sql\coercions.py", line 389, in expect
+    insp._post_inspect
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\util\langhelpers.py", line 1235, in __get__
+    obj.__dict__[self.__name__] = result = self.fget(obj)
+                                           ^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 2733, in _post_inspect
+    self._check_configure()
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 2410, in _check_configure
+    _configure_registries({self.registry}, cascade=True)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 4227, in _configure_registries
+    _do_configure_registries(registries, cascade)
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\sqlalchemy\orm\mapper.py", line 4264, in _do_configure_registries
+    raise e
+sqlalchemy.exc.InvalidRequestError: One or more mappers failed to initialize - can't proceed with initialization of other mappers. Triggering mapper: 'Mapper[UserAlert(user_alerts)]'. Original exception was: Multiple classes found for path "User" in the registry of this declarative base. Please use a fully module-qualified path.
+C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\cache\multi_layer.py:374: RuntimeWarning: coroutine 'MultiLayerCache.get.<locals>._fetch' was never awaited
+  logger.error(f"L2 Cache Get Failure/Circuit Trip: {e}")
+Object allocated at (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\core\resilience\core.py", lineno 239
+    result = func()

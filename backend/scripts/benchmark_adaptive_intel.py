@@ -12,7 +12,7 @@ logger = logging.getLogger("benchmark")
 
 from services.search_service import SearchService
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Persona
+from core.data_utils.structures import Persona
 from database.session import initialize_database_pools
 
 async def run_benchmark():

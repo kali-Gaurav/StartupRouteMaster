@@ -5,7 +5,7 @@ import random
 from datetime import datetime
 from contextvars import ContextVar
 from typing import Optional, Any
-from database.config import Config
+from database.infrastructure.config import Config
 
 # ContextVar to hold the unique request ID for the current async task
 request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
@@ -152,5 +152,19 @@ def setup_logging():
     root_logger.addHandler(handler)
     
     # Silence noisy third-party logs
-    for noisy in ["uvicorn.access", "sqlalchemy.engine", "aiosqlite", "httpx", "httpcore"]:
+    noisy_loggers = [
+        "uvicorn.access", 
+        "uvicorn.error",
+        "sqlalchemy.engine", 
+        "sqlalchemy.pool",
+        "aiosqlite", 
+        "httpx", 
+        "httpcore", 
+        "asyncio",
+        "fapi", # some common aliases
+        "routemaster.routing", # excessive registration logs
+        "nexus.bootstrapper"
+    ]
+    for noisy in noisy_loggers:
         logging.getLogger(noisy).setLevel(logging.WARNING)
+        logging.getLogger(noisy).propagate = False # Prevent leaking to root if necessary

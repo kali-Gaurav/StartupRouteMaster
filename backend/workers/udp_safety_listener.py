@@ -58,7 +58,7 @@ class UDPSafetyListener:
 
     async def handle_ping(self, pnr, lat, lng):
         try:
-            from api.sos import _redis, PNR_REGISTRY_KEY, _load_event, _save_event
+            from api.safety.sos import _redis, PNR_REGISTRY_KEY, _load_event, _save_event
             if _redis:
                 eid = _redis.hget(PNR_REGISTRY_KEY, str(pnr))
                 if eid:

@@ -4,7 +4,7 @@ import pickle
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from core.redis_client import async_redis_client as redis_client
+from core.infrastructure.redis_manager import async_redis_client as redis_client
 from services.search_service import SearchService
 from database.session import SessionLocal
 

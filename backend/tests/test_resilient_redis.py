@@ -7,8 +7,11 @@ from pathlib import Path
 # Add backend to path
 sys.path.append(str(Path(__file__).resolve().parent))
 
-from core.redis_client import async_redis_client, verify_redis_connection
+from core.infrastructure.redis_manager import async_redis_client, verify_redis_connection
 
+import pytest
+
+@pytest.mark.asyncio
 async def test_resilient_redis():
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("test.redis")

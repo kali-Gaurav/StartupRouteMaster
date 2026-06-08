@@ -3,8 +3,8 @@ import time
 import asyncio
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from core.system_monitor import system_monitor, SystemState
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from core.infrastructure.system_monitor import system_monitor, SystemState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 

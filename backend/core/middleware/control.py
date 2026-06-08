@@ -99,7 +99,7 @@ class ControlLoop:
                 load, is_surge = self.predictor.step() or (0, False)
                 
                 # 2. Get System Health
-                from core.system_monitor import system_monitor, SystemState
+                from core.infrastructure.system_monitor import system_monitor, SystemState
                 state = system_monitor.current_state
                 
                 # 3. Adjust Buckets [Task 3.5 & 3.10]

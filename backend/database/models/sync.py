@@ -8,7 +8,7 @@ Models for:
 - Station realtime heartbeats
 """
 
-from database.base import UserBase, TransitBase
+from database.infrastructure.base import UserBase, TransitBase
 from sqlalchemy import Column, String, Integer, Float, DateTime, Date, Time, Text, JSON, Boolean, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -16,6 +16,7 @@ import uuid
 
 
 class SearchEvent(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Tracks user search events for analytics and hot zone detection.
     """
@@ -49,6 +50,7 @@ class SearchEvent(UserBase):
 
 
 class RecommendationEvent(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Tracks recommendation events and user responses.
     """
@@ -79,41 +81,9 @@ class RecommendationEvent(UserBase):
     booked_at = Column(DateTime, nullable=True)
 
 
-class PrecalculatedRoute(UserBase):
-    """
-    Stores precalculated routes for fast retrieval.
-    """
-    __tablename__ = "precalculated_routes"
-    
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    # Route parameters
-    src = Column(String(20), nullable=False, index=True)
-    dest = Column(String(20), nullable=False, index=True)
-    travel_date = Column(Date, nullable=False, index=True)
-    
-    # Route details
-    route_data = Column(JSON, nullable=False)  # Full route information
-    total_duration_minutes = Column(Integer, nullable=True)
-    total_distance_km = Column(Float, nullable=True)
-    number_of_transfers = Column(Integer, default=0)
-    
-    # Quality metrics
-    reliability_score = Column(Float, default=0.9)
-    popularity_score = Column(Float, default=0.5)
-    
-    # Metadata
-    calculated_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=True)
-    last_accessed_at = Column(DateTime, nullable=True)
-    access_count = Column(Integer, default=0)
-    
-    __table_args__ = (
-        Index('ix_precalc_route_lookup', 'src', 'dest', 'travel_date'),
-    )
-
 
 class StationRealtimeHeartbeat(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores real-time station status for hot zone detection.
     """
@@ -145,6 +115,7 @@ class StationRealtimeHeartbeat(UserBase):
 
 
 class HotZoneThreshold(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Configurable thresholds for hot zone detection.
     """
@@ -171,6 +142,7 @@ class HotZoneThreshold(UserBase):
 
 
 class SyncAuditLog(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Audit log for sync operations.
     """

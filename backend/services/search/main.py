@@ -10,7 +10,7 @@ from datetime import datetime
 from services.search.engine import SearchMicroservice
 from core.route_engine import route_engine
 from database.session import SessionTransit
-from core.system_monitor import system_monitor
+from core.infrastructure.system_monitor import system_monitor
 
 app = FastAPI(title="RouteMaster Search Microservice")
 
@@ -42,8 +42,8 @@ async def startup_event():
     await system_monitor.update_if_stale(force=True)
     
     # Task 7.6: Auto-Registration with Heartbeat
-    from core.service_discovery import ServiceRegistry
-    from core.lifespan import get_redis
+    from core.integration.discovery import ServiceRegistry
+    from core.infrastructure.lifespan import get_redis
     redis = await get_redis()
     if redis:
         registry = ServiceRegistry(redis)

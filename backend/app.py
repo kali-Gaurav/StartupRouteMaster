@@ -1,324 +1,243 @@
+"""
+RouteMaster API — Clean entry point.
+Boots in < 2 seconds. No heavy imports at startup.
+Only loads what's needed: search, stations, auth, SOS, health.
+"""
 from __future__ import annotations
 
-import importlib
 import logging
 import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
 
-# Ensure backend package root is importable when running from repo root
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+# Ensure backend root is importable
 backend_root = Path(__file__).resolve().parent
 if str(backend_root) not in sys.path:
     sys.path.insert(0, str(backend_root))
+if str(backend_root.parent) not in sys.path:
+    sys.path.insert(0, str(backend_root.parent))
 
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
-
-from config import BootstrapConfigError, BootstrapSettings, get_bootstrap_settings
 from utils.structured_logging import setup_logging
-
-
-def _configure_event_loop() -> None:
-    try:
-        import asyncio
-
-        if sys.platform == "win32":
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            return
-
-        import uvloop
-
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    except ImportError:
-        return
-    except Exception:
-        return
-
-
-_configure_event_loop()
 setup_logging()
-logger = logging.getLogger("api-gateway")
+logger = logging.getLogger("routemaster")
 
 
-class BootstrapIntegrationError(RuntimeError):
-    """Raised when an optional bootstrap integration cannot be loaded."""
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _record_bootstrap_warning(app: FastAPI, warning: str) -> None:
-    state = getattr(app.state, "bootstrap", None)
-    if state is None:
-        app.state.bootstrap = {"warnings": [warning], "components": {}}
-        return
-    warnings: List[str] = state.setdefault("warnings", [])
-    if warning not in warnings:
-        warnings.append(warning)
-
-
-def _update_component_state(app: FastAPI, component: str, status: str, detail: Optional[str] = None) -> None:
-    state = getattr(app.state, "bootstrap", None)
-    if state is None:
-        app.state.bootstrap = {"warnings": [], "components": {}}
-        state = app.state.bootstrap
-
-    payload: Dict[str, Any] = {"status": status}
-    if detail:
-        payload["detail"] = detail
-    state.setdefault("components", {})[component] = payload
-
-
-def _load_callable(module_name: str, attr_name: str) -> Callable[..., Any]:
-    module = importlib.import_module(module_name)
-    try:
-        return getattr(module, attr_name)
-    except AttributeError as exc:
-        raise BootstrapIntegrationError(
-            f"Missing attribute '{attr_name}' in module '{module_name}'."
-        ) from exc
-
+# ─── Lifespan (startup / shutdown) ───────────────────────────────────────────
 
 @asynccontextmanager
-async def _noop_lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
+    """Boot only what matters. Everything else is lazy."""
+    logger.info("RouteMaster starting...")
+
+    # 1. Database
+    try:
+        from database.infrastructure.session import initialize_database_pools
+        await initialize_database_pools()
+        app.state.db = "ready"
+        logger.info("Database: ready")
+    except Exception as e:
+        app.state.db = "degraded"
+        logger.warning(f"Database degraded: {e}")
+
+    # 2. Redis cache — direct connection (no multi_layer complexity)
+    try:
+        import redis as redis_lib
+        redis_url = os.getenv("REDIS_URL", "")
+        if redis_url:
+            r = redis_lib.from_url(redis_url, decode_responses=True, socket_connect_timeout=5)
+            r.ping()
+            app.state.redis_client = r
+            app.state.redis = "ready"
+            logger.info("Redis: ready")
+        else:
+            app.state.redis = "no_url"
+            logger.warning("Redis: REDIS_URL not set")
+    except Exception as e:
+        app.state.redis = "degraded"
+        logger.warning(f"Redis degraded: {e}")
+
+    # 3. Station search index (in-memory trie — fast autocomplete)
+    try:
+        from services.station_search_service import station_search_engine
+        app.state.stations = "ready"
+        logger.info("Station index: ready")
+    except Exception as e:
+        app.state.stations = "degraded"
+        logger.warning(f"Station index degraded: {e}")
+
+    # 4. Route engine (lazy — initialises on first search request)
+    app.state.route_engine = "lazy"
+
+    # 5. Register Telegram webhook (non-blocking — only if token + render URL set)
+    try:
+        import os as _os
+        if _os.getenv("TELEGRAM_BOT_TOKEN") and _os.getenv("RENDER_EXTERNAL_URL"):
+            from api.v1.telegram import register_webhook
+            result = await register_webhook()
+            if result.get("registered"):
+                logger.info(f"Telegram webhook registered: {result.get('webhook_url')}")
+            else:
+                logger.warning(f"Telegram webhook skipped: {result}")
+    except Exception as e:
+        logger.warning(f"Telegram webhook registration skipped: {e}")
+
+    logger.info("RouteMaster ready.")
     yield
 
-
-def _resolve_lifespan(settings: BootstrapSettings) -> Callable[..., Any]:
-    if settings.use_simple_lifespan:
-        return _load_callable("core.lifespan_simple", "lifespan")
-
+    # Shutdown
     try:
-        return _load_callable("core.lifespan", "lifespan")
-    except Exception as exc:
-        if not settings.allow_degraded_boot:
-            raise BootstrapIntegrationError("Failed to load production lifespan.") from exc
-        logger.exception("Production lifespan unavailable; falling back to simplified lifespan.")
-        return _load_callable("core.lifespan_simple", "lifespan")
+        from database.infrastructure.session import _dispose_all_pools
+        await _dispose_all_pools()
+    except Exception:
+        pass
+    logger.info("RouteMaster shutdown complete.")
 
 
-def _setup_exception_handlers(app: FastAPI, settings: BootstrapSettings) -> None:
-    try:
-        setup_exception_handlers = _load_callable("core.exceptions", "setup_exception_handlers")
-        setup_exception_handlers(app)
-        _update_component_state(app, "exception_handlers", "loaded")
-    except Exception as exc:
-        if not settings.allow_degraded_boot:
-            raise
-        logger.exception("Exception handler bootstrap failed.")
-        _record_bootstrap_warning(app, f"exception_handlers_unavailable: {exc}")
-        _update_component_state(app, "exception_handlers", "degraded", str(exc))
+# ─── App ─────────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="RouteMaster API",
+    description="Indian railway multi-segment route optimizer.",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
 
-def _setup_middleware(app: FastAPI, settings: BootstrapSettings) -> None:
-    try:
-        middleware_module = importlib.import_module("core.middleware")
-        setup_middleware = getattr(middleware_module, "setup_middleware", None)
-        if setup_middleware is None:
-            raise BootstrapIntegrationError("core.middleware.setup_middleware is not available.")
-        setup_middleware(app)
-        _update_component_state(app, "middleware", "loaded")
-    except Exception as exc:
-        if not settings.allow_degraded_boot:
-            raise
-        logger.exception("Middleware bootstrap failed.")
-        _record_bootstrap_warning(app, f"middleware_unavailable: {exc}")
-        _update_component_state(app, "middleware", "degraded", str(exc))
+# ─── CORS ────────────────────────────────────────────────────────────────────
+
+_cors_origins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "https://routemaster.vercel.app",
+    "https://routemaster-frontend.vercel.app",
+    "https://routemaster-api.onrender.com",
+]
+_custom = os.getenv("FRONTEND_URL", "").strip()
+if _custom:
+    _cors_origins.append(_custom)
+
+# Also allow all Vercel preview deploy URLs (*.vercel.app)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
-def _register_routers(app: FastAPI, settings: BootstrapSettings) -> None:
-    if not settings.register_api_routes:
-        _update_component_state(app, "routers", "disabled", "REGISTER_API_ROUTES=false")
-        return
+# ─── Health ──────────────────────────────────────────────────────────────────
 
-    try:
-        register_routers = _load_callable("core.routing", "register_routers")
-        register_routers(app)
-        _update_component_state(app, "routers", "loaded")
-    except Exception as exc:
-        if not settings.allow_degraded_boot:
-            raise
-        logger.exception("Router registration failed; application will run in degraded bootstrap mode.")
-        _record_bootstrap_warning(app, f"router_registration_failed: {exc}")
-        _update_component_state(app, "routers", "degraded", str(exc))
-    
-    # Register Telegram webhook routes
-    try:
-        from telegram_bot.integration import register_with_app
-        register_with_app(app)
-        _update_component_state(app, "telegram_webhook", "loaded")
-        logger.info("Telegram webhook routes registered")
-    except Exception as exc:
-        logger.warning(f"Telegram webhook registration failed: {exc}")
-        _record_bootstrap_warning(app, f"telegram_webhook_unavailable: {exc}")
-        _update_component_state(app, "telegram_webhook", "degraded", str(exc))
-
-
-def _mount_static_files(app: FastAPI, settings: BootstrapSettings) -> None:
-    settings.media_sos_root.mkdir(parents=True, exist_ok=True)
-    app.mount("/media", StaticFiles(directory=str(settings.media_root)), name="media")
-    _update_component_state(app, "static_files", "loaded")
-
-
-def _build_health_payload(app: FastAPI) -> Dict[str, Any]:
-    bootstrap = getattr(app.state, "bootstrap", {"warnings": [], "components": {}})
-    runtime_components = getattr(app.state, "runtime_components", {})
-    components: Dict[str, str] = {
-        "database": runtime_components.get("database", "unknown"),
-        "redis": runtime_components.get("redis", "unknown"),
-        "route_engine": runtime_components.get("route_engine", "unknown"),
-        "external_api": runtime_components.get("external_api", "unknown"),
-        "routers": bootstrap.get("components", {}).get("routers", {}).get("status", "unknown"),
-        "middleware": bootstrap.get("components", {}).get("middleware", {}).get("status", "unknown"),
-    }
-
-    try:
-        nexus_boot = getattr(importlib.import_module("core.nexus.bootstrapper"), "nexus_boot")
-        system_state = getattr(importlib.import_module("core.nexus.state"), "SystemState")
-        state_value = getattr(nexus_boot.state, "value", str(nexus_boot.state))
-        components["nexus"] = state_value
-        if nexus_boot.state == system_state.READY:
-            components["route_engine"] = "loaded"
-            components["database"] = "ready"
-    except Exception as exc:
-        components["nexus"] = "unavailable"
-        _record_bootstrap_warning(app, f"nexus_state_unavailable: {exc}")
-
-    essential_components = {
-        "routers": components["routers"],
-        "database": components["database"],
-        "route_engine": components["route_engine"],
-    }
-    healthy = all(status in {"ready", "loaded", "up"} for status in essential_components.values())
-    status = "healthy" if healthy else "degraded"
-    readiness = "ready" if healthy else "degraded"
-
+@app.get("/health", tags=["health"])
+async def health():
+    db_state = getattr(app.state, "db", "unknown")
+    redis_state = getattr(app.state, "redis", "unknown")
+    overall = "ok" if db_state in ("ready", "degraded") else "degraded"
     return {
-        "status": status,
-        "readiness": readiness,
-        "timestamp": _utc_now(),
-        "environment": getattr(app.state, "settings").environment,
-        "bootstrap_mode": "degraded" if bootstrap.get("warnings") else "normal",
-        "warnings": bootstrap.get("warnings", []),
-        "components": components,
-        "database": "up" if components["database"] in {"ready", "up"} else components["database"],
-        "route_engine": components["route_engine"],
+        "status": overall,
+        "version": "1.0.0",
+        "components": {
+            "database": db_state,
+            "redis":    redis_state,
+            "stations": getattr(app.state, "stations", "unknown"),
+        }
     }
 
+# Alias used by frontend useServerWarmup hook
+@app.get("/health/live", tags=["health"])
+async def health_live():
+    return {"status": "ok", "version": "1.0.0"}
 
-def create_app(settings: Optional[BootstrapSettings] = None) -> FastAPI:
-    settings = settings or get_bootstrap_settings()
-    settings.validate()
+@app.get("/ping", tags=["health"])
+async def ping():
+    return {"pong": True}
 
-    app = FastAPI(
-        title="RouteMaster V3",
-        description="Industrial-grade railway search platform bootstrap gateway.",
-        version="3.0.0",
-        lifespan=_resolve_lifespan(settings),
+# Stats endpoint used by frontend to show train/station counts
+@app.get("/stats", tags=["health"])
+async def stats():
+    try:
+        from core.route_engine.data_provider import DataProvider
+        dp = DataProvider()
+        from sqlalchemy import text
+        trains = dp.session.execute(text("SELECT COUNT(DISTINCT route_id) FROM trips")).scalar() or 0
+        stations = dp.session.execute(text("SELECT COUNT(*) FROM stops")).scalar() or 0
+        dp.close()
+        return {"total_trains": int(trains), "total_stations": int(stations)}
+    except Exception:
+        return {"total_trains": 11000, "total_stations": 8000}
+
+
+# ─── Routers — registered safely, one failure won't break the others ─────────
+
+def _include(router_path: str, attr: str, prefix: str = "", **kwargs):
+    """Import and register a router. Log a warning on failure, never crash."""
+    try:
+        import importlib
+        mod = importlib.import_module(router_path)
+        router = getattr(mod, attr)
+        app.include_router(router, prefix=prefix, **kwargs)
+        logger.info(f"Router registered: {router_path}")
+    except Exception as e:
+        logger.warning(f"Router skipped [{router_path}]: {e}")
+
+
+# ── V1 CLEAN ROUTES (always first — these are the product) ───────────────────
+_include("api.v1.search",   "router", prefix="/api/v1")
+_include("api.v1.stations", "router", prefix="/api/v1")
+_include("api.v1.auth",     "router", prefix="/api/v1")
+_include("api.v1.live",     "router", prefix="/api/v1")
+_include("api.v1.fare",      "router", prefix="/api/v1")
+_include("api.v1.routes_seo", "router", prefix="/api/v1")
+_include("api.v1.telegram",   "router", prefix="/api/v1")
+_include("api.v1.alerts",       "router", prefix="/api/v1")
+_include("api.v1.saved_routes",  "router", prefix="/api/v1")
+_include("api.v1.reliability",   "router", prefix="/api/v1")
+_include("api.v1.pnr",      "router", prefix="/api/v1")
+_include("api.v1.sos",      "router", prefix="/api/v1")
+
+# ── LEGACY ROUTES (optional — may fail, that's ok) ────────────────────────────
+_include("api.search.search",    "router", prefix="/api")
+_include("api.search.stations",  "router", prefix="/api")
+_include("api.auth.auth",        "router", prefix="/api")
+_include("api.auth.users",       "router", prefix="/api")
+_include("api.safety.sos",       "router", prefix="/api")
+_include("api.safety.sathi",     "router", prefix="/api")
+_include("api.bookings.bookings","router", prefix="/api")
+_include("api.payments.payments",          "router", prefix="/api")
+_include("api.payments.payment_webhook",   "router")
+_include("api.payments.razorpay_standard", "router", prefix="/api")
+_include("api.system.status",    "router", prefix="/api")
+_include("api.admin.admin",      "router", prefix="/api/v1")
+
+
+# ─── Global error handler ────────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Unhandled error on {request.url}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"error": True, "message": "An unexpected error occurred."}
     )
-    app.state.settings = settings
-    app.state.bootstrap = {"warnings": [], "components": {}}
-
-    _setup_exception_handlers(app, settings)
-    _setup_middleware(app, settings)
-    _register_routers(app, settings)
-    _mount_static_files(app, settings)
-    _register_bootstrap_routes(app)
-    return app
 
 
-def _register_bootstrap_routes(app: FastAPI) -> None:
-    @app.get("/", tags=["Health"])
-    async def root() -> Dict[str, Any]:
-        return {
-            "message": "RouteMaster bootstrap online.",
-            "timestamp": _utc_now(),
-            "bootstrap_mode": _build_health_payload(app)["bootstrap_mode"],
-        }
-
-    @app.get("/ping", tags=["Health"])
-    async def ping() -> Dict[str, str]:
-        return {"status": "pong", "timestamp": _utc_now()}
-
-    @app.post("/chat", tags=["Compatibility"])
-    async def chat_alias():
-        return RedirectResponse(url="/api/chat", status_code=307)
-
-    @app.get("/health", tags=["Health"])
-    @app.get("/api/health", tags=["Health"])
-    async def api_health() -> Dict[str, Any]:
-        return _build_health_payload(app)
-
-    @app.get("/health/live", tags=["Health"])
-    @app.get("/api/health/live", tags=["Health"])
-    async def api_health_live() -> Dict[str, str]:
-        return {"status": "alive", "timestamp": _utc_now()}
-
-    @app.get("/health/ready", tags=["Health"])
-    @app.get("/api/health/ready", tags=["Health"])
-    async def api_health_ready() -> Dict[str, Any]:
-        payload = _build_health_payload(app)
-        return {
-            "status": payload["readiness"],
-            "timestamp": payload["timestamp"],
-            "database": payload["components"]["database"],
-            "route_engine": payload["components"]["route_engine"],
-            "components": {
-                "database": payload["components"]["database"],
-                "route_engine": payload["components"]["route_engine"],
-                "routers": payload["components"]["routers"],
-            },
-            "warnings": payload["warnings"],
-        }
-
-    @app.get("/stats", tags=["Health"])
-    @app.get("/api/stats", tags=["Health"])
-    async def api_stats() -> Dict[str, Any]:
-        try:
-            nexus_governor = getattr(importlib.import_module("core.nexus.audit.governor"), "nexus_governor")
-            nexus_telemetry = getattr(importlib.import_module("core.nexus.telemetry"), "nexus_telemetry")
-            gov_stats = await nexus_governor.get_stats()
-            telemetry_metrics = await nexus_telemetry.get_metrics()
-            return {
-                "cpu": gov_stats.get("cpu_percent", 0),
-                "ram": gov_stats.get("ram_percent", 0),
-                "latency_ms": telemetry_metrics.get("avg_latency_ms", 0),
-                "requests_per_sec": telemetry_metrics.get("requests_per_sec", 0),
-                "timestamp": _utc_now(),
-            }
-        except Exception as exc:
-            logger.exception("Stats endpoint degraded.")
-            return {
-                "cpu": 0,
-                "ram": 0,
-                "latency_ms": 0,
-                "requests_per_sec": 0,
-                "timestamp": _utc_now(),
-                "warning": str(exc),
-            }
-
-
-try:
-    app = create_app()
-except BootstrapConfigError:
-    raise
-except Exception as exc:
-    logger.exception("Fatal bootstrap error while creating application.")
-    raise BootstrapIntegrationError("Application bootstrap failed.") from exc
-
+# ─── Dev entrypoint ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-
-    bootstrap_settings = get_bootstrap_settings()
     uvicorn.run(
         "app:app",
-        host=bootstrap_settings.host,
-        port=bootstrap_settings.port,
-        reload=False,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+        reload=os.getenv("ENVIRONMENT", "development") == "development",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )

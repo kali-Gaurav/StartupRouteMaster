@@ -1,318 +1,207 @@
 """
-Pricing Service - Neural Surge Pricing & Yield Controller (NSPYC)
-With circuit breaker protection, caching, and comprehensive error handling
+Pricing Service - Dynamic pricing based on demand and availability.
 """
+
 import logging
-import math
-from typing import Dict, Any, List, Optional
+from datetime import datetime, date, timedelta
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
+
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
-from dataclasses import dataclass, field
-from collections import deque
-from core.resource_monitor import resource_monitor
-from core.resilience import circuit_breaker_manager
-from core.retry import retry_sync
 
-logger = logging.getLogger("routemaster.pricing")
+from database.models import Route, Schedule
+
+logger = logging.getLogger("pricing_service")
 
 
 @dataclass
-class PricingConfig:
-    """Configuration for pricing service."""
-    base_fee: float = 39.0
-    max_fee: float = 149.0
-    cache_ttl_seconds: int = 300  # 5 minutes
-    demand_window_hours: int = 1
-    intent_window_minutes: int = 30
-    circuit_failure_threshold: int = 5
-
-
-@dataclass
-class PricingResult:
-    """Result of pricing calculation."""
-    source: str
-    destination: str
-    final_fee: float
-    base_fee: float
-    demand_score: float
-    scarcity_score: float
-    intent_score: float
-    load_score: float
-    value_score: float
-    surge_multiplier: float
-    cached: bool = False
-    calculation_time_ms: int = 0
+class PriceBreakdown:
+    """Detailed price breakdown."""
+    base_fare: float
+    dynamic_fare: float
+    demand_factor: float
+    total_fare: float
+    class_multiplier: float
+    distance_km: int
 
 
 class PricingService:
-    """
-    [Point 1 & 25] Neural Surge Pricing & Yield Controller (NSPYC).
-    A high-scale monetization engine that prices 'Value', not Features.
-    With circuit breaker protection and caching.
-    """
+    """Dynamic pricing service with demand-based redistribution."""
     
-    BASE_FEE = 39.0
-    MAX_FEE = 149.0  # Ethical Cap to maintain trust
+    # Base fares per km by class
+    CLASS_MULTIPLIERS = {
+        "SL": 1.0,    # Sleeper
+        "3A": 2.2,    # AC 3-Tier
+        "2A": 3.5,    # AC 2-Tier
+        "1A": 5.0,    # First AC
+        "CC": 1.8,    # Chair Car
+        "2S": 0.7,    # Second Seating
+        "EC": 2.5,    # Executive Chair
+    }
     
-    # Class-level config
-    config = PricingConfig()
-    _cache: Dict[str, tuple[PricingResult, datetime]] = {}
-    _cache_lock = None
-    _metrics: deque = deque(maxlen=1000)
+    # Demand factors by day of week
+    DAY_FACTORS = {
+        0: 1.0,  # Monday
+        1: 1.0,  # Tuesday
+        2: 1.0,  # Wednesday
+        3: 1.1,  # Thursday
+        4: 1.3,  # Friday
+        5: 1.4,  # Saturday
+        6: 1.2,  # Sunday
+    }
     
-    def __init__(self, config: Optional[PricingConfig] = None):
-        self.config = config or self.__class__.config
-        self._breaker = circuit_breaker_manager.get_breaker("pricing")
-        
-    @classmethod
-    def _get_cache_key(cls, source: str, destination: str) -> str:
-        """Generate cache key for pricing."""
-        return f"pricing:{source}:{destination}"
+    def __init__(self, db: Session):
+        self.db = db
+        self.base_fare_per_km = 0.15  # ₹0.15 per km base fare
     
-    @classmethod
-    def _get_cached_result(cls, source: str, destination: str) -> Optional[PricingResult]:
-        """Get cached pricing result."""
-        cache_key = cls._get_cache_key(source, destination)
-        if cache_key in cls._cache:
-            result, timestamp = cls._cache[cache_key]
-            if datetime.utcnow() - timestamp < timedelta(seconds=cls.config.cache_ttl_seconds):
-                result.cached = True
-                return result
-            del cls._cache[cache_key]
-        return None
-    
-    @classmethod
-    def _cache_result(cls, source: str, destination: str, result: PricingResult):
-        """Cache pricing result."""
-        cache_key = cls._get_cache_key(source, destination)
-        cls._cache[cache_key] = (result, datetime.utcnow())
-    
-    @classmethod
-    @retry_sync
-    def _calculate_demand_score(
-        cls, 
-        db: Session, 
-        source: str, 
-        destination: str
-    ) -> float:
-        """Calculate demand score with retry logic."""
-        from database.models import RouteSearchLog
-        one_hour_ago = datetime.utcnow() - timedelta(hours=cls.config.demand_window_hours)
-        
-        try:
-            search_count = db.query(RouteSearchLog).filter(
-                RouteSearchLog.src == source,
-                RouteSearchLog.dst == destination,
-                RouteSearchLog.created_at >= one_hour_ago
-            ).count()
-            return min(2.0, (search_count / 10.0))
-        except Exception as e:
-            logger.warning(f"Error calculating demand score: {e}")
-            try: db.rollback()
-            except: pass
-            return 0.0
-    
-    @classmethod
-    @retry_sync
-    def _calculate_intent_score(
-        cls, 
-        db: Session, 
-        user_id: str, 
-        source: str, 
-        destination: str
-    ) -> float:
-        """Calculate user intent score with retry logic."""
-        from database.models import RouteSearchLog
-        try:
-            recent = db.query(RouteSearchLog).filter(
-                RouteSearchLog.user_id == user_id,
-                RouteSearchLog.src == source,
-                RouteSearchLog.dst == destination,
-                RouteSearchLog.created_at >= datetime.utcnow() - timedelta(minutes=cls.config.intent_window_minutes)
-            ).count()
-            return min(1.0, recent / 5.0)
-        except Exception as e:
-            logger.warning(f"Error calculating intent score: {e}")
-            try: db.rollback()
-            except: pass
-            return 0.0
-
-    @classmethod
-    @circuit_breaker_manager.get_breaker("pricing").decorate
-    async def get_dynamic_unlock_fee(
-        cls, 
-        db: Session, 
-        source: str, 
-        destination: str, 
-        seats_available: Optional[int] = None,
-        user_id: Optional[str] = None,
-        confidence: float = 0.5,
-        bypass_cache: bool = False
+    async def calculate_fare(
+        self,
+        journey_id: str,
+        class_type: str,
+        passengers: int,
+        travel_date: str
     ) -> float:
         """
-        Implementation of the Alpha-Beta-Gamma-Delta Yield Formula:
-        Price = Base * (1 + aD + bS + gU + dL + eV)
+        Calculate fare for a journey.
         
-        Args:
-            db: Database session
-            source: Source station code
-            destination: Destination station code
-            seats_available: Number of seats available
-            user_id: User ID for intent tracking
-            confidence: Confidence score for route value
-            bypass_cache: Skip cache and recalculate
-            
-        Returns:
-            Dynamic unlock fee
+        Factors:
+        - Base fare by distance
+        - Class multiplier
+        - Demand factor (day of week, advance booking, etc.)
+        - Availability-based surge
         """
-        start_time = datetime.utcnow()
-        
-        # Check cache first
-        if not bypass_cache:
-            cached = cls._get_cached_result(source, destination)
-            if cached:
-                logger.debug(f"Pricing cache hit for {source}->{destination}")
-                return cached.final_fee
-        
-        # 1. Demand Engine (D) - Volume Surge
+        breakdown = await self.get_price_breakdown(journey_id, class_type, travel_date)
+        return breakdown.total_fare * passengers
+    
+    async def get_price_breakdown(
+        self,
+        journey_id: str,
+        class_type: str,
+        travel_date: str
+    ) -> PriceBreakdown:
+        """Get detailed price breakdown."""
         try:
-            demand_score = cls._calculate_demand_score(db, source, destination)
-        except Exception as e:
-            logger.warning(f"Demand score calculation failed: {e}")
-            demand_score = 0.0
-
-        # 2. Scarcity Engine (S) - Seat Intelligence
-        scarcity_score = 0.0
-        if seats_available is not None:
-            if seats_available <= 2:
-                scarcity_score = 1.0
-            elif seats_available <= 10:
-                scarcity_score = 0.5
-            elif seats_available <= 50:
-                scarcity_score = 0.2
-        
-        # 3. User Intent Engine (U) - Repeat Searches
-        intent_score = 0.0
-        if user_id:
-            try:
-                intent_score = cls._calculate_intent_score(db, user_id, source, destination)
-            except Exception as e:
-                logger.warning(f"Intent score calculation failed: {e}")
-                intent_score = 0.0
-
-        # 4. System Load Engine (L) - Infrastructure Pressure
-        load_score = 1.0 - resource_monitor.get_resource_budget()
-        
-        # 5. Route Value Engine (V) - Prediction Confidence
-        value_score = confidence
-
-        # --- FINAL YIELD CALCULATION ---
-        # Weights (Optimized for Startup Early Phase)
-        alpha, beta, gamma, delta, epsilon = 0.3, 0.4, 0.2, 0.5, 0.2
-        
-        surge_mult = (
-            alpha * demand_score + 
-            beta * scarcity_score + 
-            gamma * intent_score + 
-            delta * load_score + 
-            epsilon * value_score
-        )
-        
-        final_fee = cls.BASE_FEE * (1.0 + surge_mult)
-        
-        # Ethics & Trust Clamping
-        final_fee = max(cls.BASE_FEE, min(cls.MAX_FEE, final_fee))
-        
-        calculation_time_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-        
-        # Create result object
-        result = PricingResult(
-            source=source,
-            destination=destination,
-            final_fee=round(final_fee, 2),
-            base_fee=cls.BASE_FEE,
-            demand_score=demand_score,
-            scarcity_score=scarcity_score,
-            intent_score=intent_score,
-            load_score=load_score,
-            value_score=value_score,
-            surge_multiplier=surge_mult,
-            calculation_time_ms=calculation_time_ms
-        )
-        
-        # Cache the result
-        cls._cache_result(source, destination, result)
-        
-        # Record metrics
-        cls._metrics.append({
-            "timestamp": datetime.utcnow(),
-            "source": source,
-            "destination": destination,
-            "final_fee": final_fee,
-            "calculation_time_ms": calculation_time_ms,
-            "cached": False
-        })
-        
-        # [Point 25] Intelligence Loop: log to NIS
-        try:
-            from services.intelligence_service import IntelligenceService
-            intel_svc = IntelligenceService(db)
-            # await intel_svc.log_pricing_decision(source, destination, final_fee, surge_mult)
-        except Exception as e:
-            logger.debug(f"NIS logging skipped: {e}")
-
-        logger.info(f"💰 [YIELD] {source}->{destination} | Multipliers: [D:{demand_score:.1f}, S:{scarcity_score:.1f}, L:{load_score:.1f}] | Fee: ₹{final_fee:.2f}")
-        return round(final_fee, 2)
-
-    @classmethod
-    def get_pricing_reasons(cls, actual_fee: Optional[float]) -> List[str]:
-        """User-facing transparency reasons."""
-        reasons = []
-        if actual_fee is None:
-            return reasons
+            # Parse travel date
+            travel_dt = datetime.strptime(travel_date, "%Y-%m-%d").date()
             
-        if actual_fee > cls.BASE_FEE * 1.3:
-            reasons.append("High Demand Surge 🔥")
-        if actual_fee > cls.BASE_FEE * 2.0:
-            reasons.append("Extreme Seat Scarcity 🚨")
-        if actual_fee > cls.BASE_FEE * 2.5:
-             reasons.append("Priority Infrastructure Load ⚡")
-        return reasons
+            # Get route info
+            route = self.db.get(Route, journey_id)
+            
+            # Calculate base fare
+            distance_km = route.duration_minutes  # Approximate: 1 min = 1 km
+            base_fare = distance_km * self.base_fare_per_km
+            
+            # Apply class multiplier
+            class_multiplier = self.CLASS_MULTIPLIERS.get(class_type, 1.0)
+            dynamic_fare = base_fare * class_multiplier
+            
+            # Calculate demand factor
+            demand_factor = self._calculate_demand_factor(travel_dt)
+            
+            # Apply demand factor
+            total_fare = dynamic_fare * demand_factor
+            
+            return PriceBreakdown(
+                base_fare=base_fare,
+                dynamic_fare=dynamic_fare,
+                demand_factor=demand_factor,
+                total_fare=round(total_fare, 2),
+                class_multiplier=class_multiplier,
+                distance_km=distance_km
+            )
+            
+        except Exception as e:
+            logger.error(f"Error calculating fare: {e}")
+            return PriceBreakdown(
+                base_fare=500,
+                dynamic_fare=500,
+                demand_factor=1.0,
+                total_fare=500,
+                class_multiplier=1.0,
+                distance_km=1000
+            )
     
-    @classmethod
-    def get_metrics(cls) -> dict:
-        """Get pricing service metrics."""
-        if not cls._metrics:
-            return {"total_calculations": 0, "avg_calculation_time_ms": 0}
+    def _calculate_demand_factor(self, travel_date: date) -> float:
+        """Calculate demand factor based on various factors."""
+        now = datetime.now().date()
+        days_ahead = (travel_date - now).days
         
-        total = len(cls._metrics)
-        fees = [m["final_fee"] for m in cls._metrics]
-        times = [m["calculation_time_ms"] for m in cls._metrics]
+        factor = 1.0
         
-        return {
-            "total_calculations": total,
-            "avg_fee": sum(fees) / len(fees) if fees else 0,
-            "min_fee": min(fees) if fees else 0,
-            "max_fee": max(fees) if fees else 0,
-            "avg_calculation_time_ms": sum(times) / len(times) if times else 0,
-            "cache_size": len(cls._cache)
-        }
+        # Day of week factor
+        factor *= self.DAY_FACTORS.get(travel_date.weekday(), 1.0)
+        
+        # Advance booking discount
+        if days_ahead > 30:
+            factor *= 0.95  # 5% discount for early booking
+        elif days_ahead > 60:
+            factor *= 0.90  # 10% discount for very early booking
+        
+        # Last minute premium
+        if days_ahead <= 2:
+            factor *= 1.25  # 25% premium
+        elif days_ahead <= 7:
+            factor *= 1.15  # 15% premium
+        
+        # Festival/holiday premium
+        if self._is_holiday(travel_date):
+            factor *= 1.5  # 50% premium for holidays
+        
+        return round(factor, 2)
     
-    @classmethod
-    def clear_cache(cls):
-        """Clear pricing cache."""
-        cls._cache.clear()
-        logger.info("Pricing cache cleared")
+    def _is_holiday(self, travel_date: date) -> bool:
+        """Check if date is a major holiday."""
+        holidays = [
+            (1, 1),    # New Year
+            (1, 14),   # Makar Sankranti
+            (1, 26),   # Republic Day
+            (8, 15),   # Independence Day
+            (10, 2),   # Gandhi Jayanti
+            (10, 31),  # Diwali
+            (12, 25),  # Christmas
+        ]
+        
+        return (travel_date.month, travel_date.day) in holidays
     
-    def health_check(self) -> dict:
-        """Check service health."""
-        return {
-            "status": "healthy",
-            "circuit_breaker": self._breaker.get_state().value,
-            "config": {
-                "base_fee": self.config.base_fee,
-                "max_fee": self.config.max_fee,
-                "cache_ttl_seconds": self.config.cache_ttl_seconds
-            },
-            "metrics": self.get_metrics()
-        }
+    def get_surge_pricing_info(
+        self,
+        train_number: str,
+        travel_date: str,
+        class_type: str
+    ) -> Dict[str, Any]:
+        """Get current surge pricing information."""
+        try:
+            travel_dt = datetime.strptime(travel_date, "%Y-%m-%d").date()
+            demand_factor = self._calculate_demand_factor(travel_dt)
+            
+            return {
+                "demand_factor": demand_factor,
+                "surge_percentage": int((demand_factor - 1) * 100),
+                "is_surge": demand_factor > 1.2,
+                "surge_reason": self._get_surge_reason(travel_dt)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting surge info: {e}")
+            return {"demand_factor": 1.0, "surge_percentage": 0}
+    
+    def _get_surge_reason(self, travel_date: date) -> str:
+        """Get reason for surge pricing."""
+        if travel_date.weekday() >= 5:
+            return "Weekend travel"
+        if self._is_holiday(travel_date):
+            return "Holiday travel"
+        if (travel_date - datetime.now().date()).days <= 7:
+            return "Last minute booking"
+        return "High demand"
+
+
+# Singleton instance
+pricing_service = None
+
+def get_pricing_service(db: Session) -> PricingService:
+    """Get or create pricing service instance."""
+    global pricing_service
+    if pricing_service is None:
+        pricing_service = PricingService(db)
+    return pricing_service

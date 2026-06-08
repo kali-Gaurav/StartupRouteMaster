@@ -1,14 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { auth } from '@/lib/firebase';
+import { signInWithCustomToken } from 'firebase/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Loader2, ShieldCheck, AlertCircle, ArrowLeft, Mail } from 'lucide-react';
+import { Loader2, ShieldCheck, AlertCircle, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
+import { verifyOTP, sendOTP } from '@/api/auth';
 
 const VerifyOTPPage = () => {
   const [searchParams] = useSearchParams();
@@ -35,24 +36,19 @@ const VerifyOTPPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const { error: verifyError } = await supabase.auth.verifyOtp({
-        email: email!,
-        token: otp,
-        type: 'signup', // Try signup type first, then magiclink
-      });
+      // Step 1: Verify OTP with our backend — returns a Firebase custom token
+      const response = await verifyOTP({ email: email!, otp });
 
-      if (verifyError) {
-        // Try fallback type
-        const { error: fallbackError } = await supabase.auth.verifyOtp({
-          email: email!,
-          token: otp,
-          type: 'magiclink',
-        });
-        if (fallbackError) throw fallbackError;
+      if (!response.token) {
+        throw new Error("No token received from server.");
       }
 
+      // Step 2: Exchange the Firebase custom token for a real Firebase ID token.
+      // This triggers onAuthStateChanged in AuthContext so the session is established.
+      await signInWithCustomToken(auth, response.token);
+
       toast.success("Verified!", {
-        description: "Your account has been successfully verified.",
+        description: "Your identity has been confirmed. Welcome!",
       });
       navigate('/dashboard');
     } catch (err: any) {
@@ -66,8 +62,7 @@ const VerifyOTPPage = () => {
   const handleResend = async () => {
     setLoading(true);
     try {
-      const { error: resendError } = await supabase.auth.signInWithOtp({ email: email! });
-      if (resendError) throw resendError;
+      await sendOTP({ email: email! });
       toast.success("Code Resent", { description: "A new verification code has been sent to your email." });
     } catch (err: any) {
       toast.error("Failed to resend code", { description: err.message });

@@ -24,7 +24,8 @@ class ConstraintsEngine:
         quota: str = "GN",
         permitted_engines: Optional[List[str]] = None,
         discovery_only: bool = False,
-        discovery_model: Optional[Any] = None
+        discovery_model: Optional[Any] = None,
+        women_safety_priority: bool = False
     ) -> RouteConstraints:
         """
         Creates a high-performance RouteConstraints object with persona-specific weights.
@@ -73,7 +74,8 @@ class ConstraintsEngine:
             quota=quota.upper().strip(),
             permitted_engines=permitted_engines,
             discovery_only=discovery_only,
-            discovery_model=d_model
+            discovery_model=d_model,
+            women_safety_priority=women_safety_priority
         )
 
         # 4. Apply Overrides (Task 4.6, 4.7)

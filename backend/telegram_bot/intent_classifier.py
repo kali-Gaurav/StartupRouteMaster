@@ -17,6 +17,15 @@ from .config import bot_config
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class TrainSearchQuery:
+    """Strongly typed structure for extracted train search parameters."""
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    date: Optional[str] = None
+    travel_class: Optional[str] = None
+
+
 
 @dataclass
 class IntentResult:
@@ -40,7 +49,8 @@ class IntentClassifier:
             "keywords": ["search", "find", "trains", "routes", "journey", "travel", "go to", "trip"],
             "patterns": [
                 r"(?:show|find|search|list)\s+(?:me\s+)?(?:the\s+)?(?:trains?\s+)?(?:from\s+\w+\s+)?(?:to\s+\w+)",
-                r"(?:trains?\s+)?(?:from|to)\s+\w+\s+(?:to|from)\s+\w+",
+                r"(?:trains?\s+)?(?:from|to)?\s*\w+\s+(?:to|from)\s+\w+",
+                r"^\w+\s+to\s+\w+",
                 r"(?:train|rail)\s+(?:schedule|timetable|routes?)",
             ],
             "priority": 1
@@ -273,8 +283,165 @@ class IntentClassifier:
         station_entities = self._extract_stations(text)
         if station_entities:
             entities["stations"] = station_entities
+            
+        # Feature 1 Interface: NLP Train Search Extraction
+        search_params = self._extract_search_entities(text)
+        if search_params.origin:
+            entities["origin"] = search_params.origin
+        if search_params.destination:
+            entities["destination"] = search_params.destination
+        if search_params.date:
+            entities["date"] = search_params.date
+        if search_params.travel_class:
+            entities["class"] = search_params.travel_class
         
         return entities
+    
+    def _extract_search_entities(self, text: str) -> TrainSearchQuery:
+        """
+        Phase 1 NLP Interface: Convert free text into structured TrainSearchQuery.
+        Layer 1: Regex Parser to extract raw components.
+        """
+        query = TrainSearchQuery()
+        
+        # 1. Extract Origin and Destination
+        # Pattern A: "from [Origin] to [Destination]"
+        raw_origin = None
+        raw_destination = None
+        
+        match_a = re.search(r'\bfrom\s+([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s+on|\s+tomorrow|\s+today|\s+\d|$)', text, re.IGNORECASE)
+        if match_a:
+            raw_origin = match_a.group(1).strip()
+            raw_destination = match_a.group(2).strip()
+        else:
+            # Pattern B: "[Origin] to [Destination]"
+            match_b = re.search(r'^([A-Za-z\s]+?)\s+to\s+([A-Za-z\s]+?)(?:\s+on|\s+tomorrow|\s+today|\s+\d|$)', text, re.IGNORECASE)
+            if match_b:
+                raw_origin = match_b.group(1).strip()
+                raw_destination = match_b.group(2).strip()
+
+        if raw_origin:
+            query.origin = self._resolve_station_name(raw_origin)
+        if raw_destination:
+            query.destination = self._resolve_station_name(raw_destination)
+
+        # 2. Extract Date string (raw)
+        # Matches specific keywords or basic DD/MM/YYYY formats
+        raw_date = None
+        date_match = re.search(r'\b(today|tomorrow|day after tomorrow)\b', text, re.IGNORECASE)
+        if date_match:
+            raw_date = date_match.group(1).strip()
+        else:
+            date_regex = r'\b(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|\d{1,2}[-/]\d{1,2}(?:[-/]\d{2,4})?)\b'
+            date_match = re.search(date_regex, text, re.IGNORECASE)
+            if date_match:
+                raw_date = date_match.group(1).strip()
+
+        if raw_date:
+            query.date = self._normalize_date(raw_date)
+
+        # 3. Extract Travel Class
+        class_regex = r'\b(sleeper|sl|ac|1ac|2ac|3ac|1a|2a|3a|cc|ec|general)\b'
+        class_match = re.search(class_regex, text, re.IGNORECASE)
+        if class_match:
+            query.travel_class = class_match.group(1).strip()
+
+        return query
+
+    def _normalize_date(self, raw_date: str) -> Optional[str]:
+        """
+        Layer 2: Date Parser to convert natural language dates to YYYY-MM-DD.
+        """
+        from datetime import datetime, timedelta
+        import re
+
+        raw_date = raw_date.lower().strip()
+        now = datetime.utcnow() # Assume UTC or system time
+
+        if raw_date == "today":
+            return now.strftime("%Y-%m-%d")
+        elif raw_date == "tomorrow":
+            return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif raw_date == "day after tomorrow":
+            return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+
+        # Handle '5 May' or '5th May'
+        text_date_match = re.match(r'(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)', raw_date)
+        if text_date_match:
+            day_str, month_str = text_date_match.groups()
+            try:
+                # Try parsing the month
+                parsed_date = datetime.strptime(f"{day_str} {month_str[:3]} {now.year}", "%d %b %Y")
+                # If parsed date is in the past, assume next year
+                if parsed_date.date() < now.date() and now.month > 10 and parsed_date.month < 3:
+                    parsed_date = parsed_date.replace(year=now.year + 1)
+                return parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        # Handle standard DD-MM-YYYY or DD/MM/YYYY
+        try:
+            # Replace slashes with dashes
+            clean_date = raw_date.replace('/', '-')
+            parts = clean_date.split('-')
+            if len(parts) == 2:
+                # DD-MM (assume current year)
+                parsed_date = datetime.strptime(f"{clean_date}-{now.year}", "%d-%m-%Y")
+                if parsed_date.date() < now.date() and now.month > 10 and parsed_date.month < 3:
+                    parsed_date = parsed_date.replace(year=now.year + 1)
+                return parsed_date.strftime("%Y-%m-%d")
+            elif len(parts) == 3:
+                # Ensure year is 4 digits
+                if len(parts[2]) == 2:
+                    parts[2] = f"20{parts[2]}"
+                parsed_date = datetime.strptime(f"{parts[0]}-{parts[1]}-{parts[2]}", "%d-%m-%Y")
+                return parsed_date.strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+        return None
+    
+    def _resolve_station_name(self, name: str) -> str:
+        """
+        Layer 3: Station DB mapping / Fuzzy lookup.
+        Converts 'Delhi' -> 'NDLS', 'Mumbai' -> 'MMCT'.
+        """
+        if not name: return ""
+        n = name.upper().strip()
+        
+        # 1. If already a code (3-4 uppercase chars)
+        if 3 <= len(n) <= 4 and n.isalpha():
+            return n
+            
+        # 2. Hardcoded Popular Mapping (Fast Layer)
+        POPULAR = {
+            "DELHI": "NDLS",
+            "DELLI": "NDLS",
+            "MUMBAI": "MMCT",
+            "BOMBAY": "MMCT",
+            "CHENNAI": "MAS",
+            "MADRAS": "MAS",
+            "KOLKATA": "HWH",
+            "CALCUTTA": "HWH",
+            "BANGALORE": "SBC",
+            "BENGALURU": "SBC",
+            "HYDERABAD": "SC",
+            "PUNE": "PUNE",
+            "AHMEDABAD": "ADI",
+            "KOCHI": "ERS",
+            "COCHIN": "ERS",
+            "PATNA": "PNBE",
+            "LUCKNOW": "LKO",
+            "JAIPUR": "JP"
+        }
+        
+        # Check direct or prefix
+        for city, code in POPULAR.items():
+            if n == city or n.startswith(city):
+                return code
+                
+        # 3. Fallback: Return raw title-cased name for later DB resolution in SearchHandler
+        return name.title()
     
     def _extract_stations(self, text: str) -> Dict[str, str]:
         """Extract station names and codes."""

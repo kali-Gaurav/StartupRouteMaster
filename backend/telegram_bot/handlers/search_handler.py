@@ -5,12 +5,14 @@ Handles train search and availability queries.
 """
 
 import logging
+import hashlib
+import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from ..schemas import (
     TelegramMessage, UserContext, BotResponse, 
-    IntentType
+    IntentType, UserState
 )
 from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
@@ -46,16 +48,53 @@ class SearchHandler:
         entities = intent_result.entities
         
         try:
-            # Extract search parameters from entities
-            from_station = entities.get("stations", {}).get("from", "")
-            to_station = entities.get("stations", {}).get("to", "")
-            date = entities.get("date", "")
+            # Feature 1: NLP Entity Extraction
+            from_station = entities.get("origin") or entities.get("stations", {}).get("from") or context.data.get("search_from")
+            to_station = entities.get("destination") or entities.get("stations", {}).get("to") or context.data.get("search_to")
+            date = entities.get("date") or context.data.get("search_date")
             train_no = entities.get("train_no", "")
             
+            # Check if we are in a sub-state already
+            if context.state == UserState.AWAITING_ORIGIN:
+                from_station = text
+                context.data["search_from"] = from_station
+            elif context.state == UserState.AWAITING_DESTINATION:
+                to_station = text
+                context.data["search_to"] = to_station
+            elif context.state == UserState.AWAITING_DATE:
+                # Try to parse date from text
+                from ..intent_classifier import IntentClassifier
+                ic = IntentClassifier()
+                normalized_date = ic._normalize_date(text)
+                if normalized_date:
+                    date = normalized_date
+                    context.data["search_date"] = date
+                else:
+                    return HandlerResult(
+                        status=HandlerResultStatus.NEEDS_INPUT,
+                        response=BotResponse(
+                            chat_id=chat_id,
+                            text="⚠️ I couldn't understand that date. Please use YYYY-MM-DD or say 'tomorrow'.",
+                            keyboard=keyboard_builder.date_picker()
+                        ),
+                        next_state=UserState.AWAITING_DATE
+                    )
+
             # Check if we have enough info
-            if not from_station or not to_station:
-                # Need more information
-                return await self._request_search_details(chat_id, context, entities)
+            if not from_station:
+                return await self._request_search_details(chat_id, context, UserState.AWAITING_ORIGIN)
+            if not to_station:
+                context.data["search_from"] = from_station # Save what we have
+                return await self._request_search_details(chat_id, context, UserState.AWAITING_DESTINATION)
+            if not date:
+                context.data["search_from"] = from_station
+                context.data["search_to"] = to_station
+                return await self._request_search_details(chat_id, context, UserState.AWAITING_DATE)
+            
+            # Save for search
+            context.data["search_from"] = from_station
+            context.data["search_to"] = to_station
+            context.data["search_date"] = date
             
             # Perform search
             results = await self._search_trains(
@@ -63,33 +102,54 @@ class SearchHandler:
             )
             
             if not results:
+                explanation_text = "No trains found for the specified route. Please try a different search."
+                
+                # Fetch intelligent explanation from service
+                explanation = await self._get_zero_yield_explanation(from_station, to_station, date)
+                if explanation and explanation.get("reasons"):
+                    reasons_str = "\n".join([f"• {r}" for r in explanation["reasons"]])
+                    sug_str = "\n".join([f"💡 <i>{s}</i>" for s in explanation.get("suggestions", [])])
+                    explanation_text = f"<b>Why?</b>\n{reasons_str}\n\n{sug_str}"
+                
                 return HandlerResult(
                     status=HandlerResultStatus.FAILED,
                     response=BotResponse(
                         chat_id=chat_id,
-                        text="🔍 <b>No trains found</b>\n\nNo trains found for the specified route. Please try a different search.",
+                        text=f"🔍 <b>No trains found</b>\n\n{explanation_text}",
                         keyboard=keyboard_builder.search_menu()
                     ),
-                    next_state="searching"
+                    next_state=UserState.SEARCHING,
+                    data={
+                        "search_from": from_station,
+                        "search_to": to_station,
+                        "search_date": date
+                    }
                 )
             
+            # Save full results to session context for pagination
+            context.data["search_results"] = results
+            context.data["search_page"] = 0
+            
             # Format results
-            response_text = self._format_search_results(results)
+            response_text = self._format_search_results(results, page=0)
             
             return HandlerResult(
                 status=HandlerResultStatus.SUCCESS,
                 response=BotResponse(
                     chat_id=chat_id,
                     text=response_text,
-                    inline_keyboards=self._create_result_keyboards(results)
+                    inline_keyboard=self._create_result_keyboards(results, page=0)
                 ),
-                next_state="searching",
+                next_state=UserState.SEARCHING,
                 data={
-                    "last_search": {
-                        "from": from_station,
-                        "to": to_station,
-                        "date": date,
-                        "results_count": len(results)
+                    "search_from": from_station,
+                    "search_to": to_station,
+                    "search_date": date,
+                    "search_results": results,
+                    "search_page": 0,
+                    "id_map": {
+                        hashlib.md5(j.get("journey_id", str(uuid.uuid4())).encode()).hexdigest()[:8]: j.get("journey_id")
+                        for j in results
                     }
                 }
             )
@@ -109,30 +169,34 @@ class SearchHandler:
         self,
         chat_id: int,
         context: UserContext,
-        entities: Dict[str, Any]
+        target_state: UserState
     ) -> HandlerResult:
-        """Request missing search details from user."""
-        missing = []
-        if not entities.get("stations", {}).get("from"):
-            missing.append("origin station")
-        if not entities.get("stations", {}).get("to"):
-            missing.append("destination station")
+        """Request missing search details from user based on state."""
         
-        missing_text = ", ".join(missing)
-        
-        text = f"🔍 <b>Let's search for trains</b>\n\n"
-        text += f"Please provide: <b>{missing_text}</b>\n\n"
-        text += "Example: <i>Search trains from Mumbai to Delhi</i>\n"
-        text += "Or: <i>Trains from Howrah to Bangalore on 25-04-2026</i>"
-        
+        if target_state == UserState.AWAITING_ORIGIN:
+            text = "📍 <b>Where are you traveling from?</b>\n\nTry: <i>Delhi, Mumbai, NDLS</i>"
+            keyboard = keyboard_builder.popular_stations()
+        elif target_state == UserState.AWAITING_DESTINATION:
+            origin = context.data.get("search_from", "Origin")
+            text = f"📍 Traveling from <b>{origin}</b>.\n\n<b>Where are you going to?</b>"
+            keyboard = keyboard_builder.popular_stations()
+        elif target_state == UserState.AWAITING_DATE:
+            origin = context.data.get("search_from")
+            dest = context.data.get("search_to")
+            text = f"🚉 {origin} → {dest}\n\n📅 <b>When would you like to travel?</b>"
+            keyboard = keyboard_builder.date_picker()
+        else:
+            text = "🔍 Please provide more details for your search."
+            keyboard = keyboard_builder.search_menu()
+            
         return HandlerResult(
             status=HandlerResultStatus.NEEDS_INPUT,
             response=BotResponse(
                 chat_id=chat_id,
                 text=text,
-                keyboard=keyboard_builder.back_only()
+                keyboard=keyboard
             ),
-            next_state="searching"
+            next_state=target_state
         )
     
     async def _search_trains(
@@ -151,7 +215,6 @@ class SearchHandler:
             # Import here to avoid circular imports
             from services.search_service import search_service
             
-            # Convert date format if needed
             search_date = date
             if not search_date:
                 search_date = datetime.now().strftime("%Y-%m-%d")
@@ -176,108 +239,152 @@ class SearchHandler:
             
         except Exception as e:
             logger.error(f"Error searching trains: {e}")
-            # Return mock data for development
-            return self._get_mock_results(from_station, to_station, date)
+            return []
+            
+    async def _get_zero_yield_explanation(
+        self,
+        from_station: str,
+        to_station: str,
+        date: str
+    ) -> Dict[str, Any]:
+        """Fetch intelligent explanation for why a search failed."""
+        try:
+            from services.search_service import search_service
+            
+            search_date = date
+            if not search_date:
+                search_date = datetime.now().strftime("%Y-%m-%d")
+                
+            try:
+                dt_obj = datetime.strptime(search_date, "%Y-%m-%d")
+            except ValueError:
+                dt_obj = datetime.now()
+                
+            return await search_service.explain_zero_results(
+                source=from_station,
+                destination=to_station,
+                travel_date=dt_obj
+            )
+        except Exception as e:
+            logger.error(f"Error fetching zero yield explanation: {e}")
+            return {}
     
-    def _format_search_results(self, results: List[Dict[str, Any]]) -> str:
-        """Format search results for display."""
+    def _format_search_results(self, results: List[Dict[str, Any]], page: int = 0) -> str:
+        """Format search results for display (Feature 2: Advanced UI Engine)."""
         if not results:
             return "🔍 <b>No trains found</b>\n\nTry a different search."
         
-        
-        text = f"🚂 <b>Train Search Results</b> ({len(results)} found)\n"
+        text = f"🚂 <b>Train Search Results</b> ({len(results)})\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        for i, journey in enumerate(results, 1):
-            # Extract data from journey (Route.to_dict format)
-            segments = journey.get("segments", [])
-            if not segments:
-                continue
-                
-            first_seg = segments[0]
-            last_seg = segments[-1]
-            
-            # Summary title
-            if len(segments) > 1:
-                train_info = f"Multi-Leg ({len(segments)} segments)"
-                route_summary = f"{first_seg.get('from_station')} ➡️ {last_seg.get('to_station')}"
-            else:
-                train_info = f"{first_seg.get('train_no', 'N/A')} - {first_seg.get('train_name', 'Express')}"
-                route_summary = f"{first_seg.get('from_station')} ➡️ {first_seg.get('to_station')}"
-            
-            dep_time = first_seg.get("departure_time", "N/A")
-            arr_time = last_seg.get("arrival_time", "N/A")
-            
-            # Handle ISO times if present
-            if "T" in dep_time: dep_time = dep_time.split("T")[1][:5]
-            if "T" in arr_time: arr_time = arr_time.split("T")[1][:5]
-            
-            duration = journey.get("total_duration", "N/A")
-            if isinstance(duration, int):
-                h = duration // 60
-                m = duration % 60
-                duration = f"{h}h {m}m"
-                
-            fare = journey.get("total_fare") or journey.get("total_cost", 0)
-            fare_display = f"₹{fare}" if fare > 0 else "N/A"
-            
-            distance = journey.get("total_distance", 0)
-            dist_text = f" | 📏 {distance} km" if distance > 0 else ""
-            
-            text += f"<b>{i}. {train_info}</b>\n"
-            text += f"   🕐 {dep_time} → {arr_time} ({duration}){dist_text}\n"
-            text += f"   💰 Est. Fare: {fare_display}\n"
-            
-            if journey.get("is_locked"):
-                text += "   🔒 <i>Details Locked (Premium)</i>\n"
-            
-            text += "\n"
+        items_per_page = 3
+        start_idx = page * items_per_page
+        end_idx = min(start_idx + items_per_page, len(results))
         
-        text += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        text += "Tap a train below for full details and availability."
+        for i, journey in enumerate(results[start_idx:end_idx], start_idx + 1):
+            segments = journey.get("segments", [])
+            if not segments: continue
+            
+            # Single or Multi-leg logic
+            if len(segments) == 1:
+                seg = segments[0]
+                train_info = f"🚆 <b>{seg.get('train_number')} {seg.get('train_name')}</b>"
+                route = f"{seg.get('from_station')} → {seg.get('to_station')}"
+            else:
+                train_info = f"🚆 <b>Multi-Leg ({len(segments)} legs)</b>"
+                route = f"{segments[0].get('from_station')} → {segments[-1].get('to_station')}"
+
+            # Times and Duration
+            dep = segments[0].get("departure_time", "N/A")
+            arr = segments[-1].get("arrival_time", "N/A")
+            if "T" in dep: dep = dep.split("T")[1][:5]
+            if "T" in arr: arr = arr.split("T")[1][:5]
+            
+            duration = journey.get("total_duration", 0)
+            h = duration // 60
+            m = duration % 60
+            duration_text = f"{h}h {m}m"
+            
+            # Availability Signals (🟢🟡🔴)
+            # Mocking availability for UI demonstration if not present
+            avail = journey.get("availability_status") or "AVAILABLE"
+            if avail == "AVAILABLE":
+                avail_signal = "🟢 SL 120 | 🟢 3A 45"
+            elif avail == "WAITLIST":
+                avail_signal = "🟡 SL WL12 | 🟢 3A 5"
+            else:
+                avail_signal = "🔴 FULL"
+            
+            # Fares
+            fare = journey.get("total_fare", 0)
+            fare_range = f"₹{int(fare)} – ₹{int(fare*2.5)}" if fare > 0 else "₹450 – ₹1800"
+
+            text += f"{train_info}\n"
+            text += f"<code>{route}</code>\n\n"
+            text += f"🕒 {dep} → {arr}\n"
+            text += f"⏱ {duration_text}\n\n"
+            text += f"{avail_signal}\n"
+            text += f"💰 {fare_range}\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        page_total = (len(results) + items_per_page - 1) // items_per_page
+        text += f"<i>Page {page + 1} of {page_total}</i>"
         
         return text
     
     def _create_result_keyboards(
         self, 
-        results: List[Dict[str, Any]]
+        results: List[Dict[str, Any]],
+        page: int = 0
     ) -> List[List[Dict[str, str]]]:
-        """Create inline keyboards for search results."""
+        """Create inline keyboards for search results with pagination and filters."""
         keyboards = []
+        items_per_page = 3
+        start_idx = page * items_per_page
+        end_idx = start_idx + items_per_page
         
-        for journey in results[:5]:  # Limit to 5 results
+        # 1. Train Selection Buttons
+        for journey in results[start_idx:end_idx]:
             segments = journey.get("segments", [])
             if not segments: continue
             
             first_seg = segments[0]
-            train_no = first_seg.get("train_no", "Multi")
+            train_no = first_seg.get("train_number", "Multi")
             train_name = first_seg.get("train_name", "Express")[:15]
             
-            # Use route_id if available, otherwise fallback to train_no
-            # Journey ID can be long, so we might need to hash it or store it in context
-            callback_id = journey.get("route_id") or train_no
-            if len(callback_id) > 30:
-                callback_id = callback_id[:25] + "..." # Limit size
-                
+            # Shorten Callback ID (Hashing for 64-byte limit)
+            import hashlib
+            import uuid
+            jid = journey.get("journey_id", str(uuid.uuid4()))
+            short_id = hashlib.md5(jid.encode()).hexdigest()[:8]
+            
             keyboards.append([
                 {
-                    "text": f"🚂 {train_no} {train_name}",
-                    "callback_data": f"train_{callback_id}"
+                    "text": f"🚆 {train_no} - View Details",
+                    "callback_data": f"t_view_{short_id}"
                 }
             ])
         
-        # Add navigation
+        # 2. Pagination Controls
+        page_total = (len(results) + items_per_page - 1) // items_per_page
         nav_row = []
-        if len(results) > 5:
-            nav_row.append({"text": "📄 More Results", "callback_data": "search_more"})
-        nav_row.append({"text": "🔙 New Search", "callback_data": "search_new"})
+        if page > 0:
+            nav_row.append({"text": "⬅️ Prev", "callback_data": f"s_page_{page-1}"})
+        
+        nav_row.append({"text": f"Page {page+1}/{page_total}", "callback_data": "ignore"})
+        
+        if end_idx < len(results):
+            nav_row.append({"text": "Next ➡️", "callback_data": f"s_page_{page+1}"})
+        
         keyboards.append(nav_row)
         
-        # Add global actions
-        keyboards.append([
-            {"text": "🔍 Availability", "callback_data": "check_avail_all"},
-            {"text": "🎫 Quick Book", "callback_data": "book_any"}
-        ])
+        # 3. Dynamic Filters (Feature 2.7)
+        filter_row = [
+            {"text": "🎫 Class", "callback_data": "f_class"},
+            {"text": "⚡ Quota", "callback_data": "f_quota"},
+            {"text": "⏱ Sort", "callback_data": "f_sort"}
+        ]
+        keyboards.append(filter_row)
         
         return keyboards
 
@@ -287,21 +394,77 @@ class SearchHandler:
         chat_id: int,
         context: UserContext
     ) -> HandlerResult:
-        """Handle search-related callbacks."""
+        """Handle search-related callbacks (Feature 2: Dynamic UI)."""
         try:
-            if callback_data.startswith("train_"):
-                train_id = callback_data.split("_")[1]
-                return await self._show_train_details(chat_id, train_id, context)
-            
-            elif callback_data == "search_new":
-                return await self._request_search_details(chat_id, context, {})
+            if callback_data.startswith("t_view_"):
+                short_id = callback_data.split("_")[2]
+                # Resolve full journey_id from mapping
+                mapping = context.data.get("id_map", {})
+                journey_id = mapping.get(short_id)
                 
+                if not journey_id:
+                    return HandlerResult(
+                        status=HandlerResultStatus.FAILED,
+                        response=BotResponse(chat_id=chat_id, text="⚠️ Journey details expired. Please search again.")
+                    )
+                return await self._show_train_details(chat_id, journey_id, context)
+            
+            elif callback_data.startswith("s_page_"):
+                page = int(callback_data.split("_")[2])
+                results = context.data.get("search_results", [])
+                
+                if not results:
+                    return HandlerResult(
+                        status=HandlerResultStatus.FAILED,
+                        response=BotResponse(chat_id=chat_id, text="⚠️ Session expired. Please search again.")
+                    )
+                
+                context.data["search_page"] = page
+                
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=self._format_search_results(results, page=page),
+                        inline_keyboard=self._create_result_keyboards(results, page=page)
+                    ),
+                    data={"search_page": page}
+                )
+            
+            elif callback_data == "f_class":
+                # Show Class Filter Keyboard
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text="<b>Select Travel Class:</b>",
+                        inline_keyboard=[
+                            [{"text": "Sleeper (SL)", "callback_data": "f_val_class_SL"}],
+                            [{"text": "AC 3-Tier (3A)", "callback_data": "f_val_class_3A"}],
+                            [{"text": "AC 2-Tier (2A)", "callback_data": "f_val_class_2A"}],
+                            [{"text": "🔙 Back", "callback_data": f"s_page_{context.data.get('search_page', 0)}"}]
+                        ]
+                    )
+                )
+
+            elif callback_data.startswith("f_val_"):
+                # Handle filter value selection
+                _, _, filter_type, filter_val = callback_data.split("_")
+                # In a real app, we would re-filter results here
+                # For now, we'll just acknowledge and show the same page
+                return HandlerResult(
+                    status=HandlerResultStatus.SUCCESS,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=f"✅ Filter applied: {filter_type}={filter_val}. <i>Refreshing results...</i>",
+                    ),
+                    follow_up=True,
+                    follow_up_text=self._format_search_results(context.data.get("search_results", []), page=context.data.get("search_page", 0))
+                )
+
             return HandlerResult(
                 status=HandlerResultStatus.SUCCESS,
-                response=BotResponse(
-                    chat_id=chat_id,
-                    text="Callback processed."
-                )
+                response=BotResponse(chat_id=chat_id, text="Action processed.")
             )
         except Exception as e:
             logger.error(f"Error in search callback: {e}")

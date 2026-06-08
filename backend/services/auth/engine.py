@@ -6,9 +6,9 @@ from collections import deque
 import asyncio
 from fastapi import HTTPException, status
 
-from core.system_monitor import system_monitor, SystemState
-from core.resilience import circuit_breaker_manager, CircuitConfig
-from core.retry import RetryPolicy
+from core.infrastructure.system_monitor import system_monitor, SystemState
+from core.resilience.core import circuit_breaker_manager, CircuitConfig
+from core.resilience.retry import RetryPolicy
 
 logger = logging.getLogger("routemaster.auth_service")
 

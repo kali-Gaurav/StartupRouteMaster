@@ -7,8 +7,8 @@ Standardized for 10X Performance.
 # during model/schema initialization. Use direct imports from submodules.
 # Example: from core.route_engine import get_route_engine (G11.4)
 
-from . import data_structures
+# from . import data_structures
 
 __all__ = [
-    "data_structures"
+    # "data_structures"
 ]

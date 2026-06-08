@@ -119,18 +119,9 @@ class SnapshotManager:
         except Exception as e:
             logger.error(f"Failed to save snapshot to disk: {e}")
 
-        # 2. Save to Redis (Performance)
-        try:
-            await multi_layer_cache.initialize()
-            if multi_layer_cache.redis:
-                # [Task 121: Elite Extension] Compression hook for Redis
-                import zlib
-                compressed = zlib.compress(p_data)
-                # TTL 24H for Redis snapshot
-                await multi_layer_cache.redis.setex(f"graph:snapshot:{date_str}", 86400, compressed)
-                logger.info(f"Snapshot pushed to Redis (L2) for {date_str}.")
-        except Exception as e:
-            logger.warning(f"Failed to save snapshot to Redis: {e}")
+        # 2. Save to Redis (Disabled for Security)
+        # We no longer push pickle snapshots to Redis to prevent RCE vectors.
+        # Disk fallback is used exclusively.
 
     async def list_snapshots(self) -> List[str]:
         return [f for f in os.listdir(self.snapshot_dir) if f.endswith(".pkl")]

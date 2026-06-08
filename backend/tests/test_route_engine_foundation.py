@@ -4,8 +4,8 @@ from datetime import datetime
 
 import pytest
 
-from core.data_structures import RouteSegment
-from core.providers import ServiceStatus
+from core.data_utils.structures import RouteSegment
+from core.integration.providers import ServiceStatus
 from core.route_engine.engine import RailwayRouteEngine
 
 

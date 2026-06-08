@@ -1,0 +1,135 @@
+================================================================================
+BACKEND STARTUP LOGS - 2026-05-23 10:55:00
+================================================================================
+Session: Backend startup and failure analysis
+Environment: Windows, Python 3.11, FastAPI, uvicorn
+
+================================================================================
+STARTUP LOGS
+================================================================================
+
+2026-05-23 10:54:57,637 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: open_dashboard
+2026-05-23 10:54:57,638 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: request_refund
+2026-05-23 10:54:57,638 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: rate_journey
+2026-05-23 10:54:57,638 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: report_issue
+2026-05-23 10:54:57,639 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: view_amenities
+2026-05-23 10:54:57,639 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: book_waiting
+2026-05-23 10:54:57,640 [DEBUG] bot.handler [RID:N/A]: Registered handler for action: request_crowd_info
+2026-05-23 10:54:57,640 [INFO] bot.handler [RID:N/A]: InteractiveBotHandler initialized
+2026-05-23 10:54:57,640 [INFO] core.resilience.core [RID:N/A]: CircuitBreaker 'telegram_api' initialized with config: CircuitConfig(failure_threshold=5, success_threshold=2, timeout_seconds=60.0, half_open_max_calls=3, monitoring_window_seconds=60.0)
+2026-05-23 10:54:57,641 [INFO] telegram.dispatcher [RID:N/A]: TelegramDispatcher initialized with Token Bucket Rate Limiting
+2026-05-23 10:54:57,641 [INFO] telegram.interactive [RID:N/A]: TelegramInteractiveHandler initialized
+2026-05-23 10:54:57,920 [INFO] core.resilience.core [RID:N/A]: CircuitBreaker 'redis_l2' initialized with config: CircuitConfig(failure_threshold=3, success_threshold=3, timeout_seconds=60.0, half_open_max_calls=3, monitoring_window_seconds=60.0)
+2026-05-23 10:54:57,921 [INFO] routemaster.container [RID:N/A]: IoC: Registered 'cache' v2.2.0
+2026-05-23 10:54:57,925 [INFO] core.resilience.core [RID:N/A]: CircuitBreaker 'cache_redis' initialized with config: CircuitConfig(failure_threshold=5, success_threshold=2, timeout_seconds=30.0, half_open_max_calls=3, monitoring_window_seconds=60.0)
+2026-05-23 10:54:58,501 [INFO] services.cache.manager [RID:N/A]: Successfully connected to Redis.
+2026-05-23 10:54:58,504 [INFO] services.cache.manager [RID:N/A]: CacheService initialized with resilience patterns
+2026-05-23 10:54:59,081 [INFO] core.resilience.core [RID:N/A]: CircuitBreaker 'scraper_browser' initialized with config: CircuitConfig(failure_threshold=3, success_threshold=3, timeout_seconds=300.0, half_open_max_calls=3, monitoring_window_seconds=60.0)
+2026-05-23 10:54:59,081 [INFO] core.resilience.core [RID:N/A]: CircuitBreaker 'scraper_context' initialized with config: CircuitConfig(failure_threshold=10, success_threshold=3, timeout_seconds=60.0, half_open_max_calls=3, monitoring_window_seconds=60.0)
+2026-05-23 10:55:00,048 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from creating-client-class.iot-data to creating-client-class.iot-data-plane
+2026-05-23 10:55:00,057 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from before-call.apigateway to before-call.api-gateway
+2026-05-23 10:55:00,063 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from request-created.machinelearning.Predict to request-created.machine-learning.Predict
+2026-05-23 10:55:00,070 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from before-parameter-build.autoscaling.CreateLaunchConfiguration to before-parameter-build.auto-scaling.CreateLaunchConfiguration
+2026-05-23 10:55:00,072 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from before-parameter-build.route53 to before-parameter-build.route-53
+2026-05-23 10:55:00,075 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from request-created.cloudsearchdomain.Search to request-created.cloudsearch-domain.Search
+2026-05-23 10:55:00,079 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from docs.*.autoscaling.CreateLaunchConfiguration.complete-section to docs.*.auto-scaling.CreateLaunchConfiguration.complete-section
+2026-05-23 10:55:00,090 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from before-parameter-build.logs.CreateExportTask to before-parameter-build.cloudwatch-logs.CreateExportTask
+2026-05-23 10:55:00,093 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from docs.*.logs.CreateExportTask.complete-section to docs.*.cloudwatch-logs.CreateExportTask.complete-section
+2026-05-23 10:55:00,095 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from before-parameter-build.cloudsearchdomain.Search to before-parameter-build.cloudsearch-domain.Search
+2026-05-23 10:55:00,095 [DEBUG] botocore.hooks [RID:N/A]: Changing event name from docs.*.cloudsearchdomain.Search.complete-section to docs.*.cloudsearch-domain.Search.complete-section
+2026-05-23 10:55:00,145 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\endpoints.json
+2026-05-23 10:55:00,203 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\sdk-default-configuration.json
+2026-05-23 10:55:00,204 [DEBUG] botocore.hooks [RID:N/A]: Event choose-service-name: calling handler <function handle_service_name_alias at 0x000002021AD35C60>
+2026-05-23 10:55:01,144 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\s3\2006-03-01\service-2.json
+2026-05-23 10:55:01,723 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\s3\2006-03-01\endpoint-rule-set-1.json.gz
+2026-05-23 10:55:01,757 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\partitions.json
+2026-05-23 10:55:01,762 [DEBUG] botocore.hooks [RID:N/A]: Event creating-client-class.s3: calling handler <function add_generate_presigned_post at 0x000002021ACEE160>
+2026-05-23 10:55:01,763 [DEBUG] botocore.hooks [RID:N/A]: Event creating-client-class.s3: calling handler <function lazy_call.<locals>._handler at 0x000002021AE28C20>
+2026-05-23 10:55:01,866 [DEBUG] botocore.hooks [RID:N/A]: Event creating-client-class.s3: calling handler <function add_generate_presigned_url at 0x000002021ACEDEE0>
+2026-05-23 10:55:01,870 [DEBUG] botocore.regions [RID:N/A]: Creating a regex based endpoint for s3, auto
+2026-05-23 10:55:01,872 [DEBUG] botocore.endpoint [RID:N/A]: Setting s3 timeout as (60, 60)
+2026-05-23 10:55:01,909 [DEBUG] botocore.loaders [RID:N/A]: Loading JSON file: C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\site-packages\botocore\data\_retry.json
+2026-05-23 10:55:01,909 [DEBUG] botocore.client [RID:N/A]: Registering retry handlers for service: s3
+2026-05-23 10:55:01,912 [DEBUG] botocore.utils [RID:N/A]: Registering S3 region redirector handler
+
+================================================================================
+CRITICAL ERROR
+================================================================================
+
+2026-05-23 10:55:03,692 [ERROR] api-gateway [RID:N/A]: Production lifespan unavailable; falling back to no-op lifespan.
+Traceback (most recent call last):
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\app.py", line 103, in _resolve_lifespan
+    return _load_callable("core.infrastructure.lifespan", "lifespan")
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\app.py", line 81, in _load_callable
+    module = importlib.import_module(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\bootstrap.py", line 1206, in _gcd_import
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\bootstrap.py", line 1178, in _find_and_load
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\bootstrap.py", line 1149, in _find_and_load_unlocked
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\bootstrap_external.py", line 940, in exec_module
+  File "C:\Users\Gaurav Nagar\AppData\Local\Programs\Python\Python311\Lib\importlib\bootstrap.py", line 241, in _call_with_frames_removed
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\core\infrastructure\lifespan.py", line 18, in <module>
+    from services.finance.ingestion_worker import ingestion_worker
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\finance\ingestion_worker.py", line 8, in <module>
+    from services.orchestration.recovery import smart_retry_hub
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\orchestration\__init__.py", line 4, in <module>
+    from services.orchestration.booking_orchestrator import BookingOrchestrator, get_booking_orchestrator
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\orchestration\booking_orchestrator.py", line 7, in <module>
+    from services.booking_service import BookingService
+  File "C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\booking_service.py", line 23, in <module>
+    from services.inventory_service import inventory_service
+ImportError: cannot import name 'inventory_service' from 'services.inventory_service' (C:\Users\Gaurav Nagar\OneDrive\Desktop\startupV2\backend\services\inventory_service.py)
+
+================================================================================
+ROOT CAUSE ANALYSIS
+================================================================================
+
+PRIMARY ISSUE: ImportError in booking_service.py
+- File: services/booking_service.py (line 23)
+- Import: from services.inventory_service import inventory_service
+- Error: Cannot import 'inventory_service' from services.inventory_service
+
+IMPORT CHAIN:
+1. app.py → core.infrastructure.lifespan
+2. core.infrastructure.lifespan → services.finance.ingestion_worker
+3. services.finance.ingestion_worker → services.orchestration.recovery
+4. services.orchestration.recovery → services.orchestration.booking_orchestrator
+5. services.orchestration.booking_orchestrator → services.booking_service
+6. services.booking_service → services.inventory_service [FAILURE POINT]
+
+INITIALIZED COMPONENTS (before failure):
+✓ Telegram bot handlers (8 actions registered)
+✓ Circuit breakers (telegram_api, redis_l2, cache_redis, scraper_browser, scraper_context)
+✓ Redis cache service
+✓ S3/boto3 client
+
+DEGRADED BOOT BEHAVIOR:
+- Application falls back to no-op lifespan
+- Production lifespan unavailable
+- Application may run in degraded mode
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+1. FIX IMPORT ERROR:
+   - Check services/inventory_service.py for 'inventory_service' export
+   - Either export the function/class or update the import in booking_service.py
+
+2. INVESTIGATE INVENTORY SERVICE:
+   - Read services/inventory_service.py to see what's actually exported
+   - Check if the service instance is created differently
+
+3. CHECK DEPENDENCY CHAIN:
+   - The import chain is very deep (6 levels)
+   - Consider simplifying dependencies or using lazy imports
+
+4. VERIFY DEGRADED BOOT:
+   - Despite the error, app should still start in degraded mode
+   - Test health endpoints to confirm functionality
+
+================================================================================

@@ -7,7 +7,7 @@ from sqlalchemy import text
 from typing import List, Optional, Any
 
 from .base import BaseRoutingEngine, RoutingRequest, RoutingResponse
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 
 logger = logging.getLogger(__name__)
 

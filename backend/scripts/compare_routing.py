@@ -15,7 +15,7 @@ logger = logging.getLogger("compare_routing")
 from core.route_engine.engine import RailwayRouteEngine
 from core.route_engine.constraints import RouteConstraints
 from database.session import initialize_database_pools, SessionTransit
-from core.data_structures import Route
+from core.data_utils.structures import Route
 
 async def benchmark_engine(engine_instance, engine_name, source, destination, travel_dt, db):
     constraints = RouteConstraints()

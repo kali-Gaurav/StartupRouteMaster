@@ -6,8 +6,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from fastapi import HTTPException, Request, status
 
-from core.providers import ServiceProvider, ServiceStatus
-from core.container import container
+from core.integration.providers import ServiceProvider, ServiceStatus
+from core.infrastructure.container import container
 from database.config import Config
 from core.auth.utils import verify_fingerprint, generate_fingerprint
 from core.auth.sybil import sybil_manager
@@ -24,14 +24,18 @@ class AuthServiceProvider(ServiceProvider):
         self.supabase = None
         
     async def init(self):
-        """IoC Lifecycle: Initialize Supabase Client and Auth Cache."""
-        try:
-            from core.auth.supabase_client import supabase
-            self.supabase = supabase
-            logger.info("🔐 IoC: AuthServiceProvider Initialized (v2.0.0).")
-        except Exception as e:
-            logger.error(f"Auth init failed: {e}")
-            raise
+        """IoC Lifecycle: Initialize Firebase Admin SDK and Auth Cache."""
+        from core.auth.firebase_client import lazy_init, is_ready
+        ok = lazy_init()
+        if ok:
+            logger.info("🔥 IoC: AuthServiceProvider Initialized with Firebase (v2.0.0).")
+        else:
+            logger.warning(
+                "⚠️ AuthServiceProvider: Firebase Admin SDK not ready. "
+                "Token verification will fail until GOOGLE_APPLICATION_CREDENTIALS is set. "
+                "Server continues booting in degraded auth mode."
+            )
+        # Do NOT raise — let the server boot so health checks pass.
 
     # ==========================================================================
     # CORE AUTH & VERIFICATION
@@ -84,20 +88,22 @@ class AuthServiceProvider(ServiceProvider):
                 await self._validate_introspection(session_info, request)
                 return session_info["user"]
 
-        # 3. Supabase Live Check
-        if not self.supabase:
-            raise HTTPException(status_code=500, detail="Auth not configured")
-        
+        # 3. Firebase Live Check
         try:
-            resp = self.supabase.auth.get_user(token)
-            sb_user = getattr(resp, "user", None) or (resp.get("user") if isinstance(resp, dict) else None)
-            if not sb_user:
+            from core.auth.firebase_client import get_auth
+            firebase_auth = get_auth()
+            # [Task 10.10] Firebase ID Token Verification
+            decoded_token = firebase_auth.verify_id_token(token)
+            
+            if not decoded_token:
                 raise HTTPException(status_code=401, detail="Invalid session")
             
             user_data = {
-                "id": str(sb_user.id),
-                "email": sb_user.email,
-                "role": sb_user.user_metadata.get("role", "user")
+                "id": decoded_token["uid"],
+                "email": decoded_token.get("email"),
+                "role": decoded_token.get("role", "user"), # Custom claims if any
+                "name": decoded_token.get("name"),
+                "picture": decoded_token.get("picture")
             }
             
             # 4. Cache the result with Introspection Data [Task 10.1]
@@ -112,7 +118,7 @@ class AuthServiceProvider(ServiceProvider):
             
             return user_data
         except Exception as e:
-            logger.error(f"JWT Verification failed: {e}")
+            logger.error(f"Firebase JWT Verification failed: {e}")
             raise HTTPException(status_code=401, detail="Invalid token")
 
     async def _validate_introspection(self, session_info: Dict[str, Any], request: Request):
@@ -122,7 +128,7 @@ class AuthServiceProvider(ServiceProvider):
             # [Task 10.5] Anomaly Detection
             logger.warning(f"🚨 AUTH ANOMALY: Token IP mismatch! Session: {session_info['bound_ip']} != {current_ip}")
             # In high security level, we could auto-revoke here
-            from core.control_plane import control_plane, SystemLevel
+            from core.engines.control_plane import control_plane, SystemLevel
             if await control_plane.get_level() >= SystemLevel.WARNING:
                 raise HTTPException(status_code=403, detail="Security context changed. Please re-login.")
 

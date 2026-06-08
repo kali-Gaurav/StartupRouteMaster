@@ -102,6 +102,14 @@ class NeuralRAPTORPruner:
         if self._allowed_corridor and current_stop_id not in self._allowed_corridor:
             return True
 
+        # [Work: AI Squad - Safety-First Pruning]
+        # Prune nodes with active high-priority safety incidents or high audio stress
+        # Note: We use a non-blocking check for search performance
+        from services.sathi_location_service import SathiLocationService
+        if SathiLocationService.is_node_safety_pruned(current_stop_id):
+            logger.warning(f"🛡️ [PRUNER] Safety-Pruning node {current_stop_id} due to high-risk telemetry.")
+            return True
+
         # 2. Temporal Bound (A* Heuristic)
         if global_min_arrival_mins < float('inf'):
             # If currently 18h+ later than best found, prune (Relaxed for multi-day rail)

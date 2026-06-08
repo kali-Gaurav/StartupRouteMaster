@@ -1,8 +1,0 @@
-{
-  "dependencies": {
-    "@tanstack/react-virtual": "^3.13.19",
-    "google": "^2.1.0",
-    "idb-keyval": "^6.2.2",
-    "zustand": "^5.0.11"
-  }
-}

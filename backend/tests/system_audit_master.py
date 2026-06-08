@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import asyncio
 import logging
 from datetime import datetime
-from core.redis_client import redis_client
+from core.infrastructure.redis_manager import redis_client
 from services.search_service import SearchService
 from services.telemetry_service import push_to_stream
 from services.ledger_service import LedgerService

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils.route_utils import RouteDedupFilter
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 
 def create_mock_route(jid, departure_time, score):
     r = Route()

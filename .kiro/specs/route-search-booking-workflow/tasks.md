@@ -43,7 +43,7 @@ The implementation uses Python with FastAPI, building upon the existing codebase
   - Set up dependency injection for services
   - _Requirements: REQ-028 (REST API Specification)_
 
-- [-] 1.2.2 Implement POST /api/v1/bookings endpoint
+- [x] 1.2.2 Implement POST /api/v1/bookings endpoint
   - Create BookingRequest schema with validation
   - Implement booking creation logic with idempotency
   - Return BookingResponse with PNR number
@@ -74,7 +74,7 @@ The implementation uses Python with FastAPI, building upon the existing codebase
 
 ### 1.3 Payment Webhook Handler
 
-- [ ] 1.3.1 Create payment webhook endpoint structure
+- [x] 1.3.1 Create payment webhook endpoint structure
   - Create backend/api/payment_webhook.py
   - Set up POST /api/v1/webhooks/payment/{provider} endpoint
   - _Requirements: REQ-010 (Payment Webhook Handling)_

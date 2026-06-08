@@ -8,7 +8,7 @@ from datetime import datetime
 # Add backend to path
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 
-from core.data_structures import Route, RouteSegment, Persona
+from core.data_utils.structures import Route, RouteSegment, Persona
 from services.agents.arbitrage_agent import arbitrage_agent
 
 logging.basicConfig(level=logging.INFO)

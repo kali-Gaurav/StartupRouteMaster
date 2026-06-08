@@ -136,14 +136,27 @@ def calculate_fares_batch(distances: np.ndarray, coach_class: str, is_tatkal: bo
     total_fares = base_fares + agent_fee + tatkal_charge
     return np.round(total_fares, 2)
 
-def calculate_unlock_fee(db=None) -> float:
-    """[7.11] Link fees to PlatformConfig."""
+def calculate_unlock_fee(num_segments: int = 1, is_deep_search: bool = False, db=None) -> float:
+    """[7.11] Complexity-based unlock fee for dynamic algorithms."""
+    # Base fee from complexity
+    if num_segments >= 3:
+        fee = 50.0
+    elif num_segments >= 2:
+        fee = 25.0
+    else:
+        fee = 10.0
+        
+    if is_deep_search:
+        fee += 25.0
+        
+    # Check for platform config override
     if db:
         try:
-            res = db.execute(text("SELECT value FROM platform_configs WHERE key = 'UNLOCK_FEE'")).fetchone()
-            if res: return float(res[0])
+            res = db.execute(text("SELECT value FROM platform_configs WHERE key = 'UNLOCK_FEE_BASE'")).fetchone()
+            if res: fee = float(res[0])
         except: pass
-    return 49.0
+        
+    return float(fee)
 
 def calculate_agent_fee(db=None) -> float:
     if db:

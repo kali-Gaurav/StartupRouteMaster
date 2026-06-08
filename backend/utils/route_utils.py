@@ -7,7 +7,7 @@ import hashlib
 import logging
 from typing import List, Dict, Set
 from datetime import datetime, timedelta
-from core.data_structures import Route
+from core.data_utils.structures import Route
 
 logger = logging.getLogger(__name__)
 

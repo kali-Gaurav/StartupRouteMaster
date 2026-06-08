@@ -18,7 +18,7 @@ if str(_root) not in sys.path:
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.base import RoutingRequest
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Persona
+from core.data_utils.structures import Persona
 from core.allocation.seat_allocator import seat_allocator, Passenger, PassengerCategory, BerthPreference
 
 # Setup logging to see the internal "Patent Logic" triggers

@@ -15,19 +15,19 @@ Features:
 
 import logging
 import os
-import pickle
+import joblib
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingClassifier
-from sklearn.model_selection import train_test_split
+# from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, accuracy_score, classification_report
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func
 
-from core.resilience import circuit_breaker_manager, CircuitConfig
+from core.resilience.core import circuit_breaker_manager, CircuitConfig
 
 logger = logging.getLogger("ml.trainer")
 
@@ -59,7 +59,7 @@ class ModelMetadata:
 class BaseModelTrainer:
     """Base class for ML model training"""
     
-    def __init__(self, db: Session, model_dir: str = "backend/ml/models"):
+    def __init__(self, db: AsyncSession, model_dir: str = "backend/ml/models"):
         self.db = db
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
@@ -87,9 +87,10 @@ class BaseModelTrainer:
                 return None
             
             # Split data
-            X_train, X_test, y_train, y_test = train_test_split(
-                features, labels, test_size=0.2, random_state=42
-            )
+            # Split data chronologically for time-series data
+            split_idx = int(len(features) * 0.8)
+            X_train, X_test = features[:split_idx], features[split_idx:]
+            y_train, y_test = labels[:split_idx], labels[split_idx:]
             
             # Train model
             model = self._create_model()
@@ -144,8 +145,7 @@ class BaseModelTrainer:
                 return None
             
             latest = max(model_files, key=lambda f: f.stat().st_mtime)
-            with open(latest, 'rb') as f:
-                return pickle.load(f)
+            return joblib.load(latest)
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             return None
@@ -156,8 +156,7 @@ class BaseModelTrainer:
         filename = f"{self.model_type}_{version}.pkl"
         filepath = self.model_dir / filename
         
-        with open(filepath, 'wb') as f:
-            pickle.dump(model, f)
+        joblib.dump(model, filepath)
         
         # Save metadata
         metadata = {
@@ -227,12 +226,16 @@ class DelayModelTrainer(BaseModelTrainer):
     async def _fetch_training_data(self, days: int) -> List[Dict]:
         """Fetch historical delay data"""
         from database.models import TrainLiveUpdate
+        from sqlalchemy import select
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
-        updates = self.db.query(TrainLiveUpdate).filter(
-            TrainLiveUpdate.timestamp > start_date
-        ).all()
+        result = await self.db.execute(
+            select(TrainLiveUpdate).filter(
+                TrainLiveUpdate.timestamp > start_date
+            ).order_by(TrainLiveUpdate.timestamp.asc())
+        )
+        updates = result.scalars().all()
         
         data = []
         for update in updates:
@@ -335,12 +338,16 @@ class CancellationModelTrainer(BaseModelTrainer):
     async def _fetch_training_data(self, days: int) -> List[Dict]:
         """Fetch historical booking and cancellation data"""
         from database.models import Booking
+        from sqlalchemy import select
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
-        bookings = self.db.query(Booking).filter(
-            Booking.booking_date > start_date
-        ).all()
+        result = await self.db.execute(
+            select(Booking).filter(
+                Booking.booking_date > start_date
+            ).order_by(Booking.booking_date.asc())
+        )
+        bookings = result.scalars().all()
         
         data = []
         for booking in bookings:
@@ -445,31 +452,38 @@ class DemandModelTrainer(BaseModelTrainer):
     async def _fetch_training_data(self, days: int) -> List[Dict]:
         """Fetch historical demand data"""
         from database.models import Booking, SearchEvent
+        from sqlalchemy import select
         
         start_date = datetime.utcnow() - timedelta(days=days)
         
         # Get booking counts by route/date
-        bookings = self.db.query(
-            Booking.source_station,
-            Booking.destination_station,
-            Booking.travel_date,
-            func.count(Booking.id).label("count")
-        ).filter(
-            Booking.booking_date > start_date
-        ).group_by(
-            Booking.source_station,
-            Booking.destination_station,
-            Booking.travel_date
-        ).all()
+        result = await self.db.execute(
+            select(
+                Booking.source_station,
+                Booking.destination_station,
+                Booking.travel_date,
+                func.count(Booking.id).label("count")
+            ).filter(
+                Booking.booking_date > start_date
+            ).group_by(
+                Booking.source_station,
+                Booking.destination_station,
+                Booking.travel_date
+            ).order_by(Booking.travel_date.asc())
+        )
+        bookings = result.all()
         
         data = []
         for b in bookings:
             # Get search count for same route/date
-            searches = self.db.query(func.count(SearchEvent.id)).filter(
-                SearchEvent.src == b.source_station,
-                SearchEvent.dest == b.destination_station,
-                SearchEvent.travel_date == b.travel_date
-            ).scalar() or 0
+            search_res = await self.db.execute(
+                select(func.count(SearchEvent.id)).filter(
+                    SearchEvent.src == b.source_station,
+                    SearchEvent.dest == b.destination_station,
+                    SearchEvent.travel_date == b.travel_date
+                )
+            )
+            searches = search_res.scalar() or 0
             
             data.append({
                 "source": b.source_station,
@@ -565,7 +579,7 @@ class DemandModelTrainer(BaseModelTrainer):
 class MLModelRegistry:
     """Registry for trained ML models"""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.models: Dict[str, BaseModelTrainer] = {}
         self._register_default_models()
@@ -606,17 +620,12 @@ class MLModelRegistry:
         return await trainer.predict(features)
 
 
-# Global registry
-_registry = None
+# Global registry removed to prevent singleton issues
+# _registry = None
 
-def get_ml_registry(db: Session = None) -> MLModelRegistry:
+def get_ml_registry(db: AsyncSession) -> MLModelRegistry:
     """Get or create ML model registry"""
-    global _registry
-    if _registry is None:
-        from database.session import SessionLocal
-        db_session = db or SessionLocal()
-        _registry = MLModelRegistry(db_session)
-    return _registry
+    return MLModelRegistry(db)
 
 
 # Export for external use

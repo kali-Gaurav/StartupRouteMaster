@@ -83,6 +83,8 @@ export interface BookingRequestCreate {
   destination_station: string;
   journey_date: string; 
   train_number: string;
+  class_type?: string;
+  quota?: string;
   passengers: BookingRequestPassenger[];
 }
 

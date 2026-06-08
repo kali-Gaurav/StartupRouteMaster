@@ -84,6 +84,23 @@ interface TelegramWebApp {
   offThemeChanged?: (callback: () => void) => void;
   onClipboardTextReceived?: (callback: (text: string | null) => void) => void;
   offClipboardTextReceived?: (callback: (text: string | null) => void) => void;
+  requestFullscreen: () => void;
+  exitFullscreen: () => void;
+  addToHomeScreen: () => void;
+  checkHomeScreenStatus: (callback?: (status: 'unsupported' | 'unknown' | 'added' | 'missed') => void) => void;
+  HapticFeedback: {
+    impactOccurred: (style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft') => void;
+    notificationOccurred: (type: 'error' | 'success' | 'warning') => void;
+    selectionChanged: () => void;
+  };
+  CloudStorage: {
+    setItem: (key: string, value: string, callback?: (error: string | null, success: boolean) => void) => void;
+    getItem: (key: string, callback: (error: string | null, value: string) => void) => void;
+    getItems: (keys: string[], callback: (error: string | null, values: Record<string, string>) => void) => void;
+    removeItem: (key: string, callback?: (error: string | null, success: boolean) => void) => void;
+    removeItems: (keys: string[], callback?: (error: string | null, success: boolean) => void) => void;
+    getKeys: (callback: (error: string | null, keys: string[]) => void) => void;
+  };
   MainButton: {
     show: () => void;
     hide: () => void;
@@ -96,7 +113,25 @@ interface TelegramWebApp {
     disable: () => void;
     isVisible: boolean;
   };
-  BackButton: { show: () => void; hide: () => void; onClick: (cb: () => void) => void };
+  SecondaryButton: {
+    show: () => void;
+    hide: () => void;
+    setText: (text: string) => void;
+    onClick: (cb: () => void) => void;
+    offClick: (cb: () => void) => void;
+    showProgress: (leaveActive?: boolean) => void;
+    hideProgress: () => void;
+    enable: () => void;
+    disable: () => void;
+    isVisible: boolean;
+  };
+  BackButton: { 
+    show: () => void; 
+    hide: () => void; 
+    onClick: (cb: () => void) => void; 
+    offClick: (cb: () => void) => void;
+    isVisible: boolean;
+  };
 }
 
 interface ImportMetaEnv {

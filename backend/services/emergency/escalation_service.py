@@ -4,7 +4,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
-import api.sos as sos_api
+import api.safety.sos as sos_api
 from services.emergency.dispatch_service import dispatch_service
 from api.websockets import manager
 from database.session import SessionLocal
@@ -47,7 +47,7 @@ class EscalationService:
         - 24 hours: 'Soft-Scrub' (Clear PII, keep metadata).
         - 30 days: 'Hard-Delete' (Complete removal).
         """
-        from api.sos import SOS_KEY_PREFIX, SOS_INDEX_KEY, PNR_REGISTRY_KEY, MEDIA_DIR
+        from api.safety.sos import SOS_KEY_PREFIX, SOS_INDEX_KEY, PNR_REGISTRY_KEY, MEDIA_DIR
         from database.session import SessionLocal
         from database.models import SOSEvent
         import redis

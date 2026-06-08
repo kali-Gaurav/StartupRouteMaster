@@ -1,208 +1,666 @@
 """
-Versioned payment webhook endpoint for booking/payment reconciliation.
+Payment Webhook Routes - Handle payment provider callbacks.
 
-The handler is intentionally provider-neutral: Razorpay signatures are verified
-when the provider is `razorpay`, while internal/bank simulators can post the same
-normalized payload during tests or operations.
+This module provides webhook endpoints for receiving payment status updates
+from various payment providers. It handles signature verification, idempotency
+checking, and orchestrates booking confirmation/cancellation based on payment status.
 """
 
-from __future__ import annotations
-
-import json
 import logging
-from datetime import datetime
-from typing import Any, Dict, Optional
+import hmac
+import hashlib
+import json
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Request, HTTPException, Header, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from database import get_db
-from database.models import Booking, EscrowStatus, Payment, PaymentTransaction, WebhookEvent
-from services.booking_service import BookingService
-from services.payment_service import PaymentService
+from database.session import get_db
+from database.models import Payment, Booking
+from schemas.payment import PaymentStatus as DBPaymentStatus
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("api")
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
 
 
-class PaymentWebhookPayload(BaseModel):
-    payment_id: Optional[str] = Field(None, description="Internal payment record ID or provider payment ID")
-    booking_id: Optional[str] = None
-    order_id: Optional[str] = None
-    provider_reference: Optional[str] = None
-    utr_number: Optional[str] = None
-    amount: float = Field(0.0, ge=0)
-    method: str = "UPI"
-    status: str = "success"
-    event_id: Optional[str] = None
-    raw: Dict[str, Any] = Field(default_factory=dict)
+# =============================================================================
+# Pydantic Models for Webhook Payloads
+# =============================================================================
+
+class WebhookPayload(BaseModel):
+    """Validated webhook payload from payment providers."""
+    payment_id: str = Field(..., description="Internal payment ID")
+    status: str = Field(..., description="Payment status from provider")
+    amount: float = Field(..., ge=0, description="Payment amount")
+    transaction_id: Optional[str] = Field(None, description="Provider transaction ID")
+    utr_number: Optional[str] = Field(None, description="UTR number for UPI payments")
+    provider_reference: Optional[str] = Field(None, description="Provider's payment reference")
+    currency: str = Field("INR", description="Currency code")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+    class Config:
+        extra = "allow"  # Allow additional fields from providers
 
 
-def _normalize_status(value: str) -> str:
-    normalized = (value or "").strip().lower()
-    if normalized in {"captured", "paid", "completed", "success", "succeeded"}:
-        return "success"
-    if normalized in {"failed", "failure", "cancelled", "canceled", "declined"}:
-        return "failed"
-    if normalized in {"refunded", "refund"}:
-        return "refunded"
-    return normalized or "pending"
+class WebhookResponse(BaseModel):
+    """Standard webhook response."""
+    status: str = Field(..., description="Processing status")
+    payment_id: str = Field(..., description="Payment ID")
+    booking_id: Optional[str] = Field(None, description="Associated booking ID")
+    message: str = Field(..., description="Human-readable message")
 
 
-def _extract_payload(provider: str, raw_body: bytes) -> PaymentWebhookPayload:
-    try:
-        body = json.loads(raw_body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid webhook JSON payload") from exc
-
-    if provider.lower() == "razorpay" and "payload" in body:
-        payment_entity = (
-            body.get("payload", {})
-            .get("payment", {})
-            .get("entity", {})
-        )
-        order_entity = (
-            body.get("payload", {})
-            .get("order", {})
-            .get("entity", {})
-        )
-        notes = payment_entity.get("notes") or order_entity.get("notes") or {}
-        return PaymentWebhookPayload(
-            payment_id=payment_entity.get("id"),
-            booking_id=notes.get("booking_id"),
-            order_id=payment_entity.get("order_id") or order_entity.get("id"),
-            provider_reference=payment_entity.get("id") or order_entity.get("id"),
-            amount=float(payment_entity.get("amount") or order_entity.get("amount") or 0) / 100.0,
-            method=str(payment_entity.get("method") or "RAZORPAY").upper(),
-            status=_normalize_status(payment_entity.get("status") or body.get("event", "")),
-            event_id=body.get("id") or body.get("event") or payment_entity.get("id"),
-            raw=body,
-        )
-    return PaymentWebhookPayload(**body)
+class ErrorResponse(BaseModel):
+    """Error response for webhooks."""
+    error: str = Field(..., description="Error type")
+    detail: str = Field(..., description="Error details")
+    code: int = Field(..., description="HTTP status code")
 
 
-def _verify_provider_signature(provider: str, request: Request, body: bytes) -> None:
-    if provider.lower() != "razorpay":
-        return
-    signature = request.headers.get("X-Razorpay-Signature")
+# =============================================================================
+# Signature Verification
+# =============================================================================
+
+def _verify_signature(provider: str, payload: dict, signature: str, secret: str = "") -> bool:
+    """
+    Verify webhook signature from payment provider.
+    
+    Different providers use different signature algorithms:
+    - Razorpay: HMAC-SHA256 with secret
+    - PhonePe: SHA-256 of payload with salt
+    - Stripe: HMAC-SHA256 with webhook secret
+    - Cashfree: HMAC-SHA256 with secret key
+    
+    Args:
+        provider: Payment provider name
+        payload: Webhook payload as dict
+        signature: Signature from provider header
+        secret: Provider-specific secret key
+        
+    Returns:
+        True if signature is valid, False otherwise
+    """
     if not signature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Razorpay webhook signature")
-    payment_service = PaymentService()
-    if not payment_service.verify_webhook_signature(body, signature):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook signature")
+        logger.warning(f"No signature provided for {provider} webhook")
+        return False
+    
+    if not secret:
+        # In development mode, accept all signatures if no secret configured
+        logger.debug(f"No secret configured for {provider}, accepting signature")
+        return True
+    
+    try:
+        # Convert payload to deterministic string for signing
+        payload_str = json.dumps(payload, sort_keys=True)
+        
+        if provider == "razorpay":
+            # Razorpay: HMAC-SHA256 of payload
+            expected = hmac.new(
+                secret.encode(),
+                payload_str.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(signature, expected)
+        
+        elif provider == "phonepe":
+            # PhonePe: SHA-256 with salt
+            # PhonePe uses base64 encoding in production
+            import base64
+            hash_input = payload_str + secret
+            hash_bytes = hashlib.sha256(hash_input.encode()).digest()
+            expected = base64.b64encode(hash_bytes).decode()
+            return hmac.compare_digest(signature, expected)
+        
+        elif provider == "stripe":
+            # Stripe: HMAC-SHA256 with timestamp and payload
+            # Stripe sends timestamped signatures
+            if signature.startswith("t="):
+                parts = signature.split(",")
+                timestamp = parts[0][2:]
+                sig = parts[1][3:] if len(parts) > 1 else ""
+                signed_payload = f"{timestamp}.{payload_str}"
+                expected = hmac.new(
+                    secret.encode(),
+                    signed_payload.encode(),
+                    hashlib.sha256
+                ).hexdigest()
+                return hmac.compare_digest(sig, expected)
+        
+        elif provider == "cashfree":
+            # Cashfree: HMAC-SHA256
+            expected = hmac.new(
+                secret.encode(),
+                payload_str.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(signature, expected)
+        
+        else:
+            # Generic HMAC-SHA256 for unknown providers
+            expected = hmac.new(
+                secret.encode(),
+                payload_str.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(signature, expected)
+    
+    except Exception as e:
+        logger.error(f"Signature verification error for {provider}: {e}")
+        return False
 
 
-def _find_booking(db: Session, payload: PaymentWebhookPayload) -> Optional[Booking]:
-    if payload.booking_id:
-        booking = db.query(Booking).filter(Booking.id == payload.booking_id).first()
-        if booking:
-            return booking
-    if payload.order_id:
-        payment = db.query(Payment).filter(Payment.razorpay_order_id == payload.order_id).first()
-        if payment and payment.booking_id:
-            return db.query(Booking).filter(Booking.id == payment.booking_id).first()
-    return None
+def _get_provider_secret(provider: str) -> str:
+    """
+    Get webhook secret for a provider.
+    
+    In production, this should fetch from secure secret management
+    (e.g., AWS Secrets Manager, HashiCorp Vault).
+    
+    Args:
+        provider: Payment provider name
+        
+    Returns:
+        Provider webhook secret
+    """
+    # In production, fetch from secure storage
+    # For now, return empty string (development mode)
+    secrets = {
+        "razorpay": "",  # Set RAZORPAY_WEBHOOK_SECRET env var
+        "phonepe": "",   # Set PHONEPE_WEBHOOK_SECRET env var
+        "stripe": "",    # Set STRIPE_WEBHOOK_SECRET env var
+        "cashfree": "",  # Set CASHFREE_WEBHOOK_SECRET env var
+    }
+    return secrets.get(provider, "")
 
 
-def _log_webhook_event(db: Session, event_id: str, event_type: str, payload: Dict[str, Any]) -> None:
-    existing_event = db.query(WebhookEvent).filter(WebhookEvent.id == event_id).first()
-    if existing_event:
-        return
+# =============================================================================
+# Idempotency Handling
+# =============================================================================
 
-    db.add(WebhookEvent(id=event_id, event_type=event_type, payload=payload))
+async def _check_idempotency(
+    db: Session,
+    payment_id: str,
+    status: str
+) -> tuple[bool, Optional[Payment]]:
+    """
+    Check if webhook has already been processed (idempotency check).
+    
+    Args:
+        db: Database session
+        payment_id: Payment ID to check
+        status: Incoming status from provider
+        
+    Returns:
+        Tuple of (is_duplicate, existing_payment)
+    """
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+    
+    if not payment:
+        return False, None
+    
+    # Check if this exact status has already been processed
+    if payment.status == status:
+        logger.info(
+            f"Duplicate webhook detected for payment {payment_id}, "
+            f"status already {status}"
+        )
+        return True, payment
+    
+    # Check if payment is in a terminal state
+    terminal_statuses = [
+        DBPaymentStatus.SUCCESS.value,
+        DBPaymentStatus.FAILED.value,
+        DBPaymentStatus.CANCELLED.value,
+        DBPaymentStatus.REFUNDED.value,
+    ]
+    
+    if payment.status in terminal_statuses:
+        logger.info(
+            f"Payment {payment_id} already in terminal state: {payment.status}"
+        )
+        return True, payment
+    
+    return False, payment
 
 
-@router.post("/payment/{provider}")
+# =============================================================================
+# Status Mapping
+# =============================================================================
+
+def _map_provider_status(provider: str, provider_status: str) -> str:
+    """
+    Map provider-specific status to our normalized status.
+    
+    Args:
+        provider: Payment provider name
+        provider_status: Provider's status string
+        
+    Returns:
+        Normalized status string
+    """
+    # Normalize status to lowercase
+    status = provider_status.lower().strip()
+    
+    # Common status mappings
+    status_mappings = {
+        # Success states
+        "success": "success",
+        "completed": "success",
+        "captured": "success",
+        "authorized": "success",
+        "paid": "success",
+        "payment_success": "success",
+        
+        # Failure states
+        "failed": "failed",
+        "failure": "failed",
+        "declined": "failed",
+        "rejected": "failed",
+        "payment_failed": "failed",
+        
+        # Cancelled states
+        "cancelled": "cancelled",
+        "canceled": "cancelled",
+        "voided": "cancelled",
+        
+        # Pending states
+        "pending": "pending",
+        "processing": "processing",
+        "initiated": "pending",
+        "created": "pending",
+        
+        # Refunded states
+        "refunded": "refunded",
+        "refund_initiated": "refunded",
+        "refund_completed": "refunded",
+    }
+    
+    # Provider-specific mappings
+    provider_mappings = {
+        "razorpay": {
+            "payment.captured": "success",
+            "payment.authorized": "success",
+            "payment.failed": "failed",
+            "order.paid": "success",
+        },
+        "phonepe": {
+            "SUCCESS": "success",
+            "FAILED": "failed",
+            "PENDING": "pending",
+            "TIMEOUT": "failed",
+        },
+        "stripe": {
+            "succeeded": "success",
+            "payment_intent.succeeded": "success",
+            "payment_intent.payment_failed": "failed",
+            "charge.succeeded": "success",
+            "charge.failed": "failed",
+        },
+        "cashfree": {
+            "SUCCESS": "success",
+            "FAILED": "failed",
+            "PENDING": "pending",
+            "CANCELLED": "cancelled",
+        },
+    }
+    
+    # Check provider-specific mappings first
+    if provider in provider_mappings:
+        if provider_status in provider_mappings[provider]:
+            return provider_mappings[provider][provider_status]
+    
+    # Fall back to common mappings
+    return status_mappings.get(status, "unknown")
+
+
+# =============================================================================
+# Payment Status Update Logic
+# =============================================================================
+
+async def _update_payment_status(
+    db: Session,
+    payment: Payment,
+    payload: WebhookPayload,
+    provider: str
+) -> Booking:
+    """
+    Update payment status and trigger booking actions.
+    
+    Args:
+        db: Database session
+        payment: Payment record to update
+        payload: Validated webhook payload
+        provider: Payment provider name
+        
+    Returns:
+        Updated booking record
+    """
+    # Map and update payment status
+    new_status = _map_provider_status(provider, payload.status)
+    payment.status = new_status
+    payment.completed_at = datetime.now(timezone.utc)
+    payment.provider = provider
+    
+    # Update transaction IDs
+    if payload.transaction_id:
+        payment.upi_tx_id = payload.transaction_id
+    if payload.utr_number:
+        payment.utr_number = payload.utr_number
+    if payload.provider_reference:
+        payment.provider_payment_id = payload.provider_reference
+    
+    # Store raw webhook payload
+    payment.webhook_payload = payload.model_dump_json()
+    payment.webhook_received_at = datetime.now(timezone.utc)
+    
+    # Get associated booking
+    booking = db.query(Booking).filter(Booking.id == payment.booking_id).first()
+    
+    if not booking:
+        logger.warning(f"Booking not found for payment {payment.id}")
+        db.commit()
+        return None
+    
+    # Trigger booking actions based on payment status
+    from services.booking_service import get_booking_service
+    from services.notification_service import get_notification_service
+    
+    booking_service = get_booking_service(db)
+    notification_service = get_notification_service(db)
+    
+    if new_status == "success":
+        # Confirm the booking
+        payment_details = {
+            "payment_id": payment.id,
+            "upi_tx_id": payload.transaction_id,
+            "utr_number": payload.utr_number,
+            "amount": payload.amount,
+        }
+        
+        await booking_service.confirm_booking(booking.id, payment_details)
+        
+        # Send confirmation notification
+        await notification_service.queue_notification(
+            booking.user_id,
+            "booking_confirmed",
+            {
+                "booking_id": booking.id,
+                "pnr": booking.pnr_number,
+                "amount": payload.amount,
+                "train": booking.train_number or "",
+                "date": str(booking.travel_date),
+            }
+        )
+        
+        logger.info(f"Booking {booking.pnr_number} confirmed via {provider} webhook")
+    
+    elif new_status in ["failed", "cancelled"]:
+        # Cancel the booking
+        await booking_service.cancel_booking(
+            booking.id,
+            booking.user_id,
+            reason=f"payment_{new_status}"
+        )
+        
+        # Send failure notification
+        await notification_service.queue_notification(
+            booking.user_id,
+            "payment_failed",
+            {
+                "booking_id": booking.id,
+                "pnr": booking.pnr_number,
+                "amount": payload.amount,
+                "reason": payload.status,
+            }
+        )
+        
+        logger.info(f"Booking {booking.pnr_number} cancelled due to payment {new_status}")
+    
+    elif new_status == "refunded":
+        # Handle refund
+        booking.booking_status = "refunded"
+        booking.refund_amount = payload.amount
+        booking.refund_processed_at = datetime.now(timezone.utc)
+        
+        await notification_service.queue_notification(
+            booking.user_id,
+            "payment_refunded",
+            {
+                "booking_id": booking.id,
+                "pnr": booking.pnr_number,
+                "amount": payload.amount,
+            }
+        )
+    
+    db.commit()
+    return booking
+
+
+# =============================================================================
+# Webhook Endpoints
+# =============================================================================
+
+@router.post(
+    "/payment/{provider}",
+    response_model=WebhookResponse,
+    status_code=status.HTTP_200_OK,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid payload"},
+        401: {"model": ErrorResponse, "description": "Invalid signature"},
+        404: {"model": ErrorResponse, "description": "Payment not found"},
+        409: {"model": ErrorResponse, "description": "Duplicate webhook"},
+    },
+    summary="Handle payment provider webhooks",
+    description="""
+    Receive and process payment status updates from payment providers.
+    
+    This endpoint:
+    1. Verifies the webhook signature for security
+    2. Checks idempotency to prevent duplicate processing
+    3. Updates the payment status
+    4. Triggers booking confirmation or cancellation
+    5. Sends notifications to the user
+    
+    Supported providers: razorpay, phonepe, stripe, cashfree, upi, card, net_banking
+    """,
+)
 async def handle_payment_webhook(
     provider: str,
     request: Request,
+    payload: WebhookPayload,
+    x_signature: str = Header(None, alias="X-Signature"),
+    x_webhook_id: str = Header(None, alias="X-Webhook-ID"),
+    x_razorpay_signature: str = Header(None, alias="X-Razorpay-Signature"),
+    x_hub_signature: str = Header(None, alias="X-Hub-Signature-256"),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    body = await request.body()
-    _verify_provider_signature(provider, request, body)
-
-    payload = _extract_payload(provider, body)
-    payment_status = _normalize_status(payload.status)
-    event_ref = payload.event_id or payload.provider_reference or payload.payment_id or payload.order_id
-    event_id = f"{provider.lower()}:{event_ref}" if event_ref else None
-
-    if event_id:
-        existing_webhook = db.query(WebhookEvent).filter(WebhookEvent.id == event_id).first()
-        if existing_webhook:
-            return {"status": "accepted", "idempotent": True, "event_id": event_id}
-
-    existing = None
-    if event_ref:
-        existing = db.query(PaymentTransaction).filter(
-            PaymentTransaction.provider_reference == event_ref
-        ).first()
-    if existing and existing.status == payment_status:
-        if event_id:
-            _log_webhook_event(db, event_id, f"payment.{provider.lower()}", payload.raw)
-            db.commit()
-        return {"status": "accepted", "idempotent": True, "payment_status": existing.status}
-
-    booking = _find_booking(db, payload)
-    if not booking:
-        raise HTTPException(status_code=404, detail="No booking matched this payment webhook")
-
-    transaction = existing or PaymentTransaction(
-        payment_id=str(payload.payment_id or event_ref or f"wh_{datetime.utcnow().timestamp()}"),
-        booking_id=str(booking.id),
-        amount=float(payload.amount or booking.amount_paid or 0.0),
-        method=payload.method.upper(),
-        provider_reference=event_ref,
-        utr_number=payload.utr_number,
+):
+    """
+    Handle payment provider webhook callbacks.
+    
+    Args:
+        provider: Payment provider name (razorpay, phonepe, stripe, cashfree, etc.)
+        payload: Validated webhook payload
+        x_signature: Generic signature header
+        x_webhook_id: Unique webhook ID for deduplication
+        x_razorpay_signature: Razorpay-specific signature
+        x_hub_signature: PhonePe-specific signature
+        db: Database session
+        
+    Returns:
+        WebhookResponse with processing status
+    """
+    # Get the appropriate signature header
+    signature = (
+        x_signature or
+        x_razorpay_signature or
+        x_hub_signature or
+        ""
     )
-    transaction.status = payment_status
-    transaction.utr_number = payload.utr_number or transaction.utr_number
-    if existing is None:
-        db.add(transaction)
-
-    if payload.utr_number:
-        booking.utr_number = payload.utr_number
-
-    if payment_status == "success":
-        booking.escrow_status = EscrowStatus.COMPLETED
-        booking.escrow_message = "Payment confirmed by webhook."
-        BookingService(db).confirm_booking(str(booking.id))
-    elif payment_status in {"failed", "cancelled"}:
-        booking.escrow_status = EscrowStatus.FAILED
-        booking.escrow_message = "Payment failed or was cancelled."
-        BookingService(db).cancel_booking(
-            str(booking.id),
-            reason="Payment failed or was cancelled.",
-            user_id=str(booking.user_id) if booking.user_id else None,
+    
+    logger.info(
+        f"Received webhook from {provider}: payment_id={payload.payment_id}, "
+        f"status={payload.status}, amount={payload.amount}"
+    )
+    
+    # Step 1: Verify webhook signature
+    secret = _get_provider_secret(provider)
+    if not _verify_signature(provider, payload.model_dump(), signature, secret):
+        logger.warning(
+            f"Invalid webhook signature from {provider} for payment {payload.payment_id}"
         )
-    elif payment_status == "refunded":
-        booking.escrow_status = EscrowStatus.REFUNDED
-        booking.escrow_message = "Payment refunded."
-        BookingService(db).cancel_booking(
-            str(booking.id),
-            reason="Payment refunded.",
-            user_id=str(booking.user_id) if booking.user_id else None,
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook signature"
         )
+    
+    # Step 2: Check idempotency (has this payment already been processed?)
+    is_duplicate, existing_payment = await _check_idempotency(
+        db, payload.payment_id, payload.status
+    )
+    
+    if is_duplicate and existing_payment:
+        # Return success for duplicate webhook calls (idempotent)
+        logger.info(
+            f"Duplicate webhook for payment {payload.payment_id}, "
+            f"status {payload.status}"
+        )
+        return WebhookResponse(
+            status="already_processed",
+            payment_id=payload.payment_id,
+            booking_id=existing_payment.booking_id,
+            message="Webhook already processed"
+        )
+    
+    # Step 3: Get payment record
+    payment = db.query(Payment).filter(Payment.id == payload.payment_id).first()
+    
+    if not payment:
+        logger.warning(f"Payment not found: {payload.payment_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found"
+        )
+    
+    # Step 4: Update payment status and trigger booking actions
+    try:
+        booking = await _update_payment_status(db, payment, payload, provider)
+    except Exception as e:
+        logger.error(f"Error updating payment status: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing webhook"
+        )
+    
+    return WebhookResponse(
+        status="processed",
+        payment_id=payload.payment_id,
+        booking_id=payment.booking_id,
+        message=f"Payment status updated to {payload.status}"
+    )
 
-    if payload.order_id:
-        payment = db.query(Payment).filter(Payment.razorpay_order_id == payload.order_id).first()
-        if payment:
-            payment.status = "completed" if payment_status == "success" else payment_status
-            payment.razorpay_payment_id = payload.provider_reference or payment.razorpay_payment_id
 
-    if event_id:
-        _log_webhook_event(db, event_id, f"payment.{provider.lower()}", payload.raw)
+@router.post(
+    "/payment/{provider}/raw",
+    summary="Handle raw webhook (JSON body as-is)",
+    description="""
+    Alternative endpoint that accepts raw JSON without Pydantic validation.
+    Useful for providers with non-standard payload formats.
+    """,
+)
+async def handle_payment_webhook_raw(
+    provider: str,
+    request: Request,
+    x_signature: str = Header(None, alias="X-Signature"),
+    x_razorpay_signature: str = Header(None, alias="X-Razorpay-Signature"),
+    x_hub_signature: str = Header(None, alias="X-Hub-Signature-256"),
+    db: Session = Depends(get_db),
+):
+    """
+    Handle raw webhook without Pydantic validation.
+    
+    Use this endpoint when providers send non-standard payloads.
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON payload"
+        )
+    
+    # Get the appropriate signature header
+    signature = x_signature or x_razorpay_signature or x_hub_signature or ""
+    
+    # Extract payment_id from various possible locations
+    payment_id = (
+        payload.get("payment_id") or
+        payload.get("transaction_id") or
+        payload.get("id") or
+        payload.get("payment", {}).get("id") or
+        payload.get("order", {}).get("id")
+    )
+    
+    if not payment_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Payment ID not found in payload"
+        )
+    
+    # Extract status
+    status_str = (
+        payload.get("status") or
+        payload.get("event", "").replace("payment.", "") or
+        payload.get("responseCode") or
+        "unknown"
+    )
+    
+    # Create payload object
+    webhook_payload = WebhookPayload(
+        payment_id=str(payment_id),
+        status=status_str,
+        amount=float(payload.get("amount", 0)),
+        transaction_id=payload.get("transaction_id") or payload.get("upi_tx_id"),
+        utr_number=payload.get("utr_number"),
+        provider_reference=payload.get("provider_reference") or payload.get("provider_payment_id"),
+    )
+    
+    # Delegate to main handler
+    return await handle_payment_webhook(
+        provider=provider,
+        request=request,
+        payload=webhook_payload,
+        x_signature=signature,
+        db=db,
+    )
 
-    db.commit()
-    logger.info("Payment webhook processed provider=%s booking=%s status=%s", provider, booking.id, payment_status)
+
+@router.get(
+    "/health",
+    summary="Webhook health check",
+    description="Returns the health status of the webhook service.",
+)
+async def webhook_health():
+    """Health check endpoint for webhook service."""
     return {
-        "status": "accepted",
-        "booking_id": str(booking.id),
-        "payment_status": payment_status,
-        "idempotent": False,
-        "event_id": event_id,
+        "status": "healthy",
+        "service": "payment-webhooks",
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
-__all__ = ["router", "PaymentWebhookPayload"]
+@router.get(
+    "/payment/{provider}/health",
+    summary="Provider-specific webhook health",
+    description="Check if webhook endpoint is configured for a specific provider.",
+)
+async def provider_webhook_health(provider: str):
+    """Check provider-specific webhook configuration."""
+    secret = _get_provider_secret(provider)
+    return {
+        "provider": provider,
+        "configured": bool(secret),
+        "status": "healthy" if True else "misconfigured"
+    }

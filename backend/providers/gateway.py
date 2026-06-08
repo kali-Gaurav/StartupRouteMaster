@@ -11,7 +11,7 @@ from datetime import datetime, date
 
 from sqlalchemy import select, update
 from database.session import AsyncSessionUser
-from database.models import APIBudget
+from database.models import APIBudget, SeatInventory
 
 from .models import UnifiedLiveStatus, UnifiedFare, UnifiedPNRStatus, UnifiedSchedule
 from .clients.rapidapi import RapidApiClient, to_unified_live_status as rapidapi_to_unified
@@ -143,7 +143,7 @@ class ProviderGateway:
             try:
                 raw_data = await self._safe_fetch_rapidapi(self.rapidapi_client.get_live_status, train_number, train_date=train_date)
                 lat = (time.perf_counter() - start) * 1000
-                from core.metrics import jit_metrics
+                from core.infrastructure.metrics import jit_metrics
                 
                 if raw_data:
                     health_sentinel.record_signal("RapidAPI", lat, True)
@@ -159,7 +159,7 @@ class ProviderGateway:
             except Exception as e:
                 lat = (time.perf_counter() - start) * 1000
                 health_sentinel.record_signal("RapidAPI", lat, False)
-                from core.metrics import jit_metrics
+                from core.infrastructure.metrics import jit_metrics
                 jit_metrics.record_provider_call("rapidapi", False, lat)
                 logger.warning(f"RapidAPI failover trigger: {str(e)[:50]}")
         else:
@@ -215,6 +215,42 @@ class ProviderGateway:
                     return availability
             except Exception as e:
                 logger.warning(f"Seat availability lookup failed: {e}")
+
+        # --- [Task 121.2] Local Inventory Fallback ---
+        try:
+            async with AsyncSessionUser() as session:
+                # Convert travel_date string to date object
+                try:
+                    j_date = datetime.strptime(travel_date, "%d-%m-%Y").date()
+                except ValueError:
+                    try:
+                        j_date = datetime.strptime(travel_date, "%Y-%m-%d").date()
+                    except ValueError:
+                        j_date = datetime.utcnow().date()
+
+                query = select(SeatInventory).filter(
+                    SeatInventory.train_number == train_number,
+                    SeatInventory.journey_date == j_date,
+                    SeatInventory.class_type == cls,
+                    SeatInventory.quota == quota
+                )
+                result = await session.execute(query)
+                inv = result.scalar_one_or_none()
+                
+                if inv:
+                    logger.info(f"📦 [GATEWAY] Local Inventory Hit for {train_number} on {j_date}")
+                    # Map to RapidAPI-compatible format
+                    return [{
+                        "date": travel_date,
+                        "current_status": inv.status_text or f"AVAILABLE {inv.available_seats}",
+                        "seat_avl": str(inv.available_seats),
+                        "total_fare": "0", # Fares handled by separate step
+                        "probability": "0.95",
+                        "source": "local_inventory"
+                    }]
+        except Exception as e:
+            logger.error(f"Local inventory fallback failed: {e}")
+
         return None
 
     async def get_pnr_status(self, pnr: str) -> Optional[UnifiedPNRStatus]:
@@ -274,7 +310,7 @@ class ProviderGateway:
         try:
             raw_data = await self._safe_fetch_ntes(self.ntes_client.get_live_station, station_code, within_hours)
             lat = (time.perf_counter() - start) * 1000
-            from core.metrics import jit_metrics
+            from core.infrastructure.metrics import jit_metrics
             
             if raw_data:
                 jit_metrics.record_provider_call("ntes_scraper_station", True, lat)

@@ -333,13 +333,19 @@ class DynamicPricingEngine:
             mult = self.demand_curve.calculate_multiplier(fill_rate, elasticity)
             working_fare *= mult
             components["demand_multiplier"] = mult
-            fare_type = FareType.DYNAMIC
+            if fare_type == FareType.GENERAL:
+                fare_type = FareType.DYNAMIC
+            elif fare_type == FareType.TATKAL:
+                fare_type = FareType.PREMIUM_TATKAL
 
         elif strategy == PricingStrategy.TIME_DECAY:
             surge = self.time_surge.calculate_surge(days_until, fill_rate, self.config)
             working_fare *= surge
             components["urgency_surge"] = surge
-            fare_type = FareType.DYNAMIC
+            if fare_type == FareType.GENERAL:
+                fare_type = FareType.DYNAMIC
+            elif fare_type == FareType.TATKAL:
+                fare_type = FareType.PREMIUM_TATKAL
 
         elif strategy == PricingStrategy.YIELD_MAX:
             optimal, reason = self.yield_optimizer.calculate_optimal_price(
@@ -348,14 +354,20 @@ class DynamicPricingEngine:
             )
             working_fare = optimal
             components["yield_reason"] = 0.0  # Placeholder for numeric dict
-            fare_type = FareType.DYNAMIC
+            if fare_type == FareType.GENERAL:
+                fare_type = FareType.DYNAMIC
+            elif fare_type == FareType.TATKAL:
+                fare_type = FareType.PREMIUM_TATKAL
 
         elif strategy == PricingStrategy.COMPETITIVE:
             anchored, reason = self.competitive_pricer.anchor_price(
                 working_fare, competitors or [], 0, self.config
             )
             working_fare = anchored
-            fare_type = FareType.DYNAMIC
+            if fare_type == FareType.GENERAL:
+                fare_type = FareType.DYNAMIC
+            elif fare_type == FareType.TATKAL:
+                fare_type = FareType.PREMIUM_TATKAL
 
         # 3. Composite: Blend demand + time for best accuracy
         if strategy == PricingStrategy.DEMAND_CURVE:
@@ -388,17 +400,42 @@ class DynamicPricingEngine:
             components=components,
             savings_vs_static=round(savings, 2),
             confidence=0.85 if fill_rate > 0 else 0.5,
-            reasoning=f"{strategy.value} | Fill:{fill_rate:.0%} | Days:{days_until} | Surge:{surge_mult:.2f}x",
+            reasoning=f"{fare_type.value} | {strategy.value} | Fill:{fill_rate:.0%} | Days:{days_until} | Surge:{surge_mult:.2f}x",
             guardrail_applied=guardrail_applied
         )
+
+        # Audit Logging
+        audit_logger = logging.getLogger("routemaster.audit.pricing")
+        audit_logger.info(f"Audit: {train_number} | {from_station}->{to_station} | {class_code} | "
+                          f"Base:{base_fare} | Final:{result.dynamic_fare} | Strategy:{strategy.value} | "
+                          f"Reasoning:{result.reasoning}")
+
+        # 4. Cache and Return
+        if len(self._price_cache) > 10000:
+            # Clear 10% oldest if full (simple eviction)
+            keys = sorted(self._price_cache.keys(), key=lambda k: self._price_cache[k][1])[:1000]
+            for k in keys: del self._price_cache[k]
 
         self._price_cache[cache_key] = (result, time.time())
         return result
 
+    def calculate_unlock_fee(self, total_dynamic_fare: float, num_segments: int = 1, is_deep_search: bool = False) -> float:
+        """[Step 24-25] complexity-based pricing with 10% cap."""
+        from core.pricing.fare_calculator import calculate_unlock_fee as base_calc
+        
+        fee = base_calc(num_segments=num_segments, is_deep_search=is_deep_search)
+        
+        # Apply 10% cap
+        cap = total_dynamic_fare * 0.10
+        if fee > cap:
+            fee = cap
+            
+        return round(fee, 2)
+
     async def price_route(self, route, class_code: str = "SL",
                           demand_forecasts=None, db=None) -> List[PricingResult]:
         """Price all segments in a route using demand forecasts."""
-        from services.demand_forecaster import demand_forecaster
+        from services.ml.demand import demand_forecaster
         from core.pricing.fare_calculator import calculate_fare
 
         results = []
@@ -414,7 +451,7 @@ class DynamicPricingEngine:
                 expected_demand = demand_forecasts[i].predicted_demand
 
             result = await self.calculate_dynamic_fare(
-                base_fare=base, train_number=str(seg.train_number),
+                base_fare=base["base_fare"], train_number=str(seg.train_number),
                 from_station=getattr(seg, 'departure_code', ''),
                 to_station=getattr(seg, 'arrival_code', ''),
                 travel_date=travel_date, class_code=class_code,

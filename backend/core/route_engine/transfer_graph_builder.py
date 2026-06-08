@@ -14,8 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 
-from core.data_structures import TransferConnection, RouteSegment
-from core.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
+from core.data_utils.structures import TransferConnection, RouteSegment
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +205,7 @@ class TransferGraphBuilder:
                     t_type = "WALK"
                     
                     def get_tier(code):
+                        from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
                         if code in MEGA_HUBS: return 'MEGA'
                         if code in MAJOR_HUBS: return 'MAJOR'
                         if code in REGIONAL_HUBS: return 'REGIONAL'
@@ -296,6 +296,7 @@ class TransferGraphBuilder:
         def get_station_type(stop: Stop) -> str:
             if not stop: return 'SMALL'
             stop_code = str(cast(Any, stop.code))
+            from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
             if stop_code in MEGA_HUBS: return 'MEGA'
             if stop_code in MAJOR_HUBS: return 'MAJOR'
             if stop_code in REGIONAL_HUBS: return 'REGIONAL'

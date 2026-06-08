@@ -12,15 +12,15 @@ from .graph import TimeDependentGraph, StaticGraphSnapshot, RealtimeOverlay
 from .builder import GraphBuilder
 from .snapshot_manager import SnapshotManager
 from .constraints import RouteConstraints
-from core.data_structures import Route, Persona
+from core.data_utils.structures import Route, Persona
 from .orchestrator import UnifiedRoutingOrchestrator
 from services import multi_layer_cache
 from services.r2_sync_service import r2_sync
 
 logger = logging.getLogger(__name__)
 
-from core.providers import ServiceProvider
-from core.container import container
+from core.integration.providers import ServiceProvider
+from core.infrastructure.container import container
 
 class RailwayRouteEngine(ServiceProvider):
     _instance = None
@@ -51,7 +51,7 @@ class RailwayRouteEngine(ServiceProvider):
 
     async def init(self, date_override: Optional[datetime] = None, force_rebuild: bool = False):
         """IoC Lifecycle: Ensure graph is warm."""
-        from core.providers import ServiceStatus
+        from core.integration.providers import ServiceStatus
         if self.status == ServiceStatus.HEALTHY and not force_rebuild:
             return
             
@@ -152,7 +152,7 @@ class RailwayRouteEngine(ServiceProvider):
 
     async def _predictive_hydration(self, graph: TimeDependentGraph):
         try:
-            from core.hubs import MAJOR_HUBS
+            from core.engines.hubs import MAJOR_HUBS
             logger.info("🧠 Predictive JIT: Hydrating major hub segments...")
             hub_ids = [cast(int, stop.id) for code in list(MAJOR_HUBS)[:20] if (stop := graph.get_stop_by_code(code))]
             for hid in hub_ids:

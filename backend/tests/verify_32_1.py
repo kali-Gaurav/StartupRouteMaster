@@ -1,4 +1,4 @@
-from core.data_structures import Route, RouteSegment
+from core.data_utils.structures import Route, RouteSegment
 from datetime import datetime
 
 def verify_subtask_32_1():

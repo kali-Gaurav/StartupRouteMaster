@@ -3,7 +3,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '@/lib/supabase';
+import { auth } from '@/lib/firebase';
+import { createUserWithEmailAndPassword, updateProfile, sendEmailVerification } from 'firebase/auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -39,18 +40,15 @@ const SignupPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const { error: authError } = await supabase.auth.signUp({
-        email: data.email,
-        password: data.password,
-        options: {
-          data: {
-            full_name: data.fullName,
-          },
-          emailRedirectTo: `${window.location.origin}/dashboard`,
-        }
+      const userCredential = await createUserWithEmailAndPassword(auth, data.email, data.password);
+      
+      // Update display name
+      await updateProfile(userCredential.user, {
+        displayName: data.fullName
       });
 
-      if (authError) throw authError;
+      // Send verification email
+      await sendEmailVerification(userCredential.user);
 
       setSuccess(true);
       toast.success("Account created!", {
@@ -58,8 +56,9 @@ const SignupPage = () => {
       });
     } catch (err: any) {
         console.error("Signup failed:", err);
-        setError(err.message || "Failed to create account. Please try again.");
-        toast.error("Signup failed", { description: err.message || "Please try again." });
+        const msg = err.code === 'auth/email-already-in-use' ? 'Email already in use.' : (err.message || "Failed to create account.");
+        setError(msg);
+        toast.error("Signup failed", { description: msg });
     } finally {
       setLoading(false);
     }

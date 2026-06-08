@@ -17,11 +17,11 @@ from unittest.mock import Mock, AsyncMock, patch
 from collections import deque
 
 # Import resilience patterns
-from core.resilience import (
+from core.resilience.core import (
     CircuitBreaker, CircuitState, CircuitConfig, CircuitBreakerManager,
-    CircuitOpenError, circuit_breaker_manager
+    CircuitOpenError, circuit_manager
 )
-from core.retry import (
+from core.resilience.retry import (
     retry, retry_sync, RetryPolicy, RETRY_POLICY_FAST,
     RETRY_POLICY_EXTERNAL_API, RETRY_POLICY_CRITICAL
 )
@@ -320,7 +320,7 @@ class TestServiceResilience:
     @pytest.mark.asyncio
     async def test_aegis_forge_service_resilience(self):
         """Test Aegis Forge service has resilience patterns."""
-        from services.aegis_forge_service import aegis_forge_service
+        from services.security.aegis_forge import aegis_forge_service
         
         # Check circuit breaker exists
         assert hasattr(aegis_forge_service, '_service_breaker')
@@ -353,7 +353,7 @@ class TestServiceResilience:
     @pytest.mark.asyncio
     async def test_recovery_service_resilience(self):
         """Test recovery service has resilience patterns."""
-        from services.recovery_service import smart_retry_hub
+        from services.orchestration.recovery import smart_retry_hub
         
         # Check circuit breaker exists
         assert hasattr(smart_retry_hub, '_retry_breaker')
@@ -364,7 +364,7 @@ class TestServiceResilience:
     @pytest.mark.asyncio
     async def test_settlement_service_resilience(self):
         """Test settlement service has resilience patterns."""
-        from services.settlement_service import settlement_service
+        from services.finance.settlement import settlement_service
         
         # Check circuit breakers exist
         assert hasattr(settlement_service, '_db_breaker')
@@ -395,7 +395,7 @@ class TestServiceResilience:
     @pytest.mark.asyncio
     async def test_feedback_loop_resilience(self):
         """Test feedback loop has resilience patterns."""
-        from services.feedback_loop import feedback_loop
+        from services.intelligence.feedback_loop_enhanced import feedback_loop
         
         # Check circuit breaker exists
         assert hasattr(feedback_loop, '_operation_breaker')

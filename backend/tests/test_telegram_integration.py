@@ -274,12 +274,12 @@ class TestResilienceIntegration:
     async def test_circuit_breaker_integration(self):
         """Test circuit breaker integration with dispatcher."""
         from telegram_bot.dispatcher import TelegramDispatcher
-        from core.resilience import circuit_breaker_manager
+        from core.resilience.core import circuit_manager
         
         dispatcher = TelegramDispatcher()
         
         # Check circuit breaker is configured
-        breaker = circuit_breaker_manager.get_breaker("telegram_dispatcher")
+        breaker = circuit_manager.get_breaker("telegram_dispatcher")
         assert breaker is not None
         
         # Check initial state

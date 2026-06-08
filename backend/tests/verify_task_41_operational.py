@@ -5,7 +5,7 @@ from database.session import get_async_db
 from database.models import User, Subscription
 from services.subscription_service import SubscriptionService
 from services.reconciliation_service import ReconciliationService
-from core.container import container
+from core.infrastructure.container import container
 
 async def full_audit_verification():
     # 1. Initialize Container

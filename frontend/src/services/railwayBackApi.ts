@@ -47,7 +47,7 @@ export async function suggestStationsApi(
     q: trimmed,
     limit: String(effectiveLimit),
   });
-  const res = await fetch(getRailwayApiUrl(`/stations/suggest?${params.toString()}`), {
+  const res = await fetch(getRailwayApiUrl(`/api/v1/stations/suggest?${params.toString()}`), {
     signal,
   });
   if (!res.ok) {
@@ -199,6 +199,7 @@ export interface SearchRoutesParams {
   routeSource?: string;
   discoveryOnly?: boolean;
   engineModel?: string;
+  womenSafetyPriority?: boolean;
 }
 
 export interface LoadMoreParams {
@@ -244,20 +245,24 @@ export async function searchRoutesApi(
   if (params?.engineModel) {
     queryParams.append('engine_model', params.engineModel);
   }
-
-  const url = getRailwayApiUrl(`/api/v3/search/unified?${queryParams.toString()}`);
   
+  if (params?.womenSafetyPriority) {
+    queryParams.append('women_safety_priority', 'true');
+  }
+
+  const url = getRailwayApiUrl(`/api/v1/search/routes?${queryParams.toString()}`);
+
   const headers: HeadersInit = { 'Accept': 'application/json' };
   if (params?.correlationId) headers['X-Correlation-Id'] = params.correlationId;
-  
+
   const res = await fetch(url, {
     method: 'GET',
     headers
   });
-  
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.message || `Routes search (V2) failed: ${res.status}`);
+    throw new Error(err.message || `Routes search failed: ${res.status}`);
   }
 
   return (await res.json()) as BackendRoutesResponse;
@@ -397,15 +402,56 @@ export async function unlockJourneyDetailsApi(
 }
 
 export async function getTrainStatusApi(trainNumber: string): Promise<any> {
-  const res = await fetch(getRailwayApiUrl(`/realtime/train/${trainNumber}/status`));
+  const res = await fetch(getRailwayApiUrl(`/api/v1/live/train/${trainNumber}`));
   if (!res.ok) throw new Error('Failed to fetch train status');
-  return res.json();
+  const raw = await res.json();
+
+  // Normalize rappid.in response into the shape TrainTracking.tsx expects:
+  // statusData.live_status.{train_name, delay_minutes, current_station, next_station, badge_color}
+  // statusData.estimated_position.{progress_percentage, last_station.name, next_station.name}
+  const route: any[] = raw.route || [];
+  const total = route.length;
+  const currentIdx = route.findIndex((s: any) => s.is_current);
+  const progressPct = total > 1
+    ? Math.round((currentIdx >= 0 ? currentIdx / (total - 1) : 0) * 100)
+    : 0;
+
+  const lastStation = currentIdx > 0 ? route[currentIdx - 1] : (route[0] || null);
+  const nextStation = currentIdx >= 0 && currentIdx + 1 < total ? route[currentIdx + 1] : (route[total - 1] || null);
+
+  return {
+    ...raw,
+    // Fields TrainTracking.tsx reads via statusData.live_status.*
+    live_status: {
+      train_name: raw.train_name || `Train ${trainNumber}`,
+      train_number: raw.train_number || trainNumber,
+      delay_minutes: raw.delay_minutes || 0,
+      current_station: raw.current_station || '',
+      next_station: raw.next_station || '',
+      status_label: raw.status_label || 'On Time',
+      badge_color: raw.badge_color || 'green',
+      on_time: raw.on_time ?? true,
+      updated: raw.updated || '',
+      route: route,
+    },
+    // Fields TrainTracking.tsx reads via statusData.estimated_position.*
+    estimated_position: {
+      progress_percentage: progressPct,
+      last_station: lastStation ? { name: lastStation.station_name, code: '' } : null,
+      next_station: nextStation ? { name: nextStation.station_name, code: '' } : null,
+      current_station_name: raw.current_station || '',
+    },
+  };
 }
 
 export async function getStatsRailway(): Promise<{ total_stations?: number; total_trains?: number }> {
-  const res = await fetch(getRailwayApiUrl('/stats'));
-  if (!res.ok) return {};
-  return res.json();
+  try {
+    const res = await fetch(getRailwayApiUrl('/stats'), { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
 }
 
 export function getSearchHistory(): any[] {

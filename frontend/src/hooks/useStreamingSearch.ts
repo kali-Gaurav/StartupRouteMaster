@@ -31,7 +31,7 @@ interface UseStreamingSearchResult {
   error: string | null;
   latencyMs: number | null;
   metadata: any | null;
-  startSearch: (source: string, destination: string, date: string, persona?: string) => Promise<void>;
+  startSearch: (source: string, destination: string, date: string, persona?: string, womenSafetyPriority?: boolean) => Promise<void>;
   cancelSearch: () => void;
 }
 
@@ -54,7 +54,7 @@ export function useStreamingSearch(
   }, []);
 
   const startSearch = useCallback(
-    (source: string, destination: string, date: string, persona = "ECONOMY") => {
+    (source: string, destination: string, date: string, persona = "ECONOMY", womenSafetyPriority = false) => {
       // Cancel any in-flight search
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -74,6 +74,9 @@ export function useStreamingSearch(
       url.searchParams.set("destination", destination.toUpperCase());
       url.searchParams.set("date", date);
       url.searchParams.set("persona", persona);
+      if (womenSafetyPriority) {
+        url.searchParams.set("women_safety_priority", "true");
+      }
 
       const parseEvent = (rawEvent: string) => {
         const lines = rawEvent.split(/\r?\n/);

@@ -5,8 +5,8 @@ import time
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from database.session import get_db
-from core.system_monitor import system_monitor
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from core.infrastructure.system_monitor import system_monitor
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 from typing import Dict, Any
@@ -70,7 +70,7 @@ async def analytics_worker():
     Task 7.5: Redis-Streams Consumer (Message Queue).
     Asynchronously processes events produced by the Gateway.
     """
-    from core.lifespan import get_redis
+    from core.infrastructure.lifespan import get_redis
     redis = await get_redis()
     if not redis:
         logger.error("❌ Analytics Worker: Redis unavailable.")
@@ -99,8 +99,8 @@ async def analytics_worker():
 @app.on_event("startup")
 async def startup_event():
     # Task 7.6: Auto-Registration with Heartbeat
-    from core.service_discovery import ServiceRegistry
-    from core.lifespan import get_redis
+    from core.integration.discovery import ServiceRegistry
+    from core.infrastructure.lifespan import get_redis
     redis = await get_redis()
     if redis:
         registry = ServiceRegistry(redis)

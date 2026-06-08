@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from datetime import datetime, timedelta
-from core.data_structures import Route, RouteSegment, Persona, Passenger, TransferConnection
+from core.data_utils.structures import Route, RouteSegment, Persona, Passenger, TransferConnection
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.base import RoutingRequest
 from core.route_engine.constraints import RouteConstraints, DiscoveryModel

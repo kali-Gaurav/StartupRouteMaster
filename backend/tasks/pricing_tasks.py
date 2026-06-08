@@ -1,6 +1,6 @@
 from core.celery_app import celery
-from core.redis_client import redis_client
-from services.enhanced_pricing_service import enhanced_pricing_service
+from core.infrastructure.redis_manager import redis_client
+from services.pricing import pricing_orchestrator as enhanced_pricing_service
 import json
 import logging
 

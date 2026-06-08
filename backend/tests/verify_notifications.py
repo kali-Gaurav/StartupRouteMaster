@@ -3,7 +3,7 @@ import uuid
 import logging
 from database.session import SessionUser, init_db
 from database.models import User, NotificationToken, UserAlert, NotificationPreference
-from services.notification_service import notification_service
+from services.communication.notification_service import notification_service
 
 async def verify_task_46():
     print("🧪 Starting Verification for Task 46: Project Live Pulse...")

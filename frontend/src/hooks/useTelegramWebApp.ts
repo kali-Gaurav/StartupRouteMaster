@@ -69,8 +69,40 @@ export function useTelegramWebApp() {
     colorScheme: webApp?.colorScheme ?? "light",
     applyTheme,
     MainButton: mainButton,
+    BackButton: webApp?.BackButton,
     showMainButton,
+    showBackButton: useCallback(
+      (onClick: () => void) => {
+        const backButton = webApp?.BackButton;
+        if (!backButton) return () => {};
+        backButton.onClick(onClick);
+        backButton.show();
+        return () => {
+          backButton.offClick(onClick);
+          backButton.hide();
+        };
+      },
+      [webApp]
+    ),
     openSafeUrl,
     sendData: webApp?.sendData ? (data: string) => webApp.sendData(data) : () => {},
+    hapticFeedback: webApp?.HapticFeedback,
+    cloudStorage: webApp?.CloudStorage ? {
+      setItem: (key: string, value: string) => new Promise<boolean>((resolve, reject) => {
+        webApp.CloudStorage.setItem(key, value, (err, success) => err ? reject(err) : resolve(success));
+      }),
+      getItem: (key: string) => new Promise<string>((resolve, reject) => {
+        webApp.CloudStorage.getItem(key, (err, value) => err ? reject(err) : resolve(value));
+      }),
+      getItems: (keys: string[]) => new Promise<Record<string, string>>((resolve, reject) => {
+        webApp.CloudStorage.getItems(keys, (err, values) => err ? reject(err) : resolve(values));
+      }),
+      removeItem: (key: string) => new Promise<boolean>((resolve, reject) => {
+        webApp.CloudStorage.removeItem(key, (err, success) => err ? reject(err) : resolve(success));
+      }),
+      getKeys: () => new Promise<string[]>((resolve, reject) => {
+        webApp.CloudStorage.getKeys((err, keys) => err ? reject(err) : resolve(keys));
+      })
+    } : undefined
   };
 }

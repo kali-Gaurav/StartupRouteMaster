@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Allow: /pnr
+Allow: /track
+Allow: /trains/
+
+Disallow: /dashboard
+Disallow: /bookings
+Disallow: /ops/
+Disallow: /mini-app/
+
+Sitemap: https://routemaster.vercel.app/sitemap.xml

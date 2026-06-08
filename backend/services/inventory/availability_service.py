@@ -26,15 +26,32 @@ import redis.asyncio as redis
 from database.session import SessionLocal
 from database.models import (
     SeatInventory, QuotaInventory, WaitlistQueue, Coach, Seat,
-    QuotaType, BookingStatus, CoachClass, StopTime
+    QuotaType, BookingStatus, CoachClass, StopTime, Train
 )
 from database.config import Config
 from services.multi_layer_cache import multi_layer_cache, AvailabilityQuery
-from resilience.circuit_breaker import circuit_breaker, CircuitState
-from resilience.retry_policy import retry_policy, RetryStrategy
-from resilience.metrics import track_metrics, MetricsClient
+from services.inventory.rapid_api_client import rapid_api_client
+from resilience import circuit_breaker, CircuitState, RetryStrategy, track_metrics, MetricsClient
+from core.resilience.retry import retry as _db_retry_policy
 
 logger = logging.getLogger(__name__)
+
+# Create circuit breaker decorator for availability checks
+_availability_circuit_breaker = circuit_breaker(
+    name="availability_service",
+    failure_threshold=5,
+    recovery_timeout=30.0
+)
+
+# Create circuit breaker decorator for allocation operations
+_allocation_circuit_breaker = circuit_breaker(
+    name="allocation_service",
+    failure_threshold=3,
+    recovery_timeout=60.0
+)
+
+# Define retry policy for database operations (decorator)
+_db_retry_policy = _db_retry_policy()
 
 
 @dataclass
@@ -73,38 +90,12 @@ class AvailabilityService:
     def __init__(self):
         self.redis: Optional[redis.Redis] = None
         self.cache_ttl = 300  # 5 minutes
-        # Circuit breaker for availability checks
-        self._availability_circuit_breaker = circuit_breaker(
-            name="availability_check",
-            failure_threshold=10,
-            recovery_timeout=60.0
-        )
-        # Circuit breaker for seat allocation
-        self._allocation_circuit_breaker = circuit_breaker(
-            name="seat_allocation",
-            failure_threshold=5,
-            recovery_timeout=120.0
-        )
-        # Retry policies
-        self._db_retry_policy = retry_policy(
-            max_attempts=3,
-            strategy=RetryStrategy.EXPONENTIAL_BACKOFF,
-            base_delay=0.5,
-            max_delay=10.0
-        )
-        self._redis_retry_policy = retry_policy(
-            max_attempts=3,
-            strategy=RetryStrategy.LINEAR_BACKOFF,
-            base_delay=0.1,
-            max_delay=2.0
-        )
+        
         # Metrics tracking
         self._metrics = MetricsClient(
             service_name="availability_service",
             default_tags={"component": "inventory"}
         )
-        self._metrics.gauge("availability_circuit_breaker_state", lambda: self._availability_circuit_breaker.state.value)
-        self._metrics.gauge("allocation_circuit_breaker_state", lambda: self._allocation_circuit_breaker.state.value)
         self._metrics.counter("availability_checks_total")
         self._metrics.counter("availability_checks_hit")
         self._metrics.counter("availability_checks_miss")
@@ -157,11 +148,47 @@ class AvailabilityService:
     @_availability_circuit_breaker
     @_db_retry_policy
     async def _check_availability_db(self, request: AvailabilityRequest) -> AvailabilityResponse:
-
-    async def _check_availability_db(self, request: AvailabilityRequest) -> AvailabilityResponse:
         """Check availability in database"""
         session = SessionLocal()
         try:
+            # Data Resilience: First attempt real API (RapidAPI)
+            train = session.query(Train).filter(Train.id == request.trip_id).first()
+            if train:
+                from_stop_code = await self._get_stop_code(session, request.from_stop_id)
+                to_stop_code = await self._get_stop_code(session, request.to_stop_id)
+                
+                real_time_data = await rapid_api_client.get_seat_availability(
+                    train_number=train.train_number,
+                    from_station=from_stop_code,
+                    to_station=to_stop_code,
+                    date=request.travel_date,
+                    class_type=request.quota_type.value, # Might need mapping
+                    quota="GN" # General by default
+                )
+                
+                if real_time_data:
+                    available_seats = int(real_time_data.get("availableSeats", 0))
+                    total_seats = int(real_time_data.get("totalSeats", 0))
+                    
+                    if available_seats >= request.passengers:
+                        return AvailabilityResponse(
+                            available=True,
+                            available_seats=available_seats,
+                            total_seats=total_seats,
+                            confirmation_probability=1.0,
+                            message=f"{available_seats} seats available via Real-time API"
+                        )
+                    else:
+                        return AvailabilityResponse(
+                            available=False,
+                            available_seats=available_seats,
+                            total_seats=total_seats,
+                            waitlist_position=int(real_time_data.get("waitlistPosition", 0)),
+                            confirmation_probability=0.5,
+                            message="Waitlist via Real-time API"
+                        )
+            
+            # Fallback to local DB Schedule
             # Find all segments that overlap with the requested segment
             overlapping_segments = await self._find_overlapping_segments(
                 session, request.trip_id, request.from_stop_id, request.to_stop_id, request.travel_date
@@ -449,6 +476,12 @@ class AvailabilityService:
 
         finally:
             session.close()
+
+    async def _get_stop_code(self, session: Session, stop_id: int) -> str:
+        """Helper to get stop code from ID"""
+        from database.models import Stop
+        stop = session.query(Stop).filter(Stop.id == stop_id).first()
+        return stop.code if stop else "UNKNOWN"
 
     async def _find_overlapping_segments(self, session: Session, trip_id: int,
                                        from_stop_id: int, to_stop_id: int,

@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.base import RoutingRequest, RoutingResponse
-from core.data_structures import Route, Persona
+from core.data_utils.structures import Route, Persona
 from core.route_engine.constraints import RouteConstraints
 
 class MockEngine:

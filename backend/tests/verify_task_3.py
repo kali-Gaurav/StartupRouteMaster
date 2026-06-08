@@ -1,4 +1,4 @@
-from core.frontier import FrontierRoute, ParetoFrontier, FrontierManager
+from core.engines.frontier import FrontierRoute, ParetoFrontier, FrontierManager
 
 def test_pareto_dominance():
     # Route A: Arrives 10:00 (600), 1 transfer, 60m wait

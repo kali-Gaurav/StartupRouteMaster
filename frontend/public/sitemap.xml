@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <!-- Core pages -->
+  <url><loc>https://routemaster.vercel.app/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>https://routemaster.vercel.app/pnr</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/track</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/station</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/sos</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+
+  <!-- Popular station departure boards -->
+  <url><loc>https://routemaster.vercel.app/station/NDLS</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/BCT</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/HWH</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/MAS</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/SBC</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/SC</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/PUNE</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/PNBE</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/ADI</loc><changefreq>daily</changefreq><priority>0.7</priority></url>
+  <url><loc>https://routemaster.vercel.app/station/JP</loc><changefreq>daily</changefreq><priority>0.7</priority></url>
+
+  <!-- SEO city-pair pages (top routes — high Google search volume) -->
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/mumbai</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/mumbai/new-delhi</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/kolkata</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/kolkata/new-delhi</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/chennai</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/chennai/new-delhi</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/bengaluru</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/bengaluru/new-delhi</loc><changefreq>daily</changefreq><priority>0.95</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/mumbai/pune</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/jaipur</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/lucknow</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/patna</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/amritsar</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/mumbai/ahmedabad</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/chennai/bengaluru</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/bengaluru/hyderabad</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/mumbai/hyderabad</loc><changefreq>daily</changefreq><priority>0.85</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/kolkata/chennai</loc><changefreq>daily</changefreq><priority>0.85</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/varanasi</loc><changefreq>daily</changefreq><priority>0.85</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/new-delhi/guwahati</loc><changefreq>daily</changefreq><priority>0.85</priority></url>
+
+  <!-- Popular train schedules -->
+  <url><loc>https://routemaster.vercel.app/trains/12951/schedule</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12952/schedule</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12301/schedule</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12302/schedule</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12651/schedule</loc><changefreq>weekly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12615/schedule</loc><changefreq>weekly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12627/schedule</loc><changefreq>weekly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12431/schedule</loc><changefreq>weekly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://routemaster.vercel.app/trains/12903/schedule</loc><changefreq>weekly</changefreq><priority>0.75</priority></url>
+
+  <!-- Static pages -->
+  <url><loc>https://routemaster.vercel.app/privacy</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://routemaster.vercel.app/terms</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>
+</urlset>

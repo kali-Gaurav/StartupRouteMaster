@@ -13,7 +13,7 @@ from bisect import bisect_left
 from database.models import Stop
 
 
-from core.data_structures import RouteSegment, TransferConnection, Route
+from core.data_utils.structures import RouteSegment, TransferConnection, Route
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,10 @@ class StaticGraphSnapshot:
     _pattern_segments_index: Optional[np.ndarray] = None
     _pattern_id_map: Dict[int, int] = field(default_factory=dict)
     
+    # [Task 14: Elite] Precomputed Routes Serving Stop
+    _routes_serving_stop_data: Optional[np.ndarray] = None
+    _routes_serving_stop_index: Optional[np.ndarray] = None
+    
     # Nexus Indices
     _trip_stop_pos_map: Dict[int, Dict[int, int]] = field(default_factory=dict)
     _trip_to_pid: Dict[int, int] = field(default_factory=dict)
@@ -223,6 +227,10 @@ class StaticGraphSnapshot:
         self._pattern_segments_data = MemMapManager.load_array(f"p_segs_{ts}")
         self._pattern_segments_index = MemMapManager.load_array(f"p_segs_idx_{ts}")
         
+        # [Task 14] Restore Routes Serving Stop
+        self._routes_serving_stop_data = MemMapManager.load_array(f"rss_{ts}")
+        self._routes_serving_stop_index = MemMapManager.load_array(f"rss_idx_{ts}")
+        
         self._trip_reachability_bitset = MemMapManager.load_array(f"reach_{ts}")
         
         self._transfers_data = MemMapManager.load_array(f"transfers_{ts}")
@@ -280,7 +288,7 @@ class StaticGraphSnapshot:
 
         # [Task 146] Hub Intel Pre-calculation
         # Pre-resolve indices for major hubs to enable zero-latency reachability pruning
-        from core.hubs import MEGA_HUBS, MAJOR_HUBS
+        from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS
         all_hub_codes = MEGA_HUBS | MAJOR_HUBS
         rev_stop_cache = {s.code: s.id for s in self.stop_cache.values()}
         hub_ids = [rev_stop_cache[code] for code in all_hub_codes if code in rev_stop_cache]
@@ -289,9 +297,11 @@ class StaticGraphSnapshot:
         ts = int(self.date.timestamp())
         if self.departures_by_stop:
             all_deps = []; all_p_deps = []
+            all_rss_data = [] # [Task 14]
             idx = np.zeros((len(all_sids), 2), dtype=np.int32)
             p_idx = np.zeros((len(all_sids), 2), dtype=np.int32)
-            off = 0; p_off = 0
+            rss_idx = np.zeros((len(all_sids), 2), dtype=np.int32) # [Task 14]
+            off = 0; p_off = 0; rss_off = 0
             
             for i, sid in enumerate(all_sids):
                 deps = self.departures_by_stop.get(sid, [])
@@ -303,6 +313,12 @@ class StaticGraphSnapshot:
                     p_map[pid].append([pid, int(dt.timestamp()), tid])
                 off += len(deps)
                 
+                # [Task 14] Compute unique pids serving this stop
+                pids_for_stop = sorted(list(p_map.keys()))
+                all_rss_data.extend(pids_for_stop)
+                rss_idx[i] = [rss_off, len(pids_for_stop)]
+                rss_off += len(pids_for_stop)
+
                 # [FIX] Sort by timestamp within the stop slice to enable bisect search
                 stop_p_deps = []
                 for pid in p_map:
@@ -334,6 +350,13 @@ class StaticGraphSnapshot:
             self._pattern_deps_data = MemMapManager.load_array(f"p_deps_{ts}")
             MemMapManager.save_array(f"p_deps_idx_{ts}", p_idx)
             self._pattern_deps_index = MemMapManager.load_array(f"p_deps_idx_{ts}")
+
+            # [Task 14] Save Routes Serving Stop
+            rss_array = np.array(all_rss_data, dtype=np.int32)
+            MemMapManager.save_array(f"rss_{ts}", rss_array)
+            self._routes_serving_stop_data = MemMapManager.load_array(f"rss_{ts}")
+            MemMapManager.save_array(f"rss_idx_{ts}", rss_idx)
+            self._routes_serving_stop_index = MemMapManager.load_array(f"rss_idx_{ts}")
 
         # 1.1 Arrivals (New Vectorized Store)
         if self.arrivals_by_stop:
@@ -391,10 +414,25 @@ class StaticGraphSnapshot:
                 pid = hash(p_key) & 0x7FFFFFFF
                 self._pattern_id_map[pid] = i
                 
+                base_dt = datetime.combine(self.date.date(), datetime.min.time())
                 for seq, s in enumerate(segs):
+                    # [Fix] Calculate absolute seconds from the snapshot's base date
+                    # This ensures dep_time/arr_time in memmap correctly represents day offsets
+                    # (e.g. 1 AM next day = 90000s) instead of being modulo 86400.
+                    dep_dt = s.departure_time if isinstance(s.departure_time, datetime) else s.departure_time # fallback
+                    arr_dt = s.arrival_time if isinstance(s.arrival_time, datetime) else s.arrival_time
+                    
+                    try:
+                        dep_sec = int((dep_dt - base_dt).total_seconds())
+                        arr_sec = int((arr_dt - base_dt).total_seconds())
+                    except:
+                        # Fallback for non-datetime types (should not happen with builder)
+                        dep_sec = s.departure_time_seconds
+                        arr_sec = s.arrival_time_seconds
+
                     all_pattern_segs.append([
                         pid, s.departure_stop_id, s.arrival_stop_id,
-                        s.departure_time_seconds, s.arrival_time_seconds,
+                        dep_sec, arr_sec,
                         int(s.distance_km * 1000), s.service_mask, seq
                     ])
                 p_off += len(segs)
@@ -656,6 +694,20 @@ class TimeDependentGraph:
             return datetime.fromtimestamp(capped_ts)
         except: return datetime(1980, 1, 1)
 
+    def get_routes_serving_stop(self, stop_id: int) -> List[int]:
+        """[Task 14] O(1) access to patterns serving a stop."""
+        if not self.snapshot or self.snapshot._routes_serving_stop_data is None:
+            return []
+        s_idx = self.snapshot._stop_id_map.get(stop_id)
+        if s_idx is None: return []
+        
+        rss_idx = self.snapshot._routes_serving_stop_index
+        rss_data = self.snapshot._routes_serving_stop_data
+        if rss_idx is None or rss_data is None: return []
+        
+        off, count = rss_idx[s_idx]
+        return rss_data[off : off + count].tolist()
+
     def get_pattern_departures(self, stop_id: int, after_time: datetime, lookahead: int = 1440) -> Dict[int, List[Tuple[datetime, int]]]:
         results = defaultdict(list)
         if not self.snapshot or self.snapshot._pattern_deps_data is None:
@@ -812,7 +864,7 @@ class TimeDependentGraph:
                 rel_score = self.snapshot.reliability_scores.get((incoming_trip_id, sid), 0.5)
             else:
                 rel_score = 0.5
-            from core.hubs import get_smart_transfer_buffer
+            from core.engines.hubs import get_smart_transfer_buffer
             eff_min_tr = get_smart_transfer_buffer(str(getattr(stop, 'code', '')), rel_score)
             # If user explicitly requested a MINIMUM time, respect it if it's higher
             eff_min_tr = max(eff_min_tr, min_transfer_time)
@@ -920,6 +972,11 @@ class TimeDependentGraph:
     def get_trip_segments(self, tid: int) -> List[RouteSegment]:
         raw = self.get_trip_segments_raw(tid)
         if raw is None: return []
+        if not self.snapshot: return []
+        
+        # [Fix] Anchor relative timestamps to the snapshot's base date
+        base_ts = int(self.snapshot.date.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        
         delay = self.overlay.get_trip_delay(tid) * 60
         res = []
         for row in raw:
@@ -931,11 +988,11 @@ class TimeDependentGraph:
                 trip_id=tid, 
                 departure_stop_id=int(row['dep_sid']), 
                 arrival_stop_id=int(row['arr_sid']),
-                departure_time=self.safe_fromtimestamp(int(row['dep_time']) + delay),
-                arrival_time=self.safe_fromtimestamp(int(row['arr_time']) + delay),
+                departure_time=self.safe_fromtimestamp(base_ts + int(row['dep_time']) + delay),
+                arrival_time=self.safe_fromtimestamp(base_ts + int(row['arr_time']) + delay),
                 duration_minutes=duration, 
                 distance_km=float(row['dist_m']/1000.0), 
-                service_mask=int(row[6]),
+                service_mask=int(row['service_mask']),
                 train_number=self.snapshot.trip_to_train.get(tid, "") if self.snapshot else ""
             ))
         return res

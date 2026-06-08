@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 from database.session import SessionTransit
 from database.models import Trip, Booking, StopTime, Stop, TrainLiveUpdate, Route, StationRank
 from services.multi_layer_cache import multi_layer_cache
-from core.resilience import circuit_breaker_manager, CircuitBreaker, CircuitConfig
-from core.retry import retry_async, RetryPolicy
+from core.resilience.core import circuit_breaker_manager, CircuitBreaker, CircuitConfig
+from core.resilience.retry import retry_async, RetryPolicy
 from collections import deque
 import asyncio
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 

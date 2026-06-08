@@ -50,7 +50,7 @@ class MLBatcher:
 
             # Subtask 5.13: Record Metrics
             inf_dur = (time.perf_counter() - start_inf) * 1000
-            from core.metrics import jit_metrics
+            from core.infrastructure.metrics import jit_metrics
             jit_metrics.ml_inferences_total += len(batch_to_process)
             # Rolling average
             jit_metrics.ml_latency_avg_ms = (jit_metrics.ml_latency_avg_ms + inf_dur) / 2

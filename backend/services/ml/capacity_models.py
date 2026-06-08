@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 
 from database.models import SeatAvailability, TrainMaster
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 

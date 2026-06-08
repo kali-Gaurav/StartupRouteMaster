@@ -16,13 +16,124 @@ from ..command_router import HandlerResult, HandlerResultStatus
 from ..dispatcher import telegram_dispatcher
 from ..keyboards import keyboard_builder
 from ..user_session_manager import user_session_manager
+from services.booking.pnr import PNRStatusService
+from services.realtime_ingestion.live_status_service import LiveStatusService
 
 logger = logging.getLogger(__name__)
+
+
+class LiveStatusHandler:
+    """Handles live train status queries."""
+    
+    def __init__(self):
+        self.live_service = LiveStatusService()
+        self.pnr_service = PNRStatusService()
+
+    async def handle_pnr_live_status(self, chat_id: int, pnr: str) -> HandlerResult:
+        """Fetch live status for a train associated with a PNR."""
+        try:
+            pnr_data = await self.pnr_service.get_status(pnr)
+            if not pnr_data or not pnr_data.get("success"):
+                return HandlerResult(
+                    status=HandlerResultStatus.FAILED,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=f"❌ <b>Error</b>\n\nCould not fetch train details for PNR <code>{pnr}</code>"
+                    )
+                )
+            
+            train_no = self._extract_train_no(pnr_data)
+            if not train_no:
+                return HandlerResult(
+                    status=HandlerResultStatus.FAILED,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text="❌ <b>Error</b>\n\nTrain number not found in PNR data."
+                    )
+                )
+                
+            return await self.handle_train_live_status(chat_id, train_no)
+            
+        except Exception as e:
+            logger.error(f"Error in pnr live status: {e}")
+            return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
+
+    async def handle_train_live_status(self, chat_id: int, train_no: str) -> HandlerResult:
+        """Fetch live status for a specific train number."""
+        try:
+            status_data = await self.live_service.get_live_status(train_no)
+            
+            if not status_data:
+                return HandlerResult(
+                    status=HandlerResultStatus.FAILED,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=f"❌ <b>Live Status Unavailable</b>\n\nCould not fetch status for Train <b>{train_no}</b> at this moment."
+                    )
+                )
+            
+            response_text = self._format_live_status(status_data)
+            
+            return HandlerResult(
+                status=HandlerResultStatus.SUCCESS,
+                response=BotResponse(
+                    chat_id=chat_id,
+                    text=response_text,
+                    inline_keyboards=keyboard_builder.train_live_status(train_no)
+                )
+            )
+        except Exception as e:
+            logger.error(f"Error in train live status: {e}")
+            return HandlerResult(status=HandlerResultStatus.FAILED, error=str(e))
+
+    def _extract_train_no(self, pnr_data: Dict) -> Optional[str]:
+        """Extract train number from PNR data."""
+        train_info = pnr_data.get("train", "") or pnr_data.get("train_no", "")
+        if not train_info:
+            return None
+        
+        # Often format is "12626 - KERALA EXPRESS"
+        if isinstance(train_info, str) and " - " in train_info:
+            return train_info.split(" - ")[0].strip()
+        return str(train_info)
+
+    def _format_live_status(self, data: Any) -> str:
+        """Format live status data into a readable message."""
+        # This assumes data is LiveStatusResult or similar
+        # For mock/now, let's use dict access if it's a dict
+        if hasattr(data, "data") and data.data:
+            d = data.data
+        elif isinstance(data, dict):
+            d = data
+        else:
+            return "📡 <b>Live Status</b>\n\nStatus information received but could not be parsed."
+
+        train_name = d.get("train_name", "Express")
+        train_no = d.get("train_number", d.get("train_no", "N/A"))
+        current_station = d.get("current_station", "Unknown")
+        status = d.get("status", "On Time")
+        delay = d.get("delay", "No delay")
+        last_updated = d.get("last_updated", datetime.now().strftime("%H:%M"))
+
+        return f"""📡 <b>Live Running Status</b>
+
+🚂 <b>{train_no} - {train_name}</b>
+━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Current Location: <b>{current_station}</b>
+🚦 Status: <b>{status}</b>
+🕒 Delay: <b>{delay}</b>
+
+Last Updated: <i>{last_updated}</i>
+━━━━━━━━━━━━━━━━━━━━━━━━
+<i>Powered by RouteMaster Intelligence</i>"""
 
 
 class PNRHandler:
     """Handles PNR status and booking queries."""
     
+    def __init__(self):
+        self.live_handler = LiveStatusHandler()
+
     async def handle(
         self,
         message: TelegramMessage,
@@ -51,8 +162,16 @@ class PNRHandler:
             if pnr:
                 # Check specific PNR
                 return await self._check_pnr_status(chat_id, pnr, context)
+            elif intent_result.intent == IntentType.CHECK_PNR:
+                # User wants to check PNR but didn't provide it
+                from ..flow_handler import flow_handler
+                from ..schemas import UserState
+                context.data["flow_step_idx"] = 0
+                context.data["flow_waiting_input"] = False
+                context.state = UserState.PNR_INPUT
+                return await flow_handler.handle_flow("", context, chat_id)
             else:
-                # Show user's bookings
+                # Show user's bookings (VIEW_BOOKINGS intent)
                 return await self._show_user_bookings(chat_id, context)
                 
         except Exception as e:
@@ -87,6 +206,15 @@ class PNRHandler:
                 )
             
             # Format PNR response
+            if not pnr_data or pnr_data.get("status") == "N/A" or not pnr_data.get("train_no"):
+                return HandlerResult(
+                    status=HandlerResultStatus.FAILED,
+                    response=BotResponse(
+                        chat_id=chat_id,
+                        text=f"❌ <b>Invalid PNR</b>\n\nCould not fetch valid data for PNR <code>{pnr}</code>."
+                    )
+                )
+
             response_text = self._format_pnr_status(pnr_data)
             
             return HandlerResult(
@@ -168,9 +296,11 @@ You have no bookings yet.
     async def _get_pnr_details(self, pnr: str) -> Optional[Dict[str, Any]]:
         """Get PNR details from service."""
         try:
-            from services.pnr_service import pnr_service
+            from services.booking.pnr import pnr_service
             
             pnr_data = await pnr_service.get_pnr_status(pnr)
+            if not pnr_data:
+                return self._get_mock_pnr_data(pnr)
             return pnr_data
             
         except Exception as e:
@@ -340,6 +470,14 @@ Status: {status}
                 # Refresh PNR status
                 return await self._check_pnr_status(chat_id, value, context)
             
+            elif action == "refresh" and "pnr" in value:
+                pnr = value.replace("pnr_", "")
+                return await self._check_pnr_status(chat_id, pnr, context)
+
+            elif action == "live" and "pnr" in value:
+                pnr = value.replace("pnr_", "")
+                return await self.live_handler.handle_pnr_live_status(chat_id, pnr)
+
             elif action == "booking":
                 # Show booking details
                 return await self._show_booking_details(chat_id, value)
@@ -468,3 +606,31 @@ Are you sure you want to cancel this booking?
 
 # Global instance
 pnr_handler = PNRHandler()
+
+# Setup PNR Input Flow
+from ..flow_handler import flow_handler, Flow, FlowStep
+from ..schemas import UserState
+
+async def process_pnr_input(text: str, context: UserContext):
+    # Strip whitespace and capture
+    context.data["pending_pnr"] = text.strip()
+
+async def complete_pnr_input(context: UserContext, chat_id: int):
+    pnr = context.data.get("pending_pnr")
+    return await pnr_handler._check_pnr_status(chat_id, pnr, context)
+
+pnr_input_flow = Flow(
+    name="PNR Input",
+    state=UserState.PNR_INPUT,
+    steps=[
+        FlowStep(
+            id="pnr_number",
+            prompt="🎫 Please enter your 10-digit PNR number:",
+            validator=lambda x: len(x.strip()) == 10 and x.strip().isdigit(),
+            processor=process_pnr_input
+        )
+    ],
+    on_complete=complete_pnr_input
+)
+
+flow_handler.register_flow(pnr_input_flow)

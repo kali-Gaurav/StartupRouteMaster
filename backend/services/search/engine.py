@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.constraints_engine import ConstraintsEngine
 from core.route_engine.categorization import CategorizationEngine
-from core.data_structures import Route, Persona, PaginationMetadata
-from core.system_monitor import system_monitor
+from core.data_utils.structures import Route, Persona, PaginationMetadata
+from core.infrastructure.system_monitor import system_monitor
 from services.multi_layer_cache import multi_layer_cache
 
 logger = logging.getLogger("routemaster.search_service")

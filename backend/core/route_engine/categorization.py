@@ -5,7 +5,7 @@ Groups and ranks search results based on user intent, personas, and efficiency.
 
 import logging
 from typing import List, Dict, Any
-from core.data_structures import Route, Persona
+from core.data_utils.structures import Route, Persona
 
 logger = logging.getLogger(__name__)
 

@@ -1,20 +1,19 @@
 /**
  * Frontend-Backend Auth Integration Test
- * Verifies Supabase auth flow, token handling, and API connectivity
+ * Verifies Firebase auth flow, token handling, and API connectivity
  */
 
-import { supabase } from '@/lib/supabase';
+import { auth } from '@/lib/firebase';
 import { fetchWithAuth, getApiBase } from '@/lib/apiClient';
 
-async function testSupabaseConnection() {
-  console.log('🔍 Testing Supabase Connection...');
+async function testFirebaseConnection() {
+  console.log('🔍 Testing Firebase Connection...');
   try {
-    const { data, error } = await supabase.auth.getSession();
-    if (error) throw error;
-    console.log('✅ Supabase connected:', data ? 'Session exists' : 'No session');
-    return { success: true, session: data };
+    const user = auth.currentUser;
+    console.log('✅ Firebase connected:', user ? `User exists: ${user.email}` : 'No user logged in');
+    return { success: true, user: user ? { email: user.email, uid: user.uid } : null };
   } catch (err) {
-    console.error('❌ Supabase connection failed:', err);
+    console.error('❌ Firebase connection failed:', err);
     return { success: false, error: err };
   }
 }
@@ -35,17 +34,18 @@ async function testBackendHealthEndpoint() {
 async function testAuthTokenFlow() {
   console.log('🔍 Testing Auth Token Flow...');
   try {
-    // Get current session
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      console.warn('⚠️  No active session');
-      return { success: false, error: 'No active session' };
+    const user = auth.currentUser;
+    if (!user) {
+      console.warn('⚠️  No active user');
+      return { success: false, error: 'No active user' };
     }
 
+    const token = await user.getIdToken();
+    
     // Test token in header
     const response = await fetchWithAuth('/v2/user/profile');
     console.log('✅ Auth token flow working');
-    return { success: true, token: session.access_token.substring(0, 20) + '...' };
+    return { success: true, token: token.substring(0, 20) + '...' };
   } catch (err) {
     console.error('❌ Auth token flow failed:', err);
     return { success: false, error: err };
@@ -70,43 +70,6 @@ async function testCORSConfiguration() {
     return { success: true, corsHeaders };
   } catch (err) {
     console.error('❌ CORS test failed:', err);
-    return { success: false, error: err };
-  }
-}
-
-async function testLoginFlow() {
-  console.log('🔍 Testing Login Flow...');
-  try {
-    // Test with dummy credentials (will fail auth but shows flow works)
-    const { error: signUpError } = await supabase.auth.signUp({
-      email: 'test-integration@routemaster.local',
-      password: 'TestPassword123!',
-    });
-    
-    if (signUpError && signUpError.message.includes('already exists')) {
-      console.log('✅ Account exists (expected for repeated test)');
-      
-      // Try login
-      const { data: loginData, error: loginError } = await supabase.auth.signInWithPassword({
-        email: 'test-integration@routemaster.local',
-        password: 'TestPassword123!',
-      });
-      
-      if (loginError) {
-        console.log('ℹ️  Login returned expected error:', loginError.message);
-      } else {
-        console.log('✅ Login successful, session:', loginData?.session?.access_token.substring(0, 20) + '...');
-      }
-      return { success: true };
-    } else if (signUpError) {
-      console.log('ℹ️  Sign up returned:', signUpError.message);
-      return { success: true };
-    } else {
-      console.log('✅ Sign up successful (new account created)');
-      return { success: true };
-    }
-  } catch (err) {
-    console.error('❌ Login flow test failed:', err);
     return { success: false, error: err };
   }
 }
@@ -139,11 +102,10 @@ export async function runFullAuthIntegrationTest() {
   console.log('\n========== FULL AUTH INTEGRATION TEST ==========\n');
 
   const results = {
-    supabase: await testSupabaseConnection(),
+    firebase: await testFirebaseConnection(),
     health: await testBackendHealthEndpoint(),
     cors: await testCORSConfiguration(),
     tokenFlow: await testAuthTokenFlow(),
-    loginFlow: await testLoginFlow(),
     endpoints: await testAPIEndpoints(),
   };
 

@@ -5,7 +5,7 @@ from database.session import get_async_db
 from database.models import User
 from services.karma_service import KarmaService
 from services.credit_service import UnlockCreditService, BUNDLE_PACKS
-from core.container import container
+from core.infrastructure.container import container
 
 async def hard_verify_task_43():
     # 1. Initialize Container

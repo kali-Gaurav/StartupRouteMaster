@@ -14,7 +14,7 @@ import os
 
 from database.session import SessionTransit
 
-from core.data_structures import RouteSegment, TransferConnection
+from core.data_utils.structures import RouteSegment, TransferConnection
 from .graph import TimeDependentGraph, StaticGraphSnapshot
 from .transfer_graph_builder import TransferGraphBuilder
 
@@ -112,13 +112,13 @@ class GraphBuilder:
             regular_services = session.query(Calendar.service_id).filter(
                 getattr(Calendar, weekday).in_([1, True])
             ).limit(2000).all()
-        active_set = {s[0] for s in regular_services}
+        active_set = {str(s[0]) for s in regular_services}
         exceptions = session.query(CalendarDate.service_id, CalendarDate.exception_type).filter(
             CalendarDate.date == target_date
         ).all()
         for service_id, exc_type in exceptions:
-            if exc_type == 1: active_set.add(service_id)
-            elif exc_type == 2: active_set.discard(service_id)
+            if exc_type == 1: active_set.add(str(service_id))
+            elif exc_type == 2: active_set.discard(str(service_id))
         return list(active_set)
 
     def _get_service_bitmasks(self, session, service_ids: List[str]) -> Dict[str, int]:

@@ -66,6 +66,7 @@ class PollingManager:
     
     async def _polling_loop(self) -> None:
         """Main polling loop."""
+        from .bot import telegram_bot
         logger.info("Polling loop started")
         
         while self._running:
@@ -105,10 +106,10 @@ class PollingManager:
                 "allowed_updates": ["message", "callback_query"]
             }
             
-            async with self.dispatcher._client as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                data = response.json()
+            client = self.dispatcher._get_client()
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
             
             if data.get("ok"):
                 return data.get("result", [])

@@ -1,12 +1,12 @@
 import { TrainIcon } from "@/components/icons/TrainIcon";
-import { Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut, Sun, Moon } from "lucide-react";
+import { Menu, X, ShieldAlert, LayoutDashboard, MessageCircle, Ticket, Palette, LogOut, Sun, Moon, Wallet } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { prefetchBookings } from "@/lib/queryInvalidation";
 import { THEME_IDS, THEME_LABELS, type ThemeId } from "@/lib/themes/tokens";
 import { IncentiveWallet } from "@/components/profile/IncentiveWallet";
-import { Wallet } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const TELEGRAM_BOT_URL = "https://t.me/RoutemasternagarindustrisBot";
 
@@ -53,7 +53,11 @@ export function Navbar() {
             </a>
             <a href="/track" className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
                <TrainIcon className="w-4 h-4" />
-               Live Tracker
+               Live Status
+             </a>
+            <a href="/pnr" className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
+               <Ticket className="w-4 h-4" />
+               PNR
              </a>
 
             <a href="/sos" className="flex items-center gap-1.5 text-red-600 hover:text-red-700 font-medium">

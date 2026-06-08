@@ -13,9 +13,6 @@ metadata:
   name: routemaster-config
   namespace: routemaster
 data:
-  DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/postgres"
-  REDIS_URL: "redis://:password@redis:6379"
-  JWT_SECRET_KEY: "changeme"
   FRONTEND_API_URL: "https://api.routemaster.com"
   ALLOWED_ORIGINS: "https://routemaster.com,https://www.routemaster.com"
   GRAFANA_ADMIN_PASSWORD: "admin"
@@ -97,10 +94,13 @@ spec:
           image: redis/redis-stack:7.2.0-v9
           ports:
             - containerPort: 6379
-          args:
-            - "redis-server"
-            - "--requirepass"
-            - "password"
+          command: ["sh", "-c", "redis-server --requirepass $REDIS_PASSWORD"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
           volumeMounts:
             - name: redis-data
               mountPath: /data
@@ -156,6 +156,28 @@ spec:
                 secretKeyRef:
                   name: redis-secret
                   key: password
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: database_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis_url
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: routemaster-secret
+                  key: jwt_secret_key
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
           readinessProbe:
             httpGet:
               path: /api/health/ready
@@ -211,6 +233,33 @@ spec:
                 secretKeyRef:
                   name: redis-secret
                   key: password
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: database_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis_url
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep python"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pgrep python"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
 ---
 # Deployment: Frontend
 apiVersion: apps/v1
@@ -232,7 +281,7 @@ spec:
         - name: frontend
           image: routemaster/frontend:latest
           ports:
-            - containerPort: 5173
+            - containerPort: 80
           envFrom:
             - configMapRef:
                 name: routemaster-config
@@ -245,7 +294,7 @@ metadata:
   namespace: routemaster
 spec:
   ports:
-    - port: 5173
+    - port: 80
   selector:
     app: frontend
 

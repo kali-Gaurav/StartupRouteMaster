@@ -14,8 +14,8 @@ from .rapid_api_client import RapidAPIClient
 from sqlalchemy.orm import Session
 from database.models import SeatAvailability
 from database.session import SessionLocal
-from core.resilience import circuit_breaker_manager, CircuitConfig
-from core.retry import RetryPolicy
+from core.resilience.core import circuit_breaker_manager, CircuitConfig
+from core.resilience.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ class SeatAvailabilityManager:
 
     async def _check_budget_redis(self, api_name: str) -> bool:
         """Checks if the daily API budget is exceeded using Redis for speed."""
-        from core.redis_client import async_redis_client
+        from core.infrastructure.redis_manager import async_redis_client
         from datetime import date
         today_key = f"api_usage:{api_name}:{date.today().isoformat()}"
         
@@ -142,7 +142,7 @@ class SeatAvailabilityManager:
 
     async def _increment_budget_redis(self, api_name: str):
         """Increments the daily API usage count in Redis."""
-        from core.redis_client import async_redis_client
+        from core.infrastructure.redis_manager import async_redis_client
         from datetime import date
         today_key = f"api_usage:{api_name}:{date.today().isoformat()}"
         try:

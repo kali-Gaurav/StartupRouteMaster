@@ -6,7 +6,7 @@ from utils.responses import SafeJSONResponse
 from services.multi_layer_cache import multi_layer_cache
 from database.config import Config
 from utils.rate_limiter import RedisTokenBucket
-from core.orchestrator import orchestrator
+from core.engines.orchestrator import orchestrator
 
 logger = logging.getLogger(__name__)
 

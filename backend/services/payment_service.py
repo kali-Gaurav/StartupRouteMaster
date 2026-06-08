@@ -1,990 +1,721 @@
 """
-💰 PAYMENT SERVICE - Razorpay Integration
-Production-ready with audit trail, idempotency, fraud detection, and webhook support.
+Payment Service - Handles payment processing, webhooks, and refunds.
 """
 
-import httpx
-import hashlib
-import hmac
-import logging
-import asyncio
 import uuid
-import json
-from typing import Dict, Optional, Tuple, List
-from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+import hashlib
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
 from enum import Enum
-from collections import defaultdict
 
-from config import Config
-from core.resilience import circuit_manager, CircuitBreaker, CircuitConfig, CircuitOpenError
-from core.retry import retry, RETRY_POLICY_EXTERNAL_API
-from database.base import Base
-from sqlalchemy import Column, String, Text, DateTime, Float, Integer, JSON, Boolean
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+from fastapi import HTTPException, status
 
-logger = logging.getLogger(__name__)
+from database.models import Payment, Booking
+from schemas.payment import PaymentRequest, PaymentResponse, PaymentStatus
 
-RAZORPAY_API_URL = "https://api.razorpay.com/v1"
-
-# Create circuit breaker for Razorpay
-RAZORPAY_BREAKER = circuit_manager.get_or_create(
-    "razorpay",
-    CircuitConfig(
-        failure_threshold=5,
-        timeout_seconds=120.0,
-        success_threshold=3,
-        half_open_max_calls=2
-    )
-)
+logger = logging.getLogger("payment_service")
 
 
-
-
-# =========================================================================
-# CONFIGURATION
-# =========================================================================
-
-@dataclass
-class WebhookDeliveryLog:
-    webhook_id: str
-    attempts: int = 0
-    last_attempt_at: Optional[datetime] = None
-    last_status: Optional[str] = None
-
-
-class PaymentAuditLog(Base):
-    __tablename__ = "payment_audit_logs"
-    audit_id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    payment_id = Column(String(36), nullable=True, index=True)
-    order_id = Column(String(128), nullable=True, index=True)
-    action = Column(String(50), nullable=False)
-    previous_state = Column(String(50), nullable=True)
-    new_state = Column(String(50), nullable=False)
-    actor_type = Column(String(50), nullable=False)
-    actor_id = Column(String(36), nullable=True)
-    amount = Column(Float, nullable=True)
-    currency = Column(String(10), default="INR")
-    extra_data = Column(JSON, default=dict)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(String(255), nullable=True)
-    checksum = Column(String(64), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    @staticmethod
-    def compute_checksum(audit_data: Dict) -> str:
-        canonical = json.dumps(audit_data, sort_keys=True, default=str)
-        return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-class PaymentIdempotency(Base):
-    __tablename__ = "payment_idempotency"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    idempotency_key = Column(String(255), unique=True, nullable=False)
-    operation_type = Column(String(50), nullable=False)
-    request_hash = Column(String(128), nullable=False)
-    response = Column(JSON, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-
-
-class PaymentFraudCheck(Base):
-    __tablename__ = "payment_fraud_checks"
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    payment_id = Column(String(36), nullable=True)
-    user_id = Column(String(36), nullable=False)
-    check_type = Column(String(50), nullable=False)
-    risk_score = Column(Float, default=0.0)
-    flags = Column(JSON, default=list)
-    decision = Column(String(20), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-# =========================================================================
-# CONFIGURATION
-# =========================================================================
-
-@dataclass
-class PaymentConfig:
-    """Configuration for payment service."""
-    cache_ttl_seconds: int = 300
-    idempotency_ttl_hours: int = 24
-    max_payment_amount: float = 1000000.0  # 10L limit
-    min_payment_amount: float = 1.0
-    high_value_threshold: float = 50000.0
-    max_refunds_per_day: int = 10
-    max_refund_amount_daily: float = 100000.0
-    webhook_max_retries: int = 3
-    webhook_retry_delay_seconds: int = 60
+class PaymentProvider(Enum):
+    UPI = "upi"
+    CARD = "card"
+    NET_BANKING = "net_banking"
 
 
 class PaymentService:
-    """
-    Handle Razorpay payment operations with production features:
-    - Audit trail
-    - Idempotency
-    - Fraud detection
-    - Webhook management
-    - Rate limiting
-    """
+    """Payment processing service."""
     
-    def __init__(self, db_session=None):
-        self.key_id = Config.RAZORPAY_KEY_ID
-        self.key_secret = Config.RAZORPAY_KEY_SECRET
-        self.db = db_session  # Optional database session for audit
-        
-        if not self.key_id or self.key_id == "your_razorpay_key_id":
-            logger.warning("Razorpay key_id not configured")
-        if not self.key_secret or self.key_secret == "your_razorpay_key_secret":
-            logger.warning("Razorpay key_secret not configured")
-        
-        # Local cache for order details
-        self._order_cache: Dict[str, Dict] = {}
-        self._cache_ttl_seconds = 300  # 5 minutes
-        
-        # Production features
-        self._webhook_registry: Dict[str, List[Dict]] = defaultdict(list)
-        self._webhook_delivery_attempts: Dict[str, WebhookDeliveryLog] = {}
-        
-        logger.info("PaymentService initialized with production features")
-
-    def is_configured(self) -> bool:
-        """Check if Razorpay is properly configured."""
-        return bool(
-            self.key_id
-            and self.key_id != "your_razorpay_key_id"
-            and self.key_secret
-            and self.key_secret != "your_razorpay_key_secret"
-        )
-
-    def _is_cache_valid(self, cached: Dict) -> bool:
-        """Check if cached order is still valid."""
-        if not cached:
-            return False
-        cached_time = cached.get("_cached_at", 0)
-        return (datetime.utcnow().timestamp() - cached_time) < self._cache_ttl_seconds
-
-    # =========================================================================
-    # TASK: AUDIT TRAIL
-    # =========================================================================
+    def __init__(self, db: Session):
+        self.db = db
+        self.webhook_secrets = {}  # In production, use secure secret management
     
-    def _log_audit(
+    async def create_payment(
         self,
-        payment_id: Optional[str],
-        order_id: Optional[str],
-        action: str,
-        new_state: str,
-        actor_type: str,
-        actor_id: Optional[str] = None,
-        previous_state: Optional[str] = None,
-        amount: Optional[float] = None,
-        currency: str = "INR",
-        extra_data: Optional[Dict] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
-    ) -> str:
-        """Log an immutable audit entry for payment operations."""
-        audit_id = str(uuid.uuid4())
-        
-        audit_data = {
-            "audit_id": audit_id,
-            "payment_id": payment_id,
-            "order_id": order_id,
-            "action": action,
-            "previous_state": previous_state,
-            "new_state": new_state,
-            "actor_type": actor_type,
-            "actor_id": actor_id,
-            "amount": amount,
-            "currency": currency,
-            "extra_data": extra_data,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-        checksum = PaymentAuditLog.compute_checksum(audit_data)
-        
-        if self.db:
-            try:
-                audit_entry = PaymentAuditLog(
-                    audit_id=audit_id,
-                    payment_id=payment_id,
-                    order_id=order_id,
-                    action=action,
-                    previous_state=previous_state,
-                    new_state=new_state,
-                    actor_type=actor_type,
-                    actor_id=actor_id,
-                    amount=amount,
-                    currency=currency,
-                    extra_data=extra_data,
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                    checksum=checksum
-                )
-                self.db.add(audit_entry)
-                self.db.commit()
-            except Exception as e:
-                logger.error(f"Failed to log payment audit: {e}")
-                self.db.rollback()
-        
-        logger.debug(f"📋 Payment audit logged: {audit_id} | {action} | {order_id}")
-        return audit_id
-
-    def get_audit_trail(self, payment_id: Optional[str] = None, order_id: Optional[str] = None) -> List[Dict]:
-        """Retrieve audit trail for a payment or order."""
-        if not self.db:
-            return []
-        
-        try:
-            query = self.db.query(PaymentAuditLog)
-            if payment_id:
-                query = query.filter(PaymentAuditLog.payment_id == payment_id)
-            if order_id:
-                query = query.filter(PaymentAuditLog.order_id == order_id)
-            
-            audits = query.order_by(PaymentAuditLog.created_at.asc()).all()
-            
-            return [
-                {
-                    "audit_id": a.audit_id,
-                    "action": a.action,
-                    "previous_state": a.previous_state,
-                    "new_state": a.new_state,
-                    "actor_type": a.actor_type,
-                    "actor_id": a.actor_id,
-                    "amount": a.amount,
-                    "currency": a.currency,
-                    "extra_data": a.extra_data,
-                    "created_at": a.created_at.isoformat(),
-                    "checksum": a.checksum
-                }
-                for a in audits
-            ]
-        except Exception as e:
-            logger.error(f"Failed to retrieve audit trail: {e}")
-            return []
-
-    # =========================================================================
-    # TASK: IDEMPOTENCY
-    # =========================================================================
-    
-    async def calculate_unlock_fee(self, route_complexity: float, total_fare: float) -> int:
-        """
-        Patent-Level Algorithm: Yield-Based Pricing for Algorithm Access.
-        Base fee: ₹49. Max fee: ₹149.
-        """
-        base_fee = 49
-        bonus = min(100, int(max(0, route_complexity - 1.0) * 50))
-        final_fee = base_fee + bonus
-        capped_fee = min(final_fee, int(total_fare * 0.10))
-        return max(49, capped_fee)
-
-    def _generate_request_hash(
-        self,
-        operation_type: str,
+        booking_id: str,
         amount: float,
-        receipt_id: str,
-        customer_email: Optional[str]
-    ) -> str:
-        """Generate deterministic hash for request deduplication."""
-        content = f"{operation_type}:{amount}:{receipt_id}:{customer_email}"
-        return hashlib.sha256(content.encode()).hexdigest()
-
-    def _check_idempotency(self, idempotency_key: str) -> Optional[Dict]:
-        """Check if request was already processed."""
-        if not self.db:
-            return None
+        payment_method: str,
+        user_id: str
+    ) -> PaymentResponse:
+        """
+        Create a new payment for a booking.
         
-        try:
-            record = self.db.query(PaymentIdempotency).filter(
-                PaymentIdempotency.idempotency_key == idempotency_key
-            ).first()
+        Args:
+            booking_id: ID of the booking
+            amount: Payment amount
+            payment_method: Payment method (upi, card, net_banking)
+            user_id: ID of the user making payment
             
-            if record and datetime.utcnow() < record.expires_at:
-                logger.info(f"🔄 Idempotent request found: {idempotency_key}")
-                return record.response
-            
-            if record:
-                self.db.delete(record)
-                self.db.commit()
-            
-            return None
-        except Exception as e:
-            logger.error(f"Idempotency check failed: {e}")
-            return None
-
-    def _record_idempotency(
-        self,
-        idempotency_key: str,
-        operation_type: str,
-        request_hash: str,
-        response: Dict
-    ) -> None:
-        """Cache idempotent response."""
-        if not self.db:
-            return
-        
-        try:
-            expires = datetime.utcnow() + timedelta(hours=24)
-            record = PaymentIdempotency(
-                idempotency_key=idempotency_key,
-                operation_type=operation_type,
-                request_hash=request_hash,
-                response=response,
-                expires_at=expires
+        Returns:
+            PaymentResponse with payment details
+        """
+        # Validate booking exists and is in correct state
+        booking = self.db.get(Booking, booking_id)
+        if not booking:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Booking not found"
             )
-            self.db.add(record)
-            self.db.commit()
-        except Exception as e:
-            logger.error(f"Failed to record idempotency: {e}")
-            self.db.rollback()
-
-    # =========================================================================
-    # TASK: FRAUD DETECTION
-    # =========================================================================
+        
+        if booking.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to pay for this booking"
+            )
+        
+        if booking.booking_status not in ["initiated", "payment_pending"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot pay for booking in status: {booking.booking_status}"
+            )
+        
+        # Create payment record
+        payment_id = str(uuid.uuid4())
+        payment = Payment(
+            id=payment_id,
+            booking_id=booking_id,
+            amount=amount,
+            payment_method=payment_method,
+            status=PaymentStatus.PENDING.value,
+            created_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)
+        )
+        
+        self.db.add(payment)
+        
+        # Generate payment URL based on method
+        if payment_method == "upi":
+            payment_url = await self._create_upi_payment(payment)
+        elif payment_method == "card":
+            payment_url = await self._create_card_payment(payment)
+        elif payment_method == "net_banking":
+            payment_url = await self._create_net_banking_payment(payment)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported payment method: {payment_method}"
+            )
+        
+        payment.payment_url = payment_url
+        self.db.commit()
+        
+        # Update booking status
+        booking.booking_status = "payment_pending"
+        booking.payment_id = payment_id
+        self.db.commit()
+        
+        return PaymentResponse(
+            payment_id=payment_id,
+            booking_id=booking_id,
+            amount=amount,
+            status=PaymentStatus.PENDING,
+            payment_url=payment_url,
+            expires_at=payment.expires_at
+        )
     
-    def _check_fraud(
+    async def _create_upi_payment(self, payment: Payment) -> str:
+        """Create UPI payment URL."""
+        # In production, integrate with UPI gateway (PhonePe, Paytm, etc.)
+        upi_id = "booking@upi"  # Configure in settings
+        return f"upi://pay?pa={upi_id}&pn=TravelBooking&am={payment.amount}&tn=Booking {payment.booking_id}&tr={payment.id}"
+    
+    async def _create_card_payment(self, payment: Payment) -> str:
+        """Create card payment URL."""
+        # In production, integrate with payment gateway (Razorpay, Stripe, etc.)
+        return f"/payment/card/{payment.id}?amount={payment.amount}"
+    
+    async def _create_net_banking_payment(self, payment: Payment) -> str:
+        """Create net banking payment URL."""
+        return f"/payment/nb/{payment.id}?amount={payment.amount}"
+    
+    # ==================== MOCK PAYMENT METHODS FOR DEMO ====================
+    
+    async def create_mock_payment(
         self,
-        user_id: str,
+        booking_id: str,
         amount: float,
-        payment_id: Optional[str] = None
-    ) -> Tuple[bool, str, Dict]:
+        user_id: str
+    ) -> PaymentResponse:
         """
-        Perform fraud checks on payment.
-        Returns: (is_allowed, decision, details)
+        Create a mock payment for demo purposes.
+        
+        This simulates the payment flow without actual payment processing.
         """
-        details = {"flags": [], "risk_score": 0.0}
+        payment_id = f"mock_{uuid.uuid4().hex[:12]}"
         
-        # Check 1: Amount limits
-        if amount > 1000000:
-            details["flags"].append("AMOUNT_EXCEEDS_LIMIT")
-            details["risk_score"] = 1.0
-            return False, "BLOCK", details
+        # Create payment record
+        payment = Payment(
+            id=payment_id,
+            booking_id=booking_id,
+            amount=amount,
+            payment_method="upi",
+            status=PaymentStatus.PENDING.value,
+            created_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)
+        )
         
-        if amount < 1:
-            details["flags"].append("INVALID_AMOUNT")
-            details["risk_score"] = 0.5
-            return False, "BLOCK", details
+        self.db.add(payment)
+        self.db.commit()
         
-        # Check 2: High value flag
-        if amount > 50000:
-            details["flags"].append("HIGH_VALUE")
-            details["risk_score"] += 0.2
+        # Generate mock UPI QR code
+        upi_id = "routemaster@upi"
+        qr_data = f"upi://pay?pa={upi_id}&pn=RouteMaster&am={amount}&tn=Booking_{booking_id}"
         
-        # Check 3: Daily refund velocity (if this is a refund)
-        # In production: query database for user's refund patterns
-        
-        # Determine decision
-        decision = "ALLOW"
-        if details["risk_score"] >= 0.7:
-            decision = "BLOCK"
-        elif details["risk_score"] >= 0.4:
-            decision = "FLAG"
-        
-        # Log fraud check
-        if self.db and decision != "ALLOW":
-            try:
-                fraud_record = PaymentFraudCheck(
-                    payment_id=payment_id or "pending",
-                    user_id=user_id,
-                    check_type="COMPREHENSIVE",
-                    risk_score=details["risk_score"],
-                    flags=details["flags"],
-                    decision=decision
-                )
-                self.db.add(fraud_record)
-                self.db.commit()
-            except Exception as e:
-                logger.error(f"Failed to log fraud check: {e}")
-                self.db.rollback()
-        
-        return decision != "BLOCK", decision, details
-
-    # =========================================================================
-    # TASK: WEBHOOK MANAGEMENT
-    # =========================================================================
+        return PaymentResponse(
+            payment_id=payment_id,
+            booking_id=booking_id,
+            amount=amount,
+            status=PaymentStatus.PENDING,
+            payment_url=f"/payment/mock/{payment_id}",
+            qr_code=qr_data,
+            upi_id=upi_id,
+            expires_at=payment.expires_at
+        )
     
-    def register_webhook(
+    async def confirm_mock_payment(
         self,
-        event_type: str,
-        callback_url: str,
-        secret: Optional[str] = None,
-        user_id: Optional[str] = None
-    ) -> Dict:
+        payment_id: str,
+        transaction_details: Dict[str, Any] = None
+    ) -> PaymentResponse:
         """
-        Register webhook callback for payment events.
+        Confirm a mock payment.
         """
-        webhook_id = str(uuid.uuid4())
-        webhook_secret = secret or str(uuid.uuid4())[:16]
+        payment = self.db.execute(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        ).scalar_one_or_none()
         
-        webhook = {
-            "webhook_id": webhook_id,
-            "event_type": event_type,
-            "callback_url": callback_url,
-            "secret": webhook_secret,
-            "user_id": user_id,
-            "active": True,
-            "created_at": datetime.utcnow().isoformat()
-        }
+        if not payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment not found"
+            )
         
-        self._webhook_registry[event_type].append(webhook)
+        if payment.status == PaymentStatus.SUCCESS.value:
+            # Already confirmed - return existing
+            return PaymentResponse(
+                payment_id=payment.id,
+                booking_id=payment.booking_id,
+                amount=payment.amount,
+                status=PaymentStatus.SUCCESS,
+                payment_url=payment.payment_url or "",
+                transaction_id=payment.transaction_id
+            )
         
-        logger.info(f"📣 Payment webhook registered: {webhook_id} for {event_type}")
+        # Update payment
+        payment.status = PaymentStatus.SUCCESS.value
+        payment.transaction_id = transaction_details.get("transaction_id", f"txn_{uuid.uuid4().hex[:8]}") if transaction_details else f"txn_{uuid.uuid4().hex[:8]}"
+        payment.completed_at = datetime.now(timezone.utc)
+        
+        # Update booking status
+        booking = self.db.execute(
+            select(Booking).where(Booking.id == payment.booking_id).with_for_update()
+        ).scalar_one_or_none()
+        if booking:
+            booking.booking_status = "confirmed"
+            booking.amount_paid = payment.amount
+            booking.payment_completed_at = datetime.now(timezone.utc)
+        
+        self.db.commit()
+        
+        return PaymentResponse(
+            payment_id=payment.id,
+            booking_id=payment.booking_id,
+            amount=payment.amount,
+            status=PaymentStatus.SUCCESS,
+            payment_url=payment.payment_url or "",
+            transaction_id=payment.transaction_id
+        )
+    
+    async def handle_webhook(
+        self,
+        provider: str,
+        payload: Dict[str, Any],
+        signature: str
+    ) -> Dict[str, Any]:
+        """
+        Handle payment gateway webhook callback.
+        
+        Args:
+            provider: Payment provider name
+            payload: Webhook payload
+            signature: Webhook signature for verification
+            
+        Returns:
+            Result of webhook processing
+        """
+        # Verify webhook signature
+        if not self._verify_webhook_signature(provider, payload, signature):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook signature"
+            )
+        
+        # Extract payment details from payload
+        payment_id = payload.get("payment_id") or payload.get("transaction_id")
+        status_str = payload.get("status")
+        upi_tx_id = payload.get("upi_tx_id")
+        utr_number = payload.get("utr_number")
+        
+        if not payment_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Payment ID not found in webhook"
+            )
+        
+        # Get payment record
+        payment = self.db.execute(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        ).scalar_one_or_none()
+        if not payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment not found"
+            )
+        
+        # Check for idempotent update
+        if payment.status == status_str:
+            return {"status": "already_processed", "payment_id": payment_id}
+        
+        # Map provider status to our status
+        new_status = self._map_provider_status(provider, status_str)
+        
+        # Update payment
+        payment.status = new_status.value
+        payment.completed_at = datetime.now(timezone.utc)
+        if upi_tx_id:
+            payment.upi_tx_id = upi_tx_id
+        if utr_number:
+            payment.utr_number = utr_number
+        payment.webhook_payload = str(payload)
+        
+        # Handle booking update
+        booking = self.db.execute(
+            select(Booking).where(Booking.id == payment.booking_id).with_for_update()
+        ).scalar_one_or_none()
+        if booking:
+            if new_status == PaymentStatus.SUCCESS:
+                await self._handle_successful_payment(booking, payment)
+            elif new_status in [PaymentStatus.FAILED, PaymentStatus.CANCELLED]:
+                await self._handle_failed_payment(booking, payment)
+        
+        self.db.commit()
         
         return {
-            "success": True,
-            "webhook_id": webhook_id,
-            "secret": webhook_secret
+            "status": "processed",
+            "payment_id": payment_id,
+            "new_status": new_status.value
         }
-
-    async def _deliver_webhook(
+    
+    def _verify_webhook_signature(
         self,
-        webhook_id: str,
-        event_type: str,
-        payload: Dict,
-        webhook: Dict
+        provider: str,
+        payload: Dict[str, Any],
+        signature: str
     ) -> bool:
-        """Deliver webhook to callback URL."""
-        import httpx
+        """Verify webhook signature from payment provider."""
+        # In production, implement provider-specific signature verification
+        secret = self.webhook_secrets.get(provider, "")
+        if not secret:
+            # For development, accept all signatures
+            return True
         
-        payload_json = json.dumps(payload, default=str)
-        signature = hmac.new(
-            webhook["secret"].encode(), 
-            payload_json.encode(), 
+        # Example: HMAC verification
+        import hmac
+        expected = hmac.new(
+            secret.encode(),
+            str(payload).encode(),
             hashlib.sha256
         ).hexdigest()
         
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    webhook["callback_url"],
-                    content=payload_json,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Webhook-Signature": signature,
-                        "X-Webhook-Event": event_type,
-                        "X-Webhook-ID": webhook_id
-                    },
-                    timeout=10.0
-                )
-            
-            if response.status_code in [200, 201, 202, 204]:
-                logger.info(f"✅ Webhook delivered: {webhook_id}")
-                return True
-            else:
-                logger.warning(f"❌ Webhook failed: {webhook_id} - {response.status_code}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Webhook delivery error: {e}")
-            return False
-
-    async def trigger_webhooks(
+        return hmac.compare_digest(signature, expected)
+    
+    def _map_provider_status(
         self,
-        event_type: str,
-        data: Dict,
-        exclude_user_id: Optional[str] = None
-    ) -> Dict:
-        """
-        Trigger webhooks for a payment event.
-        """
-        webhooks = self._webhook_registry.get(event_type, [])
-        delivered = 0
-        failed = 0
-        
-        payload = {
-            "event": event_type,
-            "data": data,
-            "timestamp": datetime.utcnow().isoformat()
+        provider: str,
+        provider_status: str
+    ) -> PaymentStatus:
+        """Map provider-specific status to our status enum."""
+        status_mapping = {
+            "success": PaymentStatus.SUCCESS,
+            "completed": PaymentStatus.SUCCESS,
+            "captured": PaymentStatus.SUCCESS,
+            "failed": PaymentStatus.FAILED,
+            "declined": PaymentStatus.FAILED,
+            "cancelled": PaymentStatus.CANCELLED,
+            "pending": PaymentStatus.PENDING,
+            "processing": PaymentStatus.PROCESSING,
         }
         
-        for webhook in webhooks:
-            if not webhook.get("active"):
-                continue
-            if exclude_user_id and webhook.get("user_id") == exclude_user_id:
-                continue
-            
-            success = await self._deliver_webhook(
-                webhook["webhook_id"],
-                event_type,
-                payload,
-                webhook
-            )
-            
-            if success:
-                delivered += 1
-            else:
-                failed += 1
-        
-        return {"delivered": delivered, "failed": failed}
-
-    def unregister_webhook(self, webhook_id: str) -> bool:
-        """Unregister a webhook."""
-        for event_type, webhooks in self._webhook_registry.items():
-            for i, wh in enumerate(webhooks):
-                if wh.get("webhook_id") == webhook_id:
-                    webhooks[i]["active"] = False
-                    logger.info(f"📣 Webhook {webhook_id} unregistered")
-                    return True
-        return False
-
-    # =========================================================================
-    # MAIN PAYMENT OPERATIONS
-    # =========================================================================
-
-    async def create_order(
+        normalized = provider_status.lower()
+        return status_mapping.get(normalized, PaymentStatus.UNKNOWN)
+    
+    async def _handle_successful_payment(
         self,
-        amount_rupees: float = 39,
-        receipt_id: str = "route_unlock",
-        customer_email: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-        description: Optional[str] = None,
-        user_id: Optional[str] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
-    ) -> Dict:
-        """
-        Create Razorpay order with production features:
-        - Idempotency
-        - Fraud detection
-        - Audit logging
-        - Webhook triggers
-        """
-        if not self.is_configured():
-            return {
-                "success": False,
-                "error": "Razorpay not configured. Please contact admin.",
-            }
+        booking: Booking,
+        payment: Payment
+    ) -> None:
+        """Handle successful payment confirmation."""
+        booking.booking_status = "confirmed"
+        booking.amount_paid = payment.amount
+        booking.payment_completed_at = datetime.now(timezone.utc)
+        booking.upi_tx_id = payment.upi_tx_id
+        booking.utr_number = payment.utr_number
         
-        # Check idempotency
-        if idempotency_key:
-            cached_response = self._check_idempotency(idempotency_key)
-            if cached_response:
-                cached_response["idempotent_replay"] = True
-                return cached_response
+        # Confirm seat allocation
+        from services.inventory_service import get_inventory_service
+        inv_service = get_inventory_service(self.db)
+        await inv_service.confirm_seats(booking.id)
         
-        # Fraud check
-        fraud_allowed, fraud_decision, fraud_details = self._check_fraud(
-            user_id or "anonymous", amount_rupees
-        )
-        if not fraud_allowed:
-            self._log_audit(
-                payment_id=None,
-                order_id=None,
-                action="FRAUD_BLOCK",
-                new_state="BLOCKED",
-                actor_type="SYSTEM",
-                amount=amount_rupees,
-                extra_data={"fraud_details": fraud_details}
-            )
-            return {
-                "success": False,
-                "error": "Payment blocked due to suspicious activity",
-                "fraud_check": fraud_decision
-            }
-        
-        try:
-            # Execute through circuit breaker with retry
-            result = await RAZORPAY_BREAKER.execute(
-                self._create_order_impl,
-                amount_rupees, receipt_id, customer_email, idempotency_key, description
-            )
-            
-            if result.get("success"):
-                order_id = result.get("order_id")
-                
-                # Log audit
-                self._log_audit(
-                    payment_id=None,
-                    order_id=order_id,
-                    action="CREATE_ORDER",
-                    new_state="created",
-                    actor_type="SYSTEM",
-                    amount=amount_rupees,
-                    extra_data={"customer_email": customer_email, "description": description},
-                    ip_address=ip_address,
-                    user_agent=user_agent
-                )
-                
-                # Record idempotency
-                if idempotency_key:
-                    request_hash = self._generate_request_hash(
-                        "CREATE_ORDER", amount_rupees, receipt_id, customer_email
-                    )
-                    self._record_idempotency(idempotency_key, "CREATE_ORDER", request_hash, result)
-                
-                # Trigger webhooks
-                await self.trigger_webhooks("order.created", {
-                    "order_id": order_id,
-                    "amount": amount_rupees,
-                    "customer_email": customer_email
-                })
-            
-            return result
-            
-        except CircuitOpenError as cb_err:
-            logger.error(f"Circuit breaker open for Razorpay: {cb_err}")
-            return {"success": False, "error": "Payment service temporarily unavailable. Please try again shortly."}
-        except Exception as e:
-            logger.error(f"Failed to create order: {e}")
-            return {"success": False, "error": "Failed to create payment order"}
-
-    @retry(**RETRY_POLICY_EXTERNAL_API.__dict__)
-    async def _create_order_impl(
+        logger.info(f"Booking {booking.pnr_number} confirmed with payment {payment.id}")
+    
+    async def _handle_failed_payment(
         self,
-        amount_rupees: float,
-        receipt_id: str,
-        customer_email: Optional[str],
-        idempotency_key: Optional[str],
-        description: Optional[str],
-    ) -> Dict:
-        """Actual implementation of order creation."""
-        amount_paise = int(amount_rupees * 100)
-        payload = {
-            "amount": amount_paise, 
-            "currency": "INR", 
-            "receipt": receipt_id,
-            "notes": {
-                "customer_email": customer_email,
-                "description": description,
-            }
-        }
-        headers = {"X-Razorpay-IDEMPOTENCY": idempotency_key} if idempotency_key else {}
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{RAZORPAY_API_URL}/orders",
-                json=payload,
-                auth=(self.key_id, self.key_secret),
-                headers=headers,
-                timeout=10.0,
-            )
-
-        if response.status_code == 200:
-            order_data = response.json()
-            logger.info(f"Order created: {order_data['id']}")
-            
-            # Cache the order
-            cache_key = order_data['id']
-            self._order_cache[cache_key] = {
-                "order_id": order_data['id'],
-                "amount": amount_rupees,
-                "status": order_data.get("status", "created"),
-                "_cached_at": datetime.utcnow().timestamp()
-            }
-            
-            return {
-                "success": True, 
-                "order_id": order_data["id"], 
-                "amount": amount_rupees,
-                "currency": "INR", 
-                "key_id": self.key_id,
-            }
-        else:
-            logger.error(f"Order creation failed: {response.text}")
-            return {"success": False, "error": f"Failed to create payment order: {response.status_code}"}
-
-    def verify_payment(
-        self,
-        razorpay_payment_id: str,
-        razorpay_order_id: str,
-        razorpay_signature: str,
-        user_id: Optional[str] = None,
-        ip_address: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Verify Razorpay payment with audit logging.
-        """
-        if not self.is_configured():
-            return False, "Razorpay not configured"
+        booking: Booking,
+        payment: Payment
+    ) -> None:
+        """Handle failed payment."""
+        booking.booking_status = "payment_failed"
+        booking.payment_failure_reason = payment.webhook_payload
         
-        try:
-            message = f"{razorpay_order_id}|{razorpay_payment_id}"
-            generated_signature = hmac.new(
-                self.key_secret.encode(), message.encode(), hashlib.sha256
-            ).hexdigest()
-
-            if hmac.compare_digest(generated_signature, razorpay_signature):
-                logger.info(f"Payment verified: {razorpay_payment_id}")
-                
-                # Log audit
-                self._log_audit(
-                    payment_id=razorpay_payment_id,
-                    order_id=razorpay_order_id,
-                    action="VERIFY",
-                    new_state="verified",
-                    actor_type="SYSTEM",
-                    amount=None,
-                    ip_address=ip_address
-                )
-                
-                # Invalidate cache for this order
-                self._order_cache.pop(razorpay_order_id, None)
-                
-                # Trigger webhooks
-                asyncio.create_task(self.trigger_webhooks("payment.verified", {
-                    "payment_id": razorpay_payment_id,
-                    "order_id": razorpay_order_id
-                }))
-                
-                return True, None
-            else:
-                logger.warning(f"Signature mismatch for payment: {razorpay_payment_id}")
-                
-                # Log failed verification
-                self._log_audit(
-                    payment_id=razorpay_payment_id,
-                    order_id=razorpay_order_id,
-                    action="VERIFY_FAILED",
-                    new_state="failed",
-                    actor_type="SYSTEM",
-                    amount=None,
-                    extra_data={"reason": "Signature mismatch"},
-                    ip_address=ip_address
-                )
-                
-                return False, "Signature verification failed"
-        except Exception as e:
-            logger.error(f"Signature verification error: {e}")
-            return False, str(e)
-
-    def verify_webhook_signature(self, body: bytes, signature: str) -> bool:
-        """Verifies the signature of a webhook request."""
-        if not self.is_configured():
-            logger.error("Cannot verify webhook signature, Razorpay keys not configured.")
-            return False
-        try:
-            generated_signature = hmac.new(
-                self.key_secret.encode(), body, hashlib.sha256
-            ).hexdigest()
-            if hmac.compare_digest(generated_signature, signature):
-                logger.info("Webhook signature verified successfully.")
-                return True
-            else:
-                logger.warning("Webhook signature mismatch.")
-                return False
-        except Exception as e:
-            logger.error(f"Webhook signature verification failed: {e}")
-            return False
-
-    async def fetch_payment_details(self, payment_id: str) -> Optional[Dict]:
-        """Fetch payment details from Razorpay asynchronously."""
-        if not self.is_configured():
-            return None
-        try:
-            return await RAZORPAY_BREAKER.execute(self._fetch_payment_impl, payment_id)
-        except CircuitOpenError:
-            logger.error(f"Circuit breaker open for Razorpay fetch")
-            return None
-
-    async def _fetch_payment_impl(self, payment_id: str):
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{RAZORPAY_API_URL}/payments/{payment_id}",
-                auth=(self.key_id, self.key_secret),
-                timeout=5.0,
-            )
-        if response.status_code == 200:
-            return response.json()
-        logger.warning(f"Failed to fetch payment {payment_id}: {response.status_code}")
-        return None
-
-    async def refund_payment(
+        # Release seat lock
+        from services.inventory_service import get_inventory_service
+        inv_service = get_inventory_service(self.db)
+        await inv_service.release_seats(booking.id)
+        
+        logger.info(f"Payment failed for booking {booking.pnr_number}: {payment.webhook_payload}")
+    
+    async def process_refund(
         self,
         payment_id: str,
-        amount_rupees: Optional[float] = None,
-        idempotency_key: Optional[str] = None,
-        user_id: Optional[str] = None,
-        reason: Optional[str] = None,
-        ip_address: Optional[str] = None,
-    ) -> Tuple[bool, Optional[str], Optional[Dict]]:
+        amount: Optional[float] = None,
+        reason: str = "customer_request"
+    ) -> PaymentResponse:
         """
-        Create refund for a payment with production features:
-        - Idempotency
-        - Fraud detection
-        - Audit logging
-        - Webhook triggers
+        Process refund for a payment.
         
+        Args:
+            payment_id: Original payment ID
+            amount: Refund amount (full if not specified)
+            reason: Refund reason
+            
         Returns:
-            Tuple[success: bool, error_message: Optional[str], refund_data: Optional[Dict]]
+            Refund payment response
         """
-        if not self.is_configured():
-            return False, "Razorpay not configured", None
+        original_payment = self.db.execute(
+            select(Payment).where(Payment.id == payment_id).with_for_update()
+        ).scalar_one_or_none()
+        if not original_payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Original payment not found"
+            )
         
-        # Check idempotency
-        if idempotency_key:
-            cached_response = self._check_idempotency(idempotency_key)
-            if cached_response:
-                cached_response["idempotent_replay"] = True
-                return cached_response.get("success", False), cached_response.get("error"), cached_response.get("refund_data")
+        if original_payment.status != PaymentStatus.SUCCESS.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Can only refund successful payments"
+            )
         
-        # Fraud check for refunds
-        fraud_allowed, fraud_decision, fraud_details = self._check_fraud(
-            user_id or "anonymous", amount_rupees or 0, payment_id
+        refund_amount = amount or original_payment.amount
+        
+        # Create refund record
+        refund_id = str(uuid.uuid4())
+        refund = Payment(
+            id=refund_id,
+            booking_id=original_payment.booking_id,
+            amount=-refund_amount,  # Negative for refund
+            payment_method=original_payment.payment_method,
+            status=PaymentStatus.REFUNDED.value,
+            created_at=datetime.now(timezone.utc),
+            refund_reason=reason,
+            original_payment_id=payment_id
         )
-        if not fraud_allowed:
-            self._log_audit(
-                payment_id=payment_id,
-                order_id=None,
-                action="REFUND_FRAUD_BLOCK",
-                new_state="BLOCKED",
-                actor_type="SYSTEM",
-                amount=amount_rupees,
-                extra_data={"fraud_details": fraud_details}
-            )
-            return False, "Refund blocked due to suspicious activity", None
         
-        try:
-            success, error, refund_data = await RAZORPAY_BREAKER.execute(
-                self._refund_impl, payment_id, amount_rupees
+        self.db.add(refund)
+        
+        # Update original payment
+        original_payment.refund_id = refund_id
+        original_payment.refund_amount = refund_amount
+        
+        # Update booking
+        booking = self.db.execute(
+            select(Booking).where(Booking.id == original_payment.booking_id).with_for_update()
+        ).scalar_one_or_none()
+        if booking:
+            booking.booking_status = "refunded"
+            booking.refund_amount = refund_amount
+            booking.refund_processed_at = datetime.now(timezone.utc)
+        
+        self.db.commit()
+        
+        return PaymentResponse(
+            payment_id=refund_id,
+            booking_id=original_payment.booking_id,
+            amount=refund_amount,
+            status=PaymentStatus.REFUNDED,
+            metadata={"original_payment_id": payment_id, "reason": reason}
+        )
+    
+    async def get_payment(self, payment_id: str) -> Payment:
+        """Get payment details."""
+        payment = self.db.get(Payment, payment_id)
+        if not payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment not found"
             )
+        return payment
+    
+    async def get_payments_for_booking(
+        self,
+        booking_id: str
+    ) -> list[Payment]:
+        """Get all payments for a booking."""
+        result = self.db.execute(
+            select(Payment).where(Payment.booking_id == booking_id)
+        ).scalars().all()
+        return list(result)
+    
+    async def reconcile_payments(
+        self,
+        start_date: datetime,
+        end_date: datetime
+    ) -> Dict[str, Any]:
+        """
+        Generate reconciliation report for payments.
+        
+        Args:
+            start_date: Start of reconciliation period
+            end_date: End of reconciliation period
             
-            if success:
-                # Log audit
-                self._log_audit(
-                    payment_id=payment_id,
-                    order_id=None,
-                    action="REFUND",
-                    new_state="refunded",
-                    actor_type="SYSTEM",
-                    amount=amount_rupees,
-                    extra_data={"reason": reason},
-                    ip_address=ip_address
+        Returns:
+            Reconciliation report
+        """
+        result = self.db.execute(
+            select(Payment).where(
+                and_(
+                    Payment.created_at >= start_date,
+                    Payment.created_at <= end_date
                 )
-                
-                # Record idempotency
-                if idempotency_key:
-                    request_hash = self._generate_request_hash(
-                        "REFUND", amount_rupees or 0, payment_id, reason
-                    )
-                    self._record_idempotency(
-                        idempotency_key, "REFUND", request_hash,
-                        {"success": True, "error": None, "refund_data": refund_data}
-                    )
-                
-                # Trigger webhooks
-                await self.trigger_webhooks("payment.refunded", {
-                    "payment_id": payment_id,
-                    "refund_id": refund_data.get("id") if refund_data else None,
-                    "amount": amount_rupees
-                })
-            
-            return success, error, refund_data
-            
-        except CircuitOpenError:
-            logger.error(f"Circuit breaker open for Razorpay refund")
-            return False, "Payment service temporarily unavailable", None
-
-    async def _refund_impl(self, payment_id: str, amount_rupees: Optional[float] = None):
-        payload = {"amount": int(amount_rupees * 100)} if amount_rupees else {}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{RAZORPAY_API_URL}/payments/{payment_id}/refund",
-                json=payload,
-                auth=(self.key_id, self.key_secret),
-                timeout=10.0,
             )
-        if response.status_code in [200, 201]:
-            refund_data = response.json()
-            refund_id = refund_data.get('id')
-            logger.info(f"Refund created: {refund_id}")
-            return True, None, refund_data
-        else:
-            error_text = response.text
-            logger.error(f"Refund failed: {error_text}")
-            return False, f"Refund failed: {error_text}", None
-
-    async def fetch_payments_for_order(self, order_id: str) -> Optional[Dict]:
-        """Fetch all payments for a given Razorpay order asynchronously."""
-        if not self.is_configured():
-            return None
+        ).scalars().all()
         
-        # Check cache first
-        if order_id in self._order_cache and self._is_cache_valid(self._order_cache[order_id]):
-            logger.debug(f"Cache hit for order {order_id}")
-            cached = self._order_cache[order_id]
-            return {
-                "order_id": order_id,
-                "status": cached.get("status"),
-                "payments": []  # Would need separate cache for payments
-            }
+        payments = list(result)
         
-        try:
-            return await RAZORPAY_BREAKER.execute(self._fetch_order_payments_impl, order_id)
-        except CircuitOpenError:
-            logger.error(f"Circuit breaker open for Razorpay order payments fetch")
-            return None
-
-    async def _fetch_order_payments_impl(self, order_id: str):
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{RAZORPAY_API_URL}/orders/{order_id}/payments",
-                auth=(self.key_id, self.key_secret),
-                timeout=5.0,
-            )
-        if response.status_code == 200:
-            result = response.json()
-            # Cache the order info
-            self._order_cache[order_id] = {
-                "order_id": order_id,
-                "status": result.get("items", [{}])[0].get("order_id") if result.get("items") else None,
-                "_cached_at": datetime.utcnow().timestamp()
-            }
-            return result
-        return None
-
-    async def fetch_order_details(self, order_id: str) -> Optional[Dict]:
-        """Fetch order details from Razorpay asynchronously."""
-        if not self.is_configured():
-            return None
+        total_collected = sum(p.amount for p in payments if p.status == PaymentStatus.SUCCESS.value)
+        total_refunded = sum(abs(p.amount) for p in payments if p.status == PaymentStatus.REFUNDED.value)
+        total_pending = sum(p.amount for p in payments if p.status == PaymentStatus.PENDING.value)
+        total_failed = sum(p.amount for p in payments if p.status == PaymentStatus.FAILED.value)
         
-        # Check cache first
-        if order_id in self._order_cache and self._is_cache_valid(self._order_cache[order_id]):
-            cached = self._order_cache[order_id]
-            return {
-                "id": order_id,
-                "amount": cached.get("amount"),
-                "status": cached.get("status"),
-                "cached": True
-            }
-        
-        try:
-            return await RAZORPAY_BREAKER.execute(self._fetch_order_details_impl, order_id)
-        except CircuitOpenError:
-            logger.error(f"Circuit breaker open for Razorpay order details fetch")
-            return None
-
-    async def _fetch_order_details_impl(self, order_id: str):
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{RAZORPAY_API_URL}/orders/{order_id}",
-                auth=(self.key_id, self.key_secret),
-                timeout=5.0,
-            )
-        if response.status_code == 200:
-            result = response.json()
-            # Cache the result
-            self._order_cache[order_id] = {
-                "order_id": order_id,
-                "amount": result.get("amount") / 100,  # Convert back to rupees
-                "status": result.get("status"),
-                "_cached_at": datetime.utcnow().timestamp()
-            }
-            return result
-        return None
-
-    def clear_cache(self, order_id: Optional[str] = None) -> None:
-        """Clear order cache."""
-        if order_id:
-            self._order_cache.pop(order_id, None)
-        else:
-            self._order_cache.clear()
-        logger.info(f"Payment cache cleared" + (f" for {order_id}" if order_id else ""))
-
-    def get_health_status(self) -> Dict:
-        """Get health status including circuit breaker state."""
-        breaker = circuit_manager.get("razorpay")
-        metrics = breaker.get_metrics() if breaker else None
         return {
-            "configured": self.is_configured(),
-            "circuit_breaker": metrics if metrics else None,
-            "cache_size": len(self._order_cache)
+            "period": {
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat()
+            },
+            "summary": {
+                "total_transactions": len(payments),
+                "total_collected": total_collected,
+                "total_refunded": total_refunded,
+                "net_revenue": total_collected - total_refunded,
+                "pending_amount": total_pending,
+                "failed_amount": total_failed
+            },
+            "by_status": {
+                "success": len([p for p in payments if p.status == PaymentStatus.SUCCESS.value]),
+                "pending": len([p for p in payments if p.status == PaymentStatus.PENDING.value]),
+                "failed": len([p for p in payments if p.status == PaymentStatus.FAILED.value]),
+                "refunded": len([p for p in payments if p.status == PaymentStatus.REFUNDED.value])
+            },
+            "by_method": {
+                "upi": sum(p.amount for p in payments if p.payment_method == "upi" and p.status == PaymentStatus.SUCCESS.value),
+                "card": sum(p.amount for p in payments if p.payment_method == "card" and p.status == PaymentStatus.SUCCESS.value),
+                "net_banking": sum(p.amount for p in payments if p.payment_method == "net_banking" and p.status == PaymentStatus.SUCCESS.value)
+            }
         }
+
+
+# Singleton instance
+payment_service = None
+
+def get_payment_service(db: Session) -> PaymentService:
+    """Get or create payment service instance."""
+    global payment_service
+    if payment_service is None:
+        payment_service = PaymentService(db)
+    return payment_service
+
+
+# ==================== Mock Payment Methods for Demo ====================
+
+class MockPaymentService:
+    """
+    Mock payment service for demo and testing purposes.
+    Simulates payment flow without actual payment gateway integration.
+    """
+    
+    def __init__(self):
+        self.mock_payments: Dict[str, Dict[str, Any]] = {}
+        self.logger = logging.getLogger("mock_payment_service")
+    
+    async def create_mock_payment(
+        self,
+        booking_id: str,
+        amount: float,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """
+        Create a mock payment for demo purposes.
+        
+        Args:
+            booking_id: ID of the booking
+            amount: Payment amount
+            user_id: ID of the user
+            
+        Returns:
+            Dict with payment details including mock payment URL
+        """
+        import asyncio
+        import random
+        
+        payment_id = str(uuid.uuid4())
+        
+        # Create mock payment record
+        mock_payment = {
+            "payment_id": payment_id,
+            "booking_id": booking_id,
+            "amount": amount,
+            "user_id": user_id,
+            "status": "pending",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+            "mock_payment_url": f"/mock_payment/{payment_id}?amount={amount}",
+            "mock_verification_code": f"MOCK-{random.randint(1000, 9999)}"
+        }
+        
+        self.mock_payments[payment_id] = mock_payment
+        self.logger.info(f"Created mock payment {payment_id} for booking {booking_id}")
+        
+        return mock_payment
+    
+    async def verify_mock_payment(
+        self,
+        payment_id: str
+    ) -> Dict[str, Any]:
+        """
+        Verify a mock payment (simulates payment gateway verification).
+        
+        Args:
+            payment_id: ID of the payment to verify
+            
+        Returns:
+            Dict with verification result
+        """
+        import random
+        import asyncio
+        
+        if payment_id not in self.mock_payments:
+            return {
+                "success": False,
+                "error": "Payment not found",
+                "payment_id": payment_id
+            }
+        
+        payment = self.mock_payments[payment_id]
+        
+        # Simulate payment processing delay
+        await asyncio.sleep(0.5)
+        
+        # Simulate 95% success rate
+        if random.random() < 0.95:
+            payment["status"] = "success"
+            payment["verified_at"] = datetime.now(timezone.utc).isoformat()
+            payment["upi_tx_id"] = f"UPI{random.randint(10000000, 99999999)}"
+            payment["utr_number"] = f"{random.randint(100000000000, 999999999999)}"
+            
+            self.logger.info(f"Mock payment {payment_id} verified successfully")
+            
+            return {
+                "success": True,
+                "payment_id": payment_id,
+                "status": "success",
+                "upi_tx_id": payment["upi_tx_id"],
+                "utr_number": payment["utr_number"],
+                "message": "Payment verified successfully"
+            }
+        else:
+            payment["status"] = "failed"
+            payment["failed_at"] = datetime.now(timezone.utc).isoformat()
+            payment["failure_reason"] = "Mock payment failure for testing"
+            
+            self.logger.warning(f"Mock payment {payment_id} failed (simulated)")
+            
+            return {
+                "success": False,
+                "payment_id": payment_id,
+                "status": "failed",
+                "error": "Payment verification failed",
+                "failure_reason": "Mock payment failure for testing"
+            }
+    
+    async def simulate_payment_flow(
+        self,
+        booking_id: str,
+        amount: float,
+        user_id: str
+    ) -> Dict[str, Any]:
+        """
+        Simulate complete payment flow with success message after delay.
+        
+        Args:
+            booking_id: ID of the booking
+            amount: Payment amount
+            user_id: ID of the user
+            
+        Returns:
+            Dict with complete payment flow result
+        """
+        import asyncio
+        
+        # Step 1: Create payment
+        payment = await self.create_mock_payment(booking_id, amount, user_id)
+        
+        # Step 2: Simulate payment page delay
+        await asyncio.sleep(2)
+        
+        # Step 3: Verify payment
+        result = await self.verify_mock_payment(payment["payment_id"])
+        
+        return {
+            "payment_id": payment["payment_id"],
+            "booking_id": booking_id,
+            "amount": amount,
+            "status": result["status"],
+            "verification_result": result,
+            "message": "Payment completed successfully!" if result["success"] else "Payment failed. Please try again."
+        }
+    
+    def get_mock_payment_status(
+        self,
+        payment_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get the current status of a mock payment.
+        
+        Args:
+            payment_id: ID of the payment
+            
+        Returns:
+            Payment dict or None if not found
+        """
+        return self.mock_payments.get(payment_id)
+    
+    def clear_mock_payments(self) -> None:
+        """Clear all mock payment records (for testing)."""
+        self.mock_payments.clear()
+        self.logger.info("Cleared all mock payments")
+
+
+# Singleton instance for mock payment service
+mock_payment_service = MockPaymentService()

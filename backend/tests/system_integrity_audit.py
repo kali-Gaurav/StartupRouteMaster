@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime
 from unittest.mock import patch, AsyncMock
-from core.redis_client import async_redis_client as redis_client
+from core.infrastructure.redis_manager import async_redis_client as redis_client
 from services.search_service import SearchService
 from services.telemetry_service import push_to_stream
 

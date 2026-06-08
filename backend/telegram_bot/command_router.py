@@ -17,7 +17,7 @@ from .schemas import (
     TelegramMessage, CallbackQuery
 )
 from .intent_classifier import IntentClassifier, IntentResult
-from .user_session_manager import UserSessionManager
+from .user_session_manager import UserSessionManager, user_session_manager
 from .config import bot_config
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class CommandRouter:
     
     def __init__(self):
         self.intent_classifier = IntentClassifier()
-        self.session_manager = UserSessionManager()
+        self.session_manager = user_session_manager
         
         # Handler registry
         self._handlers: Dict[Union[IntentType, str], Callable] = {}
@@ -119,6 +119,14 @@ class CommandRouter:
                         session.context.state = result.next_state
                     await self.session_manager.save_session(session)
                     return result.response
+                else:
+                    # If flow failed, clear flow state and return the error response
+                    session.context.state = UserState.IDLE
+                    session.context.data.pop("flow_waiting_input", None)
+                    session.context.data.pop("flow_step_idx", None)
+                    await self.session_manager.save_session(session)
+                    if result.response:
+                        return result.response
 
             # 2. Run middleware
             for mw in self._middleware:
@@ -136,10 +144,16 @@ class CommandRouter:
             session.context.updated_at = datetime.utcnow()
             
             # Get appropriate handler
-            handler = self._handlers.get(
-                intent_result.intent if isinstance(intent_result.intent, IntentType) else IntentType(intent_result.intent),
-                self._fallback_handler
-            )
+            handler = None
+            
+            # Prioritize sub-states (AWAITING_...)
+            if session.context.state in [UserState.AWAITING_ORIGIN, UserState.AWAITING_DESTINATION, UserState.AWAITING_DATE]:
+                handler = self._handlers.get(IntentType.SEARCH_TRAINS)
+            else:
+                handler = self._handlers.get(
+                    intent_result.intent if isinstance(intent_result.intent, IntentType) else IntentType(intent_result.intent),
+                    self._fallback_handler
+                )
             
             if not handler:
                 # Default fallback

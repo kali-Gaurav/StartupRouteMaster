@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "name": "Employee Experience Updater (Edit)",
+  "description": "Automatically update employee experience files when meeting logs are edited",
+  "version": "1.0.0",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [".agent/logs/*.json"]
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "python .agent/workflows/employee_experience_updater.py"
+  }
+}

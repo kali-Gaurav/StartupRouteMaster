@@ -1,7 +1,8 @@
 import logging
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
-from resilience.circuit_breaker import circuit_breaker, CircuitState
+from resilience import circuit_breaker, CircuitState
 from resilience.retry_policy import retry_policy, RetryStrategy
 from resilience.metrics import track_metrics, MetricsClient
 
@@ -21,8 +22,15 @@ class AvailabilityHeuristic:
     )
     
     def __init__(self):
-        # In production, this would load a real .pkl model
-        pass
+        self.model_path = os.getenv("AVAILABILITY_MODEL_PATH")
+        self.onnx_session = None
+        if self.model_path and os.path.exists(self.model_path):
+            try:
+                import onnxruntime as ort
+                self.onnx_session = ort.InferenceSession(self.model_path)
+                logger.info(f"🧠 [ML:AVAILABILITY] Loaded ONNX model from {self.model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load ONNX model: {e}")
         # Metrics tracking
         self._metrics = MetricsClient(
             service_name="availability_heuristic",

@@ -21,6 +21,7 @@ import { useServerWarmup } from "@/hooks/useServerWarmup";
 import { IconSprite } from "./components/ui/IconSprite";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { queryClient } from "./infrastructure/queryClient";
+import { LanguageProvider } from "./context/LanguageContext";
 
 // Lazy load pages
 const Index = lazy(() => import("./pages/Index"));
@@ -38,8 +39,13 @@ const Terms = lazy(() => import("./pages/Terms"));
 const Safety = lazy(() => import("./pages/Safety"));
 const TrainTracking = lazy(() => import("./pages/TrainTracking"));
 const IrctcRedirect = lazy(() => import("./pages/IrctcRedirect"));
+const PNRStatus = lazy(() => import("./pages/PNRStatus"));
+const TrainSchedule = lazy(() => import("./pages/TrainSchedule"));
+const StationBoard = lazy(() => import("./pages/StationBoard"));
+const CityPairRoutes = lazy(() => import("./pages/CityPairRoutes"));
 const RazorpayCheckout = lazy(() => import("./pages/RazorpayCheckout"));
 const SOSDashboard = lazy(() => import("./pages/SOSDashboard"));
+const SathiOnboard = lazy(() => import("./pages/SathiOnboard"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const AdminOperations = lazy(() => import("./pages/AdminOperations"));
 const AdminFinance = lazy(() => import("./pages/AdminFinance"));
@@ -54,7 +60,14 @@ const AdminDrift = lazy(() => import("./pages/AdminDrift"));
 const AdminSwarm = lazy(() => import("./pages/AdminSwarm"));
 
 import ProtectedAdminRoute from "./components/auth/ProtectedAdminRoute";
-import AdminLayout from "./components/layout/AdminLayout";
+import { useNoIndex } from "./hooks/useNoIndex";
+
+/** Wraps any route that should not be indexed by Google */
+function NoIndexWrapper({ children }: { children: React.ReactNode }) {
+  useNoIndex();
+  return <>{children}</>;
+}
+const AdminLayout = lazy(() => import("./components/layout/AdminLayout"));
 
 const MiniAppHome = lazy(() => import("./pages/mini-app/Home"));
 const MiniAppSearch = lazy(() => import("./pages/mini-app/Search"));
@@ -146,15 +159,15 @@ const AppContent = () => {
             <Route path="/dashboard" element={
               <ProtectedRoute>
                 <VerificationGate>
-                  <ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary>
+                  <NoIndexWrapper><ErrorBoundary name="Dashboard"><Dashboard /></ErrorBoundary></NoIndexWrapper>
                 </VerificationGate>
               </ProtectedRoute>
             } />
-            
+
             <Route path="/bookings" element={
               <ProtectedRoute>
                 <VerificationGate>
-                  <ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary>
+                  <NoIndexWrapper><ErrorBoundary name="Bookings"><Bookings /></ErrorBoundary></NoIndexWrapper>
                 </VerificationGate>
               </ProtectedRoute>
             } />
@@ -168,7 +181,14 @@ const AppContent = () => {
             <Route path="/track" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/track/:trainNumber" element={<ErrorBoundary name="Tracking"><TrainTracking /></ErrorBoundary>} />
             <Route path="/redirect/irctc" element={<IrctcRedirect />} />
-            <Route path="/ops/sos" element={<SOSDashboard />} />
+            <Route path="/pnr" element={<ErrorBoundary name="PNR"><PNRStatus /></ErrorBoundary>} />
+            <Route path="/pnr/:pnr" element={<ErrorBoundary name="PNR"><PNRStatus /></ErrorBoundary>} />
+            <Route path="/trains/:trainNumber/schedule" element={<ErrorBoundary name="Schedule"><TrainSchedule /></ErrorBoundary>} />
+            <Route path="/station" element={<ErrorBoundary name="StationBoard"><StationBoard /></ErrorBoundary>} />
+            <Route path="/station/:code" element={<ErrorBoundary name="StationBoard"><StationBoard /></ErrorBoundary>} />
+            <Route path="/trains/:fromSlug/:toSlug" element={<ErrorBoundary name="CityPair"><CityPairRoutes /></ErrorBoundary>} />
+            <Route path="/ops/sos" element={<NoIndexWrapper><SOSDashboard /></NoIndexWrapper>} />
+            <Route path="/sathi/onboard" element={<NoIndexWrapper><SathiOnboard /></NoIndexWrapper>} />
             
             {/* High-Tech Admin Portals (Task 10) */}
             <Route path="/ops/admin" element={
@@ -214,6 +234,7 @@ const AppContent = () => {
         <Routes>
           <Route path="*" element={<ChatbotWrapper />} />
         </Routes>
+        <SOSWidget />
         <BottomNav />
       </BrowserRouter>
     </TooltipProvider>
@@ -223,11 +244,13 @@ const AppContent = () => {
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <ThemeProvider>
-      <AuthProvider>
-        <BookingFlowProvider>
-          <AppContent />
-        </BookingFlowProvider>
-      </AuthProvider>
+      <LanguageProvider>
+        <AuthProvider>
+          <BookingFlowProvider>
+            <AppContent />
+          </BookingFlowProvider>
+        </AuthProvider>
+      </LanguageProvider>
     </ThemeProvider>
   </QueryClientProvider>
 );

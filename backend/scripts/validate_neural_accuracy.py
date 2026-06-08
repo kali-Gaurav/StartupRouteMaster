@@ -17,9 +17,9 @@ sys.path.append(os.getcwd())
 from database.session import initialize_database_pools
 from services.search_service import search_service
 from services.rapidapi_provider import rapidapi_provider
-from core.container import container
+from core.infrastructure.container import container
 from core.route_engine import get_route_engine
-from core.data_structures import Route
+from core.data_utils.structures import Route
 
 async def run_accuracy_audit():
     """

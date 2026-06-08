@@ -1,4 +1,3 @@
-
 import logging
 import hashlib
 from datetime import datetime, timedelta
@@ -29,8 +28,6 @@ class SharedAuthManager:
         """Sliding window rate limiter."""
         if not self.redis: return True
         try:
-            # Note: For sync compatibility in monolith, we might need a sync wrapper
-            # But here we assume async usage in new services
             count = await self.redis.get(f"auth:limit:{key}")
             if count and int(count) >= limit: return False
             await self.redis.incr(f"auth:limit:{key}")
@@ -58,7 +55,6 @@ class SharedAuthManager:
 
     def verify_jwt(self, token: str) -> Dict[str, Any]:
         """Strict JWT verification with Supabase + Blacklist check."""
-        # 1. Check Blacklist first (fast, local/redis)
         if self.is_blacklisted(token):
             logger.warning("Attempted use of blacklisted token.")
             raise HTTPException(
@@ -82,20 +78,19 @@ class SharedAuthManager:
 
     @with_db_retry()
     def sync_user(self, sb_user: Any) -> Any:
-        """Synchronize Supabase user to PostgreSQL."""
+        """Synchronize Firebase user to PostgreSQL."""
         from database.models import User, Profile
         sb_id = getattr(sb_user, "id", sb_user.get("id") if isinstance(sb_user, dict) else None)
         sb_email = getattr(sb_user, "email", sb_user.get("email") if isinstance(sb_user, dict) else None)
         sb_metadata = getattr(sb_user, "user_metadata", sb_user.get("user_metadata", {}) if isinstance(sb_user, dict) else {})
         sb_role = sb_metadata.get("role") or "user"
         
-        user = self.db.query(User).filter(User.supabase_id == sb_id).first()
+        user = self.db.query(User).filter(User.firebase_uid == sb_id).first()
         if not user:
-            # Logic from old auth_manager.py
             sb_name = sb_metadata.get("full_name") or sb_metadata.get("name") or (sb_email.split('@')[0] if sb_email else "User")
             user = User(
                 email=sb_email,
-                supabase_id=sb_id,
+                firebase_uid=sb_id,
                 role=sb_role,
                 full_name=sb_name,
                 is_verified=True
@@ -106,7 +101,7 @@ class SharedAuthManager:
             profile = Profile(user_id=user.id, name=sb_name)
             self.db.add(profile)
             self.db.commit()
-            self.log_audit(user.id, "USER_CREATED", reason="Sync from Supabase")
+            self.log_audit(user.id, "USER_CREATED", reason="Sync from Firebase")
         elif user.role != sb_role:
             user.role = sb_role
             self.db.commit()
@@ -124,7 +119,6 @@ class SharedAuthManager:
         device_type = "Mobile" if any(m in user_agent for m in ["Mobile", "Android", "iPhone"]) else "Desktop"
         device_info = {"type": device_type, "ua": user_agent[:100], "ip": client_ip}
         
-        # Session Rotation logic
         existing = self.db.query(UserSession).filter(
             UserSession.user_id == user_id,
             UserSession.ip_address == client_ip,

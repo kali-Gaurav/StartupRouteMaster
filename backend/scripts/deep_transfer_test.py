@@ -14,7 +14,7 @@ sys.path.append(os.getcwd())
 
 from database.session import initialize_database_pools
 from services.search_service import search_service
-from core.container import container
+from core.infrastructure.container import container
 from core.route_engine.constraints import DiscoveryModel
 
 async def run_deep_test():

@@ -4,6 +4,7 @@ Keyboard Definitions
 UI components for Telegram bot interactions.
 """
 
+from .config import bot_config
 from typing import Dict, Any, List
 from .config import feature_config
 
@@ -28,6 +29,9 @@ class KeyboardBuilder:
                 [
                     {"text": "🚨 SOS Emergency"},
                     {"text": "❓ Help"}
+                ],
+                [
+                    {"text": "🚀 Launch RouteMaster App", "web_app": {"url": bot_config.web_app_url}}
                 ]
             ],
             "resize_keyboard": True,
@@ -120,6 +124,30 @@ class KeyboardBuilder:
     def empty() -> Dict[str, Any]:
         """Remove custom keyboard."""
         return {"remove_keyboard": True}
+
+    @staticmethod
+    def popular_stations() -> Dict[str, Any]:
+        """Popular stations for selection."""
+        return {
+            "keyboard": [
+                [{"text": "NDLS"}, {"text": "MMCT"}, {"text": "MAS"}],
+                [{"text": "SBC"}, {"text": "PUNE"}, {"text": "HWH"}],
+                [{"text": "🔙 Back"}]
+            ],
+            "resize_keyboard": True
+        }
+
+    @staticmethod
+    def date_picker() -> Dict[str, Any]:
+        """Simple date selection keyboard."""
+        return {
+            "keyboard": [
+                [{"text": "Today"}, {"text": "Tomorrow"}],
+                [{"text": "Day after tomorrow"}],
+                [{"text": "🔙 Back"}]
+            ],
+            "resize_keyboard": True
+        }
     
     # Inline keyboards
     @staticmethod
@@ -177,11 +205,27 @@ class KeyboardBuilder:
         return [
             [
                 {"text": "🔄 Refresh", "callback_data": f"refresh_pnr_{pnr}"},
-                {"text": "📜 Boarding Slip", "callback_data": f"slip_{pnr}"}
+                {"text": "📡 Live Status", "callback_data": f"live_pnr_{pnr}"}
             ],
             [
-                {"text": "🚉 Station Map", "callback_data": f"station_map_{pnr}"},
+                {"text": "📜 Boarding Slip", "callback_data": f"slip_{pnr}"},
                 {"text": "⏰ Alerts", "callback_data": f"alerts_{pnr}"}
+            ],
+            [
+                {"text": "🚉 Station Map", "callback_data": f"station_map_{pnr}"}
+            ]
+        ]
+    
+    @staticmethod
+    def train_live_status(train_no: str) -> List[List[Dict[str, str]]]:
+        """Inline keyboard for live train status."""
+        return [
+            [
+                {"text": "🔄 Refresh", "callback_data": f"live_train_{train_no}"},
+                {"text": "⏰ Arrival Alerts", "callback_data": f"alerts_train_{train_no}"}
+            ],
+            [
+                {"text": "🚉 Full Schedule", "callback_data": f"schedule_{train_no}"}
             ]
         ]
     
@@ -269,6 +313,21 @@ class KeyboardBuilder:
             [
                 {"text": "Divyang", "callback_data": "quota_divyang"},
                 {"text": "Premium Tatkal", "callback_data": "quota_premium_tatkal"}
+            ]
+        ]
+    
+    @staticmethod
+    def booking_method_selection() -> List[List[Dict[str, str]]]:
+        """Hybrid booking method selection."""
+        return [
+            [
+                {"text": "⚡ Book via IRCTC (Direct)", "callback_data": "method_irctc"},
+            ],
+            [
+                {"text": "🤝 Book via Verified Agent", "callback_data": "method_agent"}
+            ],
+            [
+                {"text": "🔙 Back", "callback_data": "method_back"}
             ]
         ]
 

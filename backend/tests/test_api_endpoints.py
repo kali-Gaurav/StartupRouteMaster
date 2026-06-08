@@ -60,7 +60,7 @@ async def test_api_routers():
     # Test search router
     logger.info("\n--- Test: Search Router ---")
     try:
-        from api.search import router as search_router
+        from api.search.search import router as search_router
         results.add_pass("Search router import", f"Routes: {len(search_router.routes)}")
     except Exception as e:
         results.add_fail("Search router import", str(e))
@@ -84,7 +84,7 @@ async def test_api_routers():
     # Test bookings router
     logger.info("\n--- Test: Bookings Router ---")
     try:
-        from api.bookings import router as bookings_router
+        from api.bookings.bookings import router as bookings_router
         results.add_pass("Bookings router import", f"Routes: {len(bookings_router.routes)}")
     except Exception as e:
         results.add_fail("Bookings router import", str(e))
@@ -92,7 +92,7 @@ async def test_api_routers():
     # Test payments router
     logger.info("\n--- Test: Payments Router ---")
     try:
-        from api.payments import router as payments_router
+        from api.payments.payments import router as payments_router
         results.add_pass("Payments router import", f"Routes: {len(payments_router.routes)}")
     except Exception as e:
         results.add_fail("Payments router import", str(e))
@@ -108,7 +108,7 @@ async def test_api_routers():
     # Test user router
     logger.info("\n--- Test: User Router ---")
     try:
-        from api.users import router as user_router
+        from api.auth.auth.users import router as user_router
         results.add_pass("User router import", f"Routes: {len(user_router.routes)}")
     except Exception as e:
         results.add_fail("User router import", str(e))
@@ -116,7 +116,7 @@ async def test_api_routers():
     # Test auth router
     logger.info("\n--- Test: Auth Router ---")
     try:
-        from api.auth import router as auth_router
+        from api.auth.auth import router as auth_router
         results.add_pass("Auth router import", f"Routes: {len(auth_router.routes)}")
     except Exception as e:
         results.add_fail("Auth router import", str(e))

@@ -2,7 +2,7 @@ import logging
 import json
 from datetime import datetime
 from typing import Dict, Any, Optional
-from api.sos import _load_event_async as _load_event
+from api.safety.sos import _load_event_async as _load_event
 from database.session import SessionLocal
 
 logger = logging.getLogger(__name__)

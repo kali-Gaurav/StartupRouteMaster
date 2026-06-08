@@ -1,7 +1,7 @@
 import time
 from datetime import datetime, timedelta
-from core.data_structures import DynamicWaitConfig
-from core.dynamic_logic import is_valid_transfer
+from core.data_utils.structures import DynamicWaitConfig
+from core.engines.dynamic_logic import is_valid_transfer
 
 def benchmark_is_valid_transfer():
     config = DynamicWaitConfig()

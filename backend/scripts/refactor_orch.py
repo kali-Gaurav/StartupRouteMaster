@@ -7,8 +7,8 @@ with open(fname, "r", encoding="utf-8") as f:
 
 # 1. Add RoutingRequest and BaseRoutingEngine to imports
 if "from .base import " not in code:
-    code = code.replace("from core.data_structures import Route, RouteSegment, TransferConnection, Persona",
-                        "from core.data_structures import Route, RouteSegment, TransferConnection, Persona\nfrom .base import BaseRoutingEngine, RoutingRequest, RoutingResponse")
+    code = code.replace("from core.data_utils.structures import Route, RouteSegment, TransferConnection, Persona",
+                        "from core.data_utils.structures import Route, RouteSegment, TransferConnection, Persona\nfrom .base import BaseRoutingEngine, RoutingRequest, RoutingResponse")
 
 # 2. Update __init__ registry
 init_old = """    def __init__(self, route_engine_instance):

@@ -20,16 +20,27 @@ class R2Storage:
         self.bucket_name = Config._get_env("CLOUDFLARE_R2_BUCKET_NAME", "routemaster-storage")
 
         if not all([self.account_id, self.access_key_id, self.secret_access_key, self.endpoint_url]):
-            logger.warning(f"⚠️ Cloudflare R2 credentials not fully configured. Missing: {[k for k in ['ACCOUNT_ID', 'ACCESS_KEY', 'SECRET_KEY', 'S3_API'] if not getattr(self, k.lower().replace('s3_api', 'endpoint_url'))]}")
-
-        self.s3_client = boto3.client(
-            service_name='s3',
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
-            region_name='auto',  # R2 uses 'auto'
-            config=BotoConfig(s3={'addressing_style': 'path'})
-        )
+            missing = []
+            if not self.account_id:
+                missing.append('ACCOUNT_ID')
+            if not self.access_key_id:
+                missing.append('ACCESS_KEY')
+            if not self.secret_access_key:
+                missing.append('SECRET_KEY')
+            if not self.endpoint_url:
+                missing.append('S3_API')
+            if missing:
+                logger.warning(f"⚠️ Cloudflare R2 credentials not fully configured. Missing: {missing}")
+            self.s3_client = None
+        else:
+            self.s3_client = boto3.client(
+                service_name='s3',
+                endpoint_url=self.endpoint_url,
+                aws_access_key_id=self.access_key_id,
+                aws_secret_access_key=self.secret_access_key,
+                region_name='auto',  # R2 uses 'auto'
+                config=BotoConfig(s3={'addressing_style': 'path'})
+            )
 
     @staticmethod
     def calculate_sha256(file_path: str | Path) -> str:
@@ -49,6 +60,10 @@ class R2Storage:
         extra_args = {}
         if metadata:
             extra_args['Metadata'] = metadata
+
+        if not self.s3_client:
+            logger.error("❌ Cloudflare R2 is not configured. Cannot upload file.")
+            return False
 
         try:
             self.s3_client.upload_file(str(file_path), self.bucket_name, object_name, ExtraArgs=extra_args)

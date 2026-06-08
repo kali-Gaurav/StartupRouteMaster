@@ -8,7 +8,7 @@ from typing import List, Any
 from core.route_engine.orchestrator import UnifiedRoutingOrchestrator
 from core.route_engine.base import RoutingRequest, RoutingResponse
 from core.route_engine.constraints import RouteConstraints
-from core.data_structures import Persona
+from core.data_utils.structures import Persona
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AuditSuite")

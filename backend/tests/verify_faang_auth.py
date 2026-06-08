@@ -34,7 +34,7 @@ async def test_faang_session_control():
     
     try:
         # 1. Create a dummy user
-        user = User(id="faang_test_user", email="faang@test.com", supabase_id="faang_sb_123")
+        user = User(id="faang_test_user", email="faang@test.com", firebase_uid="faang_sb_123")
         db.add(user)
         db.commit()
         

@@ -9,7 +9,7 @@ Models for persisting knowledge graph data including:
 - User behavior matrix
 """
 
-from database.base import UserBase, TransitBase
+from database.infrastructure.base import UserBase, TransitBase
 from sqlalchemy import Column, String, Integer, Float, DateTime, Text, JSON, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -17,6 +17,7 @@ import uuid
 
 
 class UserPreferenceModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores learned user preferences for the knowledge graph.
     """
@@ -66,6 +67,7 @@ class UserPreferenceModel(UserBase):
 
 
 class RoutePatternModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores learned route patterns and statistics.
     """
@@ -105,6 +107,7 @@ class RoutePatternModel(UserBase):
 
 
 class SeasonalPatternModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores seasonal demand patterns for routes.
     """
@@ -131,12 +134,12 @@ class SeasonalPatternModel(UserBase):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        # Unique constraint for source-destination-month
-        {'sqlite_autoincrement': True},
+        {'sqlite_autoincrement': True, "extend_existing": True},
     )
 
 
 class CompetitorPriceModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores competitor pricing information.
     """
@@ -175,6 +178,7 @@ class CompetitorPriceModel(UserBase):
 
 
 class UserBehaviorModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores user behavior data for collaborative filtering.
     """
@@ -208,6 +212,7 @@ class UserBehaviorModel(UserBase):
 
 
 class StationPatternModel(UserBase):
+    __table_args__ = {"extend_existing": True}
     """
     Stores learned station patterns and characteristics.
     """
