@@ -31,6 +31,7 @@ const VerifyOTPPage = lazy(() => import("./pages/auth/VerifyOTPPage"));
 const SOS = lazy(() => import("./pages/SOS"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Bookings = lazy(() => import("./pages/Bookings"));
+const UserDashboard = lazy(() => import("./pages/UserDashboard"));
 const Ticket = lazy(() => import("./pages/Ticket"));
 const Responder = lazy(() => import("./pages/Responder"));
 const NotFound = lazy(() => import("./pages/NotFound"));
@@ -171,7 +172,15 @@ const AppContent = () => {
                 </VerificationGate>
               </ProtectedRoute>
             } />
-            
+
+            <Route path="/user/dashboard" element={
+              <ProtectedRoute>
+                <VerificationGate>
+                  <NoIndexWrapper><ErrorBoundary name="UserDashboard"><UserDashboard /></ErrorBoundary></NoIndexWrapper>
+                </VerificationGate>
+              </ProtectedRoute>
+            } />
+
             <Route path="/ticket/:bookingId" element={<ErrorBoundary name="Ticket"><Ticket /></ErrorBoundary>} />
             <Route path="/checkout" element={<ErrorBoundary name="RazorpayCheckout"><RazorpayCheckout /></ErrorBoundary>} />
             <Route path="/responder" element={<Responder />} />

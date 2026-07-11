@@ -1,0 +1,60 @@
+# Testing Requirements for Razorpay Payment Integration Tests
+# Team 5: QA & Testing Team
+# June 8, 2026
+
+# Core Testing Framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-timeout>=2.1.0
+
+# HTTP Testing
+httpx>=0.24.0
+requests>=2.28.0
+
+# Database
+sqlalchemy>=2.0.0
+sqlalchemy-utils>=0.41.0
+
+# Data Validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Security & Cryptography
+cryptography>=40.0.0
+PyJWT>=2.8.0
+passlib>=1.7.4
+bcrypt>=4.0.0
+
+# Mocking & Fixtures
+responses>=0.23.0
+factory-boy>=3.3.0
+
+# Utilities
+python-dotenv>=1.0.0
+click>=8.1.0
+
+# Report Generation
+pytest-html>=3.2.0
+pytest-json-report>=1.5.0
+
+# Performance Testing
+locust>=2.15.0  # Optional: for load testing
+
+# Code Quality (Optional but Recommended)
+pytest-flake8>=1.1.1
+pytest-pylint>=0.19.0
+coverage>=7.0.0
+
+# CI/CD Integration
+pytest-xdist>=3.3.0  # Parallel execution
+pytest-github-actions-annotate-failures>=0.2.0  # GitHub Actions integration
+
+# Async Support
+aiohttp>=3.8.0
+asyncio>=3.4.3
+
+# Additional Utilities
+faker>=18.0.0  # Fake data generation
+freezegun>=1.2.0  # Time mocking

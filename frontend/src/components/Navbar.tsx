@@ -69,6 +69,15 @@ export function Navbar() {
               Dashboard
             </a>
             <a
+              href="/user/dashboard"
+              className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
+              onMouseEnter={handleBookingsHover}
+              onFocus={handleBookingsHover}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              My Dashboard
+            </a>
+            <a
               href="/bookings"
               className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
               onMouseEnter={handleBookingsHover}
@@ -195,6 +204,9 @@ export function Navbar() {
             </a>
             <a href="/dashboard" className="flex items-center gap-2 py-2 text-foreground">
               <LayoutDashboard className="w-4 h-4" /> Dashboard
+            </a>
+            <a href="/user/dashboard" className="flex items-center gap-2 py-2 text-foreground" onFocus={handleBookingsHover} onMouseEnter={handleBookingsHover}>
+              <LayoutDashboard className="w-4 h-4" /> My Dashboard
             </a>
             <a href="/bookings" className="flex items-center gap-2 py-2 text-foreground" onFocus={handleBookingsHover} onMouseEnter={handleBookingsHover}>
               <Ticket className="w-4 h-4" /> My Bookings
