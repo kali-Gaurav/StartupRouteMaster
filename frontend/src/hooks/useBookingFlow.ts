@@ -1,116 +1,221 @@
 /**
  * Booking Flow Hook
- * Manages the complete booking flow: Auth → Payment → IRCTC Redirect
+ * Manages the complete booking flow: Create → Payment → Confirmation
  */
 
-import { useState } from 'react';
-import { useAuth } from '@/context/AuthContext';
-import { createBookingRedirect } from '@/lib/paymentApi';
-import { invalidateBookingsCache } from '@/lib/queryInvalidation';
+import { useCallback } from 'react';
+import { useBookingStore } from '@/store/useBookingStore';
+import type { PassengerDetails, TrainInfo, BookingData as BookingStateData } from '@/store/useBookingStore';
 import { logEvent } from '@/lib/observability';
 
-export interface BookingData {
-  origin: string;
-  destination: string;
-  trainNo: string;
-  travelDate: string;
-  travelClass?: string;
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000';
+
+export interface BookingRequest {
+  journey_id: string;
+  train_number: string;
+  from_station: string;
+  to_station: string;
+  travel_date: string;
+  passengers: PassengerDetails[];
+  class_type: string;
+  berth_preference?: string;
+  meal_preference?: string;
+  payment_method: string;
+}
+
+export interface PaymentInitiateRequest {
+  booking_id: string;
+}
+
+export interface PaymentVerifyRequest {
+  booking_id: string;
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+export interface BookingResponse {
+  booking_id: string;
+  pnr_number: string;
+  status: string;
+  total_amount: number;
+  payment_url?: string;
+  expires_at?: string;
+  seats_allocated: string[];
+}
+
+export interface PaymentInitiateResponse {
+  razorpay_order_id: string;
+  amount_paise: number;
+  currency: string;
+  booking_id: string;
+}
+
+export interface PaymentVerifyResponse {
+  booking_id: string;
+  status: string;
+  pnr_number: string;
+  message: string;
 }
 
 export const useBookingFlow = () => {
-  const { isAuthenticated, token } = useAuth();
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [bookingData, setBookingData] = useState<BookingData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const bookingStore = useBookingStore();
 
-  /**
-   * Start booking flow
-   * Checks auth → Shows payment → Redirects to IRCTC
-   */
-  const startBooking = (data: BookingData) => {
-    setBookingData(data);
-    setError('');
-    logEvent('booking_started', { origin: data.origin, destination: data.destination });
+  const createBooking = useCallback(
+    async (request: BookingRequest): Promise<BookingResponse | null> => {
+      try {
+        bookingStore.setLoading(true);
+        bookingStore.setError(undefined);
+        bookingStore.setBookingStatus('validating');
 
-    if (!isAuthenticated) {
-      setShowAuthModal(true);
-      return;
-    }
+        const response = await fetch(`${API_BASE}/api/v1/bookings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(request),
+        });
 
-    setShowPaymentModal(true);
-  };
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to create booking');
+        }
 
-  /**
-   * Handle successful authentication
-   */
-  const handleAuthSuccess = () => {
-    setShowAuthModal(false);
-    if (bookingData) {
-      setShowPaymentModal(true);
-    }
-  };
+        const data: BookingResponse = await response.json();
+        bookingStore.setBookingId(data.booking_id, data.pnr_number);
+        bookingStore.setBookingStatus('payment_pending');
+        logEvent('booking_created', { booking_id: data.booking_id });
 
-  /**
-   * Handle successful payment
-   */
-  const handlePaymentSuccess = async (paymentOrderId: string) => {
-    if (!bookingData || !token) return;
-
-    setLoading(true);
-    setError('');
-
-    try {
-      const response = await createBookingRedirect({
-        payment_order_id: paymentOrderId,
-        origin: bookingData.origin,
-        destination: bookingData.destination,
-        train_no: bookingData.trainNo,
-        travel_date: bookingData.travelDate,
-        travel_class: bookingData.travelClass || 'SL',
-      });
-
-      if (response.irctc_url) {
-        logEvent('booking_redirect_success', { origin: bookingData.origin, destination: bookingData.destination });
-        await invalidateBookingsCache();
-        window.open(response.irctc_url, '_blank');
-        setShowPaymentModal(false);
-        return true;
-      } else {
-        throw new Error('Failed to create booking');
+        return data;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to create booking';
+        bookingStore.setError(errorMsg);
+        bookingStore.setBookingStatus('failed');
+        return null;
+      } finally {
+        bookingStore.setLoading(false);
       }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to redirect to IRCTC');
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  };
+    },
+    [bookingStore]
+  );
 
-  /**
-   * Reset flow
-   */
-  const reset = () => {
-    setShowAuthModal(false);
-    setShowPaymentModal(false);
-    setBookingData(null);
-    setError('');
-    setLoading(false);
-  };
+  const initiatePayment = useCallback(
+    async (bookingId: string): Promise<PaymentInitiateResponse | null> => {
+      try {
+        bookingStore.setLoading(true);
+        bookingStore.setError(undefined);
+        bookingStore.setPaymentStatus('processing');
+
+        const response = await fetch(`${API_BASE}/api/v1/bookings/${bookingId}/payment/initiate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to initiate payment');
+        }
+
+        const data: PaymentInitiateResponse = await response.json();
+        bookingStore.setPaymentOrderId(data.razorpay_order_id);
+        logEvent('payment_initiated', { booking_id: bookingId });
+
+        return data;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to initiate payment';
+        bookingStore.setPaymentError(errorMsg);
+        return null;
+      } finally {
+        bookingStore.setLoading(false);
+      }
+    },
+    [bookingStore]
+  );
+
+  const verifyPayment = useCallback(
+    async (request: PaymentVerifyRequest): Promise<PaymentVerifyResponse | null> => {
+      try {
+        bookingStore.setLoading(true);
+        bookingStore.setError(undefined);
+        bookingStore.setPaymentStatus('processing');
+
+        const response = await fetch(`${API_BASE}/api/v1/bookings/${request.booking_id}/payment/verify`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            razorpay_order_id: request.razorpay_order_id,
+            razorpay_payment_id: request.razorpay_payment_id,
+            razorpay_signature: request.razorpay_signature,
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to verify payment');
+        }
+
+        const data: PaymentVerifyResponse = await response.json();
+        bookingStore.setPaymentStatus('success');
+        bookingStore.setBookingStatus('confirmed');
+        logEvent('payment_verified', { booking_id: request.booking_id });
+
+        return data;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to verify payment';
+        bookingStore.setPaymentError(errorMsg);
+        bookingStore.setBookingStatus('failed');
+        return null;
+      } finally {
+        bookingStore.setLoading(false);
+      }
+    },
+    [bookingStore]
+  );
+
+  const cancelBooking = useCallback(
+    async (bookingId: string, reason: string): Promise<boolean> => {
+      try {
+        bookingStore.setLoading(true);
+        bookingStore.setError(undefined);
+
+        const response = await fetch(`${API_BASE}/api/v1/bookings/${bookingId}/cancel`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ reason }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to cancel booking');
+        }
+
+        bookingStore.setBookingStatus('cancelled');
+        logEvent('booking_cancelled', { booking_id: bookingId });
+        return true;
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to cancel booking';
+        bookingStore.setError(errorMsg);
+        return false;
+      } finally {
+        bookingStore.setLoading(false);
+      }
+    },
+    [bookingStore]
+  );
 
   return {
-    isAuthenticated,
-    showAuthModal,
-    showPaymentModal,
-    bookingData,
-    loading,
-    error,
-    startBooking,
-    handleAuthSuccess,
-    handlePaymentSuccess,
-    setShowAuthModal,
-    setShowPaymentModal,
-    reset,
+    bookingStore,
+    createBooking,
+    initiatePayment,
+    verifyPayment,
+    cancelBooking,
+    isLoading: bookingStore.loading,
+    error: bookingStore.error,
   };
 };
