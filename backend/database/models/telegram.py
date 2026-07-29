@@ -7,9 +7,36 @@ Core user and session models are maintained in core.py.
 from database.infrastructure.base import UserBase
 from sqlalchemy import Column, String, Integer, DateTime, Text, Boolean, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
-from .core import TelegramUser, TelegramSession
+
+
+class TelegramConversationState(UserBase):
+    __table_args__ = {"extend_existing": True}
+    """
+    Tracks multi-turn conversation state for Telegram bot.
+    Enables stateful booking flows and user context preservation.
+    """
+    __tablename__ = "telegram_conversation_states"
+    __table_args__ = {"extend_existing": True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    telegram_user_id = Column(String(50), nullable=False, index=True, unique=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+
+    # State machine
+    current_state = Column(String(50), default="IDLE")  # IDLE, AWAITING_STATION, AWAITING_DATE, AWAITING_CLASS, AWAITING_BERTH, AWAITING_PASSENGER_INFO, AWAITING_CONFIRMATION, AWAITING_AUTHENTICATION
+
+    # Conversation context
+    context = Column(JSON, default={})  # Stores station_from, station_to, travel_date, passenger_class, etc.
+
+    # Timestamps
+    last_message_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    expires_at = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(minutes=15))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<TelegramConversationState(user={self.telegram_user_id}, state={self.current_state})>"
 
 
 class TelegramMessage(UserBase):
@@ -220,8 +247,7 @@ class TelegramNotificationTemplate(UserBase):
 
 # Export for easy importing
 __all__ = [
-    'TelegramUser',
-    'TelegramSession', 
+    'TelegramConversationState',
     'TelegramMessage',
     'TelegramBookingLink',
     'TelegramSOSEvent',

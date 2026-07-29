@@ -279,6 +279,90 @@ I help you find Indian Railways train routes instantly.
 
 🌐 Full search: routemaster.vercel.app"""
 
+async def handle_callback_query(callback_query: dict):
+    """Handle inline button clicks from users."""
+    from database.core import get_db
+    from services.telegram_service import get_telegram_service
+
+    callback_id = callback_query.get("id")
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    data = callback_query.get("data", "")
+    from_user = callback_query.get("from", {})
+    telegram_user_id = str(from_user.get("id", ""))
+
+    if not chat_id or not data:
+        return
+
+    try:
+        db = next(get_db())
+        service = get_telegram_service(db)
+
+        # Parse callback data: format "action_param"
+        # Examples: "book_12345", "view_12345", "live_12345", "class_2A", "berth_Middle"
+        parts = data.split("_", 1)
+        action = parts[0]
+        param = parts[1] if len(parts) > 1 else ""
+
+        # Get conversation state
+        state = await service.get_conversation_state(telegram_user_id)
+
+        if action == "book":
+            # User clicked Book button on a train
+            await send_message(
+                chat_id,
+                "🚂 <b>Booking Selected</b>\n"
+                "Please select your class:\n"
+                "• 1A (First AC)\n"
+                "• 2A (AC 2-Tier)\n"
+                "• 3A (AC 3-Tier)\n"
+                "• SL (Sleeper)\n"
+                "• GN (General)\n\n"
+                "Reply with: <code>class 2A</code>"
+            )
+            await service.update_conversation_state(
+                telegram_user_id,
+                "AWAITING_CLASS",
+                {"selected_train": param}
+            )
+
+        elif action == "class":
+            # User selected class
+            if state.current_state == "AWAITING_CLASS":
+                await send_message(
+                    chat_id,
+                    "🛏️ <b>Select Berth Preference</b>\n"
+                    "• Upper\n"
+                    "• Middle\n"
+                    "• Lower\n"
+                    "• Any\n\n"
+                    "Reply with: <code>berth Middle</code>"
+                )
+                await service.update_conversation_state(
+                    telegram_user_id,
+                    "AWAITING_BERTH",
+                    {"passenger_class": param}
+                )
+
+        elif action == "live":
+            # User clicked live status button
+            await handle_live_status(chat_id, param)
+
+        elif action == "link":
+            # User wants to link account
+            result = await service.create_auth_link(telegram_user_id)
+            link_url = result.get("auth_url", "")
+            await send_message(
+                chat_id,
+                f"🔗 <b>Link Your Account</b>\n\n"
+                f"<a href='{link_url}'>Click here to link your Telegram</a>\n\n"
+                f"This link expires in 1 hour."
+            )
+
+    except Exception as e:
+        logger.error(f"Error handling callback: {e}")
+        await send_message(chat_id, "❌ An error occurred. Please try again.")
+
+
 HELP_MSG = """📖 <b>Route Master Bot Guide</b>
 
 <b>Train Search:</b>
@@ -313,6 +397,12 @@ async def telegram_webhook(request: Request):
     try:
         update = await request.json()
     except Exception:
+        return Response(status_code=200)
+
+    # Handle callback queries (button clicks)
+    callback_query = update.get("callback_query")
+    if callback_query:
+        await handle_callback_query(callback_query)
         return Response(status_code=200)
 
     message = update.get("message") or update.get("edited_message")
@@ -399,3 +489,103 @@ async def bot_info():
         }
     except Exception as e:
         return {"configured": True, "error": str(e)}
+
+
+# ===================== USER LINKING & BOOKING ENDPOINTS =====================
+
+@router.post("/auth-link")
+async def create_auth_link(request: Request):
+    """
+    Create one-time authentication link for user to link Telegram account.
+
+    Request body:
+    {
+        "telegram_user_id": "123456789",
+        "telegram_username": "@username" (optional)
+    }
+    """
+    from database.core import get_db
+    from services.telegram_service import get_telegram_service
+
+    try:
+        body = await request.json()
+        telegram_user_id = body.get("telegram_user_id")
+        telegram_username = body.get("telegram_username")
+
+        if not telegram_user_id:
+            return {"error": "telegram_user_id required"}, 400
+
+        db = next(get_db())
+        service = get_telegram_service(db)
+        result = await service.create_auth_link(telegram_user_id, telegram_username)
+
+        return result
+    except Exception as e:
+        logger.error(f"Error creating auth link: {e}")
+        return {"error": str(e)}, 500
+
+
+@router.post("/link-confirm")
+async def confirm_link(request: Request):
+    """
+    Confirm and complete Telegram account linking.
+
+    Request body:
+    {
+        "link_token": "uuid",
+        "user_id": "uuid"
+    }
+    """
+    from database.core import get_db
+    from services.telegram_service import get_telegram_service
+
+    try:
+        body = await request.json()
+        link_token = body.get("link_token")
+        user_id = body.get("user_id")
+
+        if not link_token or not user_id:
+            return {"error": "link_token and user_id required"}, 400
+
+        db = next(get_db())
+        service = get_telegram_service(db)
+        result = await service.confirm_telegram_link(link_token, user_id)
+
+        return result
+    except Exception as e:
+        logger.error(f"Error confirming link: {e}")
+        return {"error": str(e)}, 500
+
+
+@router.post("/book")
+async def book_via_telegram(request: Request):
+    """
+    Complete booking via Telegram after payment verification.
+
+    Request body:
+    {
+        "link_token": "uuid",
+        "passenger_name": "Raj Kumar",
+        "passenger_age": 28,
+        "passenger_gender": "M",
+        "seat_preference": null,
+        "berth_preference": "Middle"
+    }
+    """
+    from database.core import get_db
+    from services.telegram_service import get_telegram_service
+
+    try:
+        body = await request.json()
+        result = await get_telegram_service(next(get_db())).complete_booking(
+            link_token=body.get("link_token"),
+            passenger_name=body.get("passenger_name"),
+            passenger_age=body.get("passenger_age"),
+            passenger_gender=body.get("passenger_gender"),
+            seat_preference=body.get("seat_preference"),
+            berth_preference=body.get("berth_preference"),
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error booking: {e}")
+        return {"error": str(e)}, 500
