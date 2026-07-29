@@ -204,6 +204,7 @@ _include("api.v1.reliability",   "router", prefix="/api/v1")
 _include("api.v1.pnr",      "router", prefix="/api/v1")
 _include("api.v1.sos",      "router", prefix="/api/v1")
 _include("api.booking_routes", "router")
+_include("api.user_routes", "router")
 _include("api.payment_webhook", "router")
 
 # ── LEGACY ROUTES (optional — may fail, that's ok) ────────────────────────────
