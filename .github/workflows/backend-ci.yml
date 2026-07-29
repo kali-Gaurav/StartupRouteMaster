@@ -71,7 +71,7 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: ./backend
-          file: ./backend/Dockerfile
+          file: ./backend/infrastructure/Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/startupv2-backend:${{ github.sha }}

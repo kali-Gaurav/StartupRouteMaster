@@ -80,7 +80,7 @@ export async function initiatePayment(
   bookingId: string
 ): Promise<InitiatePaymentResponse> {
   try {
-    const response = await v3Fetch("/api/v1/booking/payment/initiate", {
+    const response = await v3Fetch(`/api/v1/bookings/${bookingId}/payment/initiate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ booking_id: bookingId }),
@@ -118,7 +118,7 @@ export async function verifyPayment(
   request: VerifyPaymentRequest
 ): Promise<VerifyPaymentResponse> {
   try {
-    const response = await v3Fetch("/api/v1/booking/payment/verify", {
+    const response = await v3Fetch(`/api/v1/bookings/${request.booking_id}/payment/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),

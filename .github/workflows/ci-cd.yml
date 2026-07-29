@@ -48,10 +48,9 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install -r backend/scraper/requirements.txt
-        pip install -r backend/etl/requirements.txt
-        pip install -r backend/route_service/requirements.txt
-        pip install -r backend/user_service/requirements.txt
+        pip install -r backend/requirements.txt
+        [ -f backend/scraper/requirements.txt ] && pip install -r backend/scraper/requirements.txt || true
+        [ -f backend/etl/requirements.txt ] && pip install -r backend/etl/requirements.txt || true
 
     - name: Run tests
       run: |
@@ -61,11 +60,10 @@ jobs:
 
     - name: Build Docker images
       run: |
-        docker build -t startupv2-scraper ./backend/scraper
-        docker build -t startupv2-etl ./backend/etl
-        docker build -t startupv2-route_service ./backend/route_service
-        docker build -t startupv2-user_service ./backend/user_service
-        # RL service build takes too long for CI, build on deploy
+        docker build -t startupv2-backend ./backend/infrastructure
+        [ -d ./backend/scraper ] && docker build -t startupv2-scraper ./backend/scraper || true
+        [ -d ./backend/etl ] && docker build -t startupv2-etl ./backend/etl || true
+        # Deprecated microservices (route_service, user_service) have been consolidated into main backend
 
   deploy:
     needs: test
