@@ -1,0 +1,468 @@
+/usr/local/lib/python3.11/dist-packages/pytest_asyncio/plugin.py:299: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.2.0, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/StartupRouteMaster/backend
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 21 items
+
+backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_create_booking_history FAILED [  4%]
+backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_booking_history_indexes FAILED [  9%]
+backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_record_booking_helper FAILED [ 14%]
+backend/tests/test_feature5_optimization.py::TestUserPreferenceUpdate::test_create_preference_update FAILED [ 19%]
+backend/tests/test_feature5_optimization.py::TestUserPreferenceUpdate::test_record_preference_update_helper FAILED [ 23%]
+backend/tests/test_feature5_optimization.py::TestMaterializedViews::test_trending_routes_view_structure PASSED [ 28%]
+backend/tests/test_feature5_optimization.py::TestMaterializedViews::test_user_segmentation_view_structure PASSED [ 33%]
+backend/tests/test_feature5_optimization.py::TestMaterializedViews::test_route_quality_score_view_structure PASSED [ 38%]
+backend/tests/test_feature5_optimization.py::TestMaterializedViews::test_get_user_segment_helper PASSED [ 42%]
+backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_route_knowledge_indexes_created FAILED [ 47%]
+backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_demand_snapshot_indexes_created FAILED [ 52%]
+backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_user_travel_preference_indexes_created FAILED [ 57%]
+backend/tests/test_feature5_optimization.py::TestDataRetention::test_demand_snapshot_archive_flag FAILED [ 61%]
+backend/tests/test_feature5_optimization.py::TestDataRetention::test_search_outcome_archive_flag FAILED [ 66%]
+backend/tests/test_feature5_optimization.py::TestQueryOptimization::test_candidate_generation_sources_queries PASSED [ 71%]
+backend/tests/test_feature5_optimization.py::TestQueryOptimization::test_recommendation_pipeline_with_indexes FAILED [ 76%]
+backend/tests/test_feature5_optimization.py::TestSchemaIntegrity::test_all_tables_exist PASSED [ 80%]
+backend/tests/test_feature5_optimization.py::TestSchemaIntegrity::test_foreign_key_relationships PASSED [ 85%]
+backend/tests/test_feature5_optimization.py::TestSchemaIntegrity::test_cascade_delete_on_user_deletion FAILED [ 90%]
+backend/tests/test_feature5_optimization.py::TestMigrationPath::test_migration_order PASSED [ 95%]
+backend/tests/test_feature5_optimization.py::TestMigrationPath::test_backward_compatibility PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestUserBookingHistory.test_create_booking_history ______________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: user_booking_history
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:72: in test_create_booking_history
+    db_session.commit()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2035: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1316: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1290: in _prepare_impl
+    self.session.flush()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4353: in flush
+    self._flush(objects)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4488: in _flush
+    with util.safe_reraise():
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/util/langhelpers.py:122: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4449: in _flush
+    flush_context.execute()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:465: in execute
+    rec.execute(self)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:641: in execute
+    util.preloaded.orm_persistence.save_obj(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:94: in save_obj
+    _emit_insert_statements(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:1234: in _emit_insert_statements
+    result = connection.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+E   [SQL: INSERT INTO user_booking_history (id, user_id, booking_id, route_id, source_code, destination_code, persona, fare, booking_status, travel_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+E   [parameters: ('95a39ad5-8e08-4978-990f-b3976a3107bc', 'user_123', 'booking_456', 'route_789', 'NDLS', 'BCT', 'COMFORT', 2500.0, 'CONFIRMED', '2026-08-15', '2026-07-29 10:03:06.866361', '2026-07-29 10:03:06.866366')]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+_____________ TestUserBookingHistory.test_booking_history_indexes ______________
+backend/tests/test_feature5_optimization.py:88: in test_booking_history_indexes
+    indexes = inspector.get_indexes("user_booking_history")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:1146: in get_indexes
+    return self.dialect.get_indexes(
+<string>:2: in get_indexes
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2985: in get_indexes
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: user_booking_history
+______________ TestUserBookingHistory.test_record_booking_helper _______________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: user_booking_history
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:113: in test_record_booking_helper
+    ).first()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2766: in first
+    return self.limit(1)._iter().first()  # type: ignore
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2864: in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2373: in execute
+    return self._execute_internal(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/context.py:306: in orm_execute_statement
+    result = conn.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+E   [SQL: SELECT user_booking_history.id AS user_booking_history_id, user_booking_history.user_id AS user_booking_history_user_id, user_booking_history.booking_id AS user_booking_history_booking_id, user_booking_history.route_id AS user_booking_history_route_id, user_booking_history.source_code AS user_booking_history_source_code, user_booking_history.destination_code AS user_booking_history_destination_code, user_booking_history.persona AS user_booking_history_persona, user_booking_history.fare AS user_booking_history_fare, user_booking_history.booking_status AS user_booking_history_booking_status, user_booking_history.travel_date AS user_booking_history_travel_date, user_booking_history.created_at AS user_booking_history_created_at, user_booking_history.updated_at AS user_booking_history_updated_at 
+E   FROM user_booking_history 
+E   WHERE user_booking_history.user_id = ?
+E    LIMIT ? OFFSET ?]
+E   [parameters: ('user_test', 1, 0)]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+------------------------------ Captured log call -------------------------------
+ERROR    database.models.feature5_optimization:feature5_optimization.py:200 Failed to record booking history: (sqlite3.OperationalError) no such table: user_booking_history
+[SQL: INSERT INTO user_booking_history (id, user_id, booking_id, route_id, source_code, destination_code, persona, fare, booking_status, travel_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('f68ba560-8f50-403e-af2b-7084522adb8c', 'user_test', 'booking_test', 'route_test', 'NDLS', 'BCT', 'COMFORT', 3000.0, 'CONFIRMED', '2026-08-15', '2026-07-29 10:03:07.473574', '2026-07-29 10:03:07.473580')]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+____________ TestUserPreferenceUpdate.test_create_preference_update ____________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: user_preference_updates
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:133: in test_create_preference_update
+    db_session.commit()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2035: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1316: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1290: in _prepare_impl
+    self.session.flush()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4353: in flush
+    self._flush(objects)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4488: in _flush
+    with util.safe_reraise():
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/util/langhelpers.py:122: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4449: in _flush
+    flush_context.execute()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:465: in execute
+    rec.execute(self)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:641: in execute
+    util.preloaded.orm_persistence.save_obj(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:94: in save_obj
+    _emit_insert_statements(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:1234: in _emit_insert_statements
+    result = connection.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_preference_updates
+E   [SQL: INSERT INTO user_preference_updates (id, user_id, field_name, old_value, new_value, change_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)]
+E   [parameters: ('b40335ee-61e3-4d33-80cf-9ece26df371b', 'user_123', 'preferred_hours', '[8, 9, 10]', '[6, 7, 8, 9]', 'auto_learned', '2026-07-29 10:03:07.804320')]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+________ TestUserPreferenceUpdate.test_record_preference_update_helper _________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: user_preference_updates
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:158: in test_record_preference_update_helper
+    ).first()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2766: in first
+    return self.limit(1)._iter().first()  # type: ignore
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2864: in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2373: in execute
+    return self._execute_internal(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/context.py:306: in orm_execute_statement
+    result = conn.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_preference_updates
+E   [SQL: SELECT user_preference_updates.id AS user_preference_updates_id, user_preference_updates.user_id AS user_preference_updates_user_id, user_preference_updates.field_name AS user_preference_updates_field_name, user_preference_updates.old_value AS user_preference_updates_old_value, user_preference_updates.new_value AS user_preference_updates_new_value, user_preference_updates.change_reason AS user_preference_updates_change_reason, user_preference_updates.created_at AS user_preference_updates_created_at 
+E   FROM user_preference_updates 
+E   WHERE user_preference_updates.user_id = ?
+E    LIMIT ? OFFSET ?]
+E   [parameters: ('user_test', 1, 0)]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+------------------------------ Captured log call -------------------------------
+ERROR    database.models.feature5_optimization:feature5_optimization.py:222 Failed to record preference update: (sqlite3.OperationalError) no such table: user_preference_updates
+[SQL: INSERT INTO user_preference_updates (id, user_id, field_name, old_value, new_value, change_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('0bc71fd2-3d4b-422f-8052-6209e0ad53d8', 'user_test', 'price_sensitivity', '0.5', '0.7', 'auto_learned', '2026-07-29 10:03:08.264867')]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+__________ TestIndexPerformance.test_route_knowledge_indexes_created ___________
+backend/tests/test_feature5_optimization.py:204: in test_route_knowledge_indexes_created
+    all_indexes = inspector.get_indexes("route_knowledge")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:1146: in get_indexes
+    return self.dialect.get_indexes(
+<string>:2: in get_indexes
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2985: in get_indexes
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: route_knowledge
+__________ TestIndexPerformance.test_demand_snapshot_indexes_created ___________
+backend/tests/test_feature5_optimization.py:214: in test_demand_snapshot_indexes_created
+    all_indexes = inspector.get_indexes("demand_snapshots")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:1146: in get_indexes
+    return self.dialect.get_indexes(
+<string>:2: in get_indexes
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2985: in get_indexes
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: demand_snapshots
+_______ TestIndexPerformance.test_user_travel_preference_indexes_created _______
+backend/tests/test_feature5_optimization.py:221: in test_user_travel_preference_indexes_created
+    all_indexes = inspector.get_indexes("user_travel_preferences")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:1146: in get_indexes
+    return self.dialect.get_indexes(
+<string>:2: in get_indexes
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2985: in get_indexes
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: user_travel_preferences
+_____________ TestDataRetention.test_demand_snapshot_archive_flag ______________
+backend/tests/test_feature5_optimization.py:231: in test_demand_snapshot_archive_flag
+    columns = inspector.get_columns("demand_snapshots")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:870: in get_columns
+    col_defs = self.dialect.get_columns(
+<string>:2: in get_columns
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2443: in get_columns
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: demand_snapshots
+______________ TestDataRetention.test_search_outcome_archive_flag ______________
+backend/tests/test_feature5_optimization.py:242: in test_search_outcome_archive_flag
+    columns = inspector.get_columns("search_outcomes")
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:870: in get_columns
+    col_defs = self.dialect.get_columns(
+<string>:2: in get_columns
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/reflection.py:107: in cache
+    ret = fn(self, con, *args, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/dialects/sqlite/base.py:2443: in get_columns
+    raise exc.NoSuchTableError(
+E   sqlalchemy.exc.NoSuchTableError: search_outcomes
+_______ TestQueryOptimization.test_recommendation_pipeline_with_indexes ________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: route_knowledge
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:289: in test_recommendation_pipeline_with_indexes
+    ).order_by(RouteKnowledge.search_count.desc()).limit(5).all()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2711: in all
+    return self._iter().all()  # type: ignore
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/query.py:2864: in _iter
+    result: Union[ScalarResult[_T], Result[_T]] = self.session.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2373: in execute
+    return self._execute_internal(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2271: in _execute_internal
+    result: Result[Any] = compile_state_cls.orm_execute_statement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/context.py:306: in orm_execute_statement
+    result = conn.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: route_knowledge
+E   [SQL: SELECT route_knowledge.id AS route_knowledge_id, route_knowledge.source_code AS route_knowledge_source_code, route_knowledge.destination_code AS route_knowledge_destination_code, route_knowledge.duration_minutes AS route_knowledge_duration_minutes, route_knowledge.distance_km AS route_knowledge_distance_km, route_knowledge.frequency_daily AS route_knowledge_frequency_daily, route_knowledge.reliability_score AS route_knowledge_reliability_score, route_knowledge.avg_delay_minutes AS route_knowledge_avg_delay_minutes, route_knowledge.on_time_percentage AS route_knowledge_on_time_percentage, route_knowledge.seasonal_demand AS route_knowledge_seasonal_demand, route_knowledge.weekly_demand AS route_knowledge_weekly_demand, route_knowledge.peak_hour_demand AS route_knowledge_peak_hour_demand, route_knowledge.search_count AS route_knowledge_search_count, route_knowledge.booking_count AS route_knowledge_booking_count, route_knowledge.conversion_rate AS route_knowledge_conversion_rate, route_knowledge.avg_fare AS route_knowledge_avg_fare, route_knowledge.fare_range_low AS route_knowledge_fare_range_low, route_knowledge.fare_range_high AS route_knowledge_fare_range_high, route_knowledge.last_updated AS route_knowledge_last_updated 
+E   FROM route_knowledge 
+E   WHERE route_knowledge.search_count > ? ORDER BY route_knowledge.search_count DESC
+E    LIMIT ? OFFSET ?]
+E   [parameters: (0, 5, 0)]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+___________ TestSchemaIntegrity.test_cascade_delete_on_user_deletion ___________
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlite3.OperationalError: no such table: user_booking_history
+
+The above exception was the direct cause of the following exception:
+backend/tests/test_feature5_optimization.py:357: in test_cascade_delete_on_user_deletion
+    db_session.commit()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:2035: in commit
+    trans.commit(_to_root=True)
+<string>:2: in commit
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1316: in commit
+    self._prepare_impl()
+<string>:2: in _prepare_impl
+    ???
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/state_changes.py:137: in _go
+    ret_value = fn(self, *arg, **kw)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:1290: in _prepare_impl
+    self.session.flush()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4353: in flush
+    self._flush(objects)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4488: in _flush
+    with util.safe_reraise():
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/util/langhelpers.py:122: in __exit__
+    raise exc_value.with_traceback(exc_tb)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/session.py:4449: in _flush
+    flush_context.execute()
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:465: in execute
+    rec.execute(self)
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/unitofwork.py:641: in execute
+    util.preloaded.orm_persistence.save_obj(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:94: in save_obj
+    _emit_insert_statements(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/orm/persistence.py:1234: in _emit_insert_statements
+    result = connection.execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1421: in execute
+    return meth(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/sql/elements.py:526: in _execute_on_connection
+    return connection._execute_clauseelement(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1643: in _execute_clauseelement
+    ret = self._execute_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1848: in _execute_context
+    return self._exec_single_context(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1988: in _exec_single_context
+    self._handle_dbapi_exception(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:2365: in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/base.py:1969: in _exec_single_context
+    self.dialect.do_execute(
+/usr/local/lib/python3.11/dist-packages/sqlalchemy/engine/default.py:952: in do_execute
+    cursor.execute(statement, parameters)
+E   sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+E   [SQL: INSERT INTO user_booking_history (id, user_id, booking_id, route_id, source_code, destination_code, persona, fare, booking_status, travel_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+E   [parameters: ('ef293eac-6984-481d-a022-bb4ea9018e25', 'user_to_delete', 'booking_123', None, 'NDLS', 'BCT', None, None, 'CONFIRMED', None, '2026-07-29 10:03:09.365980', '2026-07-29 10:03:09.365985')]
+E   (Background on this error at: https://sqlalche.me/e/20/e3q8)
+=========================== short test summary info ============================
+FAILED backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_create_booking_history - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+[SQL: INSERT INTO user_booking_history (id, user_id, booking_id, route_id, source_code, destination_code, persona, fare, booking_status, travel_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('95a39ad5-8e08-4978-990f-b3976a3107bc', 'user_123', 'booking_456', 'route_789', 'NDLS', 'BCT', 'COMFORT', 2500.0, 'CONFIRMED', '2026-08-15', '2026-07-29 10:03:06.866361', '2026-07-29 10:03:06.866366')]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+FAILED backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_booking_history_indexes - sqlalchemy.exc.NoSuchTableError: user_booking_history
+FAILED backend/tests/test_feature5_optimization.py::TestUserBookingHistory::test_record_booking_helper - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+[SQL: SELECT user_booking_history.id AS user_booking_history_id, user_booking_history.user_id AS user_booking_history_user_id, user_booking_history.booking_id AS user_booking_history_booking_id, user_booking_history.route_id AS user_booking_history_route_id, user_booking_history.source_code AS user_booking_history_source_code, user_booking_history.destination_code AS user_booking_history_destination_code, user_booking_history.persona AS user_booking_history_persona, user_booking_history.fare AS user_booking_history_fare, user_booking_history.booking_status AS user_booking_history_booking_status, user_booking_history.travel_date AS user_booking_history_travel_date, user_booking_history.created_at AS user_booking_history_created_at, user_booking_history.updated_at AS user_booking_history_updated_at 
+FROM user_booking_history 
+WHERE user_booking_history.user_id = ?
+ LIMIT ? OFFSET ?]
+[parameters: ('user_test', 1, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+FAILED backend/tests/test_feature5_optimization.py::TestUserPreferenceUpdate::test_create_preference_update - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_preference_updates
+[SQL: INSERT INTO user_preference_updates (id, user_id, field_name, old_value, new_value, change_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('b40335ee-61e3-4d33-80cf-9ece26df371b', 'user_123', 'preferred_hours', '[8, 9, 10]', '[6, 7, 8, 9]', 'auto_learned', '2026-07-29 10:03:07.804320')]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+FAILED backend/tests/test_feature5_optimization.py::TestUserPreferenceUpdate::test_record_preference_update_helper - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_preference_updates
+[SQL: SELECT user_preference_updates.id AS user_preference_updates_id, user_preference_updates.user_id AS user_preference_updates_user_id, user_preference_updates.field_name AS user_preference_updates_field_name, user_preference_updates.old_value AS user_preference_updates_old_value, user_preference_updates.new_value AS user_preference_updates_new_value, user_preference_updates.change_reason AS user_preference_updates_change_reason, user_preference_updates.created_at AS user_preference_updates_created_at 
+FROM user_preference_updates 
+WHERE user_preference_updates.user_id = ?
+ LIMIT ? OFFSET ?]
+[parameters: ('user_test', 1, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+FAILED backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_route_knowledge_indexes_created - sqlalchemy.exc.NoSuchTableError: route_knowledge
+FAILED backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_demand_snapshot_indexes_created - sqlalchemy.exc.NoSuchTableError: demand_snapshots
+FAILED backend/tests/test_feature5_optimization.py::TestIndexPerformance::test_user_travel_preference_indexes_created - sqlalchemy.exc.NoSuchTableError: user_travel_preferences
+FAILED backend/tests/test_feature5_optimization.py::TestDataRetention::test_demand_snapshot_archive_flag - sqlalchemy.exc.NoSuchTableError: demand_snapshots
+FAILED backend/tests/test_feature5_optimization.py::TestDataRetention::test_search_outcome_archive_flag - sqlalchemy.exc.NoSuchTableError: search_outcomes
+FAILED backend/tests/test_feature5_optimization.py::TestQueryOptimization::test_recommendation_pipeline_with_indexes - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: route_knowledge
+[SQL: SELECT route_knowledge.id AS route_knowledge_id, route_knowledge.source_code AS route_knowledge_source_code, route_knowledge.destination_code AS route_knowledge_destination_code, route_knowledge.duration_minutes AS route_knowledge_duration_minutes, route_knowledge.distance_km AS route_knowledge_distance_km, route_knowledge.frequency_daily AS route_knowledge_frequency_daily, route_knowledge.reliability_score AS route_knowledge_reliability_score, route_knowledge.avg_delay_minutes AS route_knowledge_avg_delay_minutes, route_knowledge.on_time_percentage AS route_knowledge_on_time_percentage, route_knowledge.seasonal_demand AS route_knowledge_seasonal_demand, route_knowledge.weekly_demand AS route_knowledge_weekly_demand, route_knowledge.peak_hour_demand AS route_knowledge_peak_hour_demand, route_knowledge.search_count AS route_knowledge_search_count, route_knowledge.booking_count AS route_knowledge_booking_count, route_knowledge.conversion_rate AS route_knowledge_conversion_rate, route_knowledge.avg_fare AS route_knowledge_avg_fare, route_knowledge.fare_range_low AS route_knowledge_fare_range_low, route_knowledge.fare_range_high AS route_knowledge_fare_range_high, route_knowledge.last_updated AS route_knowledge_last_updated 
+FROM route_knowledge 
+WHERE route_knowledge.search_count > ? ORDER BY route_knowledge.search_count DESC
+ LIMIT ? OFFSET ?]
+[parameters: (0, 5, 0)]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+FAILED backend/tests/test_feature5_optimization.py::TestSchemaIntegrity::test_cascade_delete_on_user_deletion - sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) no such table: user_booking_history
+[SQL: INSERT INTO user_booking_history (id, user_id, booking_id, route_id, source_code, destination_code, persona, fare, booking_status, travel_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)]
+[parameters: ('ef293eac-6984-481d-a022-bb4ea9018e25', 'user_to_delete', 'booking_123', None, 'NDLS', 'BCT', None, None, 'CONFIRMED', None, '2026-07-29 10:03:09.365980', '2026-07-29 10:03:09.365985')]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+=================== 12 failed, 9 passed, 2 warnings in 3.27s ===================
