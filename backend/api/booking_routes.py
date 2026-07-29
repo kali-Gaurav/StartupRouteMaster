@@ -14,7 +14,7 @@ from schemas.booking import (
     BookingRequest, BookingResponse, BookingListResponse,
     PassengerDetails, BookingStatus, CancelBookingRequest
 )
-from schemas.payment import PaymentStatus, PaymentResponse
+from schemas.payment import PaymentStatus, PaymentResponse, PaymentVerifyRequest
 from services.booking_service import get_booking_service, BookingService
 from services.payment_service import get_payment_service, PaymentService
 from services.sos_service import get_sos_service, SOSService
@@ -549,7 +549,7 @@ async def get_user_profile(
 # ==================== RAZORPAY PAYMENT ENDPOINTS ====================
 
 
-@router.post("/payment/initiate", status_code=status.HTTP_200_OK)
+@router.post("/{booking_id}/payment/initiate", status_code=status.HTTP_200_OK)
 async def initiate_payment(
     booking_id: str,
     db: Session = Depends(get_db),
@@ -620,8 +620,8 @@ async def initiate_payment(
         logger.info(f"Payment initiated for booking {booking_id}, amount: {amount}")
 
         return {
-            "order_id": result.payment_id,
-            "amount": amount_paise,
+            "razorpay_order_id": result.payment_id,
+            "amount_paise": amount_paise,
             "currency": "INR",
             "booking_id": booking_id,
             "status": result.status.value,
@@ -641,7 +641,7 @@ async def initiate_payment(
 @router.post("/{booking_id}/payment/verify", status_code=status.HTTP_200_OK)
 async def verify_payment(
     booking_id: str,
-    request: dict,
+    payload: PaymentVerifyRequest,
     db: Session = Depends(get_db),
     user = Depends(get_current_user)
 ):
@@ -654,12 +654,9 @@ async def verify_payment(
     - Transitions booking to CONFIRMED state
     - Releases locks and cleans up temporary state
 
-    Expected request body:
-    {
-        "razorpay_order_id": "order_...",
-        "razorpay_payment_id": "pay_...",
-        "razorpay_signature": "signature_..."
-    }
+    Args:
+        booking_id: ID of the booking
+        payload: Payment verification details (razorpay_order_id, razorpay_payment_id, razorpay_signature)
 
     Returns:
         {
@@ -670,16 +667,10 @@ async def verify_payment(
         }
     """
     try:
-        # Validate inputs
-        razorpay_order_id = request.get("razorpay_order_id")
-        razorpay_payment_id = request.get("razorpay_payment_id")
-        razorpay_signature = request.get("razorpay_signature")
-
-        if not all([razorpay_order_id, razorpay_payment_id, razorpay_signature]):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing required payment verification fields"
-            )
+        # Extract payment details from payload
+        razorpay_order_id = payload.razorpay_order_id
+        razorpay_payment_id = payload.razorpay_payment_id
+        razorpay_signature = payload.razorpay_signature
 
         # Verify booking exists and belongs to user
         booking_service = get_booking_service(db)

@@ -34,6 +34,13 @@ class PaymentRequest(BaseModel):
     return_url: Optional[str] = None
 
 
+class PaymentVerifyRequest(BaseModel):
+    """Request to verify payment."""
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
 class PaymentResponse(BaseModel):
     """Payment response."""
     payment_id: str
