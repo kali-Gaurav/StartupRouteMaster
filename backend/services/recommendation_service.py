@@ -24,17 +24,19 @@ from sqlalchemy import select, func, and_
 
 from database.models import RouteKnowledge, UserTravelPreference, DemandSnapshot, SearchOutcome
 from core.data_utils.structures import Route, Persona
-from services.search.service import SearchService
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid dependency issues in tests
+SearchService = None
 
 
 class RecommendationEngine:
     """Engine for generating personalized route recommendations."""
 
-    def __init__(self, db: Optional[Session] = None, search_service: Optional[SearchService] = None):
+    def __init__(self, db: Optional[Session] = None, search_service: Optional[Any] = None):
         self.db = db
-        self.search_service = search_service or SearchService(db)
+        self.search_service = search_service
         self._cache: Dict[str, Tuple[List[Route], datetime]] = {}
         self._cache_ttl = timedelta(minutes=5)
 
@@ -321,6 +323,15 @@ class RecommendationEngine:
         Helper method to fetch actual Route objects.
         """
         try:
+            # Lazy-load SearchService if needed
+            if not self.search_service:
+                try:
+                    from services.search.service import SearchService as SS
+                    self.search_service = SS(self.db)
+                except ImportError:
+                    logger.warning("SearchService unavailable. Skipping route query.")
+                    return []
+
             travel_date = datetime.now().strftime("%Y-%m-%d")
             result = await self.search_service.search_routes(
                 source=source,
@@ -448,10 +459,13 @@ class RecommendationEngine:
         # Define budget ranges by persona
         budget_ranges = {
             Persona.ECONOMY: (500, 2000),
+            Persona.BUDGET: (500, 2000),
             Persona.COMFORT: (2000, 5000),
+            Persona.STANDARD: (2000, 5000),
             Persona.PREMIUM: (5000, 15000),
             Persona.FAMILY: (1500, 4000),
-            Persona.SPECIAL: (5000, 12000),
+            Persona.FAST: (3000, 8000),
+            Persona.EMERGENCY: (5000, 12000),
         }
 
         min_budget, max_budget = budget_ranges.get(persona, (1000, 5000))
