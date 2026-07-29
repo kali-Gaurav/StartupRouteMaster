@@ -118,7 +118,10 @@ class NotificationService:
             if channel == "push" and not prefs.get("push_enabled", True):
                 results.append(NotificationResult(success=False, channel=channel, error="Push disabled"))
                 continue
-            
+            if channel == "telegram" and not prefs.get("telegram_enabled", True):
+                results.append(NotificationResult(success=False, channel=channel, error="Telegram disabled"))
+                continue
+
             # Send based on channel
             if channel == "sms":
                 result = await self._send_sms(user_id, notification_type, data)
@@ -126,9 +129,11 @@ class NotificationService:
                 result = await self._send_email(user_id, notification_type, data)
             elif channel == "push":
                 result = await self._send_push(user_id, notification_type, data)
+            elif channel == "telegram":
+                result = await self._send_telegram(user_id, notification_type, data)
             else:
                 result = NotificationResult(success=False, channel=channel, error="Unknown channel")
-            
+
             results.append(result)
         
         return results
@@ -250,7 +255,98 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Push send error: {e}")
             return NotificationResult(success=False, channel="push", error=str(e))
-    
+
+    async def _send_telegram(
+        self,
+        user_id: str,
+        notification_type: str,
+        data: Dict[str, Any]
+    ) -> NotificationResult:
+        """Send notification via Telegram Bot API."""
+        try:
+            import httpx
+            import os
+
+            from database.models import User
+
+            # Get user
+            user = self.db.get(User, user_id)
+            if not user or not user.telegram_id:
+                return NotificationResult(success=False, channel="telegram", error="User has no Telegram ID")
+
+            # Get bot token
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+            if not bot_token:
+                logger.warning("TELEGRAM_BOT_TOKEN not configured - Telegram notifications disabled")
+                return NotificationResult(
+                    success=True,
+                    channel="telegram",
+                    message_id=f"stub_{user.telegram_id}"
+                )
+
+            # Get template
+            template = self.templates.get(notification_type, {})
+            if isinstance(template, dict):
+                message = template.get("push", template.get("sms", ""))
+            else:
+                message = template
+
+            if not message:
+                return NotificationResult(success=False, channel="telegram", error="No template found")
+
+            # Format message
+            formatted_message = message.format(**data)
+
+            # Format for Telegram (escape HTML special chars)
+            formatted_message = formatted_message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            # Add emoji and formatting based on notification type
+            emoji_map = {
+                "booking_confirmed": "✅",
+                "payment_received": "💳",
+                "pnr_status": "📋",
+                "delay_alert": "⚠️",
+                "safety_alert": "🛡️",
+            }
+            emoji = emoji_map.get(notification_type, "📢")
+
+            final_message = f"{emoji} <b>RouteMaster</b>\n\n{formatted_message}"
+
+            # Send via Telegram Bot API
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": user.telegram_id,
+                        "text": final_message,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=10.0
+                )
+
+                if response.status_code in (200, 201):
+                    result = response.json()
+                    if result.get("ok"):
+                        message_id = result.get("result", {}).get("message_id")
+                        logger.info(f"Telegram sent to user {user_id}: {message_id}")
+                        return NotificationResult(
+                            success=True,
+                            channel="telegram",
+                            message_id=message_id
+                        )
+                    else:
+                        error = result.get("description", response.text)
+                        logger.error(f"Telegram API error: {error}")
+                        return NotificationResult(success=False, channel="telegram", error=error)
+                else:
+                    error = response.text
+                    logger.error(f"Telegram send failed: {error}")
+                    return NotificationResult(success=False, channel="telegram", error=error)
+
+        except Exception as e:
+            logger.error(f"Telegram send error: {e}")
+            return NotificationResult(success=False, channel="telegram", error=str(e))
+
     async def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
         """Get user notification preferences."""
         result = self.db.execute(
@@ -259,11 +355,12 @@ class NotificationService:
             )
         ).scalar_one_or_none()
         
-        if result:
+        if result and hasattr(result, 'sms_enabled'):
             return {
                 "sms_enabled": result.sms_enabled,
                 "email_enabled": result.email_enabled,
                 "push_enabled": result.push_enabled,
+                "telegram_enabled": getattr(result, 'telegram_enabled', True),
                 "booking_confirmed": result.booking_confirmed,
                 "payment_received": result.payment_received,
                 "pnr_status": result.pnr_status,
@@ -271,12 +368,13 @@ class NotificationService:
                 "safety_alerts": result.safety_alerts,
                 "marketing": result.marketing
             }
-        
+
         # Default preferences
         return {
             "sms_enabled": True,
             "email_enabled": True,
             "push_enabled": True,
+            "telegram_enabled": True,
             "booking_confirmed": True,
             "payment_received": True,
             "pnr_status": True,
