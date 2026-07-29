@@ -38,34 +38,42 @@ router = APIRouter(prefix="/telegram", tags=["telegram"])
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Station name → code mapping (subset for NLP)
+# Station name → code mapping (expanded for NLP)
 NAME_TO_CODE = {
-    "delhi": "NDLS", "new delhi": "NDLS", "ndls": "NDLS",
+    # NCR Region
+    "delhi": "NDLS", "new delhi": "NDLS", "ndls": "NDLS", "delhi main": "DLI",
+    "old delhi": "DLI", "dli": "DLI", "sarai rohilla": "SR", "sr": "SR",
+    # Maharashtra
     "mumbai": "BCT", "bombay": "BCT", "mumbai central": "BCT", "bct": "BCT", "mmct": "BCT",
-    "kolkata": "HWH", "calcutta": "HWH", "howrah": "HWH", "hwh": "HWH",
+    "pune": "PUNE", "pun": "PUNE", "poona": "PUNE",
+    "nagpur": "NGP", "nag": "NGP",
+    # West Bengal
+    "kolkata": "HWH", "calcutta": "HWH", "howrah": "HWH", "hwh": "HWH", "sealdah": "SDAH",
+    # Tamil Nadu
     "chennai": "MAS", "madras": "MAS", "mas": "MAS",
-    "bengaluru": "SBC", "bangalore": "SBC", "sbc": "SBC",
+    # Karnataka
+    "bengaluru": "SBC", "bangalore": "SBC", "sbc": "SBC", "bangaluru": "SBC",
+    # Telangana
     "hyderabad": "SC", "secunderabad": "SC", "sc": "SC",
-    "pune": "PUNE",
-    "ahmedabad": "ADI", "adi": "ADI",
-    "jaipur": "JP", "jp": "JP",
+    # Others
+    "ahmedabad": "ADI", "adi": "ADI", "amd": "ADI",
+    "jaipur": "JP", "jp": "JP", "jpr": "JP",
     "lucknow": "LKO", "lko": "LKO",
-    "patna": "PNBE", "pnbe": "PNBE",
-    "varanasi": "BSB", "banaras": "BSB", "bsb": "BSB",
+    "patna": "PNBE", "pnbe": "PNBE", "pat": "PNBE",
+    "varanasi": "BSB", "banaras": "BSB", "bsb": "BSB", "vns": "BSB",
     "kanpur": "CNB", "cnb": "CNB",
-    "prayagraj": "PRYJ", "allahabad": "PRYJ",
-    "gorakhpur": "GKP",
-    "agra": "AGC",
-    "bhopal": "BPL",
-    "nagpur": "NGP",
-    "surat": "ST",
-    "amritsar": "ASR",
-    "guwahati": "GHY",
-    "ranchi": "HTE",
-    "bhubaneswar": "BBS",
-    "kochi": "ERS", "ernakulam": "ERS",
-    "thiruvananthapuram": "TVC", "trivandrum": "TVC",
-    "visakhapatnam": "VSKP", "vizag": "VSKP",
+    "prayagraj": "PRYJ", "allahabad": "PRYJ", "prag": "PRYJ",
+    "gorakhpur": "GKP", "gkp": "GKP", "gorax": "GKP",
+    "agra": "AGC", "agra": "AGC",
+    "bhopal": "BPL", "bpl": "BPL",
+    "surat": "ST", "srt": "ST",
+    "amritsar": "ASR", "asr": "ASR",
+    "guwahati": "GHY", "ghy": "GHY", "assam": "GHY",
+    "ranchi": "HTE", "rte": "HTE",
+    "bhubaneswar": "BBS", "bbs": "BBS", "bbsr": "BBS",
+    "kochi": "ERS", "ernakulam": "ERS", "cochin": "ERS", "ers": "ERS",
+    "thiruvananthapuram": "TVC", "trivandrum": "TVC", "tvm": "TVC", "tvl": "TVC",
+    "visakhapatnam": "VSKP", "vizag": "VSKP", "vskp": "VSKP",
 }
 
 MONTH_MAP = {
@@ -76,18 +84,45 @@ MONTH_MAP = {
 }
 
 
-async def send_message(chat_id: int, text: str, parse_mode: str = "HTML"):
-    """Send a message via Telegram Bot API."""
+async def send_message(
+    chat_id: int,
+    text: str,
+    parse_mode: str = "HTML",
+    inline_keyboard: Optional[list] = None
+):
+    """Send a message via Telegram Bot API with optional inline keyboard."""
     if not BOT_TOKEN:
         return
     try:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
                 f"{TELEGRAM_API}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+                json=payload,
             )
     except Exception as e:
         logger.warning(f"Telegram send failed: {e}")
+
+
+def make_inline_buttons(buttons: list[dict]) -> list:
+    """
+    Convert button list to Telegram inline keyboard format.
+    Input: [{"text": "Button", "callback_data": "action_param"}, ...]
+    Output: [[{"text": "Button", "callback_data": "action_param"}], ...]
+    """
+    return [[btn] for btn in buttons]
+
+
+def make_button_row(buttons: list[dict]) -> list:
+    """Make buttons appear in a single row."""
+    return [buttons]
 
 
 def parse_city_name(text: str) -> Optional[str]:
@@ -95,7 +130,29 @@ def parse_city_name(text: str) -> Optional[str]:
     t = text.lower().strip()
     if t.upper() in [c.upper() for c in NAME_TO_CODE.values()]:
         return t.upper()
-    return NAME_TO_CODE.get(t)
+    result = NAME_TO_CODE.get(t)
+    if result:
+        return result
+    # Try fuzzy match if exact match fails
+    return fuzzy_match_station(t)
+
+
+def fuzzy_match_station(query: str) -> Optional[str]:
+    """Fuzzy match station name to code (handles typos, abbreviations)."""
+    query = query.lower().strip()
+
+    # Try prefix matching
+    for name, code in NAME_TO_CODE.items():
+        if name.startswith(query) or query.startswith(name):
+            return code
+
+    # Try substring matching (but require at least 3 chars)
+    if len(query) >= 3:
+        for name, code in NAME_TO_CODE.items():
+            if query in name or name in query:
+                return code
+
+    return None
 
 
 def parse_date_from_text(tokens: list[str]) -> Optional[date]:
@@ -210,21 +267,24 @@ async def handle_route_search(chat_id: int, query: dict):
         dur_m = t.duration_minutes % 60
         dur_str = f"{dur_h}h {dur_m}m" if dur_m else f"{dur_h}h"
 
-        irctc_date = travel_date.strftime("%d/%m/%Y")
-        irctc_url = (
-            f"https://www.irctc.co.in/nget/train-search?"
-            f"fromStn={from_code}&toStn={to_code}&jrnyDate={irctc_date}"
-            f"&jrnyClass=SL&trainNo={t.route_id}&jrnySrc=P&ticketType=E"
-        )
-
-        lines.append(
+        msg = (
             f"<b>{i}. {t.train_name}</b> ({t.route_id})\n"
-            f"   🕐 {dep} → {arr} ({dur_str})\n"
-            f"   🎟️ <a href='{irctc_url}'>Book on IRCTC</a>"
+            f"🕐 {dep} → {arr} ({dur_str})\n"
+            f"💰 Check price\n"
         )
 
-    lines.append(f"\n🌐 <a href='https://routemaster.vercel.app/?from={from_code}&to={to_code}'>See all routes + transfers</a>")
-    await send_message(chat_id, "\n".join(lines))
+        buttons = make_inline_buttons([
+            {"text": "📖 Details", "callback_data": f"view_{t.route_id}"},
+            {"text": "✅ Book", "callback_data": f"book_{t.route_id}"},
+            {"text": "🚂 Live Status", "callback_data": f"live_{t.route_id}"}
+        ])
+
+        await send_message(chat_id, msg, inline_keyboard=buttons)
+
+    await send_message(
+        chat_id,
+        f"🌐 <a href='https://routemaster.vercel.app/?from={from_code}&to={to_code}'>View all options on RouteMaster</a>"
+    )
 
 
 async def handle_live_status(chat_id: int, train_no: str):
@@ -347,6 +407,22 @@ async def handle_callback_query(callback_query: dict):
             # User clicked live status button
             await handle_live_status(chat_id, param)
 
+        elif action == "berth":
+            # User selected berth preference
+            if state.current_state == "AWAITING_BERTH":
+                await send_message(
+                    chat_id,
+                    "👤 <b>Enter Passenger Details</b>\n\n"
+                    "Please send in format:\n"
+                    "<code>name Raj Kumar age 28 gender M</code>\n\n"
+                    "Or reply with your name first:"
+                )
+                await service.update_conversation_state(
+                    telegram_user_id,
+                    "AWAITING_PASSENGER_INFO",
+                    {"berth_preference": param}
+                )
+
         elif action == "link":
             # User wants to link account
             result = await service.create_auth_link(telegram_user_id)
@@ -357,6 +433,29 @@ async def handle_callback_query(callback_query: dict):
                 f"<a href='{link_url}'>Click here to link your Telegram</a>\n\n"
                 f"This link expires in 1 hour."
             )
+
+        elif action == "confirm":
+            # User confirmed booking
+            if state.current_state == "AWAITING_CONFIRMATION":
+                context = state.context or {}
+                await send_message(
+                    chat_id,
+                    f"💳 <b>Booking Confirmed!</b>\n\n"
+                    f"Train: {context.get('train_name', 'Unknown')}\n"
+                    f"Class: {context.get('passenger_class', 'Unknown')}\n"
+                    f"Passenger: {context.get('passenger_name', 'Unknown')}\n\n"
+                    f"Processing payment..."
+                )
+                await service.update_conversation_state(
+                    telegram_user_id,
+                    "IDLE",
+                    {"booking_confirmed_at": datetime.now().isoformat()}
+                )
+
+        elif action == "cancel":
+            # User cancelled
+            await send_message(chat_id, "❌ Booking cancelled. Type a new search to start over.")
+            await service.update_conversation_state(telegram_user_id, "IDLE", {})
 
     except Exception as e:
         logger.error(f"Error handling callback: {e}")
