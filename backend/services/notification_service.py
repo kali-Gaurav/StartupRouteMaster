@@ -139,34 +139,41 @@ class NotificationService:
         notification_type: str,
         data: Dict[str, Any]
     ) -> NotificationResult:
-        """Send SMS notification."""
+        """Send SMS notification via Twilio."""
         try:
             # Get user phone
             from database.models import User
             user = self.db.get(User, user_id)
             phone = user.phone if user else None
-            
+
             if not phone:
                 return NotificationResult(success=False, channel="sms", error="No phone number")
-            
+
             # Get template
             template = self.templates.get(notification_type, {}).get("sms", "")
             if isinstance(template, dict):
                 template = template.get("sms", "")
-            
+
             # Format message
             message = template.format(**data)
-            
-            # In production, integrate with SMS provider (Twilio, etc.)
-            logger.info(f"SMS to {phone}: {message[:50]}...")
-            
-            # Simulate SMS send
+
+            # Send via Twilio provider
+            from services.sms_provider import get_sms_provider
+            provider = get_sms_provider()
+            result = await provider.send(phone, message)
+
+            if result.success:
+                logger.info(f"SMS sent to {phone} via Twilio: {result.message_id}")
+            else:
+                logger.error(f"SMS send failed: {result.error}")
+
             return NotificationResult(
-                success=True,
+                success=result.success,
                 channel="sms",
-                message_id=f"sms_{datetime.now().timestamp()}"
+                message_id=result.message_id,
+                error=result.error
             )
-            
+
         except Exception as e:
             logger.error(f"SMS send error: {e}")
             return NotificationResult(success=False, channel="sms", error=str(e))
@@ -177,33 +184,48 @@ class NotificationService:
         notification_type: str,
         data: Dict[str, Any]
     ) -> NotificationResult:
-        """Send email notification."""
+        """Send email notification via Mailgun."""
         try:
             from database.models import User
             user = self.db.get(User, user_id)
             email = user.email if user else None
-            
+
             if not email:
                 return NotificationResult(success=False, channel="email", error="No email")
-            
-            # Get template
-            template = self.templates.get(notification_type, {}).get("email", "")
-            if isinstance(template, dict):
-                template = template.get("email", "")
-            
+
+            # Get template and subject
+            template_data = self.templates.get(notification_type, {})
+            if isinstance(template_data, dict):
+                template = template_data.get("email", "")
+            else:
+                template = template_data
+
             # Format subject and body
-            subject = f"Travel Booking - {notification_type.replace('_', ' ').title()}"
+            subject = f"RouteMaster - {notification_type.replace('_', ' ').title()}"
             body = template.format(**data)
-            
-            # In production, integrate with email provider (SendGrid, etc.)
-            logger.info(f"Email to {email}: {subject}")
-            
-            return NotificationResult(
-                success=True,
-                channel="email",
-                message_id=f"email_{datetime.now().timestamp()}"
+
+            # Send via Mailgun provider
+            from services.email_provider import get_email_provider
+            provider = get_email_provider()
+            result = await provider.send(
+                to=email,
+                subject=subject,
+                text=body,
+                tags=[notification_type, "transactional"]
             )
-            
+
+            if result.success:
+                logger.info(f"Email sent to {email} via Mailgun: {result.message_id}")
+            else:
+                logger.error(f"Email send failed: {result.error}")
+
+            return NotificationResult(
+                success=result.success,
+                channel="email",
+                message_id=result.message_id,
+                error=result.error
+            )
+
         except Exception as e:
             logger.error(f"Email send error: {e}")
             return NotificationResult(success=False, channel="email", error=str(e))
