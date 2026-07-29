@@ -16,12 +16,18 @@ from typing import Callable, Any, Optional, Dict, TypeVar, Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from cat.reliability.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitState
 from .retry import retry as _retry
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+
+
+class CircuitState(Enum):
+    """States for circuit breaker."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 
 def retry_with_backoff(

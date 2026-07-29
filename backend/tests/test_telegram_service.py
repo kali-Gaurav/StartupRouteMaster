@@ -44,7 +44,8 @@ class TestUserLinking:
     @pytest.mark.asyncio
     async def test_confirm_link_invalid_token(self, telegram_service, mock_db):
         """Test confirming link with non-existent token."""
-        mock_db.execute.return_value.scalar_one_or_none.return_value = None
+        # Mock the execute().scalars().all() chain
+        mock_db.execute.return_value.scalars.return_value.all.return_value = []
 
         result = await telegram_service.confirm_telegram_link("invalid-token", "user123")
 

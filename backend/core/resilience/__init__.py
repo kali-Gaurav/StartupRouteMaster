@@ -1,4 +1,4 @@
-from cat.reliability.circuit_breaker import CircuitState, CircuitBreaker, CircuitBreakerConfig
+from .core import CircuitBreaker, CircuitConfig, CircuitOpenError, CircuitBreakerManager
 from .retry import retry as _retry
 
 __all__ = [

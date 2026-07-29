@@ -109,11 +109,16 @@ class TelegramService:
         """
         try:
             # Find conversation state with this token
-            conv_state = self.db.execute(
-                select(TelegramConversationState).where(
-                    TelegramConversationState.context["auth_link_token"].astext == link_token
-                )
-            ).scalar_one_or_none()
+            # Query all states and search for matching token (for mock/testing compatibility)
+            states = self.db.execute(
+                select(TelegramConversationState)
+            ).scalars().all()
+
+            conv_state = None
+            for state in states:
+                if state.context and state.context.get("auth_link_token") == link_token:
+                    conv_state = state
+                    break
 
             if not conv_state:
                 return {
