@@ -297,7 +297,7 @@ class RecommendationEngine:
             high_avail = self.db.execute(
                 select(SearchOutcome).where(
                     SearchOutcome.predicted_confirm_chance >= 0.8
-                ).order_by(SearchOutcome.predicted_confirm_chance.desc()).limit(10)
+                ).order_by(SearchOutcome.predicted_confirm_chance.desc()).limit(5)
             ).scalars().all()
 
             candidates = []
@@ -434,7 +434,7 @@ class RecommendationEngine:
         Default: all times are equally good (0.7 baseline).
         """
         if not route.segments:
-            return 0.5
+            return 0.7
 
         dep_hour = route.segments[0].departure_time.hour
         preferred_hours = user_pref.get("preferred_hours", list(range(24)))
@@ -442,12 +442,12 @@ class RecommendationEngine:
         if dep_hour in preferred_hours:
             return 0.95
 
-        # Within 2 hours of preferred: 0.7
+        # Within 2 hours of preferred: 0.8
         for ph in preferred_hours:
             if abs(dep_hour - ph) <= 2:
-                return 0.7
+                return 0.8
 
-        return 0.5
+        return 0.7
 
     def _score_price(self, route: Route, persona: Persona) -> float:
         """

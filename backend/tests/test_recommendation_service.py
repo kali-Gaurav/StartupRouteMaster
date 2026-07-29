@@ -131,7 +131,7 @@ class TestScoring:
         user_pref = {"preferred_hours": [7, 8]}  # Prefer 7-8
 
         score = recommendation_engine._score_timing(route, user_pref)
-        assert score == 0.7  # Within 2 hours
+        assert score == 0.8  # Within 2 hours
 
     def test_score_timing_no_preference(self, recommendation_engine):
         """Test timing score with no hour preference."""
