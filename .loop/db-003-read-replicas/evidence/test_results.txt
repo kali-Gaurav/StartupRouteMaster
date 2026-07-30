@@ -1,0 +1,27 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.2.0, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/StartupRouteMaster/backend
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 16 items
+
+backend/tests/test_read_replicas.py::TestReplicationManager::test_initialization PASSED [  6%]
+backend/tests/test_read_replicas.py::TestReplicationManager::test_get_primary_engine PASSED [ 12%]
+backend/tests/test_read_replicas.py::TestReplicationManager::test_get_replica_engine PASSED [ 18%]
+backend/tests/test_read_replicas.py::TestReplicationManager::test_replica_round_robin PASSED [ 25%]
+backend/tests/test_read_replicas.py::TestReplicationManager::test_fallback_to_primary_when_no_replicas PASSED [ 31%]
+backend/tests/test_read_replicas.py::TestReplicationManager::test_replica_health_tracking PASSED [ 37%]
+backend/tests/test_read_replicas.py::TestRouteAnalyzer::test_insert_detected_as_write PASSED [ 43%]
+backend/tests/test_read_replicas.py::TestRouteAnalyzer::test_update_detected_as_write PASSED [ 50%]
+backend/tests/test_read_replicas.py::TestRouteAnalyzer::test_delete_detected_as_write PASSED [ 56%]
+backend/tests/test_read_replicas.py::TestRouteAnalyzer::test_select_detected_as_read PASSED [ 62%]
+backend/tests/test_read_replicas.py::TestRouteAnalyzer::test_string_analysis PASSED [ 68%]
+backend/tests/test_read_replicas.py::TestAsyncReadWriteRouter::test_get_session_for_write PASSED [ 75%]
+backend/tests/test_read_replicas.py::TestAsyncReadWriteRouter::test_get_session_for_read PASSED [ 81%]
+backend/tests/test_read_replicas.py::TestIntegrationReadReplica::test_query_latency_improvement PASSED [ 87%]
+backend/tests/test_read_replicas.py::TestIntegrationReadReplica::test_failover_behavior PASSED [ 93%]
+backend/tests/test_read_replicas.py::TestReplicationLagMonitoring::test_lag_tracking PASSED [100%]
+
+======================== 16 passed, 3 warnings in 0.09s ========================
