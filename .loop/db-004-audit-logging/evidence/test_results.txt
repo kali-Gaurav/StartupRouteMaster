@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-8.2.0, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/StartupRouteMaster/backend
+configfile: pytest.ini
+plugins: anyio-4.14.2, asyncio-1.4.0, mock-3.15.1
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 13 items
+
+backend/tests/test_audit_logging.py::TestAuditContext::test_set_and_get_context PASSED [  7%]
+backend/tests/test_audit_logging.py::TestAuditContext::test_empty_context_by_default PASSED [ 15%]
+backend/tests/test_audit_logging.py::TestAuditLoggerUtilities::test_should_audit_table PASSED [ 23%]
+backend/tests/test_audit_logging.py::TestAuditLoggerUtilities::test_get_record_values PASSED [ 30%]
+backend/tests/test_audit_logging.py::TestAuditLoggerUtilities::test_create_audit_entry PASSED [ 38%]
+backend/tests/test_audit_logging.py::TestAuditLoggingOperations::test_audit_insert PASSED [ 46%]
+backend/tests/test_audit_logging.py::TestAuditLoggingOperations::test_audit_delete PASSED [ 53%]
+backend/tests/test_audit_logging.py::TestAuditQueryability::test_audit_entry_json_serializable PASSED [ 61%]
+backend/tests/test_audit_logging.py::TestAuditQueryability::test_audit_log_schema_compatibility PASSED [ 69%]
+backend/tests/test_audit_logging.py::TestAuditExclusions::test_audit_table_excluded PASSED [ 76%]
+backend/tests/test_audit_logging.py::TestAuditExclusions::test_normal_tables_included PASSED [ 84%]
+backend/tests/test_audit_logging.py::TestAuditPerformance::test_audit_entry_size PASSED [ 92%]
+backend/tests/test_audit_logging.py::TestAuditPerformance::test_value_conversion PASSED [100%]
+
+======================== 13 passed, 3 warnings in 0.08s ========================

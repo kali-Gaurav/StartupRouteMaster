@@ -48,7 +48,8 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('idx_stations_geom', 'stations', ['geom'], unique=False, postgresql_using='gist')
+    # create GIST index for spatial lookups; use IF NOT EXISTS to avoid duplicate-index errors
+    op.execute("CREATE INDEX IF NOT EXISTS idx_stations_geom ON stations USING gist (geom)")
     op.create_index(op.f('ix_stations_city'), 'stations', ['city'], unique=False)
     op.create_index(op.f('ix_stations_name'), 'stations', ['name'], unique=False)
 

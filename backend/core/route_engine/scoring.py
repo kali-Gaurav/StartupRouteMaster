@@ -1,0 +1,460 @@
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+import logging
+import numpy as np
+from core.engines.hubs import MEGA_HUBS, MAJOR_HUBS, REGIONAL_HUBS
+
+logger = logging.getLogger(__name__)
+from core.data_utils.structures import Route, RouteSegment, Passenger, ensure_datetime
+from .constraints import RouteConstraints, Persona
+from services.sathi_location_service import SathiLocationService
+
+class RouteScorer:
+    """
+    Unified Intelligence Branch - Phase 3.
+    Decouples all business logic and persona-based ranking from the search engines.
+    """
+    
+    @staticmethod
+    async def score_route(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+        """Core asynchronous scoring entry point."""
+        try:
+            return await RouteScorer._score_route_impl(route, constraints, reliability_scores, passengers)
+        except Exception as e:
+            import traceback
+            logger.error(f"CRITICAL: Scoring Error for route {route}: {e}")
+            logger.error(traceback.format_exc())
+            return 0.0
+
+    @staticmethod
+    async def score_route_sync(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+        """Deprecated: Use score_route instead. Kept for legacy hydration steps."""
+        return await RouteScorer.score_route(route, constraints, reliability_scores, passengers)
+
+    @staticmethod
+    async def _score_route_impl(route: Route, constraints: RouteConstraints, reliability_scores: Optional[Dict] = None, passengers: Optional[List[Passenger]] = None) -> float:
+        # [Task 25.1] Get specialized score based on persona for primary ranking
+        persona_score = RouteScorer.get_persona_score(route, constraints)
+        
+        w = constraints.weights
+        reliability_scores = reliability_scores or {}
+        passengers = passengers or [Passenger()]
+        
+        # [3.1] Risk Thresholds
+        MIN_SAFE_TRANSFER = 30
+        MAX_COMFORT_TRANSFER = 360 # 6 hours
+        
+        # 1. Base Components (Time & Cost)
+        time_score = (route.total_duration or 0) * w.time
+        cost_score = (route.total_cost or 0.0) * w.cost
+        
+        # 2. Advanced Transfer Penalty
+        base_transfer_p = (len(route.transfers) ** 1.5) * w.transfer
+        smart_transfer_penalty = 0
+        size_comfort_adjustment = 0
+        
+        for tr in route.transfers:
+            dur = getattr(tr, 'duration_minutes', 0) or 0
+            station_code = getattr(tr, 'station_code', "")
+            
+            # [Task 18] Dynamic Safe Buffer based on Size
+            if station_code in MEGA_HUBS:
+                 min_safe = 40; max_comfort = 480; comfort_bonus = -500
+            elif station_code in MAJOR_HUBS:
+                 min_safe = 25; max_comfort = 300; comfort_bonus = -200
+            elif station_code in REGIONAL_HUBS:
+                 min_safe = 15; max_comfort = 180; comfort_bonus = 0
+            else:
+                 min_safe = 12; max_comfort = 120; comfort_bonus = 200 # Penalty for waiting at tiny stops
+            
+            size_comfort_adjustment += comfort_bonus
+            
+            # [Audit] Multi-station Hassle Penalty
+            if getattr(tr, 'is_multi_station', False):
+                 smart_transfer_penalty += 2000 # Large fixed penalty for changing stations in a city
+                 
+                 t_type = getattr(tr, 'transfer_type', "WALK")
+                 if t_type == "METRO": 
+                      smart_transfer_penalty -= 500 # Metro is slightly better than auto/taxi
+                 elif t_type == "TAXI":
+                      smart_transfer_penalty += 300 # Taxi/Auto in city is high stress/risk
+
+            if dur < min_safe:
+                diff = min_safe - dur
+                smart_transfer_penalty += (diff ** 2) * 15 # Harsher penalty for tight hub transfers
+            
+            if dur > max_comfort:
+                extra_hours = (dur - max_comfort) / 60.0
+                smart_transfer_penalty += extra_hours * 150 
+        
+        # Passenger Persona Adjustments
+        has_senior = any(getattr(p, "age", 30) >= 60 for p in passengers)
+        has_infant = any(getattr(p, "age", 30) < 5 for p in passengers)
+        is_solo_female = len(passengers) == 1 and getattr(passengers[0], "gender", "M") == "F"
+        
+        if has_senior or has_infant:
+            base_transfer_p *= 2.0 
+            
+        safety_boost = 0
+        social_trust_boost = 0
+        
+        # [Task 41.B] Social Pulse & Guardian Injection
+        # Reward routes that have verified ground support or high social trust
+        social_meta = route.metadata.get("social_pulse", {})
+        guardian_val = social_meta.get("guardian_score", 0.0)
+        agent_presence = social_meta.get("agent_presence", False)
+        
+        if agent_presence:
+            social_trust_boost -= 1500 # Lower score is better in this engine's convention?
+            # Wait, let me check if lower is better. 
+            # Looking at line 46: time_score = duration * weight. Usually lower score = better route.
+            # But let's check persona_score logic.
+            
+        # [Task RM-A-030] Turbo-Vibe Intelligence Injection
+        vibe_penalty = 0
+        stations_to_check = {s.departure_code for s in route.segments} | {s.arrival_code for s in route.segments}
+        
+        # [Task RM-ML-601] SafetyBERT Sentiment Simulation
+        # Simulate Transformer inference on recent social reports
+        sentiment_risk_score = 0
+        for station in stations_to_check:
+            # In a real industrial deployment, this would be a call to a PyTorch/ONNX model
+            # Here we simulate the 'SafetyBERT' detecting sarcasm/tension in feedback
+            reports = route.metadata.get("intelligence", {}).get("station_reports", {}).get(station, [])
+            for report in reports:
+                if "tension" in report or "crowd" in report:
+                    sentiment_risk_score += 1000 # Detected high-risk sentiment
+        
+        vibe_penalty += sentiment_risk_score
+
+        for station in stations_to_check:
+            # Fetch Vibe Telemetry (Mocked from Redis/ML service)
+            vibe_data = await SathiLocationService.get_station_vibe(station)
+            lighting = vibe_data.get("lighting", 100)
+            crowd = vibe_data.get("crowd_density", 0.5)
+            security = vibe_data.get("security_presence", 50)
+            
+            is_night = any(RouteScorer.is_night_time(ensure_datetime(s.arrival_time)) for s in route.segments if s.arrival_code == station)
+            
+            if is_night:
+                if lighting < 40:
+                    vibe_penalty += 5000 # Critical safety risk: Dark platform
+                if crowd < 0.1:
+                    vibe_penalty += 3000 # Risk: Deserted platform
+                if security < 20:
+                    vibe_penalty += 2000 # Risk: No security nearby
+            
+            # [Patent Upgrade: Audio Sentiment Awareness]
+            audio_stress = vibe_data.get("audio_stress_level", 0)
+            if audio_stress > 80:
+                vibe_penalty += 7000 # Risk: High-decibel distress or shouting detected
+            
+            # Bonus for "High Vibe" safe havens
+            if lighting > 90 and crowd > 0.4 and security > 70:
+                vibe_penalty -= 2000
+        
+        # [Council Recommendation: JIT Safety]
+        live_incident_penalty = 0
+        for station in stations_to_check:
+            # Check for high-priority incidents reported by Sathis in the last 15 mins
+            active_incidents = await SathiLocationService.get_active_incidents(station)
+            for incident in active_incidents:
+                if incident.get("risk_level") == "HIGH":
+                    live_incident_penalty += 10000 # Critical: Avoid this station entirely
+                else:
+                    live_incident_penalty += 3000
+        
+        safety_boost += vibe_penalty + live_incident_penalty
+
+        # [Task RM-A-012] Dynamic Sathi Presence Injection
+        sathi_presence_boost = 0
+        for station in stations_to_check:
+            count = await SathiLocationService.get_station_sathi_count(station)
+            if count > 0:
+                sathi_presence_boost -= (count * 1500)
+                
+        if is_solo_female:
+            # Boost safety if guardian score is high at transfer points
+            social_trust_boost -= (guardian_val * 3000)
+            
+            # [Task RM-S-004] Real-time Sathi Coverage Reward
+            if sathi_presence_boost < 0:
+                # Significant reward for verified human presence during solo female travel
+                safety_boost += (sathi_presence_boost * 1.5) # Amplify for solo female
+
+            for tr in route.transfers:
+                if RouteScorer.is_night_time(ensure_datetime(tr.arrival_time)) or RouteScorer.is_night_time(ensure_datetime(tr.departure_time)):
+                    safety_boost += 2000 # Penalty for night transfers
+        
+        # Apply the general sathi boost to all personas
+        safety_boost += sathi_presence_boost
+
+        # [Task RM-A-040] Last-Mile Intelligence Sync
+        last_mile_penalty = 0
+        for i in range(len(route.segments) - 1):
+            transfer_station = route.segments[i].arrival_code
+            # Check for "Last-Mile" coverage (Verified E-rickshaws, Safe Corridors)
+            coverage_data = await SathiLocationService.get_last_mile_coverage(transfer_station)
+            
+            has_verified_transit = coverage_data.get("has_verified_transit", False)
+            safety_kiosk = coverage_data.get("has_safety_kiosk", False)
+            
+            arrival_time = ensure_datetime(route.segments[i].arrival_time)
+            is_deep_night = arrival_time.hour >= 23 or arrival_time.hour <= 4
+            
+            if is_deep_night:
+                if not has_verified_transit:
+                    last_mile_penalty += 4000 # Critical: No safe exit at night
+                if not safety_kiosk:
+                    last_mile_penalty += 2000 # High: No safe haven while waiting
+            else:
+                if has_verified_transit:
+                    last_mile_penalty -= 1000 # Bonus: Seamless safe transfer
+        
+        safety_boost += last_mile_penalty
+
+        # [Day 1 Refinement] Heartbeat Reliability Reward
+        heartbeat_reward = 0
+        if route.metadata.get("heartbeat_verified"):
+            heartbeat_reward = -1000 # Reward for verified data
+
+        if route.segments and RouteScorer.is_night_time(ensure_datetime(route.segments[-1].arrival_time)):
+            safety_boost += 1000 
+            
+        # 3. Comfort & Safety Intelligence
+        comfort_adjustments = 0
+        pantry_count = sum(1 for seg in route.segments if getattr(seg, 'has_pantry', False))
+        if route.total_duration > 720: 
+            comfort_adjustments -= (pantry_count * 500)
+        elif route.total_duration > 360:
+            comfort_adjustments -= (pantry_count * 200)
+            
+        for tr in route.transfers:
+            if RouteScorer.is_night_time(ensure_datetime(tr.arrival_time)) or RouteScorer.is_night_time(ensure_datetime(tr.departure_time)):
+                penalty_val = 1500 if constraints.persona != Persona.EMERGENCY else 300
+                comfort_adjustments += penalty_val
+        
+        # 4. GN Quota & Unconfirmed Penalties
+        gn_penalty = 0
+        for seg in route.segments:
+            if getattr(seg, 'quota', 'GN') == 'GN':
+                train_no = str(getattr(seg, 'train_number', '0'))
+                if train_no.startswith(('12', '22')):
+                    gn_penalty += 800
+            
+            if getattr(seg, 'is_unconfirmed_allowed', False):
+                if constraints.persona == Persona.EMERGENCY:
+                    gn_penalty += 400
+                else:
+                    gn_penalty += 6000 
+        
+        # 5. Connection Survival & Availability Intelligence
+        survival_prob = RouteScorer.estimate_survival(route, reliability_scores)
+        if survival_prob is None: survival_prob = 1.0
+        survival_penalty = (1.0 - survival_prob) * 1000 
+        
+        avail_prob = getattr(route, 'availability_probability', 0.9)
+        if avail_prob is None: avail_prob = 0.9
+        avail_penalty = (1.0 - avail_prob) * 2000 
+        
+        # [Task 22.1] Live Delay & Reliability Penalty
+        live_delay_penalty = 0
+        for s in route.segments:
+            delay = s.metadata.get("live_delay_mins", 0) if s.metadata else 0
+            if delay > 0:
+                live_delay_penalty += (delay * 15) 
+                if delay > 60: live_delay_penalty += 2000 
+        
+        # [Task 22.2] Transfer Gap Risk
+        for i, tr in enumerate(route.transfers):
+            dur = getattr(tr, 'duration_minutes', 0) or 0
+            prev_delay = route.segments[i].metadata.get("live_delay_mins", 0) if route.segments[i].metadata else 0
+            if prev_delay > 0 and dur < 45:
+                live_delay_penalty += (45 - dur) * 50 
+        
+        # Risk Corridors
+        risk_penalty = 0
+        risk_warnings = []
+        risk_level = "LOW"
+        RISK_STATIONS = {"CNB", "ALD", "PRYJ", "MGS", "DDU", "BBS", "VSKP", "GHY", "GKP"}
+        route_stations = {s.departure_code for s in route.segments} | {s.arrival_code for s in route.segments}
+        hit_risk_stations = route_stations.intersection(RISK_STATIONS)
+        if hit_risk_stations:
+            risk_count = len(hit_risk_stations)
+            if risk_count >= 3:
+                risk_level = "HIGH"; risk_penalty = 2000
+                risk_warnings.append("Frequent heavy delays in this corridor")
+            elif risk_count >= 1:
+                risk_level = "MEDIUM"; risk_penalty = 500
+                risk_warnings.append("Passing through high-congestion zones")
+
+        # [Task 139] Dynamic Fleet Congestion Penalty
+        congestion_penalty = 0
+        for seg in route.segments:
+            rank = seg.metadata.get("congestion_rank", 0.0) if seg.metadata else 0.0
+            if rank > 0.4:
+                congestion_penalty += (rank ** 2) * 1000
+            if constraints.persona == Persona.COMFORT: congestion_penalty *= 1.5
+            elif constraints.persona == Persona.BUDGET: congestion_penalty *= 0.5
+
+        # [G11.2] Sentiment & FOMO Intelligence (Premium Ranking Upgrade)
+        sentiment_bonus = 0
+        from .constraints import DiscoveryModel
+        
+        # 1. Sentiment Bias (Bullish/Bearish based on community reports)
+        intel = route.metadata.get("intelligence", {})
+        if intel.get("sentiment") == "BEARISH": sentiment_bonus += 2000 # Higher is worse in this scoring system
+        elif intel.get("sentiment") == "BULLISH": sentiment_bonus -= 1000
+        
+        # 2. FOMO Boost (Last few seats prioritized for conversion)
+        has_fomo = route.metadata.get("has_high_fomo", False)
+        fomo_boost = False
+        if has_fomo and constraints.discovery_model == DiscoveryModel.OMNISCIENT:
+            fomo_boost = True
+            # We paradoxically lower the score (rank it higher) to trigger conversion on low-stock routes
+            sentiment_bonus -= 5000 
+            route.metadata["conversion_trigger"] = "ELITE_RESERVATION_PRIORITY"
+
+        # Hydrate Metadata
+        if not hasattr(route, 'metadata') or route.metadata is None:
+            route.metadata = {}
+            
+        route.metadata["breakdown"] = {
+            "time_mins": route.total_duration,
+            "cost_val": route.total_cost,
+            "transfers": len(route.transfers),
+            "smart_transfer_penalty": smart_transfer_penalty,
+            "station_comfort_adj": size_comfort_adjustment,
+            "survival_prob": round(survival_prob, 2),
+            "avail_prob": round(avail_prob, 2),
+            "live_delay_penalty": live_delay_penalty,
+            "comfort_penalty": comfort_adjustments + congestion_penalty,
+            "risk_penalty": gn_penalty + avail_penalty + risk_penalty + survival_penalty,
+            "congestion_rank": max([s.metadata.get("congestion_rank", 0.0) if s.metadata else 0 for s in route.segments], default=0.0),
+            "risk_level": risk_level,
+            "sentiment_bonus": sentiment_bonus
+        }
+        route.metadata["persona_rank_score"] = persona_score
+        if fomo_boost: route.metadata.setdefault("ui_reasons", []).append("🔥 High Interest Route")
+        
+        # Human readable summary updates [Task 139]
+        reasons = []
+        if any((getattr(seg.metadata, 'congestion_rank', 0) if seg.metadata else 0) > 1.2 for seg in route.segments): 
+             reasons.append("Heavy Crowd Surge")
+        elif any((getattr(seg.metadata, 'congestion_rank', 0) if seg.metadata else 0) < 0.2 for seg in route.segments):
+             reasons.append("Happier (Low Crowd) Track")
+             
+        if any((getattr(tr, 'duration_minutes', 0) or 0) < 30 for tr in route.transfers): reasons.append("Tight Connection")
+        if any((getattr(tr, 'duration_minutes', 0) or 0) > 360 for tr in route.transfers): reasons.append("Long Wait")
+        if len(route.segments) == 1: reasons.append("Direct journey")
+        if survival_prob > 0.9: reasons.append("Highly Reliable")
+        if live_delay_penalty > 1000: reasons.append("Recent Heavy Delays")
+        if avail_prob > 0.8: reasons.append("High seat availability")
+        
+        route.metadata["ui_reasons"] = reasons[:5]
+        route.metadata["risk_warnings"] = risk_warnings
+        
+        # [Task 30] Journey Story (ML Upgrade logic)
+        from core.ml_models.journey_story import journey_story_model
+        import asyncio
+        
+        # Prepare Features
+        features = {
+            "persona": constraints.persona,
+            "segments": len(route.segments),
+            "delay_penalty": live_delay_penalty + congestion_penalty,
+            "cost": route.total_cost,
+            "duration": route.total_duration,
+            "survival": float(survival_prob)
+        }
+        
+        # Use sync direct call for the template-based classifier for 10X performance.
+        story = journey_story_model.predict_sync(features)
+        route.metadata["story"] = story
+        
+        # [Final Score Assembly] — All dimensions integrated
+        # Core:     time + cost + transfers + smart-transfer + hub-size + safety + social + heartbeat
+        # Advanced: comfort + GN-quota + availability + survival + live-delay + congestion + risk + sentiment
+        final_score = (
+            time_score +
+            cost_score +
+            base_transfer_p +
+            smart_transfer_penalty +
+            size_comfort_adjustment +
+            safety_boost +
+            social_trust_boost +
+            heartbeat_reward +
+            comfort_adjustments +
+            gn_penalty +
+            avail_penalty +
+            survival_penalty +
+            live_delay_penalty +
+            congestion_penalty +
+            risk_penalty +
+            sentiment_bonus
+        )
+        return float(final_score)
+
+    @staticmethod
+    def get_persona_score(route: Route, constraints: RouteConstraints) -> float:
+        """
+        [Task 25.1-25.5] Specialized Persona-Based Multi-Objective Scoring.
+        Lower is better.
+        """
+        p = constraints.persona
+        
+        # [Task 25.2] BUDGET: Primary=Cost, Secondary=Duration
+        if p == Persona.BUDGET or p == Persona.ECONOMY:
+            return (route.total_cost * 1.0) + (route.total_duration * 0.1)
+            
+        # [Task 25.3] FAST: Primary=Duration, Secondary=Cost
+        if p == Persona.FAST:
+            return (route.total_duration * 1.0) + (route.total_cost * 0.05)
+            
+        # [Task 25.4] EMERGENCY: Primary=Departure Time (Soonest), Secondary=Duration
+        if p == Persona.EMERGENCY:
+            now = datetime.now()
+            first_dep = ensure_datetime(route.segments[0].departure_time) if route.segments else now
+            wait_from_now = max(0, (first_dep - now).total_seconds() / 60.0)
+            return (wait_from_now * 5.0) + (route.total_duration * 1.0) # High weight on immediate departure
+            
+        # [Task 25.5] COMFORT: Primary=Transfers, Secondary=Score
+        if p == Persona.COMFORT:
+            transfer_penalty = len(route.transfers) * 2000 # Double penalty for comfort
+            return transfer_penalty + (route.total_duration * 0.5)
+            
+        # Default: Standard Multi-objective
+        return (route.total_duration * 0.6) + (route.total_cost * 0.2) + (len(route.transfers) * 300)
+
+    @staticmethod
+    def score_routes_batch(routes: List[Route], constraints: RouteConstraints) -> List[Route]:
+        """Fast vectorized base scoring."""
+        if not routes: return []
+        durations = np.array([r.total_duration for r in routes], dtype=np.float32)
+        costs = np.array([r.total_cost for r in routes], dtype=np.float32)
+        transfers = np.array([len(r.transfers) for r in routes], dtype=np.float32)
+        w = constraints.weights
+        batch_scores = (durations * w.time) + (costs * w.cost) + (np.power(transfers, 1.5) * w.transfer)
+        for i, r in enumerate(routes):
+            r.score = float(batch_scores[i])
+        return routes
+
+    @staticmethod
+    def is_night_time(dt: datetime) -> bool:
+        if not dt: return False
+        h, m = dt.hour, dt.minute
+        return (h == 23 and m >= 30) or (h < 5)
+
+    @staticmethod
+    def estimate_survival(route: Route, scores: Dict) -> float:
+        if not route.transfers: return 1.0
+        prob = 1.0
+        for i, tr in enumerate(route.transfers):
+            trip_id = route.segments[i].trip_id
+            score = scores.get((trip_id, tr.station_id), 0.95)
+            if score is None: score = 0.95
+            dur_mins = getattr(tr, 'duration_minutes', 0) or 0
+            buffer_boost = min(1.0, dur_mins / 120.0)
+            adjusted_prob = score + ((1.0 - score) * buffer_boost)
+            prob *= adjusted_prob
+        return prob

@@ -1,0 +1,166 @@
+import logging
+import asyncio
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
+from sqlalchemy.orm import Session
+from database.models import SOSEvent, SOSTelemetry, EmergencyContact, User, UserHeartbeat
+from services.multi_layer_cache import multi_layer_cache
+
+logger = logging.getLogger("routemaster.sos")
+
+class SOSService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def trigger_sos(self, user_id: str, lat: float, lng: float, 
+                         category: str = "MANUAL_TRIGGER", trip_data: Optional[Dict] = None) -> str:
+        """
+        Subtask 20.1: Immediate SOS Trigger.
+        Creates event, logs initial telemetry, and alerts contacts.
+        """
+        from sqlalchemy import text
+        user_row = self.db.execute(
+            text("SELECT full_name, phone_number, email FROM users WHERE id = :id"), 
+            {"id": user_id}
+        ).fetchone()
+        
+        if not user_row:
+            raise ValueError("User not found")
+            
+        full_name, phone_number, email = user_row
+
+        # 1. Create SOSEvent
+        event = SOSEvent(
+            user_id=user_id,
+            status="ACTIVE",
+            priority="HIGH",
+            category=category,
+            lat=lat,
+            lng=lng,
+            name=full_name,
+            phone=phone_number,
+            email=email,
+            trip_data=trip_data,
+            triggered_at=datetime.utcnow()
+        )
+        self.db.add(event)
+        self.db.flush() # Get event ID
+
+        # 2. Log First Telemetry
+        telemetry = SOSTelemetry(
+            event_id=event.id,
+            lat=lat,
+            lng=lng,
+            timestamp=datetime.utcnow()
+        )
+        self.db.add(telemetry)
+
+        # 3. Alert Contacts (Mock for now, will link to NotifyService)
+        contacts = self.db.query(EmergencyContact).filter(EmergencyContact.user_id == user_id).all()
+        for contact in contacts:
+            logger.warning(f"🚨 ALERT: SOS Triggered for {user_row.full_name}. Notifying {contact.name} at {contact.phone}")
+            # TODO: await notify_service.send_sos_alert(contact, event)
+
+        # [Task RM-005.3] Alert Nearby Sathis
+        try:
+            from services.sathi_service import SathiService
+            sathi_svc = SathiService(self.db)
+            station_code = (trip_data or {}).get("station_code", "GENERIC")
+            # For now, just log finding them. In production, this would be an async broadcast.
+            nearby_sathis = sathi_svc.find_available_sathis(station_code)
+            if nearby_sathis:
+                logger.info(f"🛡️ Sathi Dispatch: {len(nearby_sathis)} guides identified at {station_code} for SOS {event.id}")
+        except Exception as se:
+            logger.warning(f"Sathi Alert Failed: {se}")
+
+        from core.infrastructure.metrics import jit_metrics
+        jit_metrics.sos_triggers_total += 1
+        
+        self.db.commit()
+        
+        # [Task 20.4] SOS Vacuuming: Record Hazard in Knowledge Graph
+        try:
+            from core.knowledge.graph_store import knowledge_graph
+            # Mappings for common hub codes if needed, or use station_code if available in trip_data
+            station_code = (trip_data or {}).get("station_code")
+            if station_code:
+                knowledge_graph.record_incident(station_code, f"SOS_{category}", severity=0.95)
+        except Exception as e:
+            logger.warning(f"Failed to record hazard in knowledge graph: {e}")
+            
+        # 4. Telegram Bot Integration (Safety Bridge)
+        try:
+            from services.telegram.bot import telegram_dispatcher
+            from database.models import TelegramAccount
+            account = self.db.query(TelegramAccount).filter(TelegramAccount.user_id == user_id, TelegramAccount.is_active == True).first()
+            if account:
+                asyncio.create_task(telegram_dispatcher.send_message(
+                    account.telegram_id,
+                    f"🚨 <b>SOS DETECTED (Web Portal)</b>\n\nWe noticed you triggered SOS on the RouteMaster website. "
+                    f"Please share your <b>Live Location</b> here for real-time tracking.",
+                    reply_markup={"keyboard": [[{"text": "📍 Share Live Location", "request_location": True}]], "one_time_keyboard": True, "resize_keyboard": True}
+                ))
+        except Exception as te:
+            logger.error(f"Failed to bridge SOS to Telegram: {te}")
+
+        return event.id
+
+    async def update_heartbeat(self, user_id: str, journey_id: str, 
+                               station_code: str, next_eta: datetime) -> None:
+        """
+        [Point 20.2] Safe-Haven Heartbeat.
+        Resets the 'Dead-Man's Switch' for a transfer.
+        """
+        hb = self.db.query(UserHeartbeat).filter(
+            UserHeartbeat.user_id == user_id,
+            UserHeartbeat.journey_id == journey_id
+        ).first()
+
+        if not hb:
+            hb = UserHeartbeat(
+                user_id=user_id,
+                journey_id=journey_id,
+                status="ON_TRACK"
+            )
+            self.db.add(hb)
+
+        hb.last_station_code = station_code
+        # Safety Buffer: 30 mins after expected arrival
+        hb.next_check_in_at = next_eta + timedelta(minutes=30)
+        hb.status = "ON_TRACK"
+        self.db.commit()
+        
+        logger.info(f"💓 Heartbeat Updated: {user_id} at {station_code}. Next check-in: {hb.next_check_in_at}")
+
+    async def check_overdue_heartbeats(self):
+        """
+        Background Monitor: Trigger SOS for missed check-ins.
+        """
+        now = datetime.utcnow()
+        overdue = self.db.query(UserHeartbeat).filter(
+            UserHeartbeat.status == "ON_TRACK",
+            UserHeartbeat.next_check_in_at < now
+        ).all()
+
+        for hb in overdue:
+            logger.error(f"⚠️ MISSED HEARTBEAT: User {hb.user_id} overdue at {hb.last_station_code}!")
+            hb.status = "MISSED_CHECKIN"
+            self.db.commit()
+            
+            # Auto-Trigger SOS for Critical High-Risk Hubs
+            await self.trigger_sos(
+                user_id=str(hb.user_id),
+                lat=hb.lat or 0.0,
+                lng=hb.lng or 0.0,
+                category="MISSED_HEARTBEAT_AUTO",
+                trip_data={"journey_id": hb.journey_id}
+            )
+
+    async def resolve_sos(self, event_id: str, resolution_notes: str):
+        event = self.db.query(SOSEvent).filter(SOSEvent.id == event_id).first()
+        if event:
+            event.status = "RESOLVED"
+            event.resolved_at = datetime.utcnow()
+            event.extra = resolution_notes
+            self.db.commit()
+            logger.info(f"✅ SOS {event_id} marked as RESOLVED.")

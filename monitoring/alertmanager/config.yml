@@ -1,0 +1,24 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'default'
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+
+receivers:
+  - name: 'default'
+    # By default, Alertmanager prints alerts to its logfile. Replace/add a real receiver (slack, email) below.
+    email_configs:
+      - to: 'ops@example.com'
+        from: 'alertmanager@example.com'
+        smarthost: 'smtp.example.com:587'
+        auth_username: 'smtp-user'
+        auth_identity: 'smtp-user'
+        auth_password: 'smtp-pass'
+    # slack_configs:
+    #   - api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+    #     channel: '#alerts'
+
+templates: []

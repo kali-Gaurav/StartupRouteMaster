@@ -1,0 +1,52 @@
+name: Route Master — Daily Tasks
+
+on:
+  schedule:
+    # 7:00 AM IST = 01:30 UTC
+    - cron: '30 1 * * *'
+  workflow_dispatch:  # Manual trigger from GitHub UI
+
+jobs:
+  fare-alerts:
+    name: Check Fare Alerts & Notify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger fare alert check
+        run: |
+          echo "Checking fare alerts..."
+          RESPONSE=$(curl -s -X POST \
+            "${{ secrets.API_BASE_URL }}/api/v1/alerts/check" \
+            -H "Content-Type: application/json" \
+            --max-time 60)
+          echo "Response: $RESPONSE"
+          NOTIFIED=$(echo $RESPONSE | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('notified', 0))")
+          echo "✅ Fare alerts checked. Notifications sent: $NOTIFIED"
+
+  health-check:
+    name: Daily Health Check & Warmup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warmup API (prevent cold start for morning users)
+        run: |
+          echo "Warming up API..."
+          STATUS=$(curl -s "${{ secrets.API_BASE_URL }}/health" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))")
+          echo "API status: $STATUS"
+
+      - name: Check DB row counts
+        run: |
+          curl -s "${{ secrets.API_BASE_URL }}/stats" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(f\"📊 Stations: {d.get('total_stations', 0):,} | Trains: {d.get('total_trains', 0):,}\")
+          "
+
+  sitemap-ping:
+    name: Ping Google with sitemap
+    runs-on: ubuntu-latest
+    # Run weekly on Mondays only
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && startsWith(github.event.schedule, '30 1 * * 1')) }}
+    steps:
+      - name: Submit sitemap to Google
+        run: |
+          curl -s "https://www.google.com/ping?sitemap=https://routemaster.vercel.app/sitemap.xml" || true
+          echo "✅ Sitemap submitted to Google"

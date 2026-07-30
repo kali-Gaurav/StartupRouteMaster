@@ -1,0 +1,67 @@
+{
+  "title": "Diksha AI Analytics",
+  "uid": "diksha-ai-analytics",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total Messages (1h)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(chatbot_messages_total[1h])" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Actions Executed",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(chatbot_action_executed_total[1h])" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "SOS Triggered via Chat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(chatbot_sos_triggered_total[1h])" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Guardian Activated",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(chatbot_guardian_triggered_total[1h])" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Intent Distribution",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by(intent) (rate(chatbot_messages_total[5m]))",
+          "legendFormat": "{{intent}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Conversion Success",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(chatbot_conversion_total[1h])", "legendFormat": "conversions" }
+      ]
+    }
+  ]
+}

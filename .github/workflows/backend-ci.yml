@@ -1,0 +1,88 @@
+name: Backend — CI & publish container
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    name: Run backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  publish:
+    name: Build & publish container image
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image to GHCR
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          file: ./backend/infrastructure/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/startupv2-backend:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/startupv2-backend:latest
+
+      - name: Artifact info
+        run: |
+          echo "Published image: ghcr.io/${{ github.repository_owner }}/startupv2-backend:${{ github.sha }}"
+
+      - name: Railway note
+        run: |
+          echo "To enable automatic Railway deploys:"
+          echo "  1) In Railway, connect this GitHub repo or configure a container image pull from GHCR." 
+          echo "  2) If you want an Action that calls Railway directly, add RAILWAY_API_KEY as a repo secret and tell me and I'll add the step."

@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rl-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rl-service
+  template:
+    metadata:
+      labels:
+        app: rl-service
+    spec:
+      containers:
+      - name: rl-service
+        image: startupv2-rl_service:latest  # Note: Build this image first
+        ports:
+        - containerPort: 8003
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:postgres@postgres:5432/postgres"
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rl-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8003
+    targetPort: 8003
+  selector:
+    app: rl-service

@@ -1,0 +1,27 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: route-service-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+
+  # [SOVEREIGN] Scale on active demand pressure via Prometheus Adapter
+  # - type: Pods
+  #   pods:
+  #     metric:
+  #       name: routemaster_sovereign_corridor_pressure_avg
+  #     target:
+  #       type: AverageValue
+  #       averageValue: 0.75

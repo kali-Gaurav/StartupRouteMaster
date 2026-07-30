@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "site": "irctc",
+    "job_type": "search",
+    "url": "https://www.irctc.co.in/nget/train-search",
+    "task": {"origin": "JAIPUR", "dest": "KOTA", "date": "2026-02-18"}
+  },
+  "steps": [
+    {"action": {"type": "input", "selector": "input[placeholder='From']", "value": "Jaipur"}},
+    {"action": {"type": "input", "selector": "input[placeholder='To']", "value": "Kota"}},
+    {"action": {"type": "input", "selector": "input[id^='journeyDate']", "value": "18/02/2026"}},
+    {"action": {"type": "click", "selector": "button:has-text('Search Trains')"}},
+    {"action": {"type": "wait", "selector": "#train-results"}}
+  ]
+}

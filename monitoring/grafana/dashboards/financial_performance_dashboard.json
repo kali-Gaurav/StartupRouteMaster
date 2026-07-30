@@ -1,0 +1,117 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 8,"w": 24,"x": 0,"y": 0},
+      "id": 2,
+      "options": {},
+      "targets": [
+        {
+          "format": "time_series",
+          "refId": "A",
+          "rawSql": "SELECT date_trunc('month', created_at) AS time, SUM(amount) AS value FROM payments WHERE status = 'confirmed' AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "datasource": "${PostgresDS}"
+        }
+      ],
+      "title": "Monthly Revenue",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 4,"w": 8,"x": 0,"y": 8},
+      "id": 4,
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT SUM(amount) as value FROM payments WHERE status = 'confirmed' AND date_trunc('year', created_at) = date_trunc('year', now())",
+          "format": "table",
+          "datasource": "${PostgresDS}"
+        }
+      ],
+      "title": "Total Revenue (YTD)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 6,"w": 16,"x": 8,"y": 8},
+      "id": 6,
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT $__timeGroup(created_at,'1h') AS time, 100.0 * SUM(CASE WHEN status != 'confirmed' THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*),0) AS value FROM payments WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1",
+          "format": "time_series",
+          "datasource": "${PostgresDS}"
+        }
+      ],
+      "title": "Failed Payments Rate (%) — 1h",
+      "type": "timeseries",
+      "alert": {
+        "name": "Failed Payments > 5% (1h)",
+        "severity": "critical",
+        "frequency": "1m",
+        "for": "10m",
+        "conditions": [
+          {
+            "type": "query",
+            "query": {"params": ["A"]},
+            "reducer": {"type": "avg", "params": []},
+            "evaluator": {"type": "gt", "params": [5]},
+            "operator": {"type": "and"}
+          }
+        ],
+        "noDataState": "ok",
+        "executionErrorState": "alerting",
+        "notifications": []
+      }
+    },
+    {
+      "datasource": "${PostgresDS}",
+      "fieldConfig": {"defaults": {},"overrides": []},
+      "gridPos": {"h": 6,"w": 8,"x": 0,"y": 12},
+      "id": 8,
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "rawSql": "SELECT transport_mode, COUNT(*) AS cnt FROM bookings GROUP BY transport_mode",
+          "format": "table",
+          "datasource": "${PostgresDS}"
+        }
+      ],
+      "title": "Bookings by Mode",
+      "type": "table"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 32,
+  "style": "dark",
+  "tags": ["finance", "payments"],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "PostgresDS",
+        "label": "Postgres",
+        "query": "postgres",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "time": {"from": "now-6M","to": "now"},
+  "timepicker": {"refresh_intervals": ["1m","5m","15m","30m","1h"]},
+  "title": "Financial Performance",
+  "uid": "financial-performance-dashboard",
+  "version": 1
+}

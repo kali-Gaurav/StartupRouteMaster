@@ -1,0 +1,59 @@
+groups:
+  - name: RouteMasterAlerts
+    rules:
+      # --- SOS & Safety Alerts ---
+      - alert: HighSOSTriggers
+        expr: increase(sos_alerts_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High number of SOS triggers detected"
+          description: "There have been {{ $value }} SOS triggers in the last 5 minutes. Immediate investigation required."
+
+      - alert: AbnormalStopsDetected
+        expr: increase(abnormal_stop_detected_total[10m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Abnormal stops detected by AI"
+          description: "Multiple abnormal stops detected. Guardian mode may need manual oversight."
+
+      # --- API Performance & Availability ---
+      - alert: HighAPIErrorRate
+        expr: (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High API Error Rate (> 5%)"
+          description: "The API error rate is currently {{ $value | printf \"%.2f\" }}%."
+
+      - alert: SlowRouteSearch
+        expr: histogram_quantile(0.95, sum(rate(search_request_duration_seconds_bucket[5m])) by (le)) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow Route Search Latency"
+          description: "95th percentile of route search latency is above 2 seconds ({{ $value | printf \"%.2f\" }}s)."
+
+      # --- Infrastructure ---
+      - alert: RedisConnectionFailure
+        expr: redis_health_checks_total{status="failure"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis Connection Failure"
+          description: "Backend is unable to connect to Redis. Caching and Rate Limiting are affected."
+
+      - alert: HighMemoryUsage
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Memory Usage"
+          description: "Available memory is below 10% on the host."

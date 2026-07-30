@@ -1,0 +1,907 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+from typing import List, Dict, Any, Optional
+import logging
+
+from database import get_db
+from utils.limiter import limiter
+from services.booking_service import BookingService
+from api.dependencies import get_current_user
+from database.models import User
+from database.models import Payment
+from schemas import (
+    BookingResponseSchema,
+    PassengerDetailsSchema,
+    BookingCreateSchema,  # NEW: BookingCreateSchema
+    # availability schemas added below
+    AvailabilityCheckRequestSchema,
+    AvailabilityCheckResponseSchema,
+    # Booking queue system schemas
+    BookingRequestCreateSchema,
+    BookingRequestResponseSchema,
+    BookingQueueResponseSchema,
+    RefundRequestSchema,
+    RefundResponseSchema,
+)
+from schemas.booking import IRCTCLinkRequest, IRCTCLinkResponse, SavePNRRequest, SegmentPNRResponse
+
+# Import UNLOCK_PRICE constant
+UNLOCK_PRICE = 39.0  # ₹39 unlock fee
+
+# The router is versioned to match frontend expectations (/api/v1/booking/*).
+# previously it used "/api/bookings" but the frontend called "/v1/booking/..." so
+# bumping the prefix keeps both sides aligned.  If other code still relies on the
+# old path we could mount the router twice, but most references were internal
+# so this change is safe for the integration phase.
+router = APIRouter(prefix="/v1/booking", tags=["bookings"])
+logger = logging.getLogger(__name__)
+
+from pydantic import BaseModel
+
+class ParsePassengerRequest(BaseModel):
+    raw_text: str
+
+@router.post("/generate-irctc-link", response_model=IRCTCLinkResponse)
+async def generate_irctc_link(payload: IRCTCLinkRequest):
+    """
+    Generates a redirection link to IRCTC with pre-filled search details.
+    """
+    # IRCTC search URL format (simplified)
+    # Note: IRCTC uses a complex frontend, so deep linking is limited.
+    # We use a helper URL that we can improve later.
+    date_formatted = payload.date.replace("-", "") # YYYYMMDD
+    url = f"https://www.irctc.co.in/nget/train-search?fromStation={payload.from_code}&toStation={payload.to_code}&journeyDate={date_formatted}"
+    return {"url": url}
+
+@router.post("/save-segment-pnr", response_model=SegmentPNRResponse)
+async def save_segment_pnr(
+    payload: SavePNRRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Saves a PNR for a specific segment of a journey.
+    Security: Verifies user has unlocked this route.
+    Validation: Ensures PNR is exactly 10 digits.
+    """
+    from database.models import SegmentPNR, UnlockedRoute
+    import re
+    
+    # 1. PNR Format Validation
+    if not re.match(r"^\d{10}$", payload.pnr):
+        raise HTTPException(status_code=400, detail="Invalid PNR format. Must be exactly 10 digits.")
+        
+    # 2. Security Check: Verify route is unlocked for this user
+    # Note: journey_id in frontend corresponds to route_id in backend
+    is_unlocked = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.route_id == payload.journey_id
+    ).first()
+    
+    if not is_unlocked and current_user.role != "admin":
+        # Check total active unlocks for this user to debug
+        total_active = db.query(UnlockedRoute).filter(
+            UnlockedRoute.user_id == str(current_user.id)
+        ).count()
+        logger.warning(f"Security violation: User {current_user.id} tried to save PNR for locked route {payload.journey_id}. Active unlocks: {total_active}")
+        raise HTTPException(status_code=403, detail="You must unlock this route before saving a PNR.")
+    
+    # 3. Save or Update
+    # Check if already exists for this user/journey/segment
+    existing = db.query(SegmentPNR).filter(
+        SegmentPNR.user_id == str(current_user.id),
+        SegmentPNR.journey_id == payload.journey_id,
+        SegmentPNR.segment_index == payload.segment_index
+    ).first()
+    
+    if existing:
+        existing.pnr = payload.pnr
+        existing.train_number = payload.train_number
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    new_pnr = SegmentPNR(
+        user_id=str(current_user.id),
+        journey_id=payload.journey_id,
+        segment_index=payload.segment_index,
+        train_number=payload.train_number,
+        pnr=payload.pnr
+    )
+    db.add(new_pnr)
+    db.commit()
+    db.refresh(new_pnr)
+    return new_pnr
+
+@router.get("/segment-pnrs/{journey_id}", response_model=List[SegmentPNRResponse])
+async def get_segment_pnrs(
+    journey_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves all saved PNRs for a specific journey.
+    Security: Only returns PNRs if user has unlocked the route.
+    """
+    from database.models import SegmentPNR, UnlockedRoute
+    
+    # Security Check: Verify route is unlocked for this user
+    is_unlocked = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == str(current_user.id),
+        UnlockedRoute.route_id == journey_id
+    ).first()
+    
+    if not is_unlocked and current_user.role != "admin":
+        return [] # Return empty list if not unlocked instead of 403 to avoid UI noise
+        
+    pnrs = db.query(SegmentPNR).filter(
+        SegmentPNR.user_id == str(current_user.id),
+        SegmentPNR.journey_id == journey_id
+    ).all()
+    return pnrs
+
+@router.post("/parse_passengers")
+async def parse_passengers_nlp(
+    request_data: ParsePassengerRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Task 29: NLP Passenger Schema Mapper.
+    Uses Gemini to extract structured passenger data from raw text.
+    """
+    from services.nlp_passenger_service import nlp_passenger_service
+    
+    result = nlp_passenger_service.parse_passengers(request_data.raw_text)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Failed to parse text."))
+        
+    return result
+
+@router.post("/", response_model=BookingResponseSchema)
+@limiter.limit("30/minute")
+async def create_booking(
+    request: Request,
+    booking_request: BookingCreateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Unified booking creation endpoint.
+    Expects a JSON body with route_id, travel_date, booking_details, etc.
+    """
+    service = BookingService(db)
+    booking = service.create_booking(
+        user_id=str(current_user.id),
+        route_id=booking_request.route_id,
+        travel_date=booking_request.travel_date,
+        booking_details=booking_request.booking_details,
+        amount_paid=booking_request.amount_paid,
+        passenger_details_list=[f.dict() for f in booking_request.passenger_details] if booking_request.passenger_details else None
+    )
+    if not booking:
+        raise HTTPException(status_code=400, detail="Booking creation failed")
+
+    # build a plain dict for the response to avoid ORM attributes entirely
+    resp = {
+        "id": booking.id,
+        "pnr_number": booking.pnr_number,
+        "user_id": booking.user_id,
+        # Pydantic expects a full datetime value; ensure 'T' separator present
+        "travel_date": (booking.travel_date.isoformat() + "T00:00:00") if hasattr(booking, "travel_date") and not isinstance(booking.travel_date, str) else (booking.travel_date or None),
+        "booking_status": booking.booking_status,
+        "amount_paid": booking.amount_paid,
+        "booking_details": booking.booking_details,
+        "passenger_details": [
+            {
+                "full_name": pax.full_name,
+                "age": pax.age,
+                "gender": pax.gender,
+                "phone_number": pax.phone_number,
+                "email": pax.email,
+                "document_type": pax.document_type,
+                "document_number": pax.document_number,
+                "concession_type": pax.concession_type,
+                "concession_discount": pax.concession_discount,
+                "meal_preference": pax.meal_preference,
+            }
+            for pax in getattr(booking, "passenger_details", [])
+        ] if getattr(booking, "passenger_details", None) else None,
+        "created_at": booking.created_at,
+        # legacy passenger fields - populate from first passenger if present
+        "gender": booking.passenger_details[0].gender if booking.passenger_details else "M",
+        "phone_number": booking.passenger_details[0].phone_number if booking.passenger_details else None,
+        "email": booking.passenger_details[0].email if booking.passenger_details else None,
+        "document_type": booking.passenger_details[0].document_type if booking.passenger_details else None,
+        "document_number": booking.passenger_details[0].document_number if booking.passenger_details else None,
+        "concession_type": booking.passenger_details[0].concession_type if booking.passenger_details else None,
+        "concession_discount": booking.passenger_details[0].concession_discount if booking.passenger_details else 0.0,
+        "meal_preference": booking.passenger_details[0].meal_preference if booking.passenger_details else None,
+        "payment_status": booking.payment_status or "",
+    }
+    return resp
+
+from schemas import BookingResponseSchema, PassengerDetailsSchema, BookingCreateSchema, BookingListSchema
+
+@router.get("/", response_model=BookingListSchema)
+@limiter.limit("60/minute")
+async def list_bookings(
+    request: Request,
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List bookings for current user with optional pagination."""
+    service = BookingService(db)
+    bookings, total = service.get_user_bookings(str(current_user.id), skip=skip, limit=limit)
+    return BookingListSchema(bookings=bookings, total=total, skip=skip, limit=limit)
+
+# --- AVAILABILITY CHECK -----------------------------------------------------
+
+@router.post(
+    "/availability",
+    response_model=AvailabilityCheckResponseSchema,
+    summary="Check seat availability for a segment",
+    description=(
+        "Returns inventory counts, waitlist info and a handful of helper fields "
+        "so frontend can render the booking flow without needing to interpret raw data."
+    )
+)
+@limiter.limit("60/minute")
+async def check_availability(
+    request: Request,
+    payload: AvailabilityCheckRequestSchema,
+    db: Session = Depends(get_db)
+):
+    # convert travel_date string to date object
+    try:
+        from datetime import datetime
+        travel_date_obj = datetime.strptime(payload.travel_date, "%Y-%m-%d").date()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format; expected YYYY-MM-DD")
+
+    # resolve trip_id which may be a string representing backend route/trip
+    from database.models import Trip
+
+    numeric_trip_id = None
+    if isinstance(payload.trip_id, str):
+        # try to match trip_id field first
+        trip = db.query(Trip).filter(Trip.trip_id == payload.trip_id).first()
+        if not trip and payload.trip_id.isdigit():
+            trip = db.query(Trip).filter(Trip.id == int(payload.trip_id)).first()
+        if not trip:
+            raise HTTPException(status_code=404, detail=f"Trip/route {payload.trip_id} not found")
+        numeric_trip_id = trip.id
+    else:
+        numeric_trip_id = payload.trip_id
+
+    # delegate to the availability service
+    from services.inventory.availability_service import availability_service, AvailabilityRequest
+    from database.models import QuotaType
+
+    # Convert quota_type string to QuotaType enum
+    # Handle both uppercase and lowercase inputs
+    quota_type_str = payload.quota_type.lower()
+    try:
+        quota_enum = QuotaType(quota_type_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid quota type: {payload.quota_type}. Valid options: {', '.join([qt.value for qt in QuotaType])}"
+        )
+
+    avail_req = AvailabilityRequest(
+        trip_id=numeric_trip_id,
+        from_stop_id=payload.from_stop_id,
+        to_stop_id=payload.to_stop_id,
+        travel_date=travel_date_obj,
+        quota_type=quota_enum,
+        passengers=payload.passengers,
+    )
+    resp = await availability_service.check_availability(avail_req)
+
+    # Build dictionary output and include additional compatibility fields
+    result = resp.__dict__.copy()
+    # map to extra frontend fields
+    result["availability_status"] = (
+        "AVAILABLE" if resp.available else
+        ("WL" if resp.waitlist_position is not None else "UNKNOWN")
+    )
+    result["fare"] = None  # fare can be filled by route engine if required later
+    result["quota"] = request.quota_type
+    result["class"] = None
+    result["probability"] = resp.confirmation_probability
+
+    return result
+
+
+# --------------------------------------------------------------------------
+# Compatibility endpoint: alias POST /confirm for clients still calling older
+# path.  It simply creates a booking (identical to `/`) and then marks it as
+# confirmed.  Keeping this here avoids breaking legacy integrations while
+# slowly migrating frontends to the new endpoint name.
+
+@router.post("/confirm", response_model=BookingResponseSchema)
+async def confirm_booking_endpoint(
+    request: BookingCreateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    service = BookingService(db)
+    booking = service.create_booking(
+        user_id=str(current_user.id),
+        route_id=request.route_id,
+        travel_date=request.travel_date,
+        booking_details=request.booking_details,
+        amount_paid=request.amount_paid,
+        passenger_details_list=[f.dict() for f in request.passenger_details] if request.passenger_details else None
+    )
+    if not booking:
+        raise HTTPException(status_code=400, detail="Booking creation failed")
+    # immediately mark confirmed (payment should have succeeded already)
+    service.confirm_booking(booking.id)
+    # reuse logic from create_booking to build response
+    return await create_booking(request, current_user, db)
+
+@router.get("/{pnr}", response_model=BookingResponseSchema)
+async def get_booking_by_pnr(
+    pnr: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    service = BookingService(db)
+    booking = service.get_booking_by_pnr(pnr)
+    if not booking or str(booking.user_id) != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return booking
+
+
+# ==============================================================================
+# BOOKING QUEUE SYSTEM ENDPOINTS
+# ==============================================================================
+
+@router.post("/request", response_model=BookingRequestResponseSchema)
+@limiter.limit("10/minute")
+async def create_booking_request(
+    request: Request,
+    payload: BookingRequestCreateSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a booking request for the queue system.
+    
+    This endpoint is called after:
+    1. User has unlocked route (paid ₹39)
+    2. Route has been verified via RapidAPI
+    3. User confirms they want to proceed with booking
+    
+    The request will be added to the booking queue for admin/automated execution.
+    """
+    from database.models import BookingRequest, BookingRequestPassenger, BookingQueue, Payment, UnlockedRoute
+    from datetime import datetime
+    
+    # DEBUG: Check user_id
+    logger.info(f"DEBUG: current_user.id={current_user.id}, type={type(current_user.id)}")
+    
+    # Verify user has unlocked this route (has paid ₹39)
+    # Use string comparison for user_id to avoid UUID vs String mismatches
+    user_id_str = str(current_user.id)
+    unlocked_route = db.query(UnlockedRoute).filter(
+        UnlockedRoute.user_id == user_id_str,
+        UnlockedRoute.is_active == True
+    ).order_by(UnlockedRoute.unlocked_at.desc()).first()
+    
+    if not unlocked_route:
+        # Check total active unlocks for this user to debug
+        total_active = db.query(UnlockedRoute).filter(
+            UnlockedRoute.user_id == user_id_str,
+            UnlockedRoute.is_active == True
+        ).count()
+        logger.warning(f"DEBUG: No unlocked route found for user {user_id_str}. Total active in DB: {total_active}")
+        
+        # Check first 3 active unlocks in system to see user_id format
+        sample = db.query(UnlockedRoute).filter(UnlockedRoute.is_active == True).limit(3).all()
+        for s in sample:
+            logger.info(f"DEBUG: Sample active unlock: user_id={s.user_id}, route_id={s.route_id or s.cached_route_id}")
+
+    if not unlocked_route or not unlocked_route.payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Route must be unlocked before creating booking request. Please complete unlock payment first."
+        )
+    
+    # Verify payment is completed
+    payment = db.query(Payment).filter(Payment.id == unlocked_route.payment_id).first()
+    if not payment or payment.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Unlock payment must be completed before creating booking request."
+        )
+    
+    # Parse journey date
+    try:
+        journey_date = datetime.strptime(payload.journey_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    # NEW: Phase 10 - Mandatory Seat Availability Check before queuing
+    # This fulfills the goal of saving requests by only checking at the final step
+    from services.seat_verification import SeatVerificationService
+    seat_svc = SeatVerificationService()
+    
+    # Use provided station codes or fall back to names
+    from_stn = payload.from_station_code or payload.source_station
+    to_stn = payload.to_station_code or payload.destination_station
+    
+    logger.info(f"Final verification for booking request: {payload.train_number} from {from_stn} to {to_stn}")
+    
+    try:
+        is_available = await seat_svc.check_segment(
+            train_no=payload.train_number,
+            from_code=from_stn,
+            to_code=to_stn,
+            date_str=payload.journey_date,
+            quota=payload.quota,
+            class_type=payload.class_type
+        )
+        
+        if not is_available:
+            # We don't block the request creation but we mark it as NOT_AVAILABLE
+            # This allows the user to still queue it if they want to wait, 
+            # or the system to handle it later.
+            verification_status = "NOT_AVAILABLE"
+            logger.warning(f"Final verification: No seats available for {payload.train_number}")
+        else:
+            verification_status = "VERIFIED"
+            logger.info(f"Final verification: Seats available for {payload.train_number}")
+            
+    except Exception as e:
+        logger.error(f"Final seat verification failed: {e}")
+        verification_status = "VERIFICATION_FAILED"
+
+    # Create booking request
+    booking_request = BookingRequest(
+        user_id=str(current_user.id),
+        source_station=payload.source_station,
+        destination_station=payload.destination_station,
+        journey_date=journey_date,
+        train_number=payload.train_number,
+        train_name=payload.train_name,
+        class_type=payload.class_type,
+        quota=payload.quota,
+        status="PENDING",
+        verification_status=verification_status,
+        payment_id=unlocked_route.payment_id,
+        route_details=payload.route_details,
+        verified_at=datetime.utcnow()
+    )
+    db.add(booking_request)
+    db.flush()  # Get the ID
+    
+    # Add passengers
+    for passenger_data in payload.passengers:
+        passenger = BookingRequestPassenger(
+            booking_request_id=booking_request.id,
+            name=passenger_data.name,
+            age=passenger_data.age,
+            gender=passenger_data.gender,
+            berth_preference=passenger_data.berth_preference,
+            id_proof_type=passenger_data.id_proof_type,
+            id_proof_number=passenger_data.id_proof_number
+        )
+        db.add(passenger)
+    
+    # Create queue entry
+    queue_entry = BookingQueue(
+        booking_request_id=booking_request.id,
+        priority=5,  # Default priority
+        execution_mode="MANUAL",  # Start with manual execution
+        status="WAITING"
+    )
+    db.add(queue_entry)
+    
+    # Update booking request status
+    booking_request.status = "QUEUED"
+    
+    db.commit()
+    db.refresh(booking_request)
+    db.refresh(queue_entry)
+    
+    # Topic 3: Trigger Telegram Notification for Admin (Topic 5 in todo001.md)
+    try:
+        from services.telegram_service import send_telegram_message, format_booking_alert
+        alert_msg = format_booking_alert(
+            booking_id=booking_request.id,
+            journey=payload.route_details if payload.route_details else {"source": payload.source_station, "destination": payload.destination_station, "date": payload.journey_date},
+            passengers=[p.dict() for p in payload.passengers],
+            phone=getattr(current_user, "phone", "N/A") or "N/A",
+            email=current_user.email
+        )
+        # Fire and forget (async)
+        import asyncio
+        asyncio.create_task(send_telegram_message(alert_msg))
+    except Exception as te:
+        logger.error(f"Failed to trigger Telegram alert: {te}")
+
+    # Build response
+    response_data = {
+        "id": booking_request.id,
+        "user_id": booking_request.user_id,
+        "source_station": booking_request.source_station,
+        "destination_station": booking_request.destination_station,
+        "journey_date": booking_request.journey_date.isoformat(),
+        "train_number": booking_request.train_number,
+        "train_name": booking_request.train_name,
+        "class_type": booking_request.class_type,
+        "quota": booking_request.quota,
+        "status": booking_request.status,
+        "verification_status": booking_request.verification_status,
+        "payment_id": booking_request.payment_id,
+        "created_at": booking_request.created_at,
+        "updated_at": booking_request.updated_at,
+        "queue_status": queue_entry.status
+    }
+    
+    return response_data
+
+
+@router.get("/request/{request_id}", response_model=BookingRequestResponseSchema)
+async def get_booking_request(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get booking request details by ID."""
+    from database.models import BookingRequest, BookingQueue
+    
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    queue_entry = db.query(BookingQueue).filter(
+        BookingQueue.booking_request_id == request_id
+    ).first()
+    
+    response_data = {
+        "id": booking_request.id,
+        "user_id": booking_request.user_id,
+        "source_station": booking_request.source_station,
+        "destination_station": booking_request.destination_station,
+        "journey_date": booking_request.journey_date.isoformat(),
+        "train_number": booking_request.train_number,
+        "train_name": booking_request.train_name,
+        "class_type": booking_request.class_type,
+        "quota": booking_request.quota,
+        "status": booking_request.status,
+        "verification_status": booking_request.verification_status,
+        "payment_id": booking_request.payment_id,
+        "created_at": booking_request.created_at,
+        "updated_at": booking_request.updated_at,
+        "queue_status": queue_entry.status if queue_entry else None
+    }
+    
+    return response_data
+
+
+@router.get("/requests/my", response_model=List[BookingRequestResponseSchema])
+async def get_my_booking_requests(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all booking requests for current user."""
+    from database.models import BookingRequest, BookingQueue
+    from sqlalchemy.orm import joinedload
+    
+    requests = db.query(BookingRequest).options(
+        joinedload(BookingRequest.queue_entry)
+    ).filter(
+        BookingRequest.user_id == str(current_user.id)
+    ).order_by(BookingRequest.created_at.desc()).offset(skip).limit(limit).all()
+    
+    results = []
+    for req in requests:
+        queue_entry = req.queue_entry
+        
+        results.append({
+            "id": req.id,
+            "user_id": req.user_id,
+            "source_station": req.source_station,
+            "destination_station": req.destination_station,
+            "journey_date": req.journey_date.isoformat(),
+            "train_number": req.train_number,
+            "train_name": req.train_name,
+            "class_type": req.class_type,
+            "quota": req.quota,
+            "status": req.status,
+            "verification_status": req.verification_status,
+            "payment_id": req.payment_id,
+            "created_at": req.created_at,
+            "updated_at": req.updated_at,
+            "queue_status": queue_entry.status if queue_entry else None
+        })
+    
+    return results
+
+
+# ==============================================================================
+# REFUND API ENDPOINTS (Step 2.3 - Advanced Refund System)
+# ==============================================================================
+
+@router.post("/request/{request_id}/refund", response_model=RefundResponseSchema)
+@limiter.limit("5/minute")
+async def create_refund(
+    request: Request,
+    request_id: str,
+    reason: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a refund for a booking request.
+    
+    This endpoint:
+    1. Validates the booking request belongs to the user
+    2. Checks refund eligibility (status, time-based rules)
+    3. Processes refund via Razorpay
+    4. Creates refund record in database
+    5. Updates booking request status
+    """
+    from database.models import BookingRequest, Refund
+    from services.payment_service import PaymentService
+    from datetime import datetime
+    
+    # Payment is already imported at top of file
+    
+    # Get booking request
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    # Check if already refunded
+    existing_refund = db.query(Refund).filter(
+        Refund.booking_request_id == request_id,
+        Refund.status.in_(["COMPLETED", "PROCESSING"])
+    ).first()
+    
+    if existing_refund:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Refund already processed. Refund ID: {existing_refund.id}"
+        )
+    
+    # Check refund eligibility based on booking request status
+    if booking_request.status in ["SUCCESS", "PROCESSING"]:
+        # Can refund if booking failed or user cancelled
+        if booking_request.status == "SUCCESS":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot refund a successful booking. Please cancel the booking first."
+            )
+    
+    # Get payment record
+    if not booking_request.payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No payment found for this booking request"
+        )
+    
+    payment = db.query(Payment).filter(Payment.id == booking_request.payment_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment record not found")
+    
+    if payment.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot refund payment with status: {payment.status}"
+        )
+    
+    if not payment.razorpay_payment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Razorpay payment ID not found"
+        )
+    
+    # Calculate refund amount (full refund for unlock payments, may have cancellation charges for bookings)
+    refund_amount = payment.amount
+    
+    # Apply cancellation charges if applicable (for future booking refunds)
+    # For now, full refund for unlock payments (₹39)
+    cancellation_charge = 0.0
+    if payment.amount > UNLOCK_PRICE:  # This is a booking payment, not unlock
+        # Calculate cancellation charges based on time to journey
+        journey_date = booking_request.journey_date
+        days_until_journey = (journey_date - datetime.utcnow().date()).days
+        
+        if days_until_journey < 0:
+            cancellation_charge = 0.0  # Past journey, full refund
+        elif days_until_journey < 1:
+            cancellation_charge = refund_amount * 0.5  # 50% charge for same-day cancellation
+        elif days_until_journey < 7:
+            cancellation_charge = refund_amount * 0.25  # 25% charge for <7 days
+        else:
+            cancellation_charge = refund_amount * 0.1  # 10% charge for >7 days
+        
+        refund_amount = refund_amount - cancellation_charge
+    
+    # Create refund record
+    refund = Refund(
+        booking_request_id=request_id,
+        amount=refund_amount,
+        currency="INR",
+        reason=reason or "User requested refund",
+        status="PENDING"
+    )
+    db.add(refund)
+    db.flush()
+    
+    # Process refund via Razorpay
+    payment_service = PaymentService()
+    if not payment_service.is_configured():
+        refund.status = "FAILED"
+        refund.reason = (refund.reason or "") + " | Error: Razorpay not configured"
+        db.commit()
+        raise HTTPException(status_code=503, detail="Payment service not configured")
+    
+    try:
+        # Process refund
+        refund.status = "PROCESSING"
+        db.commit()
+        
+        success, error, refund_data = await payment_service.refund_payment(
+            payment_id=payment.razorpay_payment_id,
+            amount_rupees=refund_amount
+        )
+        
+        if success and refund_data:
+            # Extract refund ID from Razorpay response
+            refund.razorpay_refund_id = refund_data.get("id")
+            refund.refund_transaction_id = refund_data.get("acquirer_data", {}).get("rrn") if refund_data.get("acquirer_data") else None
+            
+            refund.status = "COMPLETED"
+            refund.processed_at = datetime.utcnow()
+            refund.processed_by = str(current_user.id)
+            
+            # Update booking request status
+            booking_request.status = "REFUNDED"
+            
+            db.commit()
+            db.refresh(refund)
+            
+            logger.info(f"Refund completed: {refund.id} (Razorpay: {refund.razorpay_refund_id}) for booking request {request_id}")
+            
+            return {
+                "id": refund.id,
+                "booking_request_id": refund.booking_request_id,
+                "amount": refund.amount,
+                "currency": refund.currency,
+                "reason": refund.reason,
+                "status": refund.status,
+                "razorpay_refund_id": refund.razorpay_refund_id,
+                "created_at": refund.created_at
+            }
+        else:
+            refund.status = "FAILED"
+            refund.reason = (refund.reason or "") + f" | Error: {error}"
+            db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Refund processing failed: {error}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        refund.status = "FAILED"
+        refund.reason = (refund.reason or "") + f" | Error: {str(e)}"
+        db.commit()
+        logger.error(f"Refund error for request {request_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Refund processing failed: {str(e)}"
+        )
+
+
+@router.get("/request/{request_id}/refund", response_model=RefundResponseSchema)
+async def get_refund_status(
+    request_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get refund status for a booking request."""
+    from database.models import BookingRequest, Refund
+    
+    # Verify booking request belongs to user
+    booking_request = db.query(BookingRequest).filter(
+        BookingRequest.id == request_id,
+        BookingRequest.user_id == str(current_user.id)
+    ).first()
+    
+    if not booking_request:
+        raise HTTPException(status_code=404, detail="Booking request not found")
+    
+    # Get latest refund
+    refund = db.query(Refund).filter(
+        Refund.booking_request_id == request_id
+    ).order_by(Refund.created_at.desc()).first()
+    
+    if not refund:
+        raise HTTPException(status_code=404, detail="No refund found for this booking request")
+    
+    return {
+        "id": refund.id,
+        "booking_request_id": refund.booking_request_id,
+        "amount": refund.amount,
+        "currency": refund.currency,
+        "reason": refund.reason,
+        "status": refund.status,
+        "razorpay_refund_id": refund.razorpay_refund_id,
+        "created_at": refund.created_at
+    }
+
+
+@router.get("/generate_ticket/{booking_id}")
+async def get_booking_ticket(
+    booking_id: str,
+    password: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Task 32: Branded PDF Ticket Engine.
+    Generates and returns a professional branded ticket for a confirmed booking.
+    """
+    from database.models import Booking
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+        
+    if booking.user_id != str(current_user.id) and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Not authorized to view this ticket")
+        
+    from utils.ticket_generator import generate_branded_ticket
+    from fastapi.responses import FileResponse
+    
+    # Extract passenger data for the generator
+    # If booking.passenger_details exists use it, else use a placeholder for demo
+    passengers = []
+    if hasattr(booking, 'passenger_details') and booking.passenger_details:
+        for p in booking.passenger_details:
+            passengers.append({
+                "name": p.full_name,
+                "age": p.age,
+                "gender": p.gender,
+                "coach": "S1", # Mocked
+                "berth": "24"  # Mocked
+            })
+    else:
+        # Fallback for demo if no passenger rows exist
+        passengers = [{"name": "DEMO PASSENGER", "age": 30, "gender": "M", "coach": "B1", "berth": "42"}]
+
+    file_path = generate_branded_ticket(
+        booking_id=booking.id,
+        pnr=booking.pnr_number or "NOT_GEN",
+        train_no="12626", # Mocked
+        from_stn="NDLS", # Mocked
+        to_stn="SBC",    # Mocked
+        travel_date=str(booking.travel_date),
+        passengers=passengers,
+        password=password
+    )
+    
+    return FileResponse(
+        path=file_path,
+        filename=f"Ticket_{booking.pnr_number or booking_id}.pdf",
+        media_type="application/pdf"
+    )

@@ -4,22 +4,147 @@ services:
   api:
     image: python:3.11-slim
     container_name: startupv2_api
+    # no local database service; DATABASE_URL must point at Supabase
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - redis
     volumes:
       - ./backend:/app
     working_dir: /app
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
-      REDIS_URL: redis://redis:6379/0
-      LOG_LEVEL: info
+      # Supabase pooler URL provided via host env
+      - DATABASE_URL
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
     command: /bin/sh -c "pip install -r requirements.txt && uvicorn app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 5s
+      retries: 5
+
+  search-worker:
+    image: python:3.11-slim
+    container_name: startupv2_search_worker
+    # relies on DATABASE_URL environment variable pointing at Supabase
+    depends_on:
+      - redis
+    volumes:
+      - ./backend:/app
+    working_dir: /app
+    environment:
+      - DATABASE_URL
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=info
+    command: /bin/sh -c "pip install -r requirements.txt && python search_worker.py"
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 10s
+      retries: 10
+
+  scraper-service:
+    build:
+      context: .
+      dockerfile: scraper_service/Dockerfile
+    container_name: startupv2_scraper_service
+    depends_on:
+      - kafka
+      # database access is via SUPABASE; set DATABASE_URL in .env
+    volumes:
+      - ./scraper_service:/app
+    working_dir: /app
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DATABASE_URL
+      - LOG_LEVEL=info
+    command: /bin/sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8002"
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/health || exit 1"]
+      interval: 10s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:9.5.3
+    container_name: startupv2_grafana
+    depends_on:
+      - db
+      - redis
+      - prometheus
+      - kafka
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "routemaster"
+      GF_PLUGINS_ENABLE_ALPHA: "true"
+    volumes:
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD-SHELL", "grafana-cli --version || exit 1"]
+      interval: 10s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: startupv2_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      retries: 5
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: startupv2_alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager/config.yml:/etc/alertmanager/config.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9093/-/ready || exit 1"]
+      interval: 10s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9094:9094" # Internal port for inter-broker communication
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
       retries: 5

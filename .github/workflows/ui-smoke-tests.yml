@@ -1,0 +1,39 @@
+name: "UI Smoke Tests"
+
+on:
+  push:
+    paths:
+      - 'annotation_ui/**'
+      - 'scripts/**'
+      - '.github/workflows/ui-smoke-tests.yml'
+  pull_request:
+    paths:
+      - 'annotation_ui/**'
+      - 'scripts/**'
+      - '.github/workflows/ui-smoke-tests.yml'
+  workflow_dispatch: {}
+
+jobs:
+  ui-smoke:
+    name: UI smoke checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dev requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Import check (streamlit, pandas)
+        run: python scripts/ui_smoke_check.py
+
+      - name: Streamlit CLI version
+        run: streamlit --version

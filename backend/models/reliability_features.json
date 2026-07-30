@@ -1,0 +1,12 @@
+{
+  "features": [
+    "historical_delay_minutes",
+    "is_peak_hour",
+    "day_of_week",
+    "transfer_duration_minutes",
+    "distance_km",
+    "origin_station_safety",
+    "destination_station_safety",
+    "trip_on_time_ratio"
+  ]
+}

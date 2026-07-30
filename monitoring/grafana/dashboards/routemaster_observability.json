@@ -1,0 +1,184 @@
+{
+  "title": "RouteMaster Developer Command Center",
+  "uid": "routemaster-command-center",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 3,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Key Performance Indicators",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "id": 100
+    },
+    {
+      "type": "stat",
+      "title": "API Requests / sec",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rate(search_requests_total[1m]))", "legendFormat": "req/sec" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error Rate %",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(rate(search_requests_total{status=\"failure\"}[5m])) / sum(rate(search_requests_total[5m])) * 100", "legendFormat": "errors" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Sessions",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "active_sessions", "legendFormat": "users" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "SOS Alerts (1h)",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(sos_alerts_total[1h])", "legendFormat": "SOS" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Guardian Activations",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(guardian_mode_activations_total[1h])", "legendFormat": "Guardian" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Abnormal Stops",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(abnormal_stop_detected_total[1h])", "legendFormat": "Abnormal" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "User Behavior & Growth",
+      "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 },
+      "id": 200
+    },
+    {
+      "type": "timeseries",
+      "title": "Search Volume by Mode",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(route_search_total[5m])", "legendFormat": "{{mode}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Logins (Success vs Failure)",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(login_success_total[5m])", "legendFormat": "success" },
+        { "expr": "rate(login_failure_total[5m])", "legendFormat": "failure: {{reason}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Diksha AI Engagement",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(chatbot_messages_total[5m])", "legendFormat": "{{intent}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Push Notification Funnel",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(push_notifications_sent_total[5m])", "legendFormat": "sent" },
+        { "expr": "rate(push_notifications_clicked_total[5m])", "legendFormat": "clicked" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Safety Intelligence",
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 1 },
+      "id": 300
+    },
+    {
+      "type": "heatmap",
+      "title": "Safety Score Distribution",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(safety_score_distribution_bucket[5m])", "format": "heatmap" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "AI Risk Alerts",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(safety_risk_alerts_total[5m])", "legendFormat": "{{type}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Technical Latency & Infrastructure",
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 1 },
+      "id": 400
+    },
+    {
+      "type": "timeseries",
+      "title": "API Latency (P50, P95, P99)",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(search_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(search_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(search_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Route Engine & AI Latency",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(routing_engine_duration_seconds_bucket[5m])) by (le))", "legendFormat": "RAPTOR p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(ai_prediction_duration_seconds_bucket[5m])) by (le))", "legendFormat": "AI p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU & Memory",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(node_cpu_seconds_total{mode!='idle'}[5m]) * 100", "legendFormat": "CPU %" },
+        { "expr": "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100", "legendFormat": "RAM %" }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "Critical Application Logs",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "expr": "{app=\"routemaster\"} |= \"error\" or \"critical\" or \"SOS\"", "refId": "A" }
+      ]
+    }
+  ]
+}

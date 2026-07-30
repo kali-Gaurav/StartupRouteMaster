@@ -1,0 +1,33 @@
+{
+  "ARIA": {
+    "growth_level": 2,
+    "key_learnings": [
+      "Must demand clear accountability from NEXUS when engineering is blocked by cross-team dependencies (e.g., Backend vs ML)."
+    ]
+  },
+  "NEXUS": {
+    "growth_level": 3,
+    "key_learnings": [
+      "Cannot let API contracts stall backend integration. Must push for 'Draft Contracts' early to unblock frontend and integration testing.",
+      "Delegated Backend-Dev to: Fixed the memory sync bug. Learned: Discovered that relative paths must be normalized using os.path.abspath to ensure 100% portability...."
+    ]
+  },
+  "NOVA": {
+    "growth_level": 2,
+    "key_learnings": [
+      "Model stability and inference latency (p99) are just as critical as accuracy. Must proactively request backend infrastructure audits from SIGMA when bottlenecks emerge."
+    ]
+  },
+  "SIGMA": {
+    "growth_level": 2,
+    "key_learnings": [
+      "Redis cache synchronization can heavily impact ML inference worker pools. Always monitor p99 latency after caching changes."
+    ]
+  },
+  "KYLO": {
+    "growth_level": 2,
+    "key_learnings": [
+      "When breaking down complex blockers, assign specific concurrent tasks to junior engineers (e.g., Redis audit to SIGMA, model benchmark to NOVA) to accelerate resolution."
+    ]
+  }
+}

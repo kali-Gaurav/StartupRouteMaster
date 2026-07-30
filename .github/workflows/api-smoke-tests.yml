@@ -48,6 +48,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
+      - name: Run unit tests
+        run: |
+          echo "Running pytest (backend unit tests)..."
+          pytest -q backend/tests
+
       - name: Start backend
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
@@ -65,9 +70,41 @@ jobs:
           done
           curl http://127.0.0.1:8000/health
 
+      - name: Start transient Prometheus (CI) and verify target registration
+        run: |
+          cat > /tmp/prom-ci.yml <<'YML'
+          global:
+            scrape_interval: 15s
+          scrape_configs:
+            - job_name: 'routemaster_local'
+              static_configs:
+                - targets: ['host.docker.internal:8000','127.0.0.1:8000']
+          YML
+
+          # Run Prometheus container using the temporary config
+          docker run -d --name prometheus-ci -p 9090:9090 -v /tmp/prom-ci.yml:/etc/prometheus/prometheus.yml prom/prometheus:latest
+          for i in $(seq 1 30); do
+            wget -qO- http://localhost:9090/-/ready && break || sleep 1
+          done
+          echo "Prometheus ready"
+
+          # Wait until Prometheus registers the target as UP
+          for i in $(seq 1 30); do
+            up=$(curl -s http://localhost:9090/api/v1/targets | jq -r '.data.activeTargets[] | select(.discoveredLabels.__address__=="127.0.0.1:8000" or .discoveredLabels.__address__=="host.docker.internal:8000") | .health' | head -n1 || true)
+            if [ "$up" = "up" ] || [ "$up" = "UP" ]; then
+              echo "Prometheus target is UP"
+              break
+            fi
+            sleep 1
+          done
+          curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets' || true
+
       - name: Run smoke tests (curl + simple assertions)
         run: |
           set -euo pipefail
+
+          echo "-> /metrics (prometheus endpoint)"
+          curl -sSf http://127.0.0.1:8000/metrics | head -n 20
 
           echo "-> /health"
           curl -f http://127.0.0.1:8000/health
@@ -81,3 +118,6 @@ jobs:
           search_resp=$(curl -s -X POST http://127.0.0.1:8000/api/search -H "Content-Type: application/json" -d '{"source":"New Delhi","destination":"Mumbai Central","date":"2026-02-14"}')
           echo "$search_resp"
           echo "$search_resp" | python -c 'import sys,json; d=json.load(sys.stdin); assert "routes" in d; print("search OK")'
+
+          echo "-> Prometheus targets (verify backend target registered)"
+          curl -s http://localhost:9090/api/v1/targets | jq '.data.activeTargets[] | {job: .labels.job, address: .discoveredLabels.__address__, health: .health}' || true

@@ -1,0 +1,550 @@
+"""
+Database Models - Core booking and payment models.
+"""
+
+from datetime import datetime, date, time
+from typing import Optional, List
+from enum import Enum as PyEnum
+
+from sqlalchemy import (
+    Column, String, Integer, Float, Boolean, DateTime, Date, Time,
+    Text, ForeignKey, Enum, JSON, Index, UniqueConstraint
+)
+from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+
+from database.infrastructure.base import Base
+
+
+class BookingStatus(PyEnum):
+    """Booking status enumeration."""
+    INITIATED = "initiated"
+    VALIDATING = "validating"
+    SEAT_ALLOCATING = "seat_allocating"
+    PRICING = "pricing"
+    PAYMENT_PENDING = "payment_pending"
+    PAYMENT_PROCESSING = "payment_processing"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+    WAITLIST = "waitlist"
+
+
+class EscrowStatus(PyEnum):
+    """Escrow status for payments."""
+    PENDING = "pending"
+    RELEASED = "released"
+    REFUNDED = "refunded"
+
+
+class PaymentStatus(PyEnum):
+    """Payment status enumeration."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+    UNKNOWN = "unknown"
+
+
+class Booking(Base):
+    """Core booking entity."""
+    __tablename__ = "bookings"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pnr_number: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    
+    # Journey details
+    journey_id: Mapped[Optional[str]] = mapped_column(String(36))
+    travel_date: Mapped[date] = mapped_column(Date, index=True)
+    train_number: Mapped[Optional[str]] = mapped_column(String(20), index=True)
+    from_station_code: Mapped[Optional[str]] = mapped_column(String(10))
+    to_station_code: Mapped[Optional[str]] = mapped_column(String(10))
+    class_type: Mapped[Optional[str]] = mapped_column(String(10))
+    
+    # Status
+    booking_status: Mapped[str] = mapped_column(String(50), default="initiated", index=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    
+    # Financial
+    total_amount: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
+    amount_paid: Mapped[float] = mapped_column(Float, default=0.0)
+    refund_amount: Mapped[Optional[float]] = mapped_column(Float)
+    
+    # Payment details
+    payment_id: Mapped[Optional[str]] = mapped_column(String(36))
+    payment_url: Mapped[Optional[str]] = mapped_column(String(500))
+    upi_tx_id: Mapped[Optional[str]] = mapped_column(String(100), unique=True)
+    utr_number: Mapped[Optional[str]] = mapped_column(String(12), unique=True)
+    
+    # Seat allocation
+    seats_allocated: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    seat_lock_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    waitlist_position: Mapped[Optional[int]] = mapped_column(Integer)
+    
+    # Preferences
+    berth_preference: Mapped[Optional[str]] = mapped_column(String(20))
+    meal_preference: Mapped[Optional[str]] = mapped_column(String(50))
+    
+    # Cancellation
+    cancellation_reason: Mapped[Optional[str]] = mapped_column(String(200))
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    refund_status: Mapped[Optional[str]] = mapped_column(String(50))
+    refund_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    payment_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Relationships
+    passengers: Mapped[List["PassengerDetails"]] = relationship(
+        "PassengerDetails", back_populates="booking", cascade="all, delete-orphan"
+    )
+    payments: Mapped[List["Payment"]] = relationship(
+        "Payment", back_populates="booking", cascade="all, delete-orphan"
+    )
+    
+    __table_args__ = (
+        Index("idx_bookings_user_date", "user_id", "travel_date"),
+        Index("idx_bookings_status_date", "booking_status", "travel_date"),
+    )
+
+
+class PassengerDetails(Base):
+    """Passenger information for a booking."""
+    __tablename__ = "passenger_details"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    booking_id: Mapped[str] = mapped_column(String(36), ForeignKey("bookings.id"), index=True)
+    
+    # Personal info
+    full_name: Mapped[str] = mapped_column(String(255))
+    age: Mapped[int] = mapped_column(Integer)
+    gender: Mapped[str] = mapped_column(String(10))
+    
+    # Contact
+    phone_number: Mapped[Optional[str]] = mapped_column(String(20))
+    email: Mapped[Optional[str]] = mapped_column(String(100))
+    
+    # Preferences
+    berth_preference: Mapped[Optional[str]] = mapped_column(String(20))
+    concession_type: Mapped[Optional[str]] = mapped_column(String(50))
+    meal_preference: Mapped[Optional[str]] = mapped_column(String(50))
+    
+    # Seat assignment
+    seat_number: Mapped[Optional[str]] = mapped_column(String(10))
+    coach_number: Mapped[Optional[str]] = mapped_column(String(10))
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    booking: Mapped["Booking"] = relationship("Booking", back_populates="passengers")
+
+
+class Payment(Base):
+    """Payment transaction record."""
+    __tablename__ = "payments"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    booking_id: Mapped[str] = mapped_column(String(36), ForeignKey("bookings.id"), index=True)
+    
+    # Payment details
+    amount: Mapped[float] = mapped_column(Float)
+    payment_method: Mapped[str] = mapped_column(String(20))  # upi, card, net_banking
+    status: Mapped[str] = mapped_column(String(50), default="pending", index=True)
+    
+    # Provider info
+    provider: Mapped[Optional[str]] = mapped_column(String(50))
+    provider_payment_id: Mapped[Optional[str]] = mapped_column(String(100))
+    
+    # Transaction IDs
+    upi_tx_id: Mapped[Optional[str]] = mapped_column(String(100))
+    utr_number: Mapped[Optional[str]] = mapped_column(String(12))
+    
+    # Refund info
+    original_payment_id: Mapped[Optional[str]] = mapped_column(String(36))
+    refund_reason: Mapped[Optional[str]] = mapped_column(String(200))
+    
+    # Webhook
+    webhook_payload: Mapped[Optional[Text]] = mapped_column(Text)
+    webhook_received_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Relationships
+    booking: Mapped["Booking"] = relationship("Booking", back_populates="payments")
+    
+    __table_args__ = (
+        Index("idx_payments_booking", "booking_id", "status"),
+    )
+
+
+class SeatInventory(Base):
+    """High-performance seat availability tracking."""
+    __tablename__ = "seat_inventory"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    train_number: Mapped[str] = mapped_column(String(20), index=True)
+    from_station_code: Mapped[str] = mapped_column(String(10), index=True)
+    to_station_code: Mapped[str] = mapped_column(String(10), index=True)
+    journey_date: Mapped[date] = mapped_column(Date, index=True)
+    class_type: Mapped[str] = mapped_column(String(10), index=True)
+    quota: Mapped[str] = mapped_column(String(10), index=True)  # GN, CK, etc.
+    
+    # Availability
+    total_seats: Mapped[int] = mapped_column(Integer, default=0)
+    available_seats: Mapped[int] = mapped_column(Integer, default=0)
+    waitlist_count: Mapped[int] = mapped_column(Integer, default=0)
+    
+    # Status text
+    status_text: Mapped[str] = mapped_column(String(100))
+    
+    # Locking
+    locked_by_booking_id: Mapped[Optional[str]] = mapped_column(String(36))
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Timestamps
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        UniqueConstraint(
+            "train_number", "from_station_code", "to_station_code",
+            "journey_date", "class_type", "quota",
+            name="uq_seat_inventory"
+        ),
+        Index("idx_seat_inventory_lookup", "train_number", "journey_date", "class_type"),
+    )
+
+
+class SafetyIncident(Base):
+    """Safety incident tracking."""
+    __tablename__ = "safety_incidents"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
+    
+    # Incident details
+    incident_type: Mapped[str] = mapped_column(String(50))  # sos_triggered, harassment, theft, etc.
+    description: Mapped[Text] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), default="reported")  # reported, investigating, resolved
+    
+    # Location
+    location: Mapped[Optional[Dict]] = mapped_column(JSON)
+    station_code: Mapped[Optional[str]] = mapped_column(String(10))
+    
+    # Evidence
+    evidence: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    
+    # Resolution
+    resolution_notes: Mapped[Optional[Text]] = mapped_column(Text)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_incidents_user", "user_id", "created_at"),
+        Index("idx_incidents_status", "status", "created_at"),
+    )
+
+
+class UserEmergencyContact(Base):
+    """User emergency contacts."""
+    __tablename__ = "user_emergency_contacts"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    
+    # Contact info
+    name: Mapped[str] = mapped_column(String(255))
+    phone: Mapped[str] = mapped_column(String(20))
+    email: Mapped[Optional[str]] = mapped_column(String(100))
+    relationship: Mapped[str] = mapped_column(String(50))
+    
+    # Priority (lower = higher priority)
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        UniqueConstraint("user_id", "phone", name="uq_user_phone"),
+    )
+
+
+class SafetyAlert(Base):
+    """Safety alerts for stations/routes."""
+    __tablename__ = "safety_alerts"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    alert_type: Mapped[str] = mapped_column(String(50))  # station_incident, route_issue, weather
+    severity: Mapped[str] = mapped_column(String(20))  # low, medium, high, critical
+    
+    # Affected area
+    station_code: Mapped[Optional[str]] = mapped_column(String(10), index=True)
+    affected_stations: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    route_from: Mapped[Optional[str]] = mapped_column(String(10))
+    route_to: Mapped[Optional[str]] = mapped_column(String(10))
+    
+    # Alert content
+    title: Mapped[str] = mapped_column(String(200))
+    message: Mapped[Text] = mapped_column(Text)
+    recommendations: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_alerts_active", "is_active", "expires_at"),
+    )
+
+
+class Route(Base):
+    """Train route information."""
+    __tablename__ = "routes"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    train_number: Mapped[str] = mapped_column(String(20), index=True)
+    train_name: Mapped[str] = mapped_column(String(100))
+    
+    # Route
+    source_code: Mapped[str] = mapped_column(String(10), index=True)
+    source_name: Mapped[str] = mapped_column(String(100))
+    dest_code: Mapped[str] = mapped_column(String(10), index=True)
+    dest_name: Mapped[str] = mapped_column(String(100))
+    
+    # Schedule
+    departure_time: Mapped[time] = mapped_column(Time)
+    arrival_time: Mapped[time] = mapped_column(Time)
+    duration_minutes: Mapped[int] = mapped_column(Integer)
+    
+    # Days of operation
+    days_of_operation: Mapped[str] = mapped_column(String(20))  # "1234567" for daily
+    
+    # Fare (base)
+    base_fare: Mapped[float] = mapped_column(Float, default=0.0)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_routes_source_dest", "source_code", "dest_code"),
+    )
+
+
+class Schedule(Base):
+    """Train schedule for specific dates."""
+    __tablename__ = "schedules"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    route_id: Mapped[str] = mapped_column(String(36), ForeignKey("routes.id"), index=True)
+    train_number: Mapped[str] = mapped_column(String(20), index=True)
+    travel_date: Mapped[date] = mapped_column(Date, index=True)
+    
+    # Schedule times
+    departure_time: Mapped[time] = mapped_column(Time)
+    arrival_time: Mapped[time] = mapped_column(Time)
+    duration_minutes: Mapped[int] = mapped_column(Integer)
+    
+    # Availability
+    availability_status: Mapped[str] = mapped_column(String(50), default="AVAILABLE")
+    base_fare: Mapped[float] = mapped_column(Float, default=0.0)
+    
+    # Cancelled flag
+    is_cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancellation_reason: Mapped[Optional[str]] = mapped_column(String(200))
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_schedule_lookup", "train_number", "travel_date"),
+    )
+
+
+class User(Base):
+    """User entity for authentication and profile."""
+    __tablename__ = "users"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    telegram_id: Mapped[Optional[str]] = mapped_column(String(50), unique=True, index=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(20), unique=True, index=True)
+    email: Mapped[Optional[str]] = mapped_column(String(100))
+    name: Mapped[Optional[str]] = mapped_column(String(255))
+    
+    # Password hash
+    hashed_password: Mapped[Optional[str]] = mapped_column(String(255))
+    
+    # Wallet
+    wallet_balance: Mapped[float] = mapped_column(Float, default=0.0)
+    total_bookings: Mapped[int] = mapped_column(Integer, default=0)
+    
+    # Preferences
+    preferred_class: Mapped[Optional[str]] = mapped_column(String(10))
+    preferred_quota: Mapped[Optional[str]] = mapped_column(String(10))
+    
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    
+    __table_args__ = (
+        Index("idx_users_telegram", "telegram_id"),
+        Index("idx_users_phone", "phone"),
+    )
+
+
+class UserSession(Base):
+    """User session tracking."""
+    __tablename__ = "user_sessions"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    telegram_id: Mapped[str] = mapped_column(String(50), index=True)
+    chat_id: Mapped[str] = mapped_column(String(50))
+    
+    # Session info
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    # Location
+    latitude: Mapped[Optional[float]] = mapped_column(Float)
+    longitude: Mapped[Optional[float]] = mapped_column(Float)
+    
+    __table_args__ = (
+        Index("idx_sessions_user", "user_id", "started_at"),
+        Index("idx_sessions_telegram", "telegram_id", "started_at"),
+    )
+
+
+class WalletBalance(Base):
+    """User wallet balance."""
+    __tablename__ = "wallet_balances"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), unique=True, index=True)
+    
+    balance: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(10), default="INR")
+    
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_wallet_user", "user_id"),
+    )
+
+
+class WalletTransaction(Base):
+    """Wallet transaction history."""
+    __tablename__ = "wallet_transactions"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    
+    transaction_type: Mapped[str] = mapped_column(String(50))  # topup, payment, refund, adjustment
+    amount: Mapped[float] = mapped_column(Float)  # Positive for credit, negative for debit
+    balance_after: Mapped[float] = mapped_column(Float)
+    
+    description: Mapped[Optional[str]] = mapped_column(String(500))
+    reference_id: Mapped[Optional[str]] = mapped_column(String(100))  # External reference
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_wallet_tx_user", "user_id", "created_at"),
+        Index("idx_wallet_tx_type", "transaction_type", "created_at"),
+    )
+
+
+class BookingIdempotency(Base):
+    """Booking idempotency tracking."""
+    __tablename__ = "booking_idempotency"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    booking_id: Mapped[str] = mapped_column(String(36), index=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    
+    __table_args__ = (
+        Index("idx_idempotency_key", "idempotency_key"),
+    )
+
+
+class BookingFraudCheck(Base):
+    """Fraud check results for bookings."""
+    __tablename__ = "booking_fraud_checks"
+    
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    booking_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    
+    check_type: Mapped[str] = mapped_column(String(50))
+    risk_score: Mapped[float] = mapped_column(Float)
+    flags: Mapped[Optional[List[str]]] = mapped_column(JSON)
+    decision: Mapped[str] = mapped_column(String(20))  # ALLOW, FLAG, BLOCK
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_fraud_user", "user_id", "created_at"),
+        Index("idx_fraud_booking", "booking_id"),
+    )
+
+
+class BookingAuditLog(Base):
+    """Immutable audit log for booking operations."""
+    __tablename__ = "booking_audit_logs"
+    
+    audit_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    booking_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
+    pnr_number: Mapped[Optional[str]] = mapped_column(String(10), index=True)
+    
+    action: Mapped[str] = mapped_column(String(50))
+    previous_state: Mapped[Optional[str]] = mapped_column(String(50))
+    new_state: Mapped[str] = mapped_column(String(50))
+    
+    actor_type: Mapped[str] = mapped_column(String(20))  # USER, SYSTEM, ADMIN
+    actor_id: Mapped[Optional[str]] = mapped_column(String(36))
+    
+    amount: Mapped[Optional[float]] = mapped_column(Float)
+    reason: Mapped[Optional[str]] = mapped_column(String(200))
+    extra_data: Mapped[Optional[Dict]] = mapped_column(JSON)
+    
+    ip_address: Mapped[Optional[str]] = mapped_column(String(50))
+    user_agent: Mapped[Optional[str]] = mapped_column(String(500))
+    
+    checksum: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_audit_booking", "booking_id", "created_at"),
+        Index("idx_audit_pnr", "pnr_number", "created_at"),
+        Index("idx_audit_action", "action", "created_at"),
+    )

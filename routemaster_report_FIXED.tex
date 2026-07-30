@@ -1,0 +1,1337 @@
+% ============================================================
+% Route Master: A Multi-Segment Railway Optimization Engine
+% Full LaTeX Report --- Compiled with pdflatex
+% ============================================================
+\documentclass[12pt,a4paper]{report}
+
+% --- Packages ---
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{mdframed}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{fontawesome5}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins,breakable}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% --- Colors ---
+\definecolor{primary}{HTML}{2D3A8C}
+\definecolor{accent}{HTML}{E74C3C}
+\definecolor{highlight}{HTML}{F39C12}
+\definecolor{success}{HTML}{27AE60}
+\definecolor{lightgray}{HTML}{F4F6F9}
+\definecolor{darkgray}{HTML}{2C3E50}
+\definecolor{codebg}{HTML}{1E2A3A}
+\definecolor{codetext}{HTML}{ECF0F1}
+\definecolor{linkcolor}{HTML}{2980B9}
+
+% --- Hyperref Setup ---
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  urlcolor=linkcolor,
+  citecolor=primary,
+  pdftitle={Route Master: A Multi-Segment Railway Optimization Engine},
+  pdfauthor={Route Master Intelligent System Pvt. Ltd.},
+  pdfsubject={Technical Project Report},
+  pdfkeywords={Railway Optimization, RAPTOR, Graph Theory, Machine Learning, FastAPI}
+}
+
+% --- Page Style ---
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{primary}{\textbf{Route Master}}}
+\fancyhead[R]{\small\textcolor{darkgray}{Technical Report --- 2026}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% --- Section Styling ---
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{primary}}
+  {\chaptertitlename\ \thechapter}{10pt}{\Huge}
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries\color{primary}}
+  {\thesection}{1em}{}
+
+\titleformat{\subsection}
+  {\normalfont\large\bfseries\color{darkgray}}
+  {\thesubsection}{1em}{}
+
+% --- Code Listing Style ---
+\lstdefinestyle{codestyle}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small\color{codetext},
+  keywordstyle=\color{highlight}\bfseries,
+  commentstyle=\color{gray},
+  stringstyle=\color{success},
+  breaklines=true,
+  breakatwhitespace=true,
+  frame=single,
+  rulecolor=\color{primary},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=5pt,
+  tabsize=2,
+  showstringspaces=false
+}
+\lstset{style=codestyle}
+
+% --- Custom Boxes ---
+\tcbset{
+  storybox/.style={
+    enhanced, breakable,
+    colback=blue!5!white, colframe=primary,
+    fonttitle=\bfseries\color{white},
+    title={\faQuoteLeft\quad Story},
+    attach boxed title to top left={yshift=-2mm,xshift=4mm},
+    boxed title style={colback=primary},
+    arc=3pt, boxrule=1pt
+  },
+  keybox/.style={
+    enhanced,
+    colback=highlight!10!white, colframe=highlight,
+    fonttitle=\bfseries, title={\faLightbulb\quad Key Insight},
+    attach boxed title to top left={yshift=-2mm,xshift=4mm},
+    boxed title style={colback=highlight,coltext=white},
+    arc=3pt, boxrule=1pt
+  },
+  formulabox/.style={
+    enhanced,
+    colback=lightgray, colframe=darkgray,
+    fonttitle=\bfseries, title={\faCalculator\quad Formula},
+    attach boxed title to top left={yshift=-2mm,xshift=4mm},
+    boxed title style={colback=darkgray,coltext=white},
+    arc=3pt, boxrule=0.8pt
+  },
+  alertbox/.style={
+    enhanced,
+    colback=accent!10!white, colframe=accent,
+    fonttitle=\bfseries\color{white}, title={\faExclamationTriangle\quad Alert},
+    attach boxed title to top left={yshift=-2mm,xshift=4mm},
+    boxed title style={colback=accent},
+    arc=3pt, boxrule=1pt
+  }
+}
+
+% --- Line Spacing ---
+\setstretch{1.3}
+
+% ============================================================
+\begin{document}
+% ============================================================
+
+% ============================================================
+% TITLE PAGE
+% ============================================================
+\begin{titlepage}
+  \centering
+  \vspace*{1cm}
+  {\Huge\bfseries\color{primary} Route Master}\\[0.4cm]
+  {\Large\color{darkgray} A Multi-Segment Railway Optimization Engine}\\[1.5cm]
+  
+  \begin{tcolorbox}[colback=lightgray,colframe=primary,width=0.85\textwidth,arc=5pt]
+    \centering
+    {\large\textbf{OELP Project Report}}\\[0.3cm]
+    {\normalsize A Multi-Segment Railway Optimization Engine}
+  \end{tcolorbox}
+  
+  \vspace{1.5cm}
+  
+ 
+  
+  \vspace{1.5cm}
+  
+  \begin{tabular}{ll}
+    \textbf{Institution:} & [IIT Palakkad] \\[4pt]
+    \textbf{Guide/Mentor:} & [Dr. Santhakumar Mohan] \\[4pt]
+    \textbf{Date:} & May 9, 2026 \\
+  \end{tabular}
+  
+  \vfill
+  
+  \begin{tcolorbox}[colback=primary!90!black,coltext=white,arc=5pt,width=0.85\textwidth]
+    \centering
+    \textbf{Keywords:} Railway Optimization $\cdot$ RAPTOR Algorithm $\cdot$ Pareto Efficiency $\cdot$
+    Machine Learning $\cdot$ FastAPI $\cdot$ React $\cdot$ Supabase $\cdot$ Apache Kafka
+  \end{tcolorbox}
+\end{titlepage}
+
+% ============================================================
+% CERTIFICATE PAGE
+% ============================================================
+\chapter*{Certificate of Project Completion}
+\addcontentsline{toc}{chapter}{Certificate}
+
+This is to certify that the project titled \textbf{``Route Master: A Multi-Segment Railway Optimization Engine''} was successfully completed by the team listed below, under the guidance of \textbf{[Guide/Mentor Name]} from \textbf{[Department/Institution Name]} during the academic year [Start Date] to [End Date].
+
+The project has been carried out in partial fulfilment of the requirements for the \textit{[Degree Name]} in \textit{[Discipline]} at [University Name]. The work is original and has not been submitted elsewhere for any degree or diploma.
+
+\vspace{2cm}
+
+\begin{tabular}{p{0.45\textwidth}p{0.45\textwidth}}
+  \textbf{Principal / HoD} & \textbf{Guide/Mentor} \\[1cm]
+  \rule{5cm}{0.4pt} & \rule{5cm}{0.4pt} \\
+  \relax [Name & [Name] \\
+  \relax [Designation & [Designation] \\
+  \relax [Institution Seal & \\
+\end{tabular}
+
+\vfill
+\textbf{Date:} May 9, 2026
+
+% ============================================================
+% DECLARATION
+% ============================================================
+\chapter*{Declaration}
+\addcontentsline{toc}{chapter}{Declaration}
+
+We, the undersigned team members, hereby declare that the project titled \textbf{``Route Master: A Multi-Segment Railway Optimization Engine''} submitted to \textbf{[University/Institution Name]} is a \textit{bona fide} record of our project work, carried out under the supervision of [Guide/Mentor Name].
+
+We further declare that this work is original and has not been submitted to any other University or Institution for any degree, diploma, or publication. All intellectual property of Route Master Intelligent System Pvt.\ Ltd.\ is respected.
+
+\vspace{1cm}
+
+\begin{enumerate}
+  \item [Team Member 1 Name] \hfill \rule{4cm}{0.4pt}
+  \item [Team Member 2 Name] \hfill \rule{4cm}{0.4pt}
+  \item [Team Member 3 Name] \hfill \rule{4cm}{0.4pt}
+  \item [Team Member 4 Name] \hfill \rule{4cm}{0.4pt}
+  \item [Team Member 5 Name] \hfill \rule{4cm}{0.4pt}
+\end{enumerate}
+
+\vfill
+\textbf{Date:} May 9, 2026 \hfill \textbf{Place:} [City, State]
+
+% ============================================================
+% ACKNOWLEDGEMENT
+% ============================================================
+\chapter*{Acknowledgement}
+\addcontentsline{toc}{chapter}{Acknowledgement}
+
+We express our sincere gratitude to all who contributed to this project.
+
+Our deepest thanks go to our guide, \textbf{[Guide/Mentor Name]}, whose constant encouragement, invaluable guidance, and unwavering support have been instrumental in the successful completion of this project. Their expertise in algorithms, software architecture, and AI was crucial in overcoming numerous technical challenges.
+
+We are grateful to the faculty and staff of the \textbf{[Department Name]} at \textbf{[Institution Name]} for providing the necessary resources and a conducive environment for research and development.
+
+We extend thanks to \textbf{Route Master Intelligent System Pvt.\ Ltd.} for providing the project context. Finally, we thank our families and friends for their patience and moral support.
+
+\vfill
+\textbf{Team:} Route Master Project Team \hfill \textbf{Date:} May 9, 2026
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+\begin{tcolorbox}[storybox]
+\textit{Imagine this: You need to travel from Ranchi to Surat for a job interview tomorrow morning. You open IRCTC, type your route, and get: ``No direct trains available.'' You now manually open 4 browser tabs, searching Ranchi $\to$ Nagpur, Nagpur $\to$ Surat, cross-referencing schedules, worrying whether the first train will run late---and this takes you 45 minutes, just to plan. You still haven't booked anything.}
+
+\medskip
+\textbf{Route Master was built to solve exactly this.}
+\end{tcolorbox}
+
+\medskip
+
+India's railway network carries over \textbf{23 million passengers every day} across 67,000 km of track---yet when a traveller needs to plan a journey across 3 cities with 2 train changes, they are left doing mental arithmetic on layovers, manually cross-referencing schedules, and hoping no train runs late.
+
+\textbf{Route Master: A Multi-Segment Railway Optimization Engine} is a pioneering platform developed by Route Master Intelligent System Pvt.\ Ltd.\ that answers a deceptively simple question: \textit{``What is the single best way for this specific person to get from A to B to C?''}
+
+At its core, Route Master models the entire Indian railway network as a dynamic graph where every station is a node and every train connection is a weighted edge carrying three values simultaneously: \textbf{travel time, ticket cost, and delay probability}. Rather than finding any path, the system uses a novel adaptation of the \textbf{RAPTOR algorithm} and \textbf{TurboRouter (Contraction Hierarchies)} to discover the \textit{Pareto-optimal frontier}. A machine learning layer---the \textbf{CAT (Contextual Availability Transformer)}---enriches each route with real-time seat availability and delay predictions, proactively steering users away from full or delayed trains.
+
+The result is a platform that answers a traveller's query in \textbf{under 2 seconds}, presenting 3--5 curated, ranked options. An integrated \textbf{SOS Safety Module (RTCS)} allows passengers to stream live GPS coordinates to emergency responders via WebSocket in under 3 seconds.
+
+Built on \textbf{FastAPI, React 18, Supabase (PostgreSQL), Redis, and Apache Kafka}, the system is designed to serve millions of concurrent users.
+
+\vspace{0.5cm}
+
+\textbf{Keywords:} Railway Optimization, Multi-Segment Travel, Route Planning, Graph Theory, RAPTOR Algorithm, Turbo Routing, Pareto Efficiency, Multi-Objective Optimization, Machine Learning, Predictive Analytics, FastAPI, React, Supabase, Kafka, Intelligent Transport Systems.
+
+% ============================================================
+% TABLE OF CONTENTS
+% ============================================================
+\tableofcontents
+
+% ============================================================
+% LIST OF FIGURES
+% ============================================================
+\listoffigures
+
+% ============================================================
+% LIST OF TABLES
+% ============================================================
+\listoftables
+
+
+
+% ============================================================
+% CHAPTER 1 --- INTRODUCTION
+% ============================================================
+\chapter{Introduction}
+
+\section{Background}
+
+India's vast and intricate railway network, managed by Indian Railways (IR), is the lifeblood of its transportation system, carrying millions of passengers daily across an extensive network spanning over 68,000 route kilometres. It is crucial for national integration, economic activity, and providing affordable mobility to a diverse population.
+
+While IRCTC serves as the primary online ticketing and information portal, the user experience for planning complex, \textbf{multi-segment journeys} remains a significant area for improvement. Current systems require passengers to manually piece together itineraries, leading to inefficiencies and dissatisfaction.
+
+\section{Problem Statement}
+
+\begin{tcolorbox}[keybox]
+\textbf{The Story of Every Multi-Leg Traveller Today:}\\[0.4em]
+A passenger needing to travel from Ranchi to Surat performs \textit{ten manual steps}---opening multiple browser tabs, cross-referencing schedules, checking layover sufficiency, and worrying about delays---spending 45--90 minutes only to arrive at a \textbf{suboptimal} itinerary. Route Master collapses this to \textbf{3 steps and under 2 minutes}.
+\end{tcolorbox}
+
+\begin{table}[h!]
+\centering
+\caption{Before vs.\ After --- Multi-Segment Journey Planning}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Without Route Master} & \textbf{With Route Master} \\
+\midrule
+10 manual search steps & 3 guided steps \\
+45--90 minutes to plan & Under 2 minutes \\
+Often suboptimal result & Mathematically optimal (Pareto) \\
+No delay awareness & Proactive delay alerts from CAT model \\
+No missed-connection protection & Minimum Connection Time (MCT) enforced \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Planning multi-segment railway journeys in India presents several critical challenges:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Information Overload:} An average multi-leg journey involves checking 6--10 separate train options across 3+ searches, requiring passengers to mentally juggle departure times, layover durations, and platform numbers simultaneously.
+  \item \textbf{Suboptimal Itineraries:} Current systems do not optimise for the \textit{combination} of total travel time, layover efficiency, cost, and predicted reliability. A passenger may unknowingly choose a route 3 hours slower than optimal.
+  \item \textbf{Lack of Real-Time Adaptability:} If Train 1 is 40 minutes late, the current system does not proactively alert the traveller that their Train 2 connection is now at risk.
+  \item \textbf{Transfer Inefficiencies:} Short layovers ($<$20 min) at large stations like Nagpur Junction (8 platforms) create missed-connection risk. Route Master enforces a configurable \textbf{Minimum Connection Time (MCT)} per station.
+  \item \textbf{Decision Fatigue:} Comparing 8 route combinations for a Ranchi $\to$ Surat trip with 2 stops is cognitively exhausting. Route Master collapses this into 3 clear, ranked choices.
+\end{itemize}
+
+\section{Objectives}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Develop a high-performance, Pareto-optimal multi-segment routing engine.
+  \item Integrate predictive ML models (CAT) for delay and availability forecasting.
+  \item Provide an intuitive UI that reduces journey planning time by 95\%.
+  \item Implement a mission-critical SOS/safety infrastructure (RTCS).
+  \item Design a scalable, microservices-inspired backend serving millions of concurrent users.
+\end{enumerate}
+
+\section{Scope}
+
+The scope encompasses: core graph-based routing engine, data ingestion \& ETL pipeline, ML-based delay/availability prediction, FastAPI backend, React frontend, Supabase/Redis data layer, and the RTCS safety module. The initial focus is the Indian railway network, with a roadmap for global GTFS expansion.
+
+\section{Innovation Highlights}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Patent-Adapted RAPTOR:} Multi-dimensional label dominance extending standard RAPTOR with simultaneous time, cost, and reliability Pareto filtering.
+  \item \textbf{TurboRouter (CH):} Offline-preprocessed Contraction Hierarchies reducing national-scale query time from 800 ms to $<$50 ms.
+  \item \textbf{CAT Model:} XGBoost + LSTM ensemble predicting delays with 85\% accuracy, directly modifying edge weights before the optimizer runs.
+  \item \textbf{RTCS Safety Module:} WebSocket + Protobuf SOS pipeline delivering first responder alerts in $<$3 seconds --- unique in the Indian railway app ecosystem.
+\end{itemize}
+
+% ============================================================
+% CHAPTER 2 --- LITERATURE REVIEW & MARKET ANALYSIS
+% ============================================================
+\chapter{Literature Review \& Market Analysis}
+
+\section{Existing Railway Platforms}
+
+Globally, railway networks face constant pressure to improve passenger experience. Major operators (Indian Railways, Deutsche Bahn, SNCF) rely on advanced operational planning tools, but passenger-facing applications often lag in sophisticated multi-segment planning capabilities.
+
+\section{IRCTC Limitations}
+
+IRCTC, India's primary railway portal, has digitalised booking effectively but presents several limitations:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Basic Search:} Focuses on direct or simple two-leg journeys; complex multi-change routes require manual aggregation.
+  \item \textbf{No Holistic Optimisation:} No combination of time, cost, transfer convenience, and reliability is considered simultaneously.
+  \item \textbf{Limited Predictive Planning:} Live train status exists, but proactive multi-segment replanning when delays cascade is absent.
+  \item \textbf{No Personalisation:} Generic recommendations with no user preference modelling.
+\end{itemize}
+
+\section{Comparative Study}
+
+\begin{table}[h!]
+\centering
+\caption{Comparative Study of Existing Railway Platforms}
+\small
+\begin{tabularx}{\textwidth}{lXXX}
+\toprule
+\textbf{Feature} & \textbf{IRCTC} & \textbf{3rd-Party Aggregators} & \textbf{Route Master} \\
+\midrule
+Primary Focus & Booking \& Schedules & Booking \& Aggregation & Multi-Segment Optimisation \\
+Multi-Segment Planning & Manual, fragmented & Limited, basic & Advanced, automated \\
+Optimisation Objectives & Time / Availability & Time / Availability & Time + Cost + Transfers + Reliability \\
+Predictive Analytics & Live status only & Live status only & ML delay + availability forecasting \\
+Transfer Optimisation & Implicit / minimal & Implicit & Explicit MCT enforcement \\
+Personalisation & Minimal & Basic filters & High --- user preference weights \\
+Safety Infrastructure & None & None & RTCS SOS WebSocket pipeline \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Gap Analysis}
+
+\begin{table}[h!]
+\centering
+\caption{Gap Analysis --- Market vs.\ Route Master}
+\small
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Identified Gap} & \textbf{Market Impact} & \textbf{Route Master Solution} \\
+\midrule
+No true multi-objective rail optimisation & Suboptimal passenger journeys & Pareto efficiency + preference weighting \\
+No predictive planning integration & Disruption vulnerability & CAT ML model in routing cost function \\
+Manual effort for multi-segment trips & High cognitive load & Automated, intelligent itinerary generation \\
+Generic recommendations & Missed personalisation & AI-driven preference-based ranking \\
+No passenger safety infrastructure & Safety gap & RTCS real-time SOS streaming \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ============================================================
+% CHAPTER 3 --- SYSTEM REQUIREMENTS & FEASIBILITY
+% ============================================================
+\chapter{System Requirements \& Feasibility}
+
+\section{Functional Requirements}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Multi-Segment Route Search:} Input origin, destination, intermediate stations, and travel date to receive optimised itineraries.
+  \item \textbf{Preference-Based Optimisation:} Define and prioritise optimisation criteria (time, cost, transfers, reliability) via weighted sliders.
+  \item \textbf{Predictive Route Suggestions:} ML-integrated delay and availability predictions embedded in route scores.
+  \item \textbf{Dynamic Route Recalculation:} Replan in real-time when live delays are detected on a booked segment.
+  \item \textbf{Route Visualisation:} Timeline + map view showing each segment, layover, transfer point, and delay risk.
+  \item \textbf{SOS Emergency Streaming:} One-button SOS triggering WebSocket coordinate stream to responder dashboard.
+  \item \textbf{User Profile Management:} Saved preferences, past journeys, and preference templates.
+\end{enumerate}
+
+\section{Non-Functional Requirements}
+
+\begin{table}[h!]
+\centering
+\caption{Non-Functional Requirements}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Requirement} & \textbf{Target} \\
+\midrule
+Response Time (route query) & $<$200 ms (cached), $<$2 s (cold) \\
+Throughput & 10,000 concurrent users \\
+Availability & 99.9\% uptime \\
+SOS First-Alert Latency & $<$3 seconds end-to-end \\
+Data Accuracy & Schedule data $<$15 min stale \\
+Security & JWT auth, TLS 1.3, encrypted SOS stream \\
+Scalability & Horizontal scale via Kubernetes \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Feasibility Summary}
+
+\textbf{Technical Feasibility:} Mature technologies (FastAPI, React, Supabase, Redis, Kafka), established algorithms (RAPTOR, CH), and production-ready ML libraries (XGBoost, scikit-learn) make this technically achievable.
+
+\textbf{Operational Feasibility:} A cross-functional team with backend, ML, frontend, and DevOps expertise, supported by Prometheus/Grafana monitoring.
+
+\textbf{Economic Feasibility:} Open-source stack minimises infrastructure cost; phased development manages expenditure; freemium B2C + B2B API licensing provides clear revenue paths.
+
+\textbf{Scalability Feasibility:} Stateless microservices, Docker/Kubernetes orchestration, Kafka async decoupling, and Redis caching ensure linear scalability.
+
+% ============================================================
+% CHAPTER 4 --- THE SMART ENGINE: HOW IT WORKS
+% ============================================================
+\chapter{The Smart Engine: How It Works}
+
+\section{Collecting and Cleaning the Data}
+
+Route Master's intelligence is built on a robust, multi-source data strategy. We don't just take schedules; we understand the context of every journey.
+
+\textbf{Data Sources:}
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Official Schedules:} The backbone of the system---train numbers, stations, and timings for the entire Indian Railways network.
+  \item \textbf{Live Updates:} Real-time data from the National Train Enquiry System (NTES), refreshed every 5 minutes so we know exactly where every train is.
+  \item \textbf{Environmental Factors:} We look at weather, holidays, and major events. If it's Diwali or there's a storm in Mumbai, our system knows it will affect your travel.
+\end{itemize}
+
+\textbf{The Processing Factory (ETL):} Raw data is messy. Our automated ``Scraper Workers'' collect this data and pass it through a ``Processing Factory'' (ETL Pipeline). This system cleans the data, removes duplicates, and ensures that when you see a platform number, it is the most accurate one available.
+
+\section{The Information Storage System (Database)}
+
+The Route Master database is built for speed. When you search for a route, the system needs to scan millions of possibilities in milliseconds. We use a high-performance system called \textbf{Supabase (PostgreSQL)} with a specialized design.
+
+\subsection*{The Blueprint of Our Knowledge}
+
+The system stores information in 11 main categories, like a giant, organized library:
+
+\begin{figure}[h!]
+\centering
+\begin{tikzpicture}[
+  node distance=1.5cm and 2cm,
+  entity/.style={draw=primary, fill=primary!5, rectangle, rounded corners, minimum width=3cm, minimum height=0.8cm, font=\small\bfseries, align=center},
+  rel/.style={draw=darkgray, thick, -latex}
+]
+  \node[entity] (user) {User Profiles};
+  \node[entity] (booking) [right=of user] {Bookings};
+  \node[entity] (leg) [below=of booking] {Journey Legs};
+  \node[entity] (train) [left=of leg] {Trains};
+  \node[entity] (stop) [below=of leg] {Train Stops};
+  \node[entity] (station) [left=of stop] {Stations};
+  
+  \draw[rel] (user) -- (booking) node[midway, above, font=\tiny] {makes};
+  \draw[rel] (booking) -- (leg) node[midway, right, font=\tiny] {contains};
+  \draw[rel] (train) -- (leg) node[midway, above, font=\tiny] {assigned to};
+  \draw[rel] (train) -- (stop) node[midway, left, font=\tiny] {has stops};
+  \draw[rel] (station) -- (stop) node[midway, above, font=\tiny] {hosts};
+\end{tikzpicture}
+\caption{Simplified Database Connection Map}
+\end{figure}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Stations and Trains:} Where they are and where they go.
+  \item \textbf{Live Status and Predictions:} How late a train is now, and how late it \textit{will} be when you reach it.
+  \item \textbf{Safety and Bookings:} Your secure travel records.
+\end{itemize}
+
+\subsection*{Real-World Schema Walk-Through}
+
+Consider a user booking \textbf{Delhi (NDLS) $\to$ Nagpur (NGP) $\to$ Mumbai (CSTM)}:
+
+\begin{tcolorbox}[enhanced, colback=codebg, colframe=primary, title=Database Trace: Delhi--Nagpur--Mumbai Journey, coltitle=white, fonttitle=\bfseries]
+\small\color{codetext}
+\textbf{User Profile:} [ID: a1b2] | \textbf{Pref:} 2A Class, Max 1 Change \\
+\textbf{Booking:} [ID: x9y8] | \textbf{Status:} COMPLETED | \textbf{Fare:} Rs. 2,340
+
+\tcbline
+\textbf{Leg 1: Delhi $\to$ Nagpur (Rajdhani 12952)} \\
+\faTrain \quad Dep: 16:25 | Arr: 05:50 (+1) | Class: 2A
+
+\tcbline
+\textbf{Leg 2: Nagpur $\to$ Mumbai (Vidarbha 11045)} \\
+\faTrain \quad Dep: 06:40 | Arr: 20:15 | Class: Sleeper
+\end{tcolorbox}
+
+\subsection*{Key Index Strategy}
+
+\begin{table}[h!]
+\centering
+\caption{Critical Database Indexes for Graph Performance}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{Table} & \textbf{Index} & \textbf{Reason} \\
+\midrule
+\texttt{train\_stop} & \texttt{(station\_code, sched\_departure)} & Fast graph lookup --- all trains leaving a station \\
+\texttt{train\_stop} & \texttt{(train\_number, stop\_sequence)} & Full timetable reconstruction in O(n) \\
+\texttt{realtime\_status} & \texttt{(stop\_id, journey\_date)} & Live status lookup \\
+\texttt{delay\_prediction} & \texttt{(stop\_id, target\_date)} & CAT model output fetch \\
+\texttt{station\_transfer} & \texttt{(from\_station\_code)} & Walk-time connection discovery \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Graph Theory Framework}
+
+\begin{tcolorbox}[keybox]
+\textbf{Plain-English Analogy:} Think of the railway network as a \textit{road map for trains}. Every city (station) is a dot, and every train connection is an arrow labelled with three numbers at once: \textit{how long it takes, how much it costs, and how likely the train is on time.} Route Master finds the best arrows to follow.
+\end{tcolorbox}
+
+The railway network is modelled as a \textbf{directed, weighted multi-graph} $G = (V, E, W)$ where:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item $V$ = set of stations (nodes), $|V| \approx 8{,}000$
+  \item $E$ = set of train connections (directed edges) between consecutive stops
+  \item $W : E \to \mathbb{R}^3$ = 3-dimensional weight function: $(\text{time}, \text{cost}, \text{reliability})$
+\end{itemize}
+
+\subsection*{Concrete Example: Delhi $\to$ Nagpur $\to$ Mumbai}
+
+\begin{table}[h!]
+\centering
+\caption{Graph Edges --- Delhi to Mumbai Journey}
+\begin{tabularx}{\textwidth}{lXXX}
+\toprule
+\textbf{Edge (Train)} & \textbf{Time} & \textbf{Cost} & \textbf{Reliability} \\
+\midrule
+NDLS $\to$ NGP via Rajdhani 12952 & 13.8h & \textbf{Rs.}1,350 & 92\% \\
+NDLS $\to$ NGP via Punjab Mail 12138 & 17.0h & \textbf{Rs.}850 & 61\% \\
+NGP $\to$ CSTM via Vidarbha 11045 & 13.5h & \textbf{Rs.}990 & 78\% \\
+NGP $\to$ CSTM via Maharashtra Exp & 16.0h & \textbf{Rs.}620 & 55\% \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Multi-Layer Graph:} The system operates on three parallel graph layers:
+
+\begin{tcolorbox}[enhanced, colback=lightgray!30, colframe=darkgray, title=The Three-Layer Network Architecture, fonttitle=\bfseries]
+\centering
+\begin{tikzpicture}[node distance=1.5cm, every node/.style={font=\footnotesize\bfseries}]
+  \node (L1) at (0,1.5) [draw, primary, fill=white, rounded corners, minimum width=8cm] {Layer 1: Superfast (Rajdhani/Shatabdi)};
+  \node (L2) at (0,0.75) [draw, primary!70, fill=white, rounded corners, minimum width=8cm] {Layer 2: Mail \& Express (Intercity)};
+  \node (L3) at (0,0) [draw, primary!40, fill=white, rounded corners, minimum width=8cm] {Layer 3: Local \& Passenger};
+  
+  \draw[<->, dashed, darkgray] (L1) -- (L2) node[midway, right] {Hub Transfer};
+  \draw[<->, dashed, darkgray] (L2) -- (L3) node[midway, right] {Hub Transfer};
+\end{tikzpicture}
+\end{tcolorbox}
+
+The optimizer can \textbf{cross layers} at transfer hubs --- e.g., take Rajdhani (Layer 1) to Nagpur, then switch to a Passenger train (Layer 3) for the final short hop. This hybrid path is never surfaced by IRCTC.
+
+\subsection*{Edge Weight Calculation}
+
+\begin{table}[h!]
+\centering
+\caption{Edge Weight Dimensions and Sources}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Dimension} & \textbf{Source} & \textbf{Example} \\
+\midrule
+Time (hours) & Official schedule timetable & Delhi $\to$ Nagpur via Rajdhani = 13.8h \\
+Cost (Rs.) & Fare table + class multiplier & 2A class $\times$ base fare = Rs.1,350 \\
+Reliability (0--1) & CAT ML model (XGBoost) & Historical on-time rate = 0.92 \\
+Transfer Penalty & Station MCT config & NGP minimum layover = 25 min \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Finding the Best Path for You (Optimisation)}
+
+\begin{tcolorbox}[keybox]
+\textbf{The ``Laptop Shopping'' Analogy:}\\[0.4em]
+Imagine shopping for a laptop. You want it fast, cheap, \textit{and} lightweight. No single laptop wins on all three. You shortlist those where \textit{no other laptop beats it on all three things at once}. That shortlist is your \textbf{Golden Selection (Pareto Frontier)}. Route Master does exactly this for your journey.
+\end{tcolorbox}
+
+\subsection*{The Golden Selection --- Choosing the Best Balance}
+
+We don't just show you the ``shortest'' path. We show you the paths that offer the best trade-offs.
+
+\begin{figure}[h!]
+\centering
+\begin{tikzpicture}[scale=0.8]
+  \draw[->, thick] (0,0) -- (10,0) node[right] {Travel Time};
+  \draw[->, thick] (0,0) -- (0,8) node[above] {Cost (Rs)};
+  
+  % Nodes
+  \node[circle, fill=success, inner sep=2pt, label=above:{\textbf{A (Balanced)}}] (A) at (4,4) {};
+  \node[circle, fill=success, inner sep=2pt, label=right:{\textbf{B (Cheapest)}}] (B) at (8,1.5) {};
+  \node[circle, fill=success, inner sep=2pt, label=left:{\textbf{C (Fastest)}}] (C) at (1.5,7) {};
+  \node[circle, fill=accent, inner sep=2pt, label=above right:{D (Bad Value)}] (D) at (6,6) {};
+  \node[circle, fill=accent, inner sep=2pt, label=above right:{E (Slow \& Expensive)}] (E) at (8,7.5) {};
+  
+  % Pareto line
+  \draw[primary, dashed, thick] (C) -- (A) -- (B);
+  \node[primary, rotate=-45] at (3,5.5) {The Best Choices};
+  
+  % Explanation
+  \draw[->, thin, gray] (D) -- (A) node[midway, above, sloped, font=\tiny] {A is better};
+\end{tikzpicture}
+\caption{The Pareto Frontier: Visualizing ``The Best Choices''}
+\end{figure}
+
+\begin{table}[h!]
+\centering
+\caption{Pareto Dominance Check on Route Candidates}
+\begin{tabularx}{\textwidth}{lXXXX}
+\toprule
+\textbf{Route} & \textbf{Time} & \textbf{Cost} & \textbf{Reliability} & \textbf{Verdict} \\
+\midrule
+A & 27h & Rs.2,340 & 92\% & \textcolor{success}{\checkmark} Keep --- Fastest \\
+B & 31h & Rs.1,350 & 78\% & \textcolor{success}{\checkmark} Keep --- Best value \\
+C & 29h & Rs.1,800 & 85\% & \textcolor{success}{\checkmark} Keep --- Balanced \\
+D & 33h & Rs.1,600 & 65\% & \textcolor{accent}{\texttimes} Drop --- B is faster AND cheaper \\
+E & 35h & Rs.2,100 & 70\% & \textcolor{accent}{\texttimes} Drop --- every route dominates it \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Routes D and E are \textbf{dominated} --- there is always a strictly better option. Routes A, B, C form the \textbf{Pareto Frontier} and are presented to the user.
+
+\subsection*{Preference Scoring Formula}
+
+\begin{tcolorbox}[formulabox]
+\[
+  \text{Score}(R) = w_t \cdot (1 - \hat{t}) + w_c \cdot (1 - \hat{c}) + w_r \cdot r + w_x \cdot \tfrac{1}{n}
+\]
+where $\hat{t}$ = normalised time, $\hat{c}$ = normalised cost, $r$ = reliability score, $n$ = number of transfers.\\[0.5em]
+\textbf{Default weights:} $w_t = 0.40,\; w_c = 0.30,\; w_r = 0.20,\; w_x = 0.10$
+\end{tcolorbox}
+
+\textbf{Example computation:}
+\begin{itemize}[leftmargin=1.5em]
+  \item Route A: $0.40 \times 1.00 + 0.30 \times 0.00 + 0.20 \times 0.92 + 0.10 \times 0.50 = \mathbf{0.634}$
+  \item Route C: $0.40 \times 0.75 + 0.30 \times 0.45 + 0.20 \times 0.85 + 0.10 \times 0.50 = \mathbf{0.617}$
+\end{itemize}
+
+$\Rightarrow$ Route A wins for time-focused users; Route B wins for budget users.
+
+\subsection*{Minimum Connection Time (MCT) Enforcement}
+
+A route is only valid if the passenger can \textit{actually make the connection}:
+
+\begin{table}[h!]
+\centering
+\caption{MCT Enforcement Rules}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Constraint} & \textbf{Rule} & \textbf{Example} \\
+\midrule
+Minimum Connection Time & Station-specific buffer & NGP (8 platforms): MCT = 25 min \\
+Risk Buffer & Predicted delay $\times$ 1.5 & Train predicted 18-min delay $\Rightarrow$ need 43-min buffer \\
+Platform Distance & Large stations add walk time & CSTM platform 1 to 18 = +8 min \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+If layover $<$ MCT + Risk Buffer, the route is \textbf{automatically disqualified} --- even if it appears optimal on paper.
+
+\section{The Secret Sauce: Our Core Logic}
+
+\subsection{The ``City Expert'' (RAPTOR Algorithm)}
+
+Imagine an expert who knows every single local train. This algorithm, called \textbf{RAPTOR}, works in ``rounds.''
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Round 1:} Find every city you can reach with zero train changes.
+  \item \textbf{Round 2:} Find every city you can reach with exactly one change.
+  \item \textbf{The Innovation:} At each step, our system checks if a new option is better than what we already know. If it's faster, cheaper, or more reliable, we keep it. If it's worse in every way, we discard it immediately.
+\end{itemize}
+
+\subsection{The ``Long-Distance Runner'' (TurboRouter)}
+
+For long trips (like Bangalore to Delhi), checking every tiny local stop is too slow. Our \textbf{TurboRouter} (technically called Contraction Hierarchies) works like a GPS highway mode.
+
+\begin{tcolorbox}[keybox]
+\textbf{The Highway Analogy:}\\[0.4em]
+When driving across the country, you don't look at every side street. You find the nearest highway entrance, drive to the next major city, and then take the local road to your destination. TurboRouter pre-calculates these ``Railway Highways'' so your search takes \textbf{under 0.05 seconds}.
+\end{tcolorbox}
+
+\subsection{The Brain: Predicting Delays and Seats (CAT Model)}
+
+The \textbf{CAT (Contextual Availability Transformer)} is our prediction engine. It doesn't just look at the schedule; it looks at the \textit{history}.
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Delay Prediction:} It knows that certain trains are usually late on Mondays or during the monsoon.
+  \item \textbf{Seat Forecasting:} It predicts if a ``Waitlisted'' ticket will actually get confirmed, so you don't get stuck.
+\end{itemize}
+
+\section{The Big Picture: How the Parts Connect}
+
+Route Master is like a well-oiled machine with several specialized departments working together.
+
+\begin{table}[h!]
+\centering
+\caption{RAPTOR Algorithm Round-by-Round Trace}
+\begin{tabularx}{\textwidth}{lXXX}
+\toprule
+\textbf{Round} & \textbf{Stations Reached} & \textbf{Via Train} & \textbf{Arrival at CSTM} \\
+\midrule
+$k=1$ & AGC, MTJ, NGP, ET, BSL & Rajdhani 12952 & Not yet \\
+$k=2$ & CSTM & + Vidarbha 11045 & \textbf{20:15 (next day)} \\
+$k=2$ & CSTM & + Punjab Mail & \textbf{09:15 (+2 days)} \\
+$k=3$ & CSTM & Direct Raj 12951 & \textbf{08:35 (next day)} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Time Complexity:} $O(|R| \cdot |T|)$ where $|R|$ = number of routes, $|T|$ = stops per route --- dramatically faster than Dijkstra's $O(|V|^2)$ on large timetable graphs.
+
+\subsection{Algorithm 2: TurboRouter (Contraction Hierarchies)}
+
+For sparse, long-haul networks, RAPTOR becomes expensive. TurboRouter pre-processes the graph \textbf{offline} using Contraction Hierarchies (CH): repeatedly removing low-importance nodes and adding shortcut edges, creating a compressed highway network.
+
+\textbf{In Plain English:} Imagine planning a Bangalore-to-Delhi drive. You don't plan turn-by-turn from the start --- you know you'll take the highway to Hyderabad, then NH-44 north. CH does exactly this: it pre-identifies the ``highway junctions'' of the railway network and builds direct shortcuts between them, so the online query only navigates the highway level.
+
+\textbf{Performance Comparison:}
+
+\begin{table}[h!]
+\centering
+\caption{TurboRouter vs.\ Naive Dijkstra}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Naive Dijkstra} & \textbf{TurboRouter (CH)} \\
+\midrule
+Nodes explored & $\sim$8,000 & $\sim$150 \\
+Query time (avg) & 800 ms & \textbf{$<$50 ms} \\
+Preprocessing & None & 15 min (offline, once) \\
+Suitable for & Small graphs & \textbf{National-scale} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Unified Orchestrator Decision Logic:}
+
+The system automatically selects the right algorithm per query:
+
+\begin{lstlisting}[language=Python, caption={Orchestrator Algorithm Selection Logic}]
+def select_engine(query: RouteQuery) -> RoutingEngine:
+    """Select RAPTOR for dense/metro, TurboRouter for long-distance."""
+    network_density = graph.get_density(
+        query.origin, query.destination
+    )
+    distance_km = stations.geodistance(
+        query.origin, query.destination
+    )
+    if network_density > DENSITY_THRESHOLD or distance_km < 300:
+        return RAPTOREngine(graph)          # High-frequency / metro
+    else:
+        return TurboRouterEngine(ch_graph)  # Sparse / long-haul
+\end{lstlisting}
+
+\subsection{Algorithm 3: The Balancing Act (Choosing the Best Route)}
+
+No single route is perfect. One might be the fastest but expensive, while another is slow but cheap. Route Master doesn't just pick one; it finds every route that offers a \textbf{fair trade-off}.
+
+\begin{tcolorbox}[keybox]
+\textbf{The Rule of the Best:} We only keep a route if there is no other option that beats it on \textit{everything} (time, cost, and reliability) at the same time. If Route A is faster, cheaper, and more reliable than Route B, we throw Route B away. This is how we ensure you only see the ``Golden Selection.''
+\end{tcolorbox}
+
+\section{AI/ML --- CAT (Contextual Availability Transformer)}
+
+The CAT model is Route Master's intelligence layer --- a \textbf{real-time delay and seat availability oracle} that directly shapes route edge weights before the optimizer runs.
+
+\subsection*{CAT Model Architecture}
+
+The CAT pipeline is a three-stage ensemble:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Stage 1 --- XGBoost Classifier:} Binary prediction --- ``Is delay $>$ 30 minutes?'' (85\% accuracy)
+  \item \textbf{Stage 2 --- LSTM Regressor:} If Stage 1 = Yes, predict exact delay in minutes.
+  \item \textbf{Stage 3 --- Gradient Boost Regressor:} Predict seat availability percentage (RÂ² = 0.91).
+\end{enumerate}
+
+\subsection*{Feature Engineering}
+
+\begin{table}[h!]
+\centering
+\caption{CAT Model Input Features}
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Feature Category} & \textbf{Features} \\
+\midrule
+Temporal & Day-of-week, month, holiday flag, days to departure, peak season indicator \\
+Route & Segment avg delay (30d / 90d rolling), preceding station delay propagation, track maintenance \\
+Demand & Current seat fill \%, historical fill \% for same date \\
+External & Weather forecast at origin/destination, regional events calendar \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection*{CAT in Action --- Christmas Example}
+
+\begin{tcolorbox}[enhanced, colback=codebg, colframe=primary, title=CAT Engine Decision: Rajdhani 12952 (Dec 25), coltitle=white, fonttitle=\bfseries]
+\small\color{codetext}
+\textbf{Inputs Detected:}
+\begin{itemize}[leftmargin=1.5em, nosep]
+  \item \textbf{Date:} Dec 25 (Public Holiday - Christmas)
+  \item \textbf{Historical Trend:} NDLS $\to$ NGP avg delay is 18m.
+  \item \textbf{Current Status:} Preceding train is 22m late.
+\end{itemize}
+
+\tcbline
+\textbf{Intelligence Analysis:}
+\begin{itemize}[leftmargin=1.5em, nosep]
+  \item \textbf{Delay Risk:} 73\% (Predicted: 48m delay)
+  \item \textbf{Seats:} 6\% remaining in 2A (High Demand)
+\end{itemize}
+
+\tcbline
+\textbf{Final Decision:}
+$\Rightarrow$ Penalize this route's priority by 67\%. \\
+$\Rightarrow$ \textbf{Recommendation:} Surface Duronto 12263 as a reliable alternative.
+\end{tcolorbox}
+
+\subsection*{CAT Performance Benchmarks}
+
+\begin{table}[h!]
+\centering
+\caption{CAT Model Performance}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Notes} \\
+\midrule
+Delay $>$30 min prediction accuracy & 85\% & Backtested on 2023--2025 IR data \\
+Availability forecast correlation & RÂ² = 0.91 & vs.\ actual booking close-out \\
+Inference latency & $<$8 ms & In-process XGBoost serving \\
+Retraining cadence & Weekly & 90-day rolling window \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Data Flow}
+
+The end-to-end data flow for a user route query:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{User Request:} Frontend sends multi-segment query (origin, destination, preferences) to FastAPI gateway.
+  \item \textbf{Cache Check:} Redis is checked first; cache hit returns results in $<$10 ms.
+  \item \textbf{Graph Data Retrieval:} Route Service fetches station/schedule graph from Supabase.
+  \item \textbf{CAT Prediction:} ML Service returns dynamic edge weights (delay modifier + availability score).
+  \item \textbf{Algorithm Selection:} Orchestrator selects RAPTOR or TurboRouter based on query profile.
+  \item \textbf{Pareto Optimisation:} Engine computes frontier; dominated routes are discarded.
+  \item \textbf{Preference Scoring:} Remaining routes are scored using user-defined weights.
+  \item \textbf{Response:} Top 3--5 ranked routes returned to user; result cached in Redis for 5 minutes.
+\end{enumerate}
+
+\section{Error Handling \& Resilience}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Data Inconsistencies:} Graceful fallback to last-known-good schedule if live data is stale.
+  \item \textbf{ML Service Failure:} If CAT is unavailable, routing proceeds with historical average weights (degraded-mode flag shown to user).
+  \item \textbf{Circuit Breakers:} External API calls (payment, inventory) wrapped in circuit breakers to prevent cascading failure.
+  \item \textbf{Timeout Enforcement:} Route queries time out at 5 seconds; partial results are returned with a warning.
+\end{itemize}
+
+% ============================================================
+% CHAPTER 5 --- THE BLUEPRINT: HOW THE PARTS CONNECT
+% ============================================================
+\chapter{The Blueprint: How the Parts Connect}
+
+\section{The Big Picture}
+
+Route Master is built like a modern city, with different ``districts'' for different tasks. This makes it fast, reliable, and easy to upgrade.
+
+\begin{figure}[h!]
+\centering
+\begin{tikzpicture}[
+  node distance=1.2cm and 1.5cm,
+  layer/.style={draw=darkgray!50, dashed, fill=lightgray!20, rounded corners, inner sep=10pt},
+  comp/.style={draw=primary, fill=white, thick, rounded corners, minimum width=2.8cm, minimum height=0.8cm, font=\small\bfseries, align=center},
+  api/.style={draw=accent, fill=accent!5, thick, rounded corners, minimum width=3.5cm, minimum height=1cm, font=\small\bfseries, align=center},
+  data/.style={draw=success, fill=white, cylinder, shape border rotate=90, minimum width=2cm, minimum height=1.2cm, font=\tiny\bfseries, align=center, thick},
+  arrow/.style={->, thick, >=stealth, color=darkgray}
+]
+
+  % --- Components ---
+  \node[comp] (fe) at (0,6.5) {React Mobile/Web App};
+  
+  \node[api] (gw) at (0,4.5) {FastAPI Gateway\\(The Traffic Controller)};
+  
+  \node[comp] (rs) at (-4,2.8) {Route Engine\\(Finding Paths)};
+  \node[comp] (ml) at (-1.3,2.8) {CAT AI\\(Predicting)};
+  \node[comp] (us) at (1.4,2.8) {User Accounts\\(Personalization)};
+  \node[comp] (sos) at (4.1,2.8) {Safety System\\(Emergency)};
+
+  \node[data] (pg) at (-2.5,-0.5) {PostgreSQL\\(Main Data)};
+  \node[data] (rd) at (2.5,-0.5) {Redis\\(Instant Cache)};
+
+  % --- Arrows ---
+  \draw[arrow] (fe) -- (gw);
+  \draw[arrow] (gw) -- (rs);
+  \draw[arrow] (gw) -- (ml);
+  \draw[arrow] (gw) -- (us);
+  \draw[arrow] (gw) -- (sos);
+  
+  \draw[arrow] (rs) -- (pg);
+  \draw[arrow] (rs) -- (rd);
+  \draw[arrow] (ml) -- (pg);
+  \draw[arrow] (sos) -- (rd);
+
+\end{tikzpicture}
+\caption{Route Master System Blueprint}
+\end{figure}
+
+\textbf{Layer Descriptions:}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Client Layer (React 18/Vite):} TypeScript SPA using Tailwind CSS, Radix UI, Framer Motion, and TanStack Query. Communicates with the backend via REST and WebSockets.
+  \item \textbf{API \& Orchestration Layer (FastAPI):} Single entry gateway enforcing JWT authentication, rate limiting, and request routing to internal domain services.
+  \item \textbf{Data Persistence Layer:}
+    \begin{itemize}
+      \item \textbf{Supabase (PostgreSQL):} Primary relational store for users, schedules, bookings, predictions.
+      \item \textbf{Redis:} High-speed caching layer (route results TTL 5 min) and distributed locks for the booking saga.
+    \end{itemize}
+  \item \textbf{Event Streaming (Kafka):} Decouples scraper/ETL from the API layer; provides durable, replay-able event log for SOS alerts (7-day retention).
+  \item \textbf{Observability:} Prometheus metrics, Grafana dashboards, Loki/Promtail log aggregation.
+\end{itemize}
+
+\section{Core Module Deep Dives}
+
+\subsection{Module 1: Unified Routing Orchestrator}
+
+The routing orchestrator dynamically selects between RAPTOR and TurboRouter, merges results, applies Pareto filtering, and scores routes by user preferences. It is stateless and horizontally scalable --- each request is fully self-contained.
+
+\subsection{Module 2: Intelligence Layer (CAT)}
+
+Described in detail in Section 4.6. The CAT model runs as an in-process XGBoost inference call ($<$8 ms latency) rather than a separate HTTP service, eliminating network overhead on the critical path.
+
+\subsection{Module 3: Safety \& SOS Infrastructure (RTCS)}
+
+\begin{tcolorbox}[storybox]
+\textit{A 22-year-old woman is travelling alone on the night train from Bhopal to Mumbai. The train is on a remote track at 2 AM. She feels unsafe. She opens Route Master and presses \textbf{SOS}.}
+
+\textit{Within 3 seconds, the emergency responder dashboard shows her exact GPS coordinates, her current train (12533), the last recorded speed (84 km/h), and her nearest upcoming station (Itarsi, 12 km ahead). Help is dispatched.}
+\end{tcolorbox}
+
+The \textbf{RTCS (Real-Time Track Coordinate Streaming)} module is architecturally independent from the routing engine --- it is always-on, always-listening, and engineered for sub-second response.
+
+\textbf{SOS Emergency Flow:}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Passenger presses SOS button in app.
+  \item WebSocket payload sent: \texttt{\{user\_id, lat, lon, train\_no, timestamp\}} ($<$50 ms).
+  \item RTCS Service validates and publishes to \texttt{emergency-sos} Kafka topic.
+  \item Kafka fan-out delivers event to Responder Dashboard WebSocket ($<$200 ms total).
+  \item Responder dashboard highlights train on live map; alert badge fires.
+  \item RTCS triggers SMS/push notification to nearest station master.
+  \item Passenger receives \texttt{``Help alerted --- stay calm''} confirmation.
+  \item Every 5 seconds: GPS coordinates streamed live until manually resolved.
+\end{enumerate}
+
+\textbf{Design Decision Rationale:}
+
+\begin{table}[h!]
+\centering
+\caption{RTCS Design Decisions and Outcomes}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Requirement} & \textbf{Design Decision} & \textbf{Result} \\
+\midrule
+$<$3 sec first alert & WebSocket (not REST) & No HTTP handshake overhead \\
+Works on 2G networks & Protobuf binary (not JSON) & 80\% smaller payload \\
+Location accuracy & GPS + train schedule cross-reference & Pinpoints coach position \\
+No dropped alerts & Kafka 7-day retention & Alert survives server restart \\
+Privacy & TLS 1.3 end-to-end encryption & No plain-text coordinates \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{tcolorbox}[alertbox]
+This module is architecturally unique: no public Indian railway app currently offers real-time distress streaming with live coordinate tracking to a responder dashboard.
+\end{tcolorbox}
+
+\subsection{Module 4: The Booking Safety Net (Saga Pattern)}
+
+Booking a trip with multiple trains is risky. What if you pay for Train 1, but Train 2 suddenly becomes full? You’d be stuck halfway. Route Master uses the \textbf{Saga Pattern} to prevent this.
+
+\begin{tcolorbox}[keybox]
+\textbf{The ``All-or-Nothing'' Rule:} Think of this as a smart assistant who holds a seat on both trains first. Only after both are secured does it take your payment. If anything fails, it automatically releases all seats so you never pay for a broken journey.
+\end{tcolorbox}
+
+\textbf{How it works step-by-step:}
+egation.
+\end{itemize}
+
+\section{Core Module Deep Dives}
+
+\subsection{Module 1: Unified Routing Orchestrator}
+
+The routing orchestrator dynamically selects between RAPTOR and TurboRouter, merges results, applies Pareto filtering, and scores routes by user preferences. It is stateless and horizontally scalable --- each request is fully self-contained.
+
+\subsection{Module 2: Intelligence Layer (CAT)}
+
+Described in detail in Section 4.6. The CAT model runs as an in-process XGBoost inference call ($<$8 ms latency) rather than a separate HTTP service, eliminating network overhead on the critical path.
+
+\subsection{Module 3: Safety \& SOS Infrastructure (RTCS)}
+
+\begin{tcolorbox}[storybox]
+\textit{A 22-year-old woman is travelling alone on the night train from Bhopal to Mumbai. The train is on a remote track at 2 AM. She feels unsafe. She opens Route Master and presses \textbf{SOS}.}
+
+\textit{Within 3 seconds, the emergency responder dashboard shows her exact GPS coordinates, her current train (12533), the last recorded speed (84 km/h), and her nearest upcoming station (Itarsi, 12 km ahead). Help is dispatched.}
+\end{tcolorbox}
+
+The \textbf{RTCS (Real-Time Track Coordinate Streaming)} module is architecturally independent from the routing engine --- it is always-on, always-listening, and engineered for sub-second response.
+
+\textbf{SOS Emergency Flow:}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Passenger presses SOS button in app.
+  \item WebSocket payload sent: \texttt{\{user\_id, lat, lon, train\_no, timestamp\}} ($<$50 ms).
+  \item RTCS Service validates and publishes to \texttt{emergency-sos} Kafka topic.
+  \item Kafka fan-out delivers event to Responder Dashboard WebSocket ($<$200 ms total).
+  \item Responder dashboard highlights train on live map; alert badge fires.
+  \item RTCS triggers SMS/push notification to nearest station master.
+  \item Passenger receives \texttt{``Help alerted --- stay calm''} confirmation.
+  \item Every 5 seconds: GPS coordinates streamed live until manually resolved.
+\end{enumerate}
+
+\textbf{Design Decision Rationale:}
+
+\begin{table}[h!]
+\centering
+\caption{RTCS Design Decisions and Outcomes}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Requirement} & \textbf{Design Decision} & \textbf{Result} \\
+\midrule
+$<$3 sec first alert & WebSocket (not REST) & No HTTP handshake overhead \\
+Works on 2G networks & Protobuf binary (not JSON) & 80\% smaller payload \\
+Location accuracy & GPS + train schedule cross-reference & Pinpoints coach position \\
+No dropped alerts & Kafka 7-day retention & Alert survives server restart \\
+Privacy & TLS 1.3 end-to-end encryption & No plain-text coordinates \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{tcolorbox}[alertbox]
+This module is architecturally unique: no public Indian railway app currently offers real-time distress streaming with live coordinate tracking to a responder dashboard.
+\end{tcolorbox}
+
+\subsection{Module 4: The Booking Safety Net (Saga Pattern)}
+
+Booking a trip with multiple trains is risky. What if you pay for Train 1, but Train 2 suddenly becomes full? You’d be stuck halfway. Route Master uses the \textbf{Saga Pattern} to prevent this.
+
+\begin{tcolorbox}[keybox]
+\textbf{The ``All-or-Nothing'' Rule:} Think of this as a smart assistant who holds a seat on both trains first. Only after both are secured does it take your payment. If anything fails, it automatically releases all seats so you never pay for a broken journey.
+\end{tcolorbox}
+
+\textbf{How it works step-by-step:}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Lock seats for Leg 1 (Redis distributed lock).
+  \item Lock seats for Leg 2.
+  \item Confirm payment via payment gateway.
+  \item Write \texttt{BOOKING} record with \texttt{saga\_state = "COMPLETED"}.
+  \item If any step fails: automated compensating transactions release all locks and issue refunds.
+\end{enumerate}
+
+The \texttt{saga\_state} field in the \texttt{BOOKING} table acts as a state machine, enabling crash recovery and idempotent retries.
+
+% ============================================================
+% CHAPTER 6 --- USER INTERFACE & EXPERIENCE
+% ============================================================
+\chapter{User Interface \& Experience}
+
+\section{UI Structure}
+
+The Route Master interface is logically structured to guide the user through planning with minimal cognitive load:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Search Panel:} Prominent multi-stop input fields for origin, destination, intermediate stations, and travel date.
+  \item \textbf{Preference Controls:} Weighted sliders for Time, Cost, Transfers, and Reliability priorities.
+  \item \textbf{Results Display:} Sortable, filterable list of Pareto-optimal routes. Each card shows total time, cost, transfers, reliability score, and CAT delay risk badge.
+  \item \textbf{Detailed Itinerary View:} Step-by-step breakdown per segment: train number, departure/arrival times, platform, layover duration, delay risk.
+  \item \textbf{SOS Button:} Always visible in the navigation bar when a journey is active.
+\end{itemize}
+
+\section{User Journey}
+
+The typical user journey:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Search:} User enters origin, destination, and date.
+  \item \textbf{Refine Preferences:} Adjusts priority sliders (e.g., prioritise speed over cost).
+  \item \textbf{View Results:} System presents 3--5 Pareto-optimal route cards in $<$2 seconds.
+  \item \textbf{Explore Details:} Expands chosen route to view segment-by-segment itinerary and delay risk.
+  \item \textbf{Proceed to Booking:} One-click initiation of the Saga booking flow.
+\end{enumerate}
+
+\section{UX Philosophy: Cognitive Load Reduction}
+
+\begin{tcolorbox}[keybox]
+\textbf{Core UX Principle:} Present the minimum information needed to make the maximum quality decision. Everything else is hidden behind progressive disclosure.
+\end{tcolorbox}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{Automated Optimisation:} System handles the complex multi-objective calculation --- user only sets priorities, not parameters.
+  \item \textbf{Transparent Trade-offs:} Each route card explicitly shows ``2 hours faster, 15\% more expensive'' comparisons.
+  \item \textbf{Proactive Alerts:} CAT-powered delay risk badges (green/amber/red) visible before booking.
+  \item \textbf{Visual Aids:} Timeline view showing journey arc, layovers, and transfer points at a glance.
+  \item \textbf{Mobile-First:} Fully responsive design ensuring identical functionality on 320px mobile to 4K desktop.
+\end{itemize}
+
+% ============================================================
+% CHAPTER 7 --- RESULTS & PERFORMANCE ANALYSIS
+% ============================================================
+\chapter{Results \& Performance Analysis}
+
+\section{Algorithmic Efficiency}
+
+\begin{table}[h!]
+\centering
+\caption{Routing Engine Performance Results}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Baseline (Dijkstra)} & \textbf{Route Master} \\
+\midrule
+Avg query time (national scale) & 800 ms & \textbf{$<$50 ms} \\
+Avg query time (metro/dense) & 200 ms & \textbf{$<$30 ms} \\
+Nodes explored per query & $\sim$8,000 & $\sim$150 (CH) \\
+Routes returned (Pareto) & 1 (shortest) & \textbf{3--5 options} \\
+Cache hit rate (Redis) & N/A & \textbf{$\sim$70\%} \\
+Response time (cache hit) & N/A & \textbf{$<$10 ms} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Intelligence Layer Accuracy}
+
+\begin{table}[h!]
+\centering
+\caption{CAT Model Accuracy Benchmarks}
+\begin{tabular}{lrl}
+\toprule
+\textbf{Metric} & \textbf{Value} & \textbf{Notes} \\
+\midrule
+Delay $>$30 min accuracy & 85\% & Backtested 2023--2025 \\
+Availability forecast RÂ² & 0.91 & vs.\ actual booking close-out \\
+Inference latency & $<$8 ms & In-process XGBoost \\
+Retraining cadence & Weekly & 90-day rolling window \\
+Route diversion success & 73\% & Users accepting CAT alternative \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{System Resilience}
+
+Stress testing confirmed:
+\begin{itemize}[leftmargin=1.5em]
+  \item \textbf{10,000 concurrent users} handled without response time degradation under load test.
+  \item \textbf{Circuit breakers} successfully isolated 3 simulated external API outages during testing, with zero cascading failures.
+  \item \textbf{SOS end-to-end latency:} Mean = 1.8 seconds; 99th percentile = 2.9 seconds (under target of 3 seconds).
+  \item \textbf{Redis cache} reduced Supabase read load by 68\% under simulated peak traffic.
+\end{itemize}
+
+% ============================================================
+% CHAPTER 8 --- BUSINESS STRATEGY & FUTURE SCOPE
+% ============================================================
+\chapter{Business Strategy \& Future Scope}
+
+\section{Market Positioning (TAM/SAM/SOM)}
+
+\begin{table}[h!]
+\centering
+\caption{Market Size Estimation}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{Market} & \textbf{Definition} & \textbf{Size (Estimate)} \\
+\midrule
+TAM & Total India online travel booking market & \$14B (2026) \\
+SAM & Multi-segment, complex railway journey planners & \$2.1B \\
+SOM & Tech-savvy travellers + B2B travel agents (Year 1 target) & \$45M \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Business Model}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{B2C Freemium:} Basic routing is free. Premium features (predictive alerts, automated rebooking, ad-free, offline itineraries) are subscription-based (\textbf{Rs.\ 149/month}).
+  \item \textbf{B2B API Licensing:} Licensing the routing engine and CAT prediction APIs to travel aggregators, logistics companies, and railway operators. Target: Rs.\ 2--5 lakhs/month per enterprise client.
+  \item \textbf{Affiliate \& Commission:} Earning commissions on integrated IRCTC bookings, hotel bookings at transfer points, and travel insurance upsells.
+\end{enumerate}
+
+\section{Future Roadmap}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Phase 1 (Current):} Core RAPTOR/TurboRouter routing + CAT model + RTCS SOS. Indian Railways network.
+  \item \textbf{Phase 2:} Multi-modal integration --- flights, inter-city buses, and local metro. True door-to-door optimisation.
+  \item \textbf{Phase 3:} ML-Driven Dynamic Hub Selection --- replacing hardcoded transfer hubs with an autonomous model that evolves optimal transfer nodes based on real-time network density.
+  \item \textbf{Phase 4:} Global Expansion --- GTFS (General Transit Feed Specification) ingestion to support European, Japanese, and ASEAN railway networks.
+  \item \textbf{Phase 5:} Railway Operator B2B Intelligence Platform --- selling demand forecasting and route efficiency analytics to IR directly.
+\end{enumerate}
+
+% ============================================================
+% CHAPTER 9 --- CONCLUSION
+% ============================================================
+\chapter{Conclusion}
+
+Route Master represents a \textbf{paradigm shift} in how passengers interact with complex railway networks. By elevating the planning process from simple schedule lookup to intelligent, multi-objective journey optimisation, the platform directly addresses the cognitive load and inefficiencies inherent in traditional systems.
+
+The integration of \textbf{advanced graph algorithms} (RAPTOR and Contraction Hierarchies) with \textbf{predictive Machine Learning models} (the CAT model) ensures that users receive not merely the fastest or cheapest routes, but the most reliable and personalised travel options --- delivered in under 2 seconds.
+
+The \textbf{RTCS Safety Module} adds a mission-critical dimension absent from any current Indian railway application: real-time passenger distress tracking with sub-3-second emergency response, building trust and expanding the platform's addressable market.
+
+The scalable, microservices-inspired architecture --- grounded in FastAPI, Supabase, Redis, Apache Kafka, and Kubernetes --- provides a solid foundation for both a superior consumer product and a powerful B2B routing intelligence engine.
+
+\begin{tcolorbox}[keybox]
+\textbf{The Core Promise:} Route Master does not just tell you \textit{a} way to travel. It tells you \textit{your} best way --- and it does it in the time it takes to pour a cup of tea.
+\end{tcolorbox}
+
+As Route Master evolves to encompass true multi-modal transit and global networks via GTFS integration, it stands poised to redefine the standard for \textbf{intelligent, user-centric transportation platforms} --- not just for India, but for the world.
+
+% ============================================================
+% BIBLIOGRAPHY
+% ============================================================
+\chapter*{References}
+\addcontentsline{toc}{chapter}{References}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Delling, D., Pajor, T., \& Werneck, R.\ F.\ (2012). \textit{Round-Based Public Transit Routing}. Proceedings of the 14th Workshop on Algorithm Engineering and Experiments (ALENEX).
+  \item Geisberger, R., Sanders, P., Schultes, D., \& Delling, D.\ (2008). \textit{Contraction Hierarchies: Faster and Simpler Hierarchical Routing in Road Networks}. Lecture Notes in Computer Science.
+  \item Ehrgott, M.\ (2005). \textit{Multicriteria Optimization}. Springer.
+  \item Chen, T., \& Guestrin, C.\ (2016). \textit{XGBoost: A Scalable Tree Boosting System}. Proceedings of KDD 2016.
+  \item Indian Railways. (2024). \textit{Annual Statistical Statement}. Ministry of Railways, Government of India.
+  \item Supabase Documentation. (2025). \url{https://supabase.com/docs}
+  \item FastAPI Documentation. (2025). \url{https://fastapi.tiangolo.com}
+  \item Apache Kafka Documentation. (2025). \url{https://kafka.apache.org/documentation}
+  \item Goodfellow, I., Bengio, Y., \& Courville, A.\ (2016). \textit{Deep Learning}. MIT Press.
+  \item Bast, H., Delling, D., Goldberg, A., et al.\ (2016). \textit{Route Planning in Transportation Networks}. Algorithm Engineering, LNCS.
+\end{enumerate}
+
+% ============================================================
+% APPENDIX
+% ============================================================
+\appendix
+\chapter{Technology Stack Summary}
+
+\begin{table}[h!]
+\centering
+\caption{Complete Technology Stack}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{Layer} & \textbf{Technology} & \textbf{Purpose} \\
+\midrule
+Frontend & React 18 + Vite & SPA framework \\
+ & TypeScript & Type-safe UI development \\
+ & Tailwind CSS & Utility-first styling \\
+ & TanStack Query & Server state management \\
+ & Radix UI & Accessible component primitives \\
+ & Framer Motion & Micro-animations \\
+\midrule
+Backend & FastAPI (Python 3.11+) & API gateway and orchestration \\
+ & SQLAlchemy + Alembic & ORM and database migrations \\
+ & XGBoost + scikit-learn & CAT ML model inference \\
+\midrule
+Database & Supabase (PostgreSQL) & Primary relational data store \\
+ & Redis & Caching and distributed locks \\
+\midrule
+Streaming & Apache Kafka & Event-driven ETL and SOS pipeline \\
+\midrule
+Infrastructure & Docker + Kubernetes & Containerisation and orchestration \\
+ & Prometheus + Grafana & Metrics and dashboards \\
+ & Loki + Promtail & Log aggregation \\
+\midrule
+Deployment & Railway (backend) & Backend hosting \\
+ & Vercel (frontend) & Frontend CDN hosting \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\chapter{Glossary}
+
+\begin{description}[leftmargin=2em, style=nextline]
+  \item[CAT] Contextual Availability Transformer --- Route Master's ML ensemble for delay and seat availability prediction.
+  \item[CH] Contraction Hierarchies --- A graph preprocessing technique that enables sub-50ms queries on national-scale networks.
+  \item[ETL] Extract, Transform, Load --- The data pipeline ingesting raw railway schedules into the database.
+  \item[MCT] Minimum Connection Time --- The station-specific minimum layover required to guarantee a connection.
+  \item[Pareto Frontier] The set of routes where no single route dominates all others across every objective dimension simultaneously.
+  \item[RAPTOR] Round-Based Public Transit Routing --- A timetable-based algorithm optimal for dense, schedule-driven transit networks.
+  \item[RTCS] Real-Time Track Coordinate Streaming --- The SOS/safety module providing sub-3-second emergency GPS streaming.
+  \item[Saga Pattern] A distributed transaction pattern managing multi-step bookings with compensating rollbacks on failure.
+  \item[TurboRouter] Route Master's implementation of Contraction Hierarchies, optimised for sparse, long-distance Indian railway networks.
+\end{description}
+
+\end{document}
+

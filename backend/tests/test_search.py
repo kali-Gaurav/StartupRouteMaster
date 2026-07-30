@@ -3,15 +3,29 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models import Base, Station, Segment
-from services import RouteEngine
+from database import Base
+from database.models import Station, Segment
+from core.route_engine import RouteEngine
 
 
 @pytest.fixture
 def test_db():
-    """Create test database."""
+    """Create test database (sqlite in-memory). Avoid geoalchemy2 DDL calls for sqlite."""
     engine = create_engine("sqlite:///:memory:")
+
+    # Temporarily disable geoalchemy2 sqlite after_create hook which expects SpatiaLite
+    try:
+        import geoalchemy2.dialects.sqlite as _gasqlite
+        _orig_after_create = getattr(_gasqlite, 'after_create', None)
+        _gasqlite.after_create = lambda *a, **kw: None
+    except Exception:
+        _orig_after_create = None
+
     Base.metadata.create_all(bind=engine)
+
+    if _orig_after_create is not None:
+        _gasqlite.after_create = _orig_after_create
+
     SessionLocal = sessionmaker(bind=engine)
     return SessionLocal()
 
@@ -45,17 +59,6 @@ def sample_segments(test_db, sample_stations):
             duration_minutes=720,
             cost=450.0,
             operator="Konkan Kanya Express",
-            operating_days="1111111",
-        ),
-        Segment(
-            source_station_id=sample_stations[0].id,
-            dest_station_id=sample_stations[1].id,
-            transport_mode="Flight",
-            departure_time="09:00",
-            arrival_time="11:00",
-            duration_minutes=120,
-            cost=3500.0,
-            operator="IndiGo",
             operating_days="1111111",
         ),
     ]

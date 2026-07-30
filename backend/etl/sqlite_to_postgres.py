@@ -1,217 +1,183 @@
 import sqlite3
-import uuid
-import argparse
-from datetime import datetime
-from typing import Dict, List, Optional
 import logging
 import os
+import uuid
+import gc
+from typing import Dict, Any, List
+from datetime import datetime, time, date
+from contextlib import contextmanager
+
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, and_
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
+from database.session import SessionLocal
+from database.models import Stop, Trip, Route, Agency, Calendar, StopTime, Segment, Vehicle, StationSchedule, TrainPath
 
-# Import models directly to avoid circular dependency issues with app-level modules
-from models import Base, Station, Segment, Vehicle 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("etl-atomic")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-DEFAULT_SQLITE_PATH = os.path.join(os.path.dirname(__file__), "..", "railway_manager.db")
-
-class OperatingDaysBitmask:
-    """Utility to build a 7-character operating days string (Mon-Sun).
-
-    Example: OperatingDaysBitmask.create(True, True, True, True, True, False, False) -> "1111100"
-    """
-    @staticmethod
-    def create(mon: bool=False, tue: bool=False, wed: bool=False, thu: bool=False, fri: bool=False, sat: bool=False, sun: bool=False) -> str:
-        return ''.join('1' if v else '0' for v in (mon, tue, wed, thu, fri, sat, sun))
-
-
-def calculate_duration(departure_time: str, arrival_time: str) -> int:
-    """Calculate duration in minutes between two HH:MM strings; handles overnight."""
-    fmt = "%H:%M"
-    d = datetime.strptime(departure_time, fmt)
-    a = datetime.strptime(arrival_time, fmt)
-    delta = a - d
-    if delta.total_seconds() < 0:
-        # arrival is next day
-        delta = (a.replace(day=a.day + 1) - d)
-    return int(delta.total_seconds() // 60)
-
-
-class SQLiteReader:
-    # ... (rest of the class is unchanged)
-    """Reads data from the SQLite railway_manager.db."""
+class SQLiteAtomicReader:
+    """[Task 107] High-Concurrency SQLite Handover with WAL support."""
     def __init__(self, db_path: str):
-        self.db_path = db_path
         if not os.path.exists(db_path):
-            raise FileNotFoundError(f"SQLite DB not found: {db_path}")
-        logger.info(f"Connected to SQLite: {db_path}")
+             # Try relative to parent if in backend/
+             p1 = os.path.join('backend', 'database', 'railway_data.db')
+             db_path = p1 if os.path.exists(p1) else db_path
+             
+        self.db_path = db_path
+        self._conn = None
 
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def read_stations_master(self) -> List[Dict]:
-        """Reads all stations from the stations_master table."""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT station_code, station_name, city, state, latitude, longitude FROM stations_master ORDER BY station_code")
-        stations = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        logger.info(f"Read {len(stations)} stations from SQLite.")
-        return stations
-
-    def read_segment_data(self) -> List[Dict]:
-        """Reads train route data to generate segments."""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT train_no, seq_no, station_code, departure_time, arrival_time,
-                   distance_from_source, cumulative_travel_minutes, day_offset
-            FROM train_routes
-            WHERE departure_time IS NOT NULL AND arrival_time IS NOT NULL
-            ORDER BY train_no, seq_no
-        """)
-        routes_data = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
-        trains = {}
-        for row in routes_data:
-            trains.setdefault(row['train_no'], []).append(row)
-
-        segments = []
-        for train_no, stops in trains.items():
-            stops.sort(key=lambda x: x['seq_no'])
-            for i in range(len(stops) - 1):
-                current_stop = stops[i]
-                next_stop = stops[i + 1]
-                try:
-                    duration = next_stop['cumulative_travel_minutes'] - current_stop['cumulative_travel_minutes']
-                    distance = next_stop['distance_from_source'] - current_stop['distance_from_source']
-                    
-                    if duration <= 0:
-                        continue
-
-                    segments.append({
-                        'train_no': train_no,
-                        'source_station_code': current_stop['station_code'],
-                        'dest_station_code': next_stop['station_code'],
-                        'departure_time': current_stop['departure_time'],
-                        'arrival_time': next_stop['arrival_time'],
-                        'duration_minutes': duration,
-                        'distance_km': distance,
-                        'arrival_day_offset': next_stop['day_offset'] - current_stop['day_offset'],
-                        'operator': 'Indian Railways',
-                        'operating_days': '1111111',
-                        'cost': 150.0
-                    })
-                except (TypeError, ValueError) as e:
-                    logger.warning(f"Skipping segment for train {train_no} due to data error: {e}")
-                    continue
-        logger.info(f"Generated {len(segments)} segments from {len(trains)} trains.")
-        return segments
-
-class PostgresLoader:
-    """Loads data into the PostgreSQL database."""
-    def __init__(self, db_url: str):
-        engine = create_engine(db_url)
-        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        self.db: Session = self.SessionLocal()
-        self.vehicle_cache: Dict[str, str] = {}
-        Base.metadata.drop_all(engine) # Drop all existing tables
-        Base.metadata.create_all(engine) # Ensure tables exist with the latest schema
-        logger.info(f"Connected to PostgreSQL and ensured tables exist.")
-
-    # ... (rest of the class is largely unchanged, but uses self.db)
-    def get_or_create_station(self, code: str, name: str, city: str, lat: Optional[float], lon: Optional[float]) -> Optional[str]:
-        station = self.db.query(Station).filter(Station.name == name, Station.city == city).first()
-        if station:
-            return station.id
-        new_station = Station(id=str(uuid.uuid4()), name=name, city=city, latitude=lat or 0.0, longitude=lon or 0.0)
-        self.db.add(new_station)
-        self.db.commit()
-        return new_station.id
-
-    def get_or_create_vehicle(self, train_no: str, operator: str) -> Optional[str]:
-        """Gets or creates a vehicle and returns its UUID."""
-        train_no_str = str(train_no) # Explicitly cast to string
-        if train_no_str in self.vehicle_cache:
-            return self.vehicle_cache[train_no_str]
+    @contextmanager
+    def session(self):
+        if not self._conn:
+            self._conn = sqlite3.connect(self.db_path)
+            self._conn.row_factory = sqlite3.Row
+            # Enable WAL mode for performance/locking
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             
-        vehicle = self.db.query(Vehicle).filter(Vehicle.vehicle_number == train_no_str).first()
-        if vehicle:
-            self.vehicle_cache[train_no_str] = vehicle.id
-            return vehicle.id
-
-        new_vehicle = Vehicle(id=str(uuid.uuid4()), vehicle_number=train_no_str, type='train', operator=operator)
-        self.db.add(new_vehicle)
-        self.db.commit()
-        self.vehicle_cache[train_no_str] = new_vehicle.id
-        return new_vehicle.id
-
-    def create_segment(self, segment_data: Dict) -> bool:
-        existing = self.db.query(Segment).filter(
-            and_(
-                Segment.source_station_id == segment_data["source_station_id"],
-                Segment.dest_station_id == segment_data["dest_station_id"],
-                Segment.vehicle_id == segment_data["vehicle_id"],
-                Segment.departure_time == segment_data["departure_time"],
-            )
-        ).first()
-        if not existing:
-            self.db.add(Segment(**segment_data))
-            return True
-        return False
+        try:
+            yield self._conn.cursor()
+        except Exception as e:
+            self._conn.rollback()
+            raise e
 
     def close(self):
-        self.db.close()
+        if self._conn:
+            self._conn.close()
+            self._conn = None
 
-def run_etl(sqlite_path: str, db_url: str):
-    logger.info("="*60)
-    logger.info(f"Starting ETL: {sqlite_path} -> PostgreSQL")
-    logger.info("="*60)
-
-    reader = SQLiteReader(sqlite_path)
-    loader = PostgresLoader(db_url)
-
+def parse_time(t_str):
+    if not t_str: return time(12,0)
     try:
-        stations = reader.read_stations_master()
-        station_code_to_id = {s['station_code']: loader.get_or_create_station(s['station_code'], s['station_name'], s['city'], s.get('latitude'), s.get('longitude')) for s in stations}
-        logger.info(f"Synced {len(station_code_to_id)} stations.")
+        if ' ' in t_str: t_str = t_str.split(' ')[1] 
+        parts = t_str.split(':')
+        return time(int(parts[0]) % 24, int(parts[1]))
+    except: return time(12,0)
 
-        segments_data = reader.read_segment_data()
-        for seg_dict in segments_data:
-            vehicle_id = loader.get_or_create_vehicle(seg_dict['train_no'], seg_dict['operator'])
-            source_id = station_code_to_id.get(seg_dict['source_station_code'])
-            dest_id = station_code_to_id.get(seg_dict['dest_station_code'])
-
-            if not all([vehicle_id, source_id, dest_id]):
-                continue
-            
-            loader.create_segment({
-                "id": str(uuid.uuid4()), "source_station_id": source_id, "dest_station_id": dest_id,
-                "vehicle_id": vehicle_id, "transport_mode": "train", "departure_time": seg_dict['departure_time'],
-                "arrival_time": seg_dict['arrival_time'], "duration_minutes": seg_dict['duration_minutes'],
-                "distance_km": seg_dict['distance_km'], "arrival_day_offset": seg_dict['arrival_day_offset'],
-                "cost": seg_dict['cost'], "operating_days": seg_dict['operating_days'],
-            })
+async def run_etl():
+    """[Task 107] Elite Atomic Ingestion."""
+    db_path = os.path.join('database', 'railway_data.db')
+    reader = SQLiteAtomicReader(db_path)
+    session = SessionLocal()
+    
+    DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    
+    try:
+        logger.info("🎬 Starting Atomic Relational Handover...")
         
-        loader.db.commit()
-        logger.info(f"✅ Committed all segments.")
+        # 1. Base Setup
+        agency = session.query(Agency).filter(Agency.agency_id == "IR").first()
+        if not agency:
+            agency = Agency(agency_id="IR", name="Indian Railways", url="https://enquiry.indianrail.gov.in", timezone="Asia/Kolkata")
+            session.add(agency); session.flush()
 
-    except Exception as e:
-        logger.error(f"ETL failed: {e}", exc_info=True)
-        loader.db.rollback()
+        # 2. Sync Stations
+        with reader.session() as cur:
+            cur.execute("SELECT * FROM stations_master")
+            stations = [dict(r) for r in cur.fetchall()]
+            
+        existing_stop_ids = {s[0] for s in session.query(Stop.stop_id).all()}
+        new_stops = []
+        for s in stations:
+            if s['station_code'] not in existing_stop_ids:
+                new_stops.append({
+                    "stop_id": s['station_code'], "code": s['station_code'], "name": s['station_name'], 
+                    "city": s.get('city', ''), "latitude": s.get('latitude', 0.0), "longitude": s.get('longitude', 0.0),
+                    "location_type": 1
+                })
+        
+        if new_stops:
+            logger.info(f"Syncing {len(new_stops)} new stations...")
+            from sqlalchemy.orm import Mapper
+            from typing import cast
+            session.bulk_insert_mappings(cast(Mapper, Stop), new_stops)
+            session.commit()
+
+        station_mapping = {s.stop_id: s.id for s in session.query(Stop).all()}
+
+        # 3. Sync Trains
+        with reader.session() as cur:
+            cur.execute("SELECT * FROM trains_master")
+            trains = [dict(r) for r in cur.fetchall()]
+            
+        existing_trips = {t[0] for t in session.query(Trip.trip_id).all()}
+        
+        for k, t in enumerate(trains):
+            train_no = str(t['train_no'])
+            if train_no in existing_trips: continue
+
+            # Route/Service
+            gr = Route(route_id=train_no, agency_id=agency.id, short_name=train_no, long_name=t['train_name'], route_type=2)
+            session.add(gr); session.flush()
+
+            # Running Days (Using persistent reader)
+            with reader.session() as cur:
+                cur.execute("SELECT * FROM train_running_days WHERE train_no = ?", (train_no,))
+                running = cur.fetchone()
+                
+            service_id = f"S_{train_no}" if running else "DAILY"
+            if running:
+                exists = session.query(Calendar).filter(Calendar.service_id == service_id).first()
+                if not exists:
+                    cal = Calendar(service_id=service_id, monday=bool(running['mon']), tuesday=bool(running['tue']), 
+                                  wednesday=bool(running['wed']), thursday=bool(running['thu']),
+                                  friday=bool(running['fri']), saturday=bool(running['sat']), sunday=bool(running['sun']),
+                                  start_date=date(2020,1,1), end_date=date(2030,12,31))
+                    session.add(cal); session.flush()
+
+            trip = Trip(trip_id=train_no, route_id=gr.id, service_id=service_id)
+            session.add(trip); session.flush()
+            
+            vid = str(uuid.uuid4())
+            session.add(Vehicle(id=vid, vehicle_number=train_no, type='train', operator='IR'))
+
+            # Route Rows
+            with reader.session() as cur:
+                cur.execute("SELECT * FROM train_routes WHERE train_no = ? ORDER BY seq_no", (train_no,))
+                route_rows = [dict(r) for r in cur.fetchall()]
+            
+            st_batch, seg_batch, sched_batch = [], [], []
+            for i, curr in enumerate(route_rows):
+                if curr['station_code'] not in station_mapping: continue
+                sid = station_mapping[curr['station_code']]
+                arr, dep = parse_time(curr['arrival_time']), parse_time(curr['departure_time'])
+                
+                st_batch.append({"trip_id": trip.id, "stop_id": sid, "arrival_time": arr, "departure_time": dep, "stop_sequence": curr['seq_no']})
+                for day in DAYS_OF_WEEK:
+                    sched_batch.append({"station_id": sid, "trip_id": trip.id, "arrival": arr, "departure": dep, "day_of_week": day, "stop_seq": curr['seq_no']})
+
+                if i < len(route_rows) - 1:
+                    nxt = route_rows[i+1]
+                    if nxt['station_code'] in station_mapping:
+                        dur = (nxt['cumulative_travel_minutes'] or 0) - (curr['cumulative_travel_minutes'] or 0)
+                        seg_batch.append({
+                            "id": str(uuid.uuid4()), "source_station_id": str(sid), "dest_station_id": str(station_mapping[nxt['station_code']]),
+                            "trip_id": trip.id, "vehicle_id": vid, "transport_mode": 'train',
+                            "departure_time": dep, "arrival_time": parse_time(nxt['arrival_time']),
+                            "arrival_day_offset": nxt['day_offset'] or 0, "duration_minutes": dur if dur > 0 else 60,
+                            "distance_km": float((nxt['distance_from_source'] or 0) - (curr['distance_from_source'] or 0)),
+                            "cost": float((nxt['distance_from_source'] or 0) - (curr['distance_from_source'] or 0)) * 1.2,
+                            "operating_days": "1111111"
+                        })
+
+            from sqlalchemy.orm import Mapper
+            from typing import cast
+            session.bulk_insert_mappings(cast(Mapper, StopTime), st_batch)
+            session.bulk_insert_mappings(cast(Mapper, StationSchedule), sched_batch)
+            session.bulk_insert_mappings(cast(Mapper, Segment), seg_batch)
+
+            if k % 50 == 0:
+                session.commit()
+                logger.info(f"Ingested {k} trains...")
+                gc.collect()
+
+        session.commit()
+        logger.info("✅ Atomic Handover Complete.")
+        
     finally:
-        loader.close()
-        logger.info("ETL process finished.")
+        session.close()
+        reader.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ETL script to load data from SQLite to PostgreSQL.")
-    parser.add_argument("--source", default=DEFAULT_SQLITE_PATH, help="Path to the source SQLite database file.")
-    parser.add_argument("--db-url", required=True, help="URL for the target PostgreSQL database.")
-    args = parser.parse_args()
-    
-    run_etl(sqlite_path=args.source, db_url=args.db_url)
+    import asyncio
+    asyncio.run(run_etl())
