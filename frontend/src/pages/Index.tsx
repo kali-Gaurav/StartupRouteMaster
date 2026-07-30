@@ -991,7 +991,6 @@ const Index = () => {
                         </a>
                       </div>
                     )}
-                    </p>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-4">
